@@ -25,23 +25,28 @@ repository = "https://github.com/patricksmithlaravel/Tawara-wallet"
 # THE WALLET LIBRARY, PINNED BY FULL COMMIT HASH (docs/PLAN.md D1).
 #
 # Rep-1 (`patricksmithlaravel/mcm-rust-cli-windows`) at `main`, 121daf3, the
-# commit the owner named. Upgrading the library is a change to `rev` and to
-# nothing else: no `[patch]`, no vendored copy, no fork. A change the
-# application needs from the library is made in Rep-0, merged down into
-# Rep-1, and picked up here by moving `rev`. `crates/wallet-core/tests/
-# policy.rs` holds this line to a 40-hex `rev` and the workspace to no
-# `[patch]` section.
+# commit the owner named, in the form docs/PLAN.md D1 gives. Upgrading the
+# library is a change to `rev` and to nothing else: no `[patch]`, no vendored
+# copy, no fork. A change the application needs from the library is made in
+# Rep-0, merged down into Rep-1, and picked up here by moving `rev`.
+# `crates/wallet-core/tests/policy.rs` holds this line to a 40-hex `rev`
+# alone and the repository to no patch, replacement or path override, and
+# deny.toml refuses `raw-backend` in the resolved graph.
 #
 # `default-features = false` with `native` named, and `mesh-https` for TLS:
 # rustls with `ring`, the one dependency that compiles C (D4). This
 # workspace never turns on `raw-backend`: it is the library's test-only
 # feature, and with it off the only path to a signature is
 # `Keystore::sign_spend` behind an `AdvanceReceipt` (the library's I1).
-mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-windows", rev = "121daf3773fbc7869ee56c2c795e21115044dfe7", version = "2.0.0", default-features = false, features = ["native", "mesh-https"] }
+mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-windows", rev = "121daf3773fbc7869ee56c2c795e21115044dfe7", default-features = false, features = ["native", "mesh-https"] }
 
 # THE TOOLKIT (docs/PLAN.md D2): iced, at its latest release when the work
-# began, pinned exactly so a `cargo update` cannot move it. Recorded in
-# docs/DECISIONS.md (D6).
+# began. Recorded in docs/DECISIONS.md (D6). `=0.14.0` fixes the `iced` crate
+# itself; its subcrates (iced_core, iced_widget, iced_winit, iced_renderer,
+# iced_wgpu, iced_tiny_skia and the rest) are required by it at `^0.14.0`, so
+# the committed Cargo.lock is what holds them, and CI builds with `--locked`.
+# A `cargo update` can move them within 0.14.x; that is a deliberate change,
+# reviewed with `cargo deny check` like any other.
 #
 # The features are iced 0.14.0's own defaults, written out so that what
 # ships is a list in this file rather than whatever iced's default becomes:
