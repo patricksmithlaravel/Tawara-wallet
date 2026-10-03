@@ -1,0 +1,17 @@
+[package]
+name = "tawara-mobile"
+description = "The Tawara entry points for Android and iOS."
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[lib]
+# `cdylib` is what Android loads (`libtawara_mobile.so`), `staticlib` is what
+# the iOS Xcode project links, and `lib` lets the workspace's own tests and
+# docs see the crate. Phase 1's spike decides which shell drives it.
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[dependencies]
+tawara-app.workspace = true

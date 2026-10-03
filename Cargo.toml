@@ -1,0 +1,93 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/wallet-core",
+    "crates/app",
+    "crates/desktop",
+    "crates/mobile",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# The executable is distributed under the wallet's licence (docs/PLAN.md
+# section 6): the Mochimo Cryptocurrency Engine License Agreement, version
+# 1.0. `LICENSE.md` is Rep-1's file copied byte for byte. The agreement has no
+# SPDX identifier, which is why this is `license-file` and not `license`, and
+# why deny.toml has to say how to read it.
+license-file = "LICENSE.md"
+# Nothing here is published to a registry. The application ships as signed
+# packages (docs/PLAN.md section 6), never as crates.
+publish = false
+repository = "https://github.com/patricksmithlaravel/Tawara-wallet"
+
+[workspace.dependencies]
+# THE WALLET LIBRARY, PINNED BY FULL COMMIT HASH (docs/PLAN.md D1).
+#
+# Rep-1 (`patricksmithlaravel/mcm-rust-cli-windows`) at `main`, 121daf3, the
+# commit the owner named. Upgrading the library is a change to `rev` and to
+# nothing else: no `[patch]`, no vendored copy, no fork. A change the
+# application needs from the library is made in Rep-0, merged down into
+# Rep-1, and picked up here by moving `rev`. `crates/wallet-core/tests/
+# policy.rs` holds this line to a 40-hex `rev` and the workspace to no
+# `[patch]` section.
+#
+# `default-features = false` with `native` named, and `mesh-https` for TLS:
+# rustls with `ring`, the one dependency that compiles C (D4). This
+# workspace never turns on `raw-backend`: it is the library's test-only
+# feature, and with it off the only path to a signature is
+# `Keystore::sign_spend` behind an `AdvanceReceipt` (the library's I1).
+mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-windows", rev = "121daf3773fbc7869ee56c2c795e21115044dfe7", version = "2.0.0", default-features = false, features = ["native", "mesh-https"] }
+
+# THE TOOLKIT (docs/PLAN.md D2): iced, at its latest release when the work
+# began, pinned exactly so a `cargo update` cannot move it. Recorded in
+# docs/DECISIONS.md (D6).
+#
+# The features are iced 0.14.0's own defaults, written out so that what
+# ships is a list in this file rather than whatever iced's default becomes:
+# `wgpu` and `tiny-skia` (the pure-Rust software renderer, D2), `crisp`,
+# `web-colors`, `thread-pool`, and on Linux `x11`, `wayland` and
+# `linux-theme-detection`. Features the renderings may need later (`svg` for
+# the line icons, `qr_code` only with the owner's approval) are added by the
+# change that needs them, with deny.toml run against the result.
+iced = { version = "=0.14.0", default-features = false, features = [
+    "wgpu",
+    "tiny-skia",
+    "crisp",
+    "web-colors",
+    "thread-pool",
+    "linux-theme-detection",
+    "x11",
+    "wayland",
+] }
+
+tawara-wallet-core = { path = "crates/wallet-core" }
+tawara-app = { path = "crates/app" }
+
+# Dev-dependencies of the policy checks only (crates/wallet-core/tests/
+# policy.rs). They never reach a shipped build.
+syn = { version = "2", default-features = false, features = ["full", "parsing", "printing", "visit-mut", "clone-impls"] }
+proc-macro2 = { version = "1", default-features = false }
+quote = { version = "1", default-features = false }
+toml = "0.9"
+
+# THE RELEASE PROFILE IS A SECURITY PROPERTY OF THE LIBRARY, AND PROFILES ARE
+# ONLY READ FROM THE ROOT OF THE WORKSPACE BEING BUILT. Rep-1's own
+# `[profile.release]` therefore does not reach a build of this repository:
+# it has to be restated here or it is silently lost.
+#
+# `panic = "unwind"`: every scrub of key material in mochimo-crypto runs
+# through `Drop` (`zeroize`, `Zeroizing`, `Secret`). Under `panic = "abort"`
+# destructors do not run, so the master seed would stay in memory on exactly
+# the path where it matters most, and SIGABRT's default disposition writes a
+# core file. Rep-1's Cargo.toml measures this; a smaller binary is not worth
+# the seed.
+#
+# `overflow-checks = true`: cargo turns them off in release by default, so a
+# bare `+` on a balance would wrap silently in the build users run while
+# panicking in the debug build every test runs in.
+#
+# `crates/wallet-core/tests/policy.rs` fails if either line changes.
+[profile.release]
+panic = "unwind"
+overflow-checks = true
