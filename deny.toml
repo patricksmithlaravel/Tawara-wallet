@@ -1,0 +1,239 @@
+# Licence, advisory, ban and source policy for this repository.
+#
+#   cargo deny check
+#
+# CI runs it on every push to main and every pull request, on all three
+# desktop operating systems (.github/workflows/ci.yml). It reaches the network
+# for the advisory database.
+#
+# WHERE THIS COMES FROM. Rep-1's `deny.toml` is the template: the same
+# advisory and source rules, the same denied features on the library's
+# transport and KDF, and the same licences for the library's own graph. What
+# is added here is the interface's graph (iced, winit, wgpu and the rest) and
+# the library itself, which in Rep-1 is the workspace crate and here is a
+# git dependency. FORK.md R2-3 is why the additions live here and never in
+# Rep-0's or Rep-1's file: the policy over the code that holds keys stays
+# exactly as it is there.
+#
+# WHAT THIS CANNOT DO, as Rep-1's file says of itself: it catches a policy
+# violation introduced by a change -- a dependency added, a version moved, a
+# feature switched on. An advisory filed against a dependency whose version
+# did not move is only seen when this runs, so it runs on every pull request
+# rather than only before a release.
+
+[graph]
+# Every feature of this workspace's own crates is resolved, so a feature added
+# later cannot hide a dependency from the walk. The library's features are
+# fixed in the root manifest (`native`, `mesh-https`), which is the one
+# configuration that pulls rustls, `ring` and the webpki root store.
+all-features = true
+# `targets` is left unset, so every target triplet is considered: the
+# Windows, macOS and Linux arms of the windowing and clipboard crates, and the
+# Android and iOS arms that phase 4 will build. A licence question is about
+# what this lockfile can pull in, not about what one host happened to build.
+
+[advisories]
+# Each ignored advisory below is a decision to ship a known finding, with its
+# reason written beside it (docs/PLAN.md section 6: "Every entry in `ignore`
+# carries a written reason"). Both are maintenance notices, not
+# vulnerabilities, and both arrive with iced 0.14.0; FORK.md R2-2 measured
+# iced as tripping `unmaintained` twice before this repository existed, and
+# these are the two. Each is re-examined when the iced pin moves.
+ignore = [
+    # `paste` 1.0.15: archived by its author. It is a procedural macro, so it
+    # runs inside the compiler while building and contributes no code to any
+    # executable. It reaches this graph only as `metal` -> `wgpu-hal` ->
+    # `wgpu` -> iced's GPU renderer, on Apple targets, and no version of
+    # `metal` that iced 0.14.0's wgpu accepts drops it.
+    { id = "RUSTSEC-2024-0436", reason = "paste is a compile-time proc macro reached only through metal -> wgpu-hal under iced 0.14.0's renderer; it puts no code in the executable and no compatible upgrade exists" },
+    # `ttf-parser` 0.25.1: its author has stated it will receive no further
+    # fixes. It reads font files, through `fontdb` and `cosmic-text`, which
+    # iced uses for all text. What it parses is the fonts this application
+    # bundles (docs/PLAN.md section 5) and the fonts installed on the user's
+    # own system, both already trusted; it never sees data from the node.
+    # No release of iced 0.14 uses another parser.
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser parses only bundled and locally installed fonts, never node data; it is iced 0.14.0's text stack and has no maintained drop-in within this iced pin" },
+]
+# Unmaintained crates anywhere in the graph, not just the ones this workspace
+# names directly, as in Rep-1: an application inherits the maintenance status
+# of everything it links.
+unmaintained = "all"
+# A yanked version is denied rather than warned: `cargo deny check` exits 0
+# on a warning, so a warn-level rule would describe a policy the gate does not
+# enforce.
+yanked = "deny"
+
+[licenses]
+# PERMISSIVE LICENCES ONLY (docs/PLAN.md section 6). Every identifier below is
+# here because a crate in this graph needs it; cargo-deny reports an entry no
+# crate uses. GPL in any version is absent, and so it can never be satisfied:
+# FORK.md's Licence section explains that a GPL dependency would fail on the
+# Mochimo licence's field-of-use restriction. Two crates in this graph offer
+# a GPL or LGPL arm in an OR expression (`self_cell`: `Apache-2.0 OR
+# GPL-2.0-only`; `r-efi`: `MIT OR Apache-2.0 OR LGPL-2.1-or-later`); each is
+# admitted through its permissive arm alone.
+allow = [
+    # From Rep-1's file, for the library's graph and the ecosystem at large.
+    #
+    # The ecosystem's dual licence, and the bulk of this graph.
+    "MIT",
+    "Apache-2.0",
+    # `ring`, `rustls-webpki` and `untrusted`, under `mesh-https`. `ring`'s
+    # expression is `Apache-2.0 AND ISC`, an AND, so this entry is required.
+    "ISC",
+    # `subtle`, the route for the library's constant-time comparison of key
+    # material.
+    "BSD-3-Clause",
+    # `unicode-ident`, `(MIT OR Apache-2.0) AND Unicode-3.0`.
+    "Unicode-3.0",
+    # `webpki-roots`: Mozilla's root store as data, under a data licence. It
+    # enters with `mesh-https`, so it is in what ships.
+    "CDLA-Permissive-2.0",
+
+    # Added for the interface's graph. These four are the ones FORK.md R2-2
+    # measured iced as needing, and its Licence section reads all four as
+    # permissive: notice preservation and a warranty disclaimer, no
+    # reciprocal clause, nothing that reaches into mochimo-crypto.
+    #
+    # `arrayref`, under `tiny-skia`, the software renderer (D2). BSD-2-Clause
+    # requires its notice in binary distributions, which is what the notices
+    # generated in CI are for (FORK.md R2-9).
+    "BSD-2-Clause",
+    # `clipboard-win` and `error-code`, iced's clipboard on Windows.
+    "BSL-1.0",
+    # `hexf-parse`, under `naga`, wgpu's shader translator: a public-domain
+    # dedication with a fallback licence.
+    "CC0-1.0",
+    # `foldhash` and `slotmap`, under wgpu and iced's layout: the zlib
+    # licence.
+    "Zlib",
+]
+
+# THE WALLET'S OWN LICENCE, and the five crates that carry it.
+#
+# The library and this repository's own crates are licensed under the
+# Mochimo Cryptocurrency Engine License Agreement, version 1.0: the root
+# `LICENSE.md` of Rep-1, which this repository's `LICENSE.md` copies byte for
+# byte (docs/PLAN.md section 6: "The executable is distributed under the
+# wallet's licence"). The agreement has no SPDX identifier, so each manifest
+# names it with `license-file`, and cargo-deny cannot read a licence from a
+# file it does not recognise: it reports the crate as unlicensed.
+#
+# Rep-1 answers that for its own crate with `[licenses.private] ignore =
+# true`. Here that would be wrong twice over: it would pass the library
+# because it is unpublished rather than because its licence was read, and it
+# would pass any other unpublished crate that ever entered the graph. So the
+# licence is named instead, with the SPDX form for a licence outside the list
+# (`LicenseRef-`), and pinned to the text by hash.
+#
+# THE HASH IS THE POINT. Both files hash to the same value because they are
+# the same bytes. If the library's licence text changes when `rev` moves,
+# this check goes red, and someone reads the new text before this
+# application's licence follows it. That is the moment a licence gate exists
+# for. A changed text is reported as the crate being unlicensed and its
+# exception below unmatched, and the second is an error, so the check fails.
+# The identifier is allowed for these five crates alone, as exceptions,
+# never in the list above.
+[licenses.private]
+ignore = false
+
+[[licenses.clarify]]
+crate = "mochimo-crypto"
+expression = "LicenseRef-Mochimo-Engine-1.0"
+license-files = [{ path = "../../LICENSE.md", hash = 0xaa8c1f8a }]
+
+[[licenses.clarify]]
+crate = "tawara-wallet-core"
+expression = "LicenseRef-Mochimo-Engine-1.0"
+license-files = [{ path = "../../LICENSE.md", hash = 0xaa8c1f8a }]
+
+[[licenses.clarify]]
+crate = "tawara-app"
+expression = "LicenseRef-Mochimo-Engine-1.0"
+license-files = [{ path = "../../LICENSE.md", hash = 0xaa8c1f8a }]
+
+[[licenses.clarify]]
+crate = "tawara-desktop"
+expression = "LicenseRef-Mochimo-Engine-1.0"
+license-files = [{ path = "../../LICENSE.md", hash = 0xaa8c1f8a }]
+
+[[licenses.clarify]]
+crate = "tawara-mobile"
+expression = "LicenseRef-Mochimo-Engine-1.0"
+license-files = [{ path = "../../LICENSE.md", hash = 0xaa8c1f8a }]
+
+[[licenses.exceptions]]
+crate = "mochimo-crypto"
+allow = ["LicenseRef-Mochimo-Engine-1.0"]
+
+[[licenses.exceptions]]
+crate = "tawara-wallet-core"
+allow = ["LicenseRef-Mochimo-Engine-1.0"]
+
+[[licenses.exceptions]]
+crate = "tawara-app"
+allow = ["LicenseRef-Mochimo-Engine-1.0"]
+
+[[licenses.exceptions]]
+crate = "tawara-desktop"
+allow = ["LicenseRef-Mochimo-Engine-1.0"]
+
+[[licenses.exceptions]]
+crate = "tawara-mobile"
+allow = ["LicenseRef-Mochimo-Engine-1.0"]
+
+[bans]
+# DUPLICATE VERSIONS ARE ALLOWED. The interface's graph carries several
+# (`foldhash` 0.1 and 0.2, `bitflags` 1 and 2, `rustix` 0.38 and 1, among
+# others), every one arriving through iced, winit or wgpu; none touches key
+# material, and denying them would make this gate red for a condition no
+# change here can fix. The duplicate that would matter is denied by name
+# below, as in Rep-1.
+multiple-versions = "allow"
+# A `*` version requirement would mean a dependency whose version the
+# lockfile does not choose. This workspace's own crates refer to each other
+# by path, which is not that, and `allow-wildcard-paths` admits exactly those
+# (it applies only to unpublished crates, which all four are). The library's
+# git line carries a version requirement as well as its `rev`, so it is not a
+# wildcard either.
+wildcards = "deny"
+allow-wildcard-paths = true
+
+# From Rep-1: the library's hash crates are pinned to the `digest` 0.10 line,
+# and a crate arriving on 0.11 would link two incompatible `Digest` traits
+# into one binary, quietly -- both lines compile. Kept here because this
+# workspace's graph is the library's graph plus the interface's, and a crate
+# in the interface's could be the one that brings 0.11 in.
+[[bans.deny]]
+crate = "digest:>=0.11"
+reason = "the library's hash crates are pinned to the digest 0.10 line; see the sha3 comment in mochimo-crypto's Cargo.toml"
+
+# From Rep-1, unchanged: the transport's features. Feature unification means
+# a crate in the interface's graph could switch one of these on in the
+# library's `ureq`, and the library's argument against each (a decompressor
+# over untrusted input, `serde` pulled back in, a second TLS stack in C) does
+# not change because the crate that asked for it is a toolkit.
+[[bans.features]]
+crate = "ureq"
+deny = ["gzip", "brotli", "json", "cookies", "socks-proxy", "win-system-proxy", "native-tls"]
+
+# From Rep-1, unchanged: the KDF's working memory is the library's own,
+# zeroized on drop, only while `alloc` and `password-hash` stay off.
+[[bans.features]]
+crate = "argon2"
+deny = ["alloc", "std", "password-hash"]
+
+# From Rep-1, unchanged: request bodies serialise with sorted keys, and
+# `preserve_order` unified in by any crate would break that.
+[[bans.features]]
+crate = "serde_json"
+deny = ["preserve_order"]
+
+[sources]
+# Every dependency is a crates.io release pinned by `Cargo.lock`, except one:
+# the wallet library, from Rep-1 by full commit hash (docs/PLAN.md D1). Any
+# other git source, or any other registry, is refused.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = ["https://github.com/patricksmithlaravel/mcm-rust-cli-windows"]
