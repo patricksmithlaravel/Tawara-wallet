@@ -19,6 +19,13 @@ unmodified (docs/DECISIONS.md, D14). What is committed instead is each frame
 as an image, drawn from the bundle exactly as supplied. The owner keeps the
 source file; the hash above identifies it.
 
+## Design tokens
+
+`design/TOKENS.md` holds the colours, type, spacing, radii, components,
+icon paths and font faces measured from the bundle's own markup, so that
+the exact values survive here although the bundle does not. Phase 3 builds
+the theme module from it.
+
 ## How the images were made
 
 Each frame's page was opened on its own in headless Chromium (Playwright
