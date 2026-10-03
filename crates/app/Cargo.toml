@@ -1,0 +1,16 @@
+[package]
+name = "tawara-app"
+description = "The Tawara iced application: state, messages, screens and theme. Talks to tawara-wallet-core only."
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+# This crate never depends on mochimo-crypto (docs/PLAN.md section 3): every
+# library call goes through tawara-wallet-core's worker. `tawara-wallet-core`'s
+# `tests/policy.rs` checks this manifest.
+
+[dependencies]
+iced.workspace = true
+tawara-wallet-core.workspace = true
