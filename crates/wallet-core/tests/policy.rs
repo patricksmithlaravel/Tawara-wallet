@@ -354,101 +354,290 @@ fn names_cheap_kdf_outside_tests(source: &str) -> Result<bool, syn::Error> {
 }
 
 // ---------------------------------------------------------------------------
-// The module tree a non-test build compiles.
+// The source a non-test build compiles, and what is provably test-only.
 // ---------------------------------------------------------------------------
 
-/// A source file in the module tree, and whether nested out-of-line modules
-/// in it resolve beside it (a crate root, a `mod.rs`, or a `#[path]` file) or
-/// in a directory named after it.
+/// A module context: where the `mod name;` declarations of a source file
+/// resolve. A crate root, a `mod.rs` or a `#[path]` file resolves them beside
+/// itself; any other file in a directory named after it. An `include!`d file
+/// shares the context of the file that includes it, since its items expand
+/// into that file's module.
 #[derive(Clone)]
 struct ModFile {
     path: PathBuf,
     mod_rs: bool,
 }
 
-fn path_attr(attrs: &[syn::Attribute]) -> Option<String> {
-    attrs
-        .iter()
-        .find(|a| a.path().is_ident("path"))
-        .map(|a| match &a.meta {
-            syn::Meta::NameValue(nv) => match &nv.value {
-                syn::Expr::Lit(syn::ExprLit {
-                    lit: syn::Lit::Str(s),
-                    ..
-                }) => s.value(),
-                _ => panic!("a #[path] attribute that is not a string literal"),
-            },
-            _ => panic!("a #[path] attribute that is not `path = \"...\"`"),
-        })
+/// A source file to read, and the module context its declarations resolve in.
+#[derive(Clone)]
+struct Source {
+    path: PathBuf,
+    context: ModFile,
 }
 
-/// The out-of-line `mod name;` declarations in `items`, each with the inline
-/// modules it is nested in and its `#[path]`, if any. Run on a file already
-/// stripped of test code, so a `#[cfg(test)] mod tests;` is not followed.
-fn out_of_line_mods(
+/// Whether a `cfg` predicate holds only in test builds: `test`, or
+/// `all(test, ..)`. `any(test, ..)` and `not(test)` do not.
+fn predicate_is_test_only(meta: &syn::Meta) -> bool {
+    match meta {
+        syn::Meta::Path(p) => p.is_ident("test"),
+        syn::Meta::List(list) if list.path.is_ident("all") => list
+            .parse_args_with(
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+            )
+            .map(|args| {
+                args.iter()
+                    .any(|m| matches!(m, syn::Meta::Path(p) if p.is_ident("test")))
+            })
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+/// One file a module declaration's attributes can select, and whether only
+/// test builds select it.
+#[derive(Debug)]
+struct PathChoice {
+    path: String,
+    test_only: bool,
+}
+
+fn path_value(meta: &syn::Meta) -> Result<Option<String>, String> {
+    match meta {
+        syn::Meta::NameValue(nv) if nv.path.is_ident("path") => match &nv.value {
+            syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(s),
+                ..
+            }) => Ok(Some(s.value())),
+            _ => Err("a `path` attribute whose value is not a string literal".into()),
+        },
+        _ => Ok(None),
+    }
+}
+
+fn cfg_attr_choices(
+    attr_args: &syn::MetaList,
+    enclosing_test: bool,
+    out: &mut Vec<PathChoice>,
+) -> Result<(), String> {
+    let args = attr_args
+        .parse_args_with(syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+        .map_err(|e| format!("a `cfg_attr` this check cannot read: {e}"))?;
+    let mut args = args.into_iter();
+    let predicate = args.next().ok_or("a `cfg_attr` with no predicate")?;
+    let test_only = enclosing_test || predicate_is_test_only(&predicate);
+    for meta in args {
+        if let Some(path) = path_value(&meta)? {
+            out.push(PathChoice { path, test_only });
+        } else if let syn::Meta::List(inner) = &meta
+            && inner.path.is_ident("cfg_attr")
+        {
+            cfg_attr_choices(inner, test_only, out)?;
+        }
+    }
+    Ok(())
+}
+
+/// Every file a declaration's attributes can select: a direct `#[path]`, and
+/// the `path` of every `#[cfg_attr(..)]`, nested ones included. rustc picks
+/// one of them for each configuration; this check takes all of them.
+fn path_choices(attrs: &[syn::Attribute]) -> Result<Vec<PathChoice>, String> {
+    let mut out = Vec::new();
+    for attr in attrs {
+        if attr.path().is_ident("path") {
+            if let Some(path) = path_value(&attr.meta)? {
+                out.push(PathChoice {
+                    path,
+                    test_only: false,
+                });
+            } else {
+                return Err("a `#[path]` attribute that is not `path = \"...\"`".into());
+            }
+        } else if attr.path().is_ident("cfg_attr") {
+            let syn::Meta::List(list) = &attr.meta else {
+                return Err("a `cfg_attr` that is not a list".into());
+            };
+            cfg_attr_choices(list, false, &mut out)?;
+        }
+    }
+    Ok(out)
+}
+
+/// An out-of-line `mod name;` declaration, with the inline modules it sits
+/// in, its attributes, and whether it sits in test-only code (its own
+/// attributes, or an enclosing inline module's).
+struct ModDecl {
+    inline: Vec<String>,
+    name: String,
+    attrs: Vec<syn::Attribute>,
+    test_only: bool,
+}
+
+fn mod_decls(
     items: &[syn::Item],
     inline: &[String],
-    out: &mut Vec<(Vec<String>, String, Option<String>)>,
-) {
+    enclosing_test: bool,
+    out: &mut Vec<ModDecl>,
+) -> Result<(), String> {
     for item in items {
-        if let syn::Item::Mod(m) = item {
-            match &m.content {
-                None => out.push((
-                    inline.to_vec(),
-                    m.ident.unraw().to_string(),
-                    path_attr(&m.attrs),
-                )),
-                Some((_, inner)) => {
-                    let mut nested = inline.to_vec();
-                    nested.push(path_attr(&m.attrs).unwrap_or_else(|| m.ident.unraw().to_string()));
-                    out_of_line_mods(inner, &nested, out);
+        let syn::Item::Mod(m) = item else { continue };
+        let test_only = enclosing_test || test_only(&m.attrs);
+        match &m.content {
+            None => out.push(ModDecl {
+                inline: inline.to_vec(),
+                name: m.ident.unraw().to_string(),
+                attrs: m.attrs.clone(),
+                test_only,
+            }),
+            Some((_, inner)) => {
+                let choices = path_choices(&m.attrs)?;
+                if choices.iter().any(|c| !c.test_only) && choices.len() > 1
+                    || m.attrs.iter().any(|a| a.path().is_ident("cfg_attr")) && !choices.is_empty()
+                {
+                    return Err(format!(
+                        "inline module `{}` takes a conditional or repeated path, which this \
+                         check does not model",
+                        m.ident
+                    ));
                 }
+                let segment = choices
+                    .first()
+                    .map(|c| c.path.clone())
+                    .unwrap_or_else(|| m.ident.unraw().to_string());
+                let mut nested = inline.to_vec();
+                nested.push(segment);
+                mod_decls(inner, &nested, test_only, out)?;
             }
+        }
+    }
+    Ok(())
+}
+
+/// Every `include!(..)` invocation in a syntax tree: `Some(path)` for a
+/// string literal, `None` for anything else (`concat!`, `env!`, a macro
+/// variable), which this check cannot resolve.
+#[derive(Default)]
+struct Includes(Vec<Option<String>>);
+
+impl<'ast> syn::visit::Visit<'ast> for Includes {
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        if mac
+            .path
+            .segments
+            .last()
+            .is_some_and(|s| s.ident == "include")
+        {
+            self.0.push(
+                syn::parse2::<syn::LitStr>(mac.tokens.clone())
+                    .ok()
+                    .map(|l| l.value()),
+            );
+        }
+        syn::visit::visit_macro(self, mac);
+    }
+}
+
+/// A source file's content as rustc may meet it: a file of items, or (for an
+/// `include!`d file) a single expression.
+enum Parsed {
+    File(syn::File),
+    Expr(syn::Expr),
+}
+
+fn parse_source(path: &Path) -> Result<Parsed, String> {
+    let text = read(path);
+    match syn::parse_file(&text) {
+        Ok(f) => Ok(Parsed::File(f)),
+        Err(file_err) => syn::parse_str::<syn::Expr>(&text)
+            .map(Parsed::Expr)
+            .map_err(|_| {
+                format!(
+                    "{} does not parse, so this check cannot say what it compiles: {file_err}",
+                    path.display()
+                )
+            }),
+    }
+}
+
+fn includes_in(parsed: &Parsed) -> Vec<Option<String>> {
+    use syn::visit::Visit;
+    let mut found = Includes::default();
+    match parsed {
+        Parsed::File(f) => found.visit_file(f),
+        Parsed::Expr(e) => found.visit_expr(e),
+    }
+    found.0
+}
+
+fn strip(parsed: &Parsed) -> Parsed {
+    match parsed {
+        Parsed::File(f) => {
+            let mut f = f.clone();
+            StripTestCode.visit_file_mut(&mut f);
+            Parsed::File(f)
+        }
+        Parsed::Expr(e) => {
+            let mut e = e.clone();
+            StripTestCode.visit_expr_mut(&mut e);
+            Parsed::Expr(e)
         }
     }
 }
 
-/// Where rustc looks for `mod name;` declared in `from`, inside the inline
-/// modules `inline`, with an optional `#[path]`.
-fn resolve_mod(from: &ModFile, inline: &[String], name: &str, path: Option<&str>) -> ModFile {
-    let dir = from.path.parent().expect("a source file has a directory");
-    let module_dir = if from.mod_rs {
+fn idents_of(parsed: &Parsed) -> Vec<String> {
+    let mut out = Vec::new();
+    match parsed {
+        Parsed::File(f) => idents(f.to_token_stream(), &mut out),
+        Parsed::Expr(e) => idents(e.to_token_stream(), &mut out),
+    }
+    out
+}
+
+fn normalise(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// The directory a declaration in `context`, inside `inline` modules,
+/// resolves a default `name.rs` / `name/mod.rs` in, and a `#[path]` in.
+fn module_dirs(context: &ModFile, inline: &[String]) -> (PathBuf, PathBuf) {
+    let dir = context
+        .path
+        .parent()
+        .expect("a source file has a directory");
+    let module_dir = if context.mod_rs {
         dir.to_path_buf()
     } else {
-        dir.join(from.path.file_stem().expect("a source file has a stem"))
+        dir.join(context.path.file_stem().expect("a source file has a stem"))
     };
-    if let Some(p) = path {
-        // Outside an inline module, `#[path]` is relative to the declaring
-        // file's directory; inside one, to the inline module's directory.
-        let base = if inline.is_empty() {
-            dir.to_path_buf()
-        } else {
-            inline.iter().fold(module_dir, |b, m| b.join(m))
-        };
-        return ModFile {
-            path: base.join(p),
-            mod_rs: true,
-        };
-    }
-    let base = inline.iter().fold(module_dir, |b, m| b.join(m));
+    let nested = inline.iter().fold(module_dir, |b, m| b.join(m));
+    // Outside an inline module, `#[path]` is relative to the declaring file's
+    // directory; inside one, to the inline module's directory.
+    let path_base = if inline.is_empty() {
+        dir.to_path_buf()
+    } else {
+        nested.clone()
+    };
+    (nested, path_base)
+}
+
+/// The file `mod name;` loads by default, if exactly one candidate exists.
+fn default_mod_file(base: &Path, name: &str) -> Result<Option<ModFile>, String> {
     let flat = base.join(format!("{name}.rs"));
     let nested = base.join(name).join("mod.rs");
     match (flat.exists(), nested.exists()) {
-        (true, false) => ModFile {
+        (true, false) => Ok(Some(ModFile {
             path: flat,
             mod_rs: false,
-        },
-        (false, true) => ModFile {
+        })),
+        (false, true) => Ok(Some(ModFile {
             path: nested,
             mod_rs: true,
-        },
-        (true, true) => panic!("both {} and {} exist", flat.display(), nested.display()),
-        (false, false) => panic!(
-            "`mod {name};` in {} resolves to neither {} nor {}",
-            from.path.display(),
+        })),
+        (true, true) => Err(format!(
+            "both {} and {} exist",
             flat.display(),
             nested.display()
-        ),
+        )),
+        (false, false) => Ok(None),
     }
 }
 
@@ -512,44 +701,213 @@ fn non_test_roots(crate_dir: &Path) -> Vec<PathBuf> {
     roots
 }
 
-/// Every file of the module tree a non-test build of `crate_dir` compiles,
-/// each already stripped of its test-only code.
-fn non_test_module_tree(crate_dir: &Path) -> Vec<(PathBuf, syn::File)> {
-    let mut out = Vec::new();
-    let mut seen = BTreeSet::new();
-    let mut stack: Vec<ModFile> = non_test_roots(crate_dir)
+/// What a crate compiles in a non-test build, and what only its tests compile.
+struct SourceWalk {
+    /// Every file the module tree of a non-test target reaches, through `mod`
+    /// (with every `#[path]` and `cfg_attr` path) and `include!`.
+    reached: BTreeSet<PathBuf>,
+    /// Files reachable only through test-only declarations: these, and only
+    /// these, are exempt from the scan.
+    exempt: BTreeSet<PathBuf>,
+    /// Every file the scan reads: all Rust files under the crate except its
+    /// top-level `tests/` and `benches/`, plus every file `reached` names,
+    /// minus `exempt`. A file nothing declares is scanned as production code.
+    scanned: BTreeSet<PathBuf>,
+}
+
+fn walk_sources(crate_dir: &Path) -> Result<SourceWalk, String> {
+    let mut reached = BTreeSet::new();
+    let mut test_targets: Vec<Source> = Vec::new();
+    let mut stack: Vec<Source> = non_test_roots(crate_dir)
         .into_iter()
-        .map(|path| ModFile { path, mod_rs: true })
+        .map(|path| Source {
+            context: ModFile {
+                path: path.clone(),
+                mod_rs: true,
+            },
+            path,
+        })
         .collect();
-    while let Some(file) = stack.pop() {
-        if !seen.insert(file.path.clone()) {
+
+    while let Some(source) = stack.pop() {
+        if !reached.insert(normalise(&source.path)) {
             continue;
         }
-        let parsed = non_test_file(&read(&file.path)).unwrap_or_else(|e| {
-            panic!(
-                "{} does not parse, so this check cannot say what it compiles: {e}",
-                file.path.display()
-            )
-        });
-        let mut mods = Vec::new();
-        out_of_line_mods(&parsed.items, &[], &mut mods);
-        for (inline, name, path) in mods {
-            stack.push(resolve_mod(&file, &inline, &name, path.as_deref()));
+        let raw = parse_source(&source.path)?;
+        let stripped = strip(&raw);
+        let here = source.path.parent().expect("a source file has a directory");
+
+        // Out-of-line modules: every non-test choice is compiled in some
+        // configuration; a test-only choice is a test target.
+        let mut decls = Vec::new();
+        if let Parsed::File(f) = &raw {
+            mod_decls(&f.items, &[], false, &mut decls)?;
         }
-        out.push((file.path, parsed));
+        for decl in decls {
+            let (default_base, path_base) = module_dirs(&source.context, &decl.inline);
+            let choices = path_choices(&decl.attrs)?;
+            let has_direct = decl.attrs.iter().any(|a| a.path().is_ident("path"));
+            for choice in &choices {
+                let file = ModFile {
+                    path: path_base.join(&choice.path),
+                    mod_rs: true,
+                };
+                let target = Source {
+                    path: file.path.clone(),
+                    context: file,
+                };
+                if decl.test_only || choice.test_only {
+                    test_targets.push(target);
+                } else if target.path.exists() {
+                    stack.push(target);
+                } else if !choices.iter().any(|c| c.test_only) && has_direct {
+                    return Err(format!(
+                        "`mod {};` in {} names {}, which does not exist",
+                        decl.name,
+                        source.path.display(),
+                        target.path.display()
+                    ));
+                }
+            }
+            if !has_direct {
+                match default_mod_file(&default_base, &decl.name)? {
+                    Some(file) => {
+                        let target = Source {
+                            path: file.path.clone(),
+                            context: file,
+                        };
+                        if decl.test_only {
+                            test_targets.push(target);
+                        } else {
+                            stack.push(target);
+                        }
+                    }
+                    None if choices.is_empty() && !decl.test_only => {
+                        return Err(format!(
+                            "`mod {};` in {} resolves to neither {name}.rs nor {name}/mod.rs \
+                             under {}",
+                            decl.name,
+                            source.path.display(),
+                            default_base.display(),
+                            name = decl.name
+                        ));
+                    }
+                    None => {}
+                }
+            }
+        }
+
+        // `include!`: in non-test code it must be a literal this check can
+        // follow; in test-only code it is a test target.
+        let non_test_includes = includes_in(&stripped);
+        for inc in &non_test_includes {
+            let Some(rel) = inc else {
+                return Err(format!(
+                    "{} uses `include!` with an argument that is not a string literal; this \
+                     check cannot see what it loads",
+                    source.path.display()
+                ));
+            };
+            stack.push(Source {
+                path: here.join(rel),
+                context: source.context.clone(),
+            });
+        }
+        let mut test_includes = includes_in(&raw);
+        for inc in &non_test_includes {
+            if let Some(pos) = test_includes.iter().position(|t| t == inc) {
+                test_includes.remove(pos);
+            }
+        }
+        for rel in test_includes.into_iter().flatten() {
+            test_targets.push(Source {
+                path: here.join(rel),
+                context: source.context.clone(),
+            });
+        }
     }
-    out.sort_by(|a, b| a.0.cmp(&b.0));
-    out
+
+    // Everything reachable from a test target, through any declaration.
+    let mut test_reached = BTreeSet::new();
+    while let Some(source) = test_targets.pop() {
+        if !source.path.exists() || !test_reached.insert(normalise(&source.path)) {
+            continue;
+        }
+        let Ok(raw) = parse_source(&source.path) else {
+            continue;
+        };
+        let here = source.path.parent().expect("a source file has a directory");
+        let mut decls = Vec::new();
+        if let Parsed::File(f) = &raw {
+            mod_decls(&f.items, &[], true, &mut decls)?;
+        }
+        for decl in decls {
+            let (default_base, path_base) = module_dirs(&source.context, &decl.inline);
+            for choice in path_choices(&decl.attrs)? {
+                let file = ModFile {
+                    path: path_base.join(&choice.path),
+                    mod_rs: true,
+                };
+                test_targets.push(Source {
+                    path: file.path.clone(),
+                    context: file,
+                });
+            }
+            if let Some(file) = default_mod_file(&default_base, &decl.name)? {
+                test_targets.push(Source {
+                    path: file.path.clone(),
+                    context: file,
+                });
+            }
+        }
+        for rel in includes_in(&raw).into_iter().flatten() {
+            test_targets.push(Source {
+                path: here.join(rel),
+                context: source.context.clone(),
+            });
+        }
+    }
+
+    let exempt: BTreeSet<PathBuf> = test_reached.difference(&reached).cloned().collect();
+    let mut scanned: BTreeSet<PathBuf> = rust_files(crate_dir)
+        .into_iter()
+        .filter(|p| {
+            let mut parts = p
+                .strip_prefix(crate_dir)
+                .expect("walked from the crate directory")
+                .components();
+            !matches!(parts.next(), Some(c) if c.as_os_str() == "tests" || c.as_os_str() == "benches")
+        })
+        .map(|p| normalise(&p))
+        .collect();
+    scanned.extend(reached.iter().cloned());
+    for e in &exempt {
+        scanned.remove(e);
+    }
+    Ok(SourceWalk {
+        reached,
+        exempt,
+        scanned,
+    })
+}
+
+/// Every scanned file of `crate_dir`, parsed and stripped of test-only code.
+fn scanned_sources(crate_dir: &Path) -> Vec<(PathBuf, Parsed)> {
+    let walk = walk_sources(crate_dir).unwrap_or_else(|e| panic!("{e}"));
+    walk.scanned
+        .into_iter()
+        .map(|path| {
+            let parsed = parse_source(&path).unwrap_or_else(|e| panic!("{e}"));
+            let stripped = strip(&parsed);
+            (path, stripped)
+        })
+        .collect()
 }
 
 fn cheap_kdf_offenders(crate_dir: &Path) -> Vec<PathBuf> {
-    non_test_module_tree(crate_dir)
+    scanned_sources(crate_dir)
         .into_iter()
-        .filter(|(_, file)| {
-            let mut found = Vec::new();
-            idents(file.to_token_stream(), &mut found);
-            found.iter().any(|i| i == CHEAP_KDF)
-        })
+        .filter(|(_, parsed)| idents_of(parsed).iter().any(|i| i == CHEAP_KDF))
         .map(|(path, _)| path)
         .collect()
 }
@@ -557,12 +915,20 @@ fn cheap_kdf_offenders(crate_dir: &Path) -> Vec<PathBuf> {
 /// `Kdf::CHEAP_FOR_TESTS` derives the store key at a cost chosen to make tests
 /// fast, which is the cost an attacker with a stolen store would choose too.
 /// Production code uses `Kdf::RECOMMENDED`. This holds every crate's non-test
-/// code to never naming the cheap parameters: the walk follows the module
-/// tree of every non-test target from its root, as rustc does, and looks at
-/// what is left once `#[cfg(test)]`, `#[cfg(all(test, ..))]` and `#[test]`
-/// code is removed. Integration tests and benchmarks are not in that tree.
+/// code to never naming the cheap parameters.
 ///
-/// `spikes/` is outside the walk on purpose: it is phase 1's throwaway
+/// The scan is conservative by construction. It reads every Rust file under a
+/// crate except its top-level `tests/` and `benches/` (integration tests and
+/// benchmarks), plus every file the module walk reaches, wherever it lives.
+/// It exempts a file only when it is reachable solely through test-only
+/// declarations (`#[cfg(test)] mod`, a `cfg_attr(test, path = ..)`, a module
+/// nested in a test-only one, an `include!` in test-only code). The walk
+/// follows `mod`, every `#[path]` and `cfg_attr` path, and literal
+/// `include!`s; a non-literal `include!` in non-test code is refused, since
+/// what it loads cannot be read. In every file, code under `#[cfg(test)]`,
+/// `#[cfg(all(test, ..))]` or `#[test]` is removed before looking.
+///
+/// `spikes/` is outside the scan on purpose: it is phase 1's throwaway
 /// feasibility code, which uses the cheap parameters for on-device store
 /// checks, and nothing in it is built into a shipped artifact.
 #[test]
@@ -571,9 +937,8 @@ fn cheap_kdf_appears_only_in_test_code() {
     let mut reached = BTreeSet::new();
     let mut offenders = Vec::new();
     for dir in crate_dirs() {
-        for (path, _) in non_test_module_tree(&dir) {
-            reached.insert(path);
-        }
+        let walk = walk_sources(&dir).unwrap_or_else(|e| panic!("{e}"));
+        reached.extend(walk.reached);
         offenders.extend(cheap_kdf_offenders(&dir));
     }
 
@@ -584,7 +949,7 @@ fn cheap_kdf_appears_only_in_test_code() {
         "desktop/src/main.rs",
         "mobile/src/lib.rs",
     ] {
-        let root = crates_dir.join(root);
+        let root = normalise(&crates_dir.join(root));
         assert!(
             reached.contains(&root),
             "the walk did not reach {}; a check over nothing passes vacuously",
@@ -642,43 +1007,79 @@ fn the_cheap_kdf_detector_sees_what_it_must() {
     }
 }
 
-/// The module walk, held to a crate laid out on disk where the answer is
-/// known: an out-of-line test module's file is not compiled into a non-test
-/// build and must not be flagged, and a production module two levels down
-/// must be reached and flagged.
-#[test]
-fn the_module_walk_follows_what_rustc_compiles() {
+/// Lays out a probe crate under the temporary directory and returns its root.
+fn probe_crate(tag: &str, files: &[(&str, &str)]) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "tawara-policy-walk-{}-{:?}",
+        "tawara-policy-{tag}-{}-{:?}",
         std::process::id(),
         std::thread::current().id()
     ));
     let _ = fs::remove_dir_all(&dir);
-    let write = |rel: &str, body: &str| {
+    for (rel, body) in files {
         let p = dir.join(rel);
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(p, body).unwrap();
-    };
-    write("Cargo.toml", "[package]\nname = \"probe\"\n");
-    write(
-        "src/lib.rs",
-        "mod a;\n#[cfg(test)] mod tests;\n#[path = \"elsewhere/c.rs\"] mod c;\nmod inline { mod d; }\n",
-    );
-    write("src/tests.rs", "const K: Kdf = Kdf::CHEAP_FOR_TESTS;\n");
-    write("src/a.rs", "mod b;\n");
-    write("src/a/b.rs", "const K: Kdf = Kdf::CHEAP_FOR_TESTS;\n");
-    write("src/elsewhere/c.rs", "const K: Kdf = Kdf::RECOMMENDED;\n");
-    write("src/inline/d.rs", "const K: Kdf = Kdf::RECOMMENDED;\n");
-    write("tests/it.rs", "const K: Kdf = Kdf::CHEAP_FOR_TESTS;\n");
+    }
+    normalise(&dir)
+}
 
-    let reached: Vec<PathBuf> = non_test_module_tree(&dir)
-        .into_iter()
-        .map(|(p, _)| p.strip_prefix(&dir).unwrap().to_path_buf())
-        .collect();
-    let offenders: Vec<PathBuf> = cheap_kdf_offenders(&dir)
-        .into_iter()
-        .map(|p| p.strip_prefix(&dir).unwrap().to_path_buf())
-        .collect();
+/// The walk and the scan, held to a crate laid out on disk where the answer
+/// is known. Production code reached through a nested module, an
+/// `include!`, a `cfg_attr` path, or nothing at all is flagged; code reached
+/// only through test-only declarations is exempt; an integration test is not
+/// scanned.
+#[test]
+fn the_source_walk_scans_what_rustc_may_compile() {
+    const CHEAP: &str = "const K: Kdf = Kdf::CHEAP_FOR_TESTS;\n";
+    const SAFE: &str = "const K: Kdf = Kdf::RECOMMENDED;\n";
+    let dir = probe_crate(
+        "walk",
+        &[
+            ("Cargo.toml", "[package]\nname = \"probe\"\n"),
+            (
+                "src/lib.rs",
+                "mod a;\n\
+                 #[cfg(test)] mod tests;\n\
+                 #[path = \"elsewhere/c.rs\"] mod c;\n\
+                 mod inline { mod d; }\n\
+                 include!(\"kdf_impl.rs\");\n\
+                 #[cfg_attr(unix, path = \"unix.rs\")] mod platform;\n\
+                 #[cfg_attr(windows, path = \"win_only.rs\")] mod plat2;\n\
+                 #[cfg_attr(test, path = \"test_path.rs\")] mod tp;\n\
+                 #[cfg(test)] mod t2 { mod deep; }\n\
+                 #[cfg(test)] mod t3 { include!(\"fixture.rs\"); }\n",
+            ),
+            ("src/tests.rs", CHEAP),
+            ("src/a.rs", "mod b;\n"),
+            ("src/a/b.rs", CHEAP),
+            ("src/elsewhere/c.rs", SAFE),
+            ("src/inline/d.rs", SAFE),
+            ("src/kdf_impl.rs", CHEAP),
+            ("src/platform.rs", SAFE),
+            ("src/unix.rs", CHEAP),
+            ("src/win_only.rs", SAFE),
+            ("src/tp.rs", SAFE),
+            ("src/test_path.rs", CHEAP),
+            ("src/t2/deep.rs", CHEAP),
+            ("src/fixture.rs", CHEAP),
+            ("src/stray.rs", CHEAP),
+            ("tests/it.rs", CHEAP),
+        ],
+    );
+    let rel = |set: &BTreeSet<PathBuf>| -> BTreeSet<String> {
+        set.iter()
+            .map(|p| {
+                p.strip_prefix(&dir)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect()
+    };
+    let walk = walk_sources(&dir).expect("the probe crate walks");
+    let reached = rel(&walk.reached);
+    let exempt = rel(&walk.exempt);
+    let offenders = rel(&cheap_kdf_offenders(&dir).into_iter().collect());
     let _ = fs::remove_dir_all(&dir);
 
     for expected in [
@@ -687,21 +1088,73 @@ fn the_module_walk_follows_what_rustc_compiles() {
         "src/a/b.rs",
         "src/elsewhere/c.rs",
         "src/inline/d.rs",
+        "src/kdf_impl.rs",
+        "src/platform.rs",
+        "src/unix.rs",
+        "src/win_only.rs",
+        "src/tp.rs",
     ] {
         assert!(
-            reached.contains(&PathBuf::from(expected)),
+            reached.contains(expected),
             "the walk did not reach {expected}: {reached:?}"
         );
     }
-    assert!(
-        !reached.contains(&PathBuf::from("src/tests.rs")),
-        "the walk followed a #[cfg(test)] module"
+    assert_eq!(
+        exempt,
+        BTreeSet::from(
+            [
+                "src/tests.rs",
+                "src/test_path.rs",
+                "src/t2/deep.rs",
+                "src/fixture.rs"
+            ]
+            .map(String::from)
+        ),
+        "only files reached solely through test-only declarations are exempt"
     );
-    assert!(
-        !reached.contains(&PathBuf::from("tests/it.rs")),
-        "the walk treated an integration test as non-test code"
+    assert_eq!(
+        offenders,
+        BTreeSet::from(
+            [
+                "src/a/b.rs",
+                "src/kdf_impl.rs",
+                "src/unix.rs",
+                "src/stray.rs"
+            ]
+            .map(String::from)
+        ),
+        "production code reached by any route, or by none, is flagged; tests/ is not scanned"
     );
-    assert_eq!(offenders, vec![PathBuf::from("src/a/b.rs")]);
+}
+
+/// What the walk cannot read, it refuses rather than passes.
+#[test]
+fn the_source_walk_refuses_what_it_cannot_read() {
+    let cases: [(&str, &str); 2] = [
+        (
+            "include!(concat!(env!(\"OUT_DIR\"), \"/generated.rs\"));\n",
+            "not a string literal",
+        ),
+        (
+            "#[cfg_attr(unix, path = \"u\")] mod inline_cond { }\n",
+            "conditional or repeated path",
+        ),
+    ];
+    for (i, (lib, expected)) in cases.into_iter().enumerate() {
+        let dir = probe_crate(
+            &format!("refuse{i}"),
+            &[
+                ("Cargo.toml", "[package]\nname = \"probe\"\n"),
+                ("src/lib.rs", lib),
+            ],
+        );
+        let result = walk_sources(&dir).map(|_| ());
+        let _ = fs::remove_dir_all(&dir);
+        match result {
+            Err(e) => assert!(e.contains(expected), "refused for the wrong reason: {e}"),
+            Ok(()) => panic!("the walk accepted what it cannot read: {lib}"),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1164,8 +1617,9 @@ fn wallet_core_and_the_interface_stay_apart() {
     }
 
     // wallet-core must not hand the whole library through to the interface,
-    // from any module of what it compiles.
-    for (path, file) in non_test_module_tree(&crates_dir.join("wallet-core")) {
+    // from any file the source scan reads.
+    for (path, parsed) in scanned_sources(&crates_dir.join("wallet-core")) {
+        let Parsed::File(file) = parsed else { continue };
         assert!(
             !reexports_library(&file.items),
             "{} re-exports mochimo_crypto wholesale; the interface would then reach the library \

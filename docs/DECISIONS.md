@@ -260,20 +260,26 @@ that a machine can check, with no network:
 - the release profile of D11;
 - `Kdf::CHEAP_FOR_TESTS` nowhere outside test code (the owner's
   instructions for phase 0: "Add a check that it never appears outside test
-  code"). The check walks the module tree of every non-test target of every
-  crate (library, binaries, build script, examples) from its root, following
-  `mod` declarations and `#[path]` as rustc does. It removes what only test
-  builds compile (`#[cfg(test)]`, `#[cfg(all(test, ..))]`, `#[test]`, a
-  file's own `#![cfg(test)]`, on items, statements, match arms, fields and
-  variants), so an out-of-line `#[cfg(test)] mod tests;` is not followed. It
-  looks for the identifier, raw or not, in what is left, macro bodies
-  included. Integration tests and benchmarks are not in that tree.
-  `spikes/` is outside the walk: it is phase 1's throwaway code and is never
-  built into a shipped artifact;
+  code"). The scan is conservative by construction: it reads every Rust file
+  under each crate except its top-level `tests/` and `benches/`, plus every
+  file the module walk reaches wherever it lives, and exempts a file only
+  when it is reachable solely through test-only declarations (a
+  `#[cfg(test)] mod`, a `cfg_attr(test, path = ..)`, a module nested in a
+  test-only one, an `include!` in test-only code). The walk starts at the
+  root of every non-test target (library, binaries, build script, examples)
+  and follows `mod`, every `#[path]` and every `cfg_attr` path, and literal
+  `include!`s, as rustc may in some configuration; a non-literal `include!`
+  in non-test code, and a conditional path on an inline module, are refused
+  as unreadable rather than passed. In every scanned file, code under
+  `#[cfg(test)]`, `#[cfg(all(test, ..))]`, `#[test]` or a file's own
+  `#![cfg(test)]`, on items, statements, match arms, fields and variants,
+  is removed before looking, and identifiers are compared raw or not, macro
+  bodies included. `spikes/` is outside the scan: it is phase 1's throwaway
+  code and is never built into a shipped artifact;
 - `wallet-core` has no interface dependency anywhere in its dependency
   closure as `Cargo.lock` resolved it; the interface crates never depend on
   the library (by any name) or name `mochimo_crypto` in any source; and no
-  module `wallet-core` compiles re-exports the library wholesale.
+  file the scan reads in `wallet-core` re-exports the library wholesale.
 
 Each check was seen to fail on a deliberately broken copy of the tree: a
 `[patch]` section, `raw-backend` on the workspace line, a crate's
@@ -283,12 +289,16 @@ dependency in `app`, a `paths` override in `.cargo/config.toml`,
 `[profile.release.package."*"]`, rustflags turning overflow checks off, the
 cheap KDF named in `app` (also as a raw identifier) and in a production
 module of `wallet-core` two files down, `mochimo_crypto` named in `app`,
-`pub use mochimo_crypto` at the top of `wallet-core` and inside a nested
-module, and iced in `wallet-core`'s dependencies. Each passes on the tree as
-committed, and an out-of-line `#[cfg(test)] mod tests;` naming the cheap KDF
-passes, as it should. Three more tests hold the detectors to fixed cases
-and to a small crate laid out on disk, so a detector that sees nothing
-cannot pass.
+`pub use mochimo_crypto` at the top of `wallet-core`, inside a nested
+module and in an `include!`d file, the cheap KDF in an `include!`d file and
+in a file selected by `#[cfg_attr(unix, path = ..)]` beside a clean
+fallback, an unreferenced file naming it, and iced in `wallet-core`'s
+dependencies. Each passes on the tree as committed; an out-of-line
+`#[cfg(test)] mod tests;` naming the cheap KDF passes, as it should, and so
+does a conditional module path with no fallback file. Four more tests hold
+the detectors to fixed cases, the walk to a crate laid out on disk where the
+answer is known, and its refusals to what it cannot read, so a detector that
+sees nothing cannot pass.
 
 ### D16. Edition 2024
 
