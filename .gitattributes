@@ -4,13 +4,15 @@
 # bytes; a CRLF checkout would be a tree that is not the commit.
 * text=auto eol=lf
 
-# The owner's reference renderings are kept exactly as supplied
-# (docs/PLAN.md section 5: "Do not edit them"), so git never converts them,
-# whatever their content looks like.
+# The reference renderings are PNG captures of the frames of the owner's
+# HTML bundle, which is not committed (docs/DECISIONS.md D14,
+# design/INDEX.md). They are never edited (docs/PLAN.md section 5: "Do not
+# edit them"), so git never converts them, whatever their content looks like.
 design/renderings/** -text
 
-# The bundled fonts and their licence texts are vendored files, kept byte for
-# byte as published.
+# Font binaries are vendored files, kept byte for byte as published. Their
+# licence texts get a rule of their own, by directory, when the fonts are
+# added (phase 3): a licence file's name varies by foundry.
 *.ttf -text
 *.otf -text
 *.woff2 -text
