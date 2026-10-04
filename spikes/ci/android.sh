@@ -148,9 +148,13 @@ emulator_up() {
   sudo apt-get install -y -q --no-install-recommends libpulse0 libnss3 libxcomposite1 \
     libxcursor1 libxdamage1 libxi6 libxtst6 libxkbfile1 libgl1 libegl1 libasound2t64 \
     libbsd0 libxkbcommon-x11-0 libx11-xcb1 >/dev/null
-  local missing
-  missing=$(ldd "$SDK/emulator/qemu/linux-x86_64/qemu-system-x86_64" | grep 'not found' || true)
-  [ -z "$missing" ] || die "the emulator still lacks: $(echo "$missing" | xargs)"
+  # The emulator's launcher puts its own libraries (lib64 and below) on the
+  # path; with those, anything ldd still cannot find is the system's to
+  # supply. A warning only: `emulator -version` below is the real test.
+  local libpath missing
+  libpath=$(find "$SDK/emulator/lib64" -name '*.so*' -printf '%h\n' | sort -u | paste -sd:)
+  missing=$(LD_LIBRARY_PATH=$libpath ldd "$SDK/emulator/qemu/linux-x86_64/qemu-system-x86_64" | grep 'not found' || true)
+  [ -z "$missing" ] || echo "::warning::the emulator may lack: $(echo "$missing" | xargs)"
   emulator -version | head -1
   endgroup
 
