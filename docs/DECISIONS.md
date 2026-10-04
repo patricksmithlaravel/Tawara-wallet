@@ -403,7 +403,8 @@ items for then:
 
 ### D19. `wallet-core`: one worker, three sessions, the library's own words
 
-**proposed.** `crates/wallet-core` is built as docs/PLAN.md section 3
+**proposed; its open questions decided by the owner on 2026-10-04
+(below).** `crates/wallet-core` is built as docs/PLAN.md section 3
 describes it, with these choices inside that design:
 
 - **One worker thread** (`worker::spawn`) owns the `Keystore` and the
@@ -477,18 +478,35 @@ describes it, with these choices inside that design:
   be cancelled. So `scan_to` (status, restore) and `advance_to` (reconcile)
   are refused above `MAX_SCAN_TO`, 100,000, a wait of under three minutes;
   the command line takes any index below `u32::MAX`. A discovery sweep
-  takes 1 to 1,024, as the command line's does. With D23's first item the
-  bound could be lifted; until then 100,000 is for the owner to confirm.
+  takes 1 to 1,024, as the command line's does. The owner approved the
+  bound of 100,000 on 2026-10-04; with D23's first item it can be lifted
+  for the walks that can then be cancelled.
 
-**For the owner, before phase 3.** The worker offers the library's
-acknowledged advance (`Command::Reconcile`) and restore
-(`Command::Restore`), because they are the remedies the library's own
-reports name, and they move a key index only on the library's terms (the
-advance only to the index the live report names). docs/PLAN.md section
-4.9 says no button moves a key index "to make a refusal go away". Whether
-the interface offers these two, and on what screen and with what
-confirmation, is a phase 3 question for the owner; nothing in phase 2
-presents them.
+**Owner, 2026-10-04: the interface offers the acknowledged advance and
+restore, on these terms.** The worker offers the library's acknowledged
+advance (`Command::Reconcile`) and restore (`Command::Restore`) because
+they are the remedies the library's own reports name, and they move a key
+index only on the library's terms (the advance only to the index the live
+report names). The advance is needed in a graphical wallet: on mobile the
+system can end the app between signing a spend and recording it, which
+leaves the account behind the chain. It is also the one remedy the
+library warns can destroy keys, when a second wallet is live on the seed.
+So, holding to docs/PLAN.md section 4.9 (no button moves a key index "to
+make a refusal go away"):
+
+- **The advance has its own account-recovery screen**, reached on
+  purpose, never offered as a button on a refusal or a divergence report.
+- That screen shows the library's whole report for **every** account in
+  the store before anything else: the library's own advance page says the
+  evidence that one account's advance is wrong is most often in another
+  account's report.
+- The person **types the index** the report names, as the command line
+  makes them type `--advance-to N`; nothing fills it in.
+- The person **confirms that no other wallet uses this seed** before the
+  advance is sent.
+- **Restore**, which adds a derived account at the position the chain
+  already shows and moves no index the store holds, is offered in the
+  ordinary flow for adding an account.
 
 ### D20. Entropy and wallet-core's two other dependencies
 
@@ -517,9 +535,10 @@ The workspace also optimises the two key-derivation crates (`argon2`,
 the library's recommended cost, about three seconds each unoptimised and
 about one optimised. The release profile is untouched.
 
-### D21. Store location, sync folders, and the desktop backup question
+### D21. Store location, sync folders, and desktop backups
 
-**proposed.** `location::default_store_dir` gives docs/PLAN.md section
+**proposed; decided by the owner on 2026-10-04 (below).**
+`location::default_store_dir` gives docs/PLAN.md section
 4.6's defaults, with `keystore` as the store's own folder:
 `%LOCALAPPDATA%\Tawara\keystore` on Windows,
 `~/Library/Application Support/Tawara/keystore` on macOS, and
@@ -538,8 +557,11 @@ and iOS the shell passes its private directory to
 **Android: `no_backup/`, not `files/`.** Section 4.6 says "the app's
 private files directory". The shell will pass `no_backup/`, which Android
 leaves out of Auto Backup by definition, as a second guard beside the
-manifest rules of section 4.5 (phase 4). This is a deviation from the
-plan's wording, for the owner's approval.
+manifest rules of section 4.5 (phase 4). This deviation from the plan's
+wording was approved by the owner on 2026-10-04; the manifest rules
+(`android:allowBackup="false"` and `dataExtractionRules` that exclude the
+store) are still made in phase 4, so the store does not depend on either
+guard alone.
 
 `location::sync_warning` says when a chosen folder is inside one a cloud
 service syncs (section 4.5's desktop rule): iCloud Drive and its Desktop
@@ -549,16 +571,29 @@ Nextcloud, ownCloud, MEGA, Synology Drive and Seafile, and a roaming
 Windows profile. It checks the path as given and the path with its links
 resolved. It warns; it does not refuse, since the plan asks for a warning.
 
-**For the owner: desktop backups.** Section 4.5 says the store must be
-excluded from every backup, and lists Android's and iOS's mechanisms; for
-the desktop it covers only sync folders. Time Machine backs up
-`~/Library/Application Support` by default, and restoring an older copy of
-the store is the key-reuse hazard section 4.5 describes. Excluding the
-folder on macOS needs a platform call (the same backup-exclusion flag iOS
-uses, set on the folder) in the desktop shell. Windows File History does
-not back up `%LOCALAPPDATA%` by default; Linux has no standard tool to
-ask. Whether to set the macOS exclusion, in phase 3 or 4, is the owner's
-call.
+**Owner, 2026-10-04: desktop backups may archive the store.** Section
+4.5 says the store is excluded from every backup; on the desktop the
+owner decided otherwise. Time Machine on macOS, and Windows' own backups
+and snapshots (File History, and the volume shadow copies behind Previous
+Versions and System Restore), may keep copies of the store. Tawara sets
+no backup exclusion on the desktop. The sync-folder warning above is
+unchanged, and on Android and iOS the store is still excluded (section
+4.5, phase 4).
+
+What this keeps and what it accepts:
+
+- A copy of the store is encrypted under its password (Argon2id at the
+  library's recommended cost), as the store on disk is.
+- Restoring an older copy rolls back the account's one-time key index and
+  any open reservation. The library reconciles every account against the
+  chain before anything is signed: an account the chain has moved past
+  the restored index is set aside as diverged (the store behind the
+  chain), and nothing signs from it until the acknowledged advance (D19).
+- The exposure that remains is a copy taken before a spend was reserved,
+  restored while that spend has not landed (or after it failed to land):
+  the chain still holds the account at the key the copy expects, so it
+  reconciles as in sync, and a new spend would sign with the key the lost
+  reservation already signed with. The owner accepts this.
 
 ### D22. The node: https, or http to loopback, and the library's roots
 
@@ -571,8 +606,8 @@ places where it names a command-line flag: it opens with the URL rather
 than `--node <URL>`, it says "an acknowledged advance" for
 "`reconcile --advance-to`", and its `ACTION` line reads "use an https
 node. http to 127.0.0.0/8, ::1 or localhost is accepted." instead of
-offering `--allow-plaintext-node`. Those changes are for the owner's
-approval (D25).
+offering `--allow-plaintext-node`. The owner approved those changes on
+2026-10-04 (D25).
 
 Changing or clearing the node detaches an open store from the node it
 was opened against: a wallet open against it becomes the store alone,
@@ -585,14 +620,26 @@ transport with `mesh-https`, which is rustls with `ring` and the bundled
 `webpki-roots` (Mozilla's store, compiled in), on every platform. That is
 what the command-line wallet uses. The platform's own roots would need a
 feature in the library (its `Cargo.toml` already discusses
-`rustls-native-certs`); D23 lists it.
+`rustls-native-certs`). **Owner, 2026-10-04: the bundled roots stay**; the
+platform's roots are not pursued now (D23, item 5). They would add
+platform-specific verification and trust any root installed on the
+machine, including a corporate inspection root; they are worth revisiting
+only if people need private nodes with their own certificates.
 
 ### D23. Library changes this phase would use (proposals; nothing changed)
 
-**proposed, for the owner.** Rep-2 does not modify the library. These are
-the changes wallet-core would use, to be made in Rep-0 if the owner
-agrees, merged down into Rep-1, and picked up here by moving `rev`. None
-blocks phase 2.
+**proposed; decided by the owner on 2026-10-04 (below).** Rep-2 does not
+modify the library. These are the changes wallet-core would use, to be
+made in Rep-0, merged down into Rep-1, and picked up here by moving `rev`.
+None blocks phase 2.
+
+**Owner, 2026-10-04.** Items 1 to 4 are approved, to be worked in the
+order 1, 2, 4, then 3 (which can be taken a function at a time). Item 5
+is not pursued now (D22). Item 6 is open: it is needed before release
+(phase 5) if moving people from the older wallets is a goal of the
+release, and not otherwise. Each approved change is written up for Rep-0
+in `docs/LIBRARY-PROPOSALS.md`: what is asked, why, the shape proposed,
+and what wallet-core drops once it lands.
 
 1. **`Cancel` and progress for the long walks.** `Wallet::open`,
    `restore::restore_account`, `reconcile::advance_acknowledged` and
@@ -617,9 +664,11 @@ blocks phase 2.
    `emptying_text` (private) or an outcome for a planned spend would give
    them. Until then wallet-core reports `PlanView::empties_account` and
    the interface needs a wording the owner approves.
-5. **Platform trust roots** as a feature beside `mesh-https` (D22).
+5. **Platform trust roots** as a feature beside `mesh-https` (D22). Not
+   now (owner, 2026-10-04).
 6. **Importing a legacy store.** The library has no import of the older
-   wallets' `.mcm` files, so neither has wallet-core.
+   wallets' `.mcm` files, so neither has wallet-core. Open: before
+   release if moving people from the older wallets is a goal.
 
 ### D24. The wallet locks after five idle minutes
 
@@ -643,9 +692,10 @@ runs on the way out). Each reports `Locked` with
 its reason, and so does an idle or background lock that drops a recovery
 phrase waiting for its confirmation.
 
-### D25. Wording the worker writes itself (for the owner's approval)
+### D25. Wording the worker writes itself
 
-**proposed.** docs/PLAN.md section 3 requires the owner's approval for any
+**proposed; approved by the owner on 2026-10-04 (below).** docs/PLAN.md
+section 3 requires the owner's approval for any
 paraphrase of the library's protective text. These are the worker's own
 texts and the one changed library text, listed so they can be approved or
 changed in one place:
@@ -671,5 +721,12 @@ changed in one place:
   `address`, `balance`).
 
 The rendered pages also name command-line verbs (`settle`,
-`reconcile ... --advance-to N`, `submit`). How the interface presents
-those is phase 3's, with the owner's approval.
+`reconcile ... --advance-to N`, `submit`).
+
+**Owner, 2026-10-04.** The plaintext-node refusal's three changes stand.
+The worker's other texts above stand as placeholders, and their final
+wording is settled in phase 3 with the screens that show them. The
+library's rendered pages are shown word for word, not paraphrased; where
+a page names a command-line verb, the screen adds a short note naming the
+control that does the same (for example, that `settle` is the Settle
+button).
