@@ -33,7 +33,8 @@ wait_line() { # wait_line FILE ERE SECONDS
 shot() { # shot NAME FILE: the PNG as base64 between markers
   [ -s "$2" ] || return 0
   echo "-----BEGIN SHOT $1-----"
-  base64 "$2" | tr -d '\n' | fold -w 76
+  # From standard input: macOS base64 takes no file operand (only -i).
+  base64 <"$2" | tr -d '\n' | fold -w 76 || echo "::warning::screenshot $1: base64 failed"
   echo
   echo "-----END SHOT $1-----"
 }
