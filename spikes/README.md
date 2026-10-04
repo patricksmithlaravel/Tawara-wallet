@@ -123,7 +123,7 @@ well as the in-app screenshot.
 | A9 | The keyboard hides when the field goes, and returns when it is focused again |
 | A10 | After the user dismisses the keyboard, tapping the focused field shows it again. **Expected to fail**: iced asks for the keyboard only when focus changes |
 | A11 | A tap reaches a row of the touch area |
-| A12 | A swipe scrolls the row list |
+| A12 | A swipe scrolls the row list. The rows react on release: iced's scrollable lets its content see a touch first, and a button captures the press, so a swipe that starts on a button does not scroll |
 | A13 | Home during a running task, then back: same process, drawing again, no crash |
 | A14 | Back reaches the app, which moves to the background; back again, same process |
 | A15 | Rotation: same process, a resize |
@@ -133,8 +133,8 @@ well as the in-app screenshot.
 | A19 | The store's directory is 0700 and its files 0600, owned by the app's user |
 | A20 | The whole self-test with tiny-skia forced |
 | A21 | The targetSdk 36 APK: layout under edge-to-edge, and Back (informational) |
-| A22 | The arm64 library, where the image translates arm64 code |
-| A23 | No crash anywhere outside A18 |
+| A22 | The arm64 library, where the image translates arm64 code. **Expected to fail**: under the x86_64 image's ARM translation, android-activity's start-up JNI (`jni` 0.22.4's frame check) panics before the app's code runs, while the x86_64 build of the same code passes everything; a real arm64 device decides |
+| A23 | No crash anywhere outside A18 and A22 |
 
 ### iOS (`ci/ios.sh`)
 

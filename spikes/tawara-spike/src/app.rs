@@ -10,7 +10,8 @@
 use std::time::{Duration, Instant};
 
 use iced::widget::{
-    button, column, container, operation, progress_bar, row, scrollable, space, text, text_input,
+    button, column, container, mouse_area, operation, progress_bar, row, scrollable, space, text,
+    text_input,
 };
 use iced::{Element, Event, Fill, Size, Subscription, Task, event, keyboard, touch, window};
 use zeroize::Zeroizing;
@@ -59,6 +60,8 @@ pub struct Spike {
     finished: bool,
     cancelled_at: Option<Instant>,
     progress_after_cancel: u32,
+    /// The step the task had reached when it was cancelled.
+    progress_at_cancel: u32,
     frames: u64,
     last_frame: Option<Instant>,
     max_gap_while_running: Duration,
@@ -115,6 +118,7 @@ impl Spike {
             finished: false,
             cancelled_at: None,
             progress_after_cancel: 0,
+            progress_at_cancel: 0,
             frames: 0,
             last_frame: None,
             max_gap_while_running: Duration::ZERO,
@@ -183,6 +187,7 @@ impl Spike {
                 if let Some(running) = self.running.take() {
                     running.cancel();
                     self.cancelled_at = Some(Instant::now());
+                    self.progress_at_cancel = self.progress.0;
                     self.status =
                         format!("cancelled at {} of {}", self.progress.0, self.progress.1);
                 }
@@ -383,15 +388,20 @@ impl Spike {
                 Task::batch([Task::done(Message::Cancel), next(1500, 3)])
             }
             3 => {
-                // At most one update already in flight may land after the abort.
+                // Updates already queued when the abort lands may still arrive
+                // (two did on the emulator); a task that kept running would
+                // have advanced about 15 steps in the 1.5 s since.
                 report::check(
                     "task.cancel",
                     self.running.is_none()
-                        && self.progress_after_cancel <= 1
+                        && self.progress.0 <= self.progress_at_cancel + 3
                         && self.progress.0 < 40,
                     format!(
-                        "progress {:?}, {} updates after cancel, status {}",
-                        self.progress, self.progress_after_cancel, self.status
+                        "cancelled at step {}, now {:?}, {} updates after cancel, status {}",
+                        self.progress_at_cancel,
+                        self.progress,
+                        self.progress_after_cancel,
+                        self.status
                     ),
                 );
                 Task::batch([self.start(20, 100), next(4000, 4)])
@@ -541,12 +551,18 @@ impl Spike {
                 .size(14)
             )
             .center_y(ROWS[5]),
+            // Rows react on release, not on press: iced's scrollable lets its
+            // content see a touch first, and a widget that captures the press
+            // (a button) stops a swipe that starts on it from scrolling.
             scrollable((1..=40u32).fold(column![].spacing(8), |rows, n| {
                 rows.push(
-                    button(text(format!("Row {n}: tap, or swipe to scroll")))
-                        .width(Fill)
-                        .padding(14)
-                        .on_press(Message::Row(n)),
+                    mouse_area(
+                        container(text(format!("Row {n}: tap, or swipe to scroll")))
+                            .width(Fill)
+                            .padding(14)
+                            .style(container::rounded_box),
+                    )
+                    .on_release(Message::Row(n)),
                 )
             }))
             .on_scroll(Message::Scrolled)

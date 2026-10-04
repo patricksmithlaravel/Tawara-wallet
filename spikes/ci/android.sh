@@ -222,7 +222,7 @@ emulator_down() {
 }
 
 # --------------------------------------------------------------- helpers
-EXPECTED_FAIL=" A10 A18 " # known limitations (spikes/README.md); recorded, not fatal
+EXPECTED_FAIL=" A10 A18 A22 " # known limitations (spikes/README.md); recorded, not fatal
 
 record() { # record ID NAME RESULT DETAIL
   printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "${4:-}" >>"$OUT/results.tsv"
@@ -488,7 +488,9 @@ checklist() {
   group "A19 store files on the device"
   local uid modes
   uid=$(ash run-as "$PKG" id -u 2>/dev/null || true)
-  modes=$(ash run-as "$PKG" sh -c 'stat -c "%a %u %n" no_backup/tawara-spike/run-*/store-a no_backup/tawara-spike/run-*/store-a/* 2>&1' || true)
+  # One string for the device's shell, so run-as gets sh -c and its script
+  # whole (adb joins its arguments with spaces).
+  modes=$(a shell "run-as $PKG sh -c 'stat -c \"%a %u %n\" no_backup/tawara-spike/run-*/store-a no_backup/tawara-spike/run-*/store-a/*'" 2>&1 | tr -d '\r' || true)
   echo "$modes"
   if [ -n "$uid" ] && grep -qE "^700 $uid .*store-a$" <<<"$modes" && grep -qE "^600 $uid .*accounts.mks$" <<<"$modes" \
     && ! grep -vE "^(700|600) $uid " <<<"$modes" | grep -q .; then
@@ -496,7 +498,7 @@ checklist() {
   else
     record A19 store-modes FAIL "uid ${uid:-?}; $(head -4 <<<"$modes" | xargs)"
   fi
-  record A19 private-dirs INFO "$(ash run-as "$PKG" sh -c 'stat -c "%a %n" . files no_backup' 2>&1 | xargs)"
+  record A19 private-dirs INFO "$(a shell "run-as $PKG sh -c 'stat -c \"%a %n\" . files no_backup'" 2>&1 | tr -d '\r' | xargs)"
   endgroup
 
   group "A17 process death and cold start"
@@ -569,6 +571,7 @@ checklist() {
     a uninstall "$PKG" >/dev/null 2>&1 || true
     if a install --abi arm64-v8a "$OUT/spike-t34.apk" >"$OUT/install-arm.txt" 2>&1 && grep -q Success "$OUT/install-arm.txt"; then
       m3=$(mark)
+      A22_START=$m3
       launch >/dev/null
       if wait_log "$m3" '^SPIKE DONE ' 240 >/dev/null; then
         record A22 arm64-start INFO "$(spike_since "$m3" | grep -m1 'start os=' || true)"
@@ -577,6 +580,7 @@ checklist() {
         record A22 arm64 FAIL "no SPIKE DONE within 240 s; $(spike_since "$m3" | grep -m1 'start os=' || true) $(crashes_since "$m3" | xargs)"
       fi
       ash am force-stop "$PKG"
+      A22_END=$(mark)
     else
       record A22 arm64-install FAIL "$(tail -3 "$OUT/install-arm.txt" | xargs)"
     fi
@@ -589,8 +593,16 @@ checklist() {
   a logcat -d -b crash >"$OUT/logcat-crash.txt" 2>&1 || true
   local before after
   before=$(head -n "${A18_START:-0}" "$LOG" | tail -n +"$((M1 + 1))" | grep -E 'FATAL EXCEPTION|Fatal signal|SPIKE FAIL panic|panicked at' | head -5 || true)
-  after=$(since "${A18_END:-0}" | grep -E 'FATAL EXCEPTION|Fatal signal|SPIKE FAIL panic|panicked at' | head -5 || true)
-  if [ -z "$before$after" ]; then record A23 crashes PASS "none outside A18"; else record A23 crashes FAIL "$(echo "$before $after" | xargs)"; fi
+  # Between A18 and A22, and after A22 (the arm64 build under the image's
+  # ARM translation, an expected failure).
+  local pat='FATAL EXCEPTION|Fatal signal|SPIKE FAIL panic|panicked at'
+  if [ -n "${A22_START:-}" ]; then
+    after=$(head -n "$A22_START" "$LOG" | tail -n +"$((A18_END + 1))" | grep -E "$pat" | head -5 || true)
+    after="$after$(since "${A22_END:-$A22_START}" | grep -E "$pat" | head -5 || true)"
+  else
+    after=$(since "${A18_END:-0}" | grep -E "$pat" | head -5 || true)
+  fi
+  if [ -z "$before$after" ]; then record A23 crashes PASS "none outside A18 and A22"; else record A23 crashes FAIL "$(echo "$before $after" | xargs)"; fi
   endgroup
 }
 
