@@ -159,8 +159,17 @@ emulator_up() {
   endgroup
 
   group "AVD and boot"
-  echo no | avdmanager create avd --force -n spike -k "$IMG" >/dev/null
-  local cfg=$ANDROID_AVD_HOME/spike.avd/config.ini
+  echo no | avdmanager create avd --force -n spike -k "$IMG"
+  # Where avdmanager put it varies with the command-line tools' version
+  # (~/.android/avd, or ~/.config/.android/avd); ask, and point the
+  # emulator there.
+  local avd_dir
+  avd_dir=$(avdmanager list avd | sed -n 's/^ *Path: \(.*spike\.avd\)$/\1/p' | head -1)
+  [ -n "$avd_dir" ] && [ -f "$avd_dir/config.ini" ] || { avdmanager list avd; die "cannot find the spike AVD"; }
+  export ANDROID_AVD_HOME
+  ANDROID_AVD_HOME=$(dirname "$avd_dir")
+  echo "AVD at $avd_dir"
+  local cfg=$avd_dir/config.ini
   set_ini "$cfg" hw.keyboard no # the soft keyboard must be allowed to show
   set_ini "$cfg" hw.ramSize 4096
   set_ini "$cfg" hw.cpu.ncore 4
