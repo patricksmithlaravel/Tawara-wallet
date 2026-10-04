@@ -398,3 +398,278 @@ items for then:
    own), chosen by the owner;
 3. insets and showing the keyboard again planned as phase 4 glue, and the
    winit limits (activity recreation, UIScene) tracked upstream.
+
+## Phase 2
+
+### D19. `wallet-core`: one worker, three sessions, the library's own words
+
+**proposed.** `crates/wallet-core` is built as docs/PLAN.md section 3
+describes it, with these choices inside that design:
+
+- **One worker thread** (`worker::spawn`) owns the `Keystore` and the
+  `Wallet`. The interface sends `Command`s through a `WorkerHandle` and
+  receives `Event`s: one `Done` per command, `Busy` before anything slow
+  (the key derivation, the node), `Locked` whenever an open store closes,
+  and `Stopped` last. Events carry view models (`view`) with no secret in
+  them; the one exception is the new store's recovery phrase, shown once,
+  in a `PhraseForDisplay` that zeroizes on drop and prints nothing in
+  `Debug`.
+- **Three sessions.** *Locked*; *Store*, where the `Keystore` is open and
+  the wallet is not (no node chosen, the node silent, no account on the
+  ledger yet, or every account diverged); and *Wallet*, after
+  `Wallet::open` reconciled. Spending needs *Wallet*. The store's
+  accounts and destinations can be shown in *Store*, and the library's
+  pre-gate operations (status, the acknowledged advance, restore,
+  discovery) run there, as they do at the command line.
+- **Checks before `Wallet::open`.** `Wallet::open` takes the store by
+  value and drops it when it refuses, and the worker keeps the password
+  only for the length of the command that brought it. So the worker first
+  asks the node about each account's tag (the request `Wallet::open` makes
+  first anyway), then makes the comparison `Wallet::open` makes for each
+  account. A silent node, "account not found" for every tag, or every
+  account diverged leaves the store open in *Store*; in the last case the
+  notice is the library's own "WALLET WILL NOT START" page, rendered from
+  the same `StartupRefusal` `Wallet::open` would have returned. The wallet
+  is opened only when an account reconciled, so `Wallet::open` refuses only
+  if the chain moved in between; then the store is reopened with the
+  password when it is at hand, and otherwise reported closed
+  (`LockReason::WalletRefused`), with the library's refusal page in the
+  command's answer (an advance's or a restore's `opened`), so the reason
+  reaches the interface. D23 proposes the library change that would make
+  the checks unnecessary.
+- **The library's words.** The worker makes each decision through the
+  library's `Wallet` and `Keystore` methods, builds the `cli::outcome::
+  Outcome` the command line would, and has `cli::render::render` write the
+  text. Divergence reports, the startup refusal, the send page with its
+  three facts (§4.9), settlement, re-signing, reconciliation, restore and
+  discovery therefore read exactly as they do at the command line. The
+  standing "THIS STORE IS NOT WHOLE" notice is taken from the renderer
+  without the rule the command line draws under it. Where the command
+  line's choice lives in a private function (`key_access`,
+  `spend_all_amount`, the classification in `cmd_status`, `cmd_resign`'s
+  outcomes, `create`'s "Nothing was created" rule), the worker repeats it
+  and names the function it follows; D23 proposes making them public.
+- **A copy of the master seed** is held beside the `Wallet` for the
+  session, as the command line holds one (`cli::decide`), because
+  `KeyAccess` borrows the seed while `reserve_and_sign` borrows the wallet
+  mutably. It is a `Secret` and is dropped with the session.
+- **Cancellation** (`WorkerHandle::cancel`) stops every command sent so
+  far and none sent later: the handle records the newest request id and
+  each command compares its own. A command the cancel reaches before it
+  starts does nothing, unless it only drops something (Lock, discarding a
+  plan or a phrase, forgetting the node); so a spend queued behind a slow
+  command does not sign after a cancel or a move to the background. A
+  running command reads it through `recon::Cancel` where the library takes
+  one (a refresh, between accounts and inside each account's walk, and a
+  status read), and nothing it read is applied. A spend is never stopped
+  between its reservation and its submission.
+- **Accounts set aside at open.** `Wallet::open` sets aside an account
+  it cannot explain, and the library refuses to spend from it by that
+  observation. Settling is not refused on it: the library's
+  `settle_if_landed` reconciles the account afresh, so an account set
+  aside because the node could not see its outstanding spend settles once
+  the node shows it landed. A refresh that finds a set-aside account
+  reconciling opens the wallet again, so the account can spend.
+- **Walks are bounded.** The worker runs one command at a time, so a lock
+  (idle, background, explicit) waits for the running command. The library
+  walks every key position up to an index the person names, about 1.6 ms
+  each in a release build, and its restore and acknowledged advance cannot
+  be cancelled. So `scan_to` (status, restore) and `advance_to` (reconcile)
+  are refused above `MAX_SCAN_TO`, 100,000, a wait of under three minutes;
+  the command line takes any index below `u32::MAX`. A discovery sweep
+  takes 1 to 1,024, as the command line's does. With D23's first item the
+  bound could be lifted; until then 100,000 is for the owner to confirm.
+
+**For the owner, before phase 3.** The worker offers the library's
+acknowledged advance (`Command::Reconcile`) and restore
+(`Command::Restore`), because they are the remedies the library's own
+reports name, and they move a key index only on the library's terms (the
+advance only to the index the live report names). docs/PLAN.md section
+4.9 says no button moves a key index "to make a refusal go away". Whether
+the interface offers these two, and on what screen and with what
+confirmation, is a phase 3 question for the owner; nothing in phase 2
+presents them.
+
+### D20. Entropy and wallet-core's two other dependencies
+
+**proposed.** docs/PLAN.md section 4.4 asks for the mechanism to be
+recorded. Entropy comes from `getrandom` 0.2 (`getrandom::getrandom`),
+which reads the operating system's generator: `BCryptGenRandom` with the
+system-preferred generator on Windows (the command-line wallet's call),
+the `getrandom` system call with `/dev/urandom` as its fallback on Linux
+and Android, `getentropy` on macOS, and `CCRandomGenerateBytes` on iOS.
+Creating a store takes three separate draws (the phrase's entropy, the
+key-derivation salt, the nonce seed); opening one takes one (the nonce
+seed). A failed draw refuses the command with nothing created or opened.
+
+`getrandom` 0.2.17 and `zeroize` 1.9.0 are wallet-core's only direct
+dependencies besides the library, and both were already in every build
+through it (`ring` uses `getrandom` 0.2; the library uses `zeroize`), so
+naming them adds no crate. `serde_json` is a dev-dependency, for the fake
+node's tests, and is also already in the graph.
+
+Secret input (§4.2) is a `SecretText`, built with `SecretText::take`,
+which moves the text field's buffer into a `Zeroizing<String>` and leaves
+the field empty, so the secret is never copied on the way in.
+
+The workspace also optimises the two key-derivation crates (`argon2`,
+`blake2`) in the dev profile. Every store the tests make pays Argon2id at
+the library's recommended cost, about three seconds each unoptimised and
+about one optimised. The release profile is untouched.
+
+### D21. Store location, sync folders, and the desktop backup question
+
+**proposed.** `location::default_store_dir` gives docs/PLAN.md section
+4.6's defaults, with `keystore` as the store's own folder:
+`%LOCALAPPDATA%\Tawara\keystore` on Windows,
+`~/Library/Application Support/Tawara/keystore` on macOS, and
+`$XDG_DATA_HOME/tawara/keystore` on Linux, falling back to
+`~/.local/share` when `$XDG_DATA_HOME` is unset or relative, as the XDG
+specification says. Finding the default creates nothing. When a store is
+created, the worker makes the application folder (`Tawara` or `tawara`,
+and any folder above it that is missing; mode `0700` on Unix), because
+the library makes only the store's own folder, in a parent that exists;
+the library then makes that folder, mode `0700` or with a private access
+list. Neither is made until the store is about to be written: after the
+confirmation words, for a new phrase. On Android
+and iOS the shell passes its private directory to
+`location::store_dir_in`.
+
+**Android: `no_backup/`, not `files/`.** Section 4.6 says "the app's
+private files directory". The shell will pass `no_backup/`, which Android
+leaves out of Auto Backup by definition, as a second guard beside the
+manifest rules of section 4.5 (phase 4). This is a deviation from the
+plan's wording, for the owner's approval.
+
+`location::sync_warning` says when a chosen folder is inside one a cloud
+service syncs (section 4.5's desktop rule): iCloud Drive and its Desktop
+and Documents sync, the macOS `CloudStorage` providers, OneDrive (with the
+variables Windows sets for it), Dropbox, Google Drive, Box, pCloud,
+Nextcloud, ownCloud, MEGA, Synology Drive and Seafile, and a roaming
+Windows profile. It checks the path as given and the path with its links
+resolved. It warns; it does not refuse, since the plan asks for a warning.
+
+**For the owner: desktop backups.** Section 4.5 says the store must be
+excluded from every backup, and lists Android's and iOS's mechanisms; for
+the desktop it covers only sync folders. Time Machine backs up
+`~/Library/Application Support` by default, and restoring an older copy of
+the store is the key-reuse hazard section 4.5 describes. Excluding the
+folder on macOS needs a platform call (the same backup-exclusion flag iOS
+uses, set on the folder) in the desktop shell. Windows File History does
+not back up `%LOCALAPPDATA%` by default; Linux has no standard tool to
+ask. Whether to set the macOS exclusion, in phase 3 or 4, is the owner's
+call.
+
+### D22. The node: https, or http to loopback, and the library's roots
+
+**proposed.** As docs/PLAN.md section 4.8 says, there is no default node
+and plain `http://` is refused except to `127.0.0.0/8`, `::1` and
+`localhost`. The command line refuses the same URLs, with the same test,
+but has a flag to override it (`--allow-plaintext-node`); this wallet has
+no override. The refusal is the command line's text except in the three
+places where it names a command-line flag: it opens with the URL rather
+than `--node <URL>`, it says "an acknowledged advance" for
+"`reconcile --advance-to`", and its `ACTION` line reads "use an https
+node. http to 127.0.0.0/8, ::1 or localhost is accepted." instead of
+offering `--allow-plaintext-node`. Those changes are for the owner's
+approval (D25).
+
+Changing or clearing the node detaches an open store from the node it
+was opened against: a wallet open against it becomes the store alone,
+with no node, and a pending plan is dropped, so nothing goes on asking
+that node or sending to it. The next command that asks a node asks the
+one chosen then, and a refresh reconciles the store against it.
+
+Trust roots (section 4.8 asks for them to be recorded): the library's
+transport with `mesh-https`, which is rustls with `ring` and the bundled
+`webpki-roots` (Mozilla's store, compiled in), on every platform. That is
+what the command-line wallet uses. The platform's own roots would need a
+feature in the library (its `Cargo.toml` already discusses
+`rustls-native-certs`); D23 lists it.
+
+### D23. Library changes this phase would use (proposals; nothing changed)
+
+**proposed, for the owner.** Rep-2 does not modify the library. These are
+the changes wallet-core would use, to be made in Rep-0 if the owner
+agrees, merged down into Rep-1, and picked up here by moving `rev`. None
+blocks phase 2.
+
+1. **`Cancel` and progress for the long walks.** `Wallet::open`,
+   `restore::restore_account`, `reconcile::advance_acknowledged` and
+   `discover::sweep` take no `recon::Cancel` and report no progress, so
+   the worker cannot stop them or show how far they are (section 3 asks
+   for both), and has to bound the indices the person names (D19). A
+   variant of each taking `&Cancel` and a progress callback. (A status
+   read needs nothing: the worker builds it from the public
+   `recon::access_for` and `recon::reconcile_account_with`, which takes a
+   `Cancel`, as `reconcile::account_status` does with `Cancel::NEVER`.)
+2. **`Wallet::open` that returns the store when it refuses**, so a
+   refusal never closes the store. The worker's checks before opening
+   (D19) would then be unnecessary, and so would the comparison they make
+   twice for every account on every open.
+3. **The command line's private decisions, made public**: `key_access`,
+   `spend_all_amount`, `plan_spend`, `reconcile::scope_to`, the
+   classification in `cmd_status`, the outcome choice in `cmd_resign`, and
+   `create`'s `nothing_was_created`. The worker repeats each today (D19).
+4. **The emptying warning before signing.** The send page includes "THIS
+   EMPTIES THE ACCOUNT" when the change is zero, but only after the spend
+   is signed. The confirmation screen needs the same words before it;
+   `emptying_text` (private) or an outcome for a planned spend would give
+   them. Until then wallet-core reports `PlanView::empties_account` and
+   the interface needs a wording the owner approves.
+5. **Platform trust roots** as a feature beside `mesh-https` (D22).
+6. **Importing a legacy store.** The library has no import of the older
+   wallets' `.mcm` files, so neither has wallet-core.
+
+### D24. The wallet locks after five idle minutes
+
+**proposed.** `DEFAULT_IDLE_LOCK` is five minutes, the period the
+dashboard rendering shows ("auto-locks in 5 min"). The interface can set
+another (`Config::idle_lock`) and calls `WorkerHandle::touch` when the
+person does something, which counts at once even while a command runs.
+The period is measured from the person's last input: that call, or a
+command carrying something they typed (unlock, create, the confirmation
+words). Any other command is not input, so an interface that polls the
+chain tip or refreshes on a timer cannot keep the store open, and the
+period is checked before each queued command is taken, so polls queued
+behind a slow node cannot either. Locking drops the `Keystore` (its key, master seed
+and lock), the worker's copy of the seed, any pending recovery phrase and
+any pending plan. It also happens on `Command::Lock`, when the app moves
+to the background (`WorkerHandle::background`, which first cancels every
+command sent so far), when another store is unlocked in its place, on
+shutdown, and when the last handle is dropped (both of which also cancel
+every command sent so far, so nothing still queued, a spend among it,
+runs on the way out). Each reports `Locked` with
+its reason, and so does an idle or background lock that drops a recovery
+phrase waiting for its confirmation.
+
+### D25. Wording the worker writes itself (for the owner's approval)
+
+**proposed.** docs/PLAN.md section 3 requires the owner's approval for any
+paraphrase of the library's protective text. These are the worker's own
+texts and the one changed library text, listed so they can be approved or
+changed in one place:
+
+- the plaintext-node refusal, in the three places where the command
+  line's text names its flags (D22);
+- the standing notice without the command line's rule under it (D19);
+- the *Store* session's notices: no node chosen, the node changed, and
+  the node not answering (`worker.rs`, `NO_NODE`, `NODE_CHANGED` and
+  `open_session`);
+- the create refusals before a phrase is shown (a store already in the
+  folder, the passwords differing) and at confirmation (the wrong words,
+  nothing to confirm), each ending with the library's "Nothing was
+  created.";
+- "there is no keystore at ...: the folder does not exist", for a folder
+  that is not there (the library reports it as `keystore stat directory:
+  NotFound`);
+- the short refusals for a command in the wrong session (locked, wallet
+  not open, no node, no such plan);
+- the refusal of a scan or an advance past `MAX_SCAN_TO` (D19), and of a
+  discovery bound outside 1 to 1,024, whose two reasons are the command
+  line's, reworded because its text names its flags and verbs (`--to`,
+  `address`, `balance`).
+
+The rendered pages also name command-line verbs (`settle`,
+`reconcile ... --advance-to N`, `submit`). How the interface presents
+those is phase 3's, with the owner's approval.

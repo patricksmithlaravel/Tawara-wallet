@@ -13,8 +13,11 @@ repository.workspace = true
 
 [dependencies]
 mochimo-crypto.workspace = true
+zeroize.workspace = true
+getrandom.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 syn.workspace = true
 proc-macro2.workspace = true
 quote.workspace = true
