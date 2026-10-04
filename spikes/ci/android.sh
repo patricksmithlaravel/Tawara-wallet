@@ -509,10 +509,14 @@ checklist() {
   sleep 1
   m3=$(mark)
   launch | tee "$OUT/am-start-cold.txt"
-  if grep -q 'LaunchState: COLD' "$OUT/am-start-cold.txt" && wait_log "$m3" '^SPIKE (PASS|FAIL) render.screenshot_not_blank' 60 >/dev/null; then
+  # The relaunched app's first frame must pass its own check, as in A3.
+  local frame=""
+  if grep -q 'LaunchState: COLD' "$OUT/am-start-cold.txt" \
+    && frame=$(wait_log "$m3" '^SPIKE (PASS|FAIL) render.screenshot_not_blank' 60) \
+    && [[ $frame == "SPIKE PASS "* ]]; then
     record A17 cold-start PASS "$(grep -E 'TotalTime' "$OUT/am-start-cold.txt" | xargs)"
   else
-    record A17 cold-start FAIL "$(grep -E 'LaunchState' "$OUT/am-start-cold.txt" | xargs); $(crashes_since "$m3" | xargs)"
+    record A17 cold-start FAIL "$(grep -E 'LaunchState' "$OUT/am-start-cold.txt" | xargs); ${frame:-no in-app screenshot}; $(crashes_since "$m3" | xargs)"
   fi
   endgroup
 
@@ -522,10 +526,12 @@ checklist() {
   sleep 3
   A18_START=$(mark)
   launch >/dev/null
-  if wait_log "$A18_START" '^SPIKE (PASS|FAIL) render.screenshot_not_blank' 30 >/dev/null; then
+  frame=""
+  if frame=$(wait_log "$A18_START" '^SPIKE (PASS|FAIL) render.screenshot_not_blank' 30) \
+    && [[ $frame == "SPIKE PASS "* ]]; then
     record A18 activity-recreated PASS "$(spike_since "$A18_START" | grep -m1 'start os=' || true)"
   else
-    record A18 activity-recreated FAIL "$(crashes_since "$A18_START" | xargs)"
+    record A18 activity-recreated FAIL "${frame:-no in-app screenshot}; $(crashes_since "$A18_START" | xargs)"
   fi
   A18_END=$(mark)
   ash settings put global always_finish_activities 0

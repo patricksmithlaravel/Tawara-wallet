@@ -131,8 +131,8 @@ well as the in-app screenshot.
 | A14 | Back reaches the app, which moves to the background; back again, same process |
 | A15 | Rotation: same process, a resize |
 | A16 | A density change: same process, a rescale or resize |
-| A17 | Process killed, then a cold start |
-| A18 | The activity destroyed while the process lives, then relaunched. **Expected to fail**: winit allows one event loop per process |
+| A17 | Process killed, then a cold start whose first frame passes the app's screenshot check |
+| A18 | The activity destroyed while the process lives, then relaunched, with a first frame that passes the screenshot check. **Expected to fail**: winit allows one event loop per process |
 | A19 | The store's directory is 0700 and its files 0600, owned by the app's user |
 | A20 | The whole self-test with tiny-skia forced |
 | A21 | The targetSdk 36 APK: layout under edge-to-edge, and Back (informational) |
