@@ -162,9 +162,20 @@ checklist() {
     shot 02-typed
   fi
   if wait_line "$err" 'iced clipboard roundtrip' 60 >/dev/null; then
-    l=$(xcrun simctl pbpaste "$UDID" 2>&1 || true)
-    [ "$l" = tawara-spike-clip ] && record I5 pasteboard-from-outside PASS "simctl pbpaste: $l" \
-      || record I5 pasteboard-from-outside FAIL "simctl pbpaste: ${l:0:80}"
+    # simctl reaches the simulator's pasteboard through a host service that
+    # can fail on a busy host: an error from the tool is tried again (up to
+    # three attempts, each counted in the result), a wrong value is not.
+    local try rc
+    for try in 1 2 3; do
+      l=$(xcrun simctl pbpaste "$UDID" 2>&1) && rc=0 || rc=$?
+      [ "$rc" -eq 0 ] && break
+      sleep 2
+    done
+    if [ "$rc" -eq 0 ] && [ "$l" = tawara-spike-clip ]; then
+      record I5 pasteboard-from-outside PASS "simctl pbpaste: $l (attempt $try)"
+    else
+      record I5 pasteboard-from-outside FAIL "simctl pbpaste, attempt $try, status $rc: $(tr -s '\n' ' ' <<<"$l" | cut -c1-300)"
+    fi
   else
     record I5 pasteboard-from-outside FAIL "no clipboard step"
   fi

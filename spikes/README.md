@@ -150,7 +150,7 @@ well as the in-app screenshot.
 | I2 | The window fills the screen (the layout line), and the renderer |
 | I3 | Typing and Return through winit's `insertText:` |
 | I4 | The keyboard on screen while the field is focused (screenshot) |
-| I5 | The app's pasteboard write, read from outside with `simctl pbpaste` |
+| I5 | The app's pasteboard write, read from outside with `simctl pbpaste` (an error from the tool is tried up to three times; a wrong value fails at once) |
 | I6 | Settings in front, then back: both launches succeed, the same process returns, and it draws a frame (its `frames N` heartbeat) within 10 s. How many heartbeats came while Settings was in front (informational) |
 | I7 | The whole self-test with tiny-skia forced |
 | I8 | The safe-area insets (informational) |
