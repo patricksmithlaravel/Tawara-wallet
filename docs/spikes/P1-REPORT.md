@@ -67,7 +67,10 @@ run 8 (`d25a266`, iOS simulator green, desktop green on all three systems)
 and run 9 (`c436fc6`, every job green apart from the three expected Android
 failures, A10, A18 and A22). Earlier runs found faults in the spike's own
 checks (timings too tight for a busy host, a script's quoting), each fixed
-and recorded in its commit.
+and recorded in its commit. Runs 11 and 12 (`9bd98e4`) repeat every job
+after review fixes: the patch now drops each window's surface when Android
+suspends the app, and the macOS screenshots reach the log. They give the
+same results, with the same three expected failures.
 
 **Desktop** (Linux under Xvfb, macOS 26, and the windows-latest runner; runs
 1 to 9). The
@@ -95,7 +98,7 @@ wgpu on Vulkan over SwiftShader by default):
 | Paste | The platform clipboard works through JNI (`ClipboardManager`) | A8 |
 | Back | Delivered to the app, which moves its task to the background; same process on return | A14 |
 | Rotation | The window resizes to 914×411; same process | A15 |
-| Suspend and resume, surface loss and recreation | Home during a task, then back: same process, drawing again after a 5.4 s gap, no crash | A13 |
+| Suspend and resume, surface loss and recreation | Home during a task, then back: same process, drawing again after a gap of 4.5 to 5.4 s, no crash (runs 9, 11 and 12) | A13 |
 | Display density | `wm density 160` and back: the scale factor follows; same process | A16 |
 | Process death | Killed, then a cold start in 0.9 to 1.6 s | A17 |
 | Store files | Store directory 0700, files 0600, owned by the app's user; `files/` is 0771, so the spike keeps stores in `no_backup/` | A19 |
