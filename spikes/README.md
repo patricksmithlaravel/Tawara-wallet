@@ -67,6 +67,9 @@ The self-test prints one line per fact on stderr: `SPIKE PASS <name>:
 
 ## The self-test
 
+The timeline starts 1.5 seconds after the window opens, not when the program
+starts: on iOS the window opens only once UIKit has finished launching.
+
 1. Focus the password field and take an in-app screenshot (`render.*`). CI
    then has 10 seconds to type and press Return (`pw_len=7`, `submit pw_len=7`);
    on iOS the app types through winit's own `insertText:`. Submitting moves

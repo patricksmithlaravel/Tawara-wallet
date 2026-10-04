@@ -70,6 +70,11 @@ pub struct Spike {
     size: Size,
     scale: f32,
     step: u32,
+    /// Whether the self-test timeline has started. It starts when the window
+    /// opens, not when the program does: on iOS the window opens only after
+    /// UIKit has finished launching, and on Android after the system has
+    /// given the app a native window.
+    started: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -96,11 +101,6 @@ pub enum Message {
 
 impl Spike {
     pub fn new(config: Config) -> (Self, Task<Message>) {
-        let first = if config.self_test {
-            worker::after(1500, Message::Script(0))
-        } else {
-            Task::none()
-        };
         let spike = Self {
             config,
             password: String::new(),
@@ -123,8 +123,9 @@ impl Spike {
             size: Size::ZERO,
             scale: 1.0,
             step: 0,
+            started: false,
         };
-        (spike, first)
+        (spike, Task::none())
     }
 
     fn note_layout(&self) {
@@ -220,7 +221,16 @@ impl Spike {
             Message::Window(_, event) => {
                 match event {
                     window::Event::RedrawRequested(_) => return Task::none(),
-                    window::Event::Opened { size, .. } | window::Event::Resized(size) => {
+                    window::Event::Opened { size, .. } => {
+                        self.size = size;
+                        report::note(format!("window event {event:?}"));
+                        self.note_layout();
+                        if self.config.self_test && !self.started {
+                            self.started = true;
+                            return worker::after(1500, Message::Script(0));
+                        }
+                    }
+                    window::Event::Resized(size) => {
                         self.size = size;
                         report::note(format!("window event {event:?}"));
                         self.note_layout();
