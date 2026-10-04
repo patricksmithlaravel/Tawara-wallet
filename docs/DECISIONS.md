@@ -376,3 +376,22 @@ production carries the change (a fork of iced at a git revision, which
 needs `allow-git` in deny.toml; an upstream change; or a shell crate of
 Tawara's own) is for the owner to choose after the phase 1 go/no-go,
 with the findings of `docs/spikes/P1-REPORT.md`.
+
+### D18. Phase 1 gate: iced goes ahead on mobile
+
+**owner, 2026-10-04.** After docs/spikes/P1-REPORT.md, the owner decided
+"Go for iced mobile": iced stays the toolkit for Android and iOS as well as
+the desktop (plan D2 and D3), and the mobile shells are not replaced.
+
+The report recommends three conditions before phase 4, which stand as open
+items for then:
+
+1. text entry checked on one real Android phone and one iPhone (composition,
+   accented and non-Latin text, the password field's keyboard, paste from
+   another app, the arm64 Android build), with the device steps in
+   `spikes/README.md`;
+2. a production route for the `iced_winit` change of D17 (a fork at a pinned
+   git revision, the change sent upstream, or a shell crate of Tawara's
+   own), chosen by the owner;
+3. insets and showing the keyboard again planned as phase 4 glue, and the
+   winit limits (activity recreation, UIScene) tracked upstream.
