@@ -275,7 +275,11 @@ that a machine can check, with no network:
   since rustc resolves its declarations in both. Every
   file a non-test declaration can select must exist: a missing one is
   refused, since the check cannot tell a configuration rustc never builds
-  from a path it resolved differently from rustc. What it does not follow
+  from a path it resolved differently from rustc. So is a module file
+  reached through a symbolic link (the file, or a directory on its path
+  below the crate): rustc resolves the modules such a file declares from
+  the link's directory, while the walk compares files by their canonical
+  paths. What it does not follow
   in non-test code it refuses as unreadable rather than passing: a
   non-literal `include!`, a conditional path on an inline module, an
   out-of-line `mod` inside a block (rustc loads one there by `#[path]`), a
@@ -325,8 +329,10 @@ a test module also reaches, in a file a test fixture loads that production
 code also loads through `include!` imported as `load` and given
 `"shared.r\x73"`, and in the crate's `tests/shared.rs` loaded by
 `#[path = "../../tests/shared.rs"]` in `src/nested/inc.rs`, itself
-`include!`d from `src/lib.rs`, and under `tests/` loaded by a `#[path]` in
-an inline module of a file that is both a module and `include!`d; and iced
+`include!`d from `src/lib.rs`, under `tests/` loaded by a `#[path]` in an
+inline module of a file that is both a module and `include!`d, and in
+`src/alias/shared.rs`, loaded by `src/alias/common.rs`, a link to
+`src/actual/common.rs`, beside a test fixture that also loads it; and iced
 in `wallet-core`'s dependencies.
 Each passes on the tree as committed; an out-of-line `#[cfg(test)] mod
 tests;` naming the cheap KDF passes, as it should, and so does a fixture

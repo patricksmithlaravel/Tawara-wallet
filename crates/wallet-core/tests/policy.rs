@@ -979,13 +979,29 @@ fn included(here: &Path, rel: &str) -> Source {
 /// resolves its declarations in both: measured on rustc 1.98.0, a `#[path]`
 /// inside an inline module of such a `src/x.rs` loads one file below
 /// `src/x/` and another below `src/`. So the walk visits each pair once, not
-/// each file once.
+/// each file once. The paths are canonical, which is sound only because
+/// production code reached through a symbolic link is refused (see
+/// `through_link`): without links, two spellings of one file sit in one
+/// directory, and resolve alike.
 fn visit_key(source: &Source) -> (PathBuf, PathBuf, bool) {
     (
         normalise(&source.path),
         normalise(&source.context.path),
         source.context.mod_rs,
     )
+}
+
+/// Whether `path` is reached through a symbolic link: the file itself, or a
+/// directory on its path below `crate_dir` (what lies above the crate
+/// directory is the checkout's business, not the crate's). rustc resolves the
+/// declarations of a file reached through a link from the link's directory:
+/// measured on rustc 1.98.0, `src/alias/common.rs`, a link to
+/// `src/actual/common.rs`, loads `#[path = "shared.rs"]` as
+/// `src/alias/shared.rs`, while the target loads `src/actual/shared.rs`.
+fn through_link(path: &Path, crate_dir: &Path) -> bool {
+    path.ancestors()
+        .take_while(|p| !crate_dir.starts_with(p))
+        .any(|p| fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink()))
 }
 
 fn walk_sources(crate_dir: &Path) -> Result<SourceWalk, String> {
@@ -1004,6 +1020,16 @@ fn walk_sources(crate_dir: &Path) -> Result<SourceWalk, String> {
         .collect();
 
     while let Some(source) = stack.pop() {
+        // Before the visit key, which canonicalises: a link and its target
+        // would share a key, and the link's own context would go unread.
+        if through_link(&source.path, crate_dir) {
+            return Err(format!(
+                "{} is reached through a symbolic link in non-test code; rustc resolves the \
+                 modules it declares from the link's directory, which this check does not \
+                 model. Use the file's own path, or a copy",
+                source.path.display()
+            ));
+        }
         if !visited.insert(visit_key(&source)) {
             continue;
         }
@@ -1596,6 +1622,44 @@ fn the_source_walk_refuses_what_it_cannot_read() {
         match result {
             Err(e) => assert!(e.contains(expected), "refused for the wrong reason: {e}"),
             Ok(()) => panic!("the walk accepted what it cannot read: {lib}"),
+        }
+    }
+
+    // A module file reached through a symbolic link: before its target and
+    // after it (the refusal must come before the canonical visit key merges
+    // the two), and through a linked directory. Unix only: making a link on
+    // Windows needs a privilege CI does not have.
+    #[cfg(unix)]
+    for (i, lib) in [
+        "#[path = \"alias/common.rs\"] mod first;\n#[path = \"actual/common.rs\"] mod second;\n",
+        "#[path = \"actual/common.rs\"] mod first;\n#[path = \"alias/common.rs\"] mod second;\n",
+        "#[path = \"linked/common.rs\"] mod first;\n",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let dir = probe_crate(
+            &format!("link{i}"),
+            &[
+                ("Cargo.toml", "[package]\nname = \"probe\"\n"),
+                ("src/lib.rs", lib),
+                ("src/actual/common.rs", "#[path = \"shared.rs\"] mod imp;\n"),
+                ("src/actual/shared.rs", ""),
+                ("src/alias/shared.rs", ""),
+            ],
+        );
+        std::os::unix::fs::symlink("../actual/common.rs", dir.join("src/alias/common.rs"))
+            .expect("make a file link");
+        std::os::unix::fs::symlink("actual", dir.join("src/linked"))
+            .expect("make a directory link");
+        let result = walk_sources(&dir).map(|_| ());
+        let _ = fs::remove_dir_all(&dir);
+        match result {
+            Err(e) => assert!(
+                e.contains("symbolic link"),
+                "refused for the wrong reason: {e}"
+            ),
+            Ok(()) => panic!("the walk accepted a module reached through a link: {lib}"),
         }
     }
 }
