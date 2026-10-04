@@ -165,14 +165,15 @@ checklist() {
     # simctl reaches the simulator's pasteboard through a host service that
     # can fail on a busy host: an error from the tool is tried again (up to
     # three attempts, each counted in the result), a wrong value is not.
-    local try rc
+    local try rc first=""
     for try in 1 2 3; do
       l=$(xcrun simctl pbpaste "$UDID" 2>&1) && rc=0 || rc=$?
       [ "$rc" -eq 0 ] && break
+      [ -n "$first" ] || first="; attempt 1, status $rc: $(tr -s '\n' ' ' <<<"$l" | cut -c1-200)"
       sleep 2
     done
     if [ "$rc" -eq 0 ] && [ "$l" = tawara-spike-clip ]; then
-      record I5 pasteboard-from-outside PASS "simctl pbpaste: $l (attempt $try)"
+      record I5 pasteboard-from-outside PASS "simctl pbpaste: $l (attempt $try$first)"
     else
       record I5 pasteboard-from-outside FAIL "simctl pbpaste, attempt $try, status $rc: $(tr -s '\n' ' ' <<<"$l" | cut -c1-300)"
     fi
