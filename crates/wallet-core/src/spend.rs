@@ -21,11 +21,15 @@
 //! Everything the node itself enforces (the fee floor, a zero amount, a
 //! destination equal to the source, an amount over the balance) is
 //! `SpendPlan::new`'s, in the library, and is not repeated.
+//!
+//! What the checks produce is the library's own `cli::args::Spend`, the
+//! value the command line's parser produces, so the worker lays it out with
+//! the command line's `cli::plan_spend` rather than a copy of it.
 
 use core::fmt;
 
 use mochimo_crypto::addr::Tag;
-use mochimo_crypto::cli::args::REFERENCE_RULE;
+use mochimo_crypto::cli::args::{REFERENCE_RULE, Spend, SpendTo};
 use mochimo_crypto::consts::{ADDR_REF_LEN, ADDR_TAG_LEN, MFEE};
 use mochimo_crypto::mesh::spend::reference_is_valid;
 use mochimo_crypto::tx::MAX_DESTINATIONS;
@@ -64,30 +68,6 @@ pub struct SpendRequest {
     pub fee: Option<u64>,
     /// The block after which the spend may not be included, or 0 for none.
     pub blk_to_live: u64,
-}
-
-/// One destination, checked.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Checked {
-    pub to: Tag,
-    pub reference: [u8; ADDR_REF_LEN],
-    /// `None` for [`Amount::Everything`].
-    pub amount: Option<u64>,
-}
-
-/// A spend, checked.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct CheckedSpend {
-    pub from: Tag,
-    pub dsts: Vec<Checked>,
-    pub fee_total: u64,
-    pub blk_to_live: u64,
-}
-
-impl CheckedSpend {
-    pub(crate) fn spends_everything(&self) -> bool {
-        self.dsts.len() == 1 && self.dsts.iter().any(|d| d.amount.is_none())
-    }
 }
 
 /// Why a spend was refused before anything was planned.
@@ -236,13 +216,14 @@ pub(crate) fn parse_reference(
     Ok(field)
 }
 
-/// Check a spend request by the command line's rules.
-pub(crate) fn check(req: &SpendRequest) -> Result<CheckedSpend, SpendInputError> {
+/// Check a spend request by the command line's rules, to the spend its
+/// parser would produce: [`Amount::Everything`] is an amount of `None`.
+pub(crate) fn check(req: &SpendRequest) -> Result<Spend, SpendInputError> {
     let n = req.destinations.len();
     if n == 0 || n > usize::from(MAX_DESTINATIONS) {
         return Err(SpendInputError::Count { given: n });
     }
-    let mut dsts: Vec<Checked> = Vec::with_capacity(n);
+    let mut dsts: Vec<SpendTo> = Vec::with_capacity(n);
     for (i, d) in req.destinations.iter().enumerate() {
         let index = i + 1;
         let to = parse_destination(&d.to, index)?;
@@ -258,15 +239,15 @@ pub(crate) fn check(req: &SpendRequest) -> Result<CheckedSpend, SpendInputError>
                 second: index,
             });
         }
-        dsts.push(Checked {
+        dsts.push(SpendTo {
             to,
             reference,
             amount,
         });
     }
     let count = u64::try_from(n).unwrap_or(u64::MAX);
-    Ok(CheckedSpend {
-        from: req.from.tag(),
+    Ok(Spend {
+        tag: req.from.tag(),
         dsts,
         fee_total: req.fee.unwrap_or(MFEE.saturating_mul(count)),
         blk_to_live: req.blk_to_live,
@@ -359,7 +340,7 @@ mod tests {
         .unwrap();
         assert_eq!(c.fee_total, 1000);
         assert_eq!(c.dsts.len(), 2);
-        assert_eq!(c.from, [7u8; 20]);
+        assert_eq!(c.tag, [7u8; 20]);
     }
 
     #[test]

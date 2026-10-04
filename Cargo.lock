@@ -1775,7 +1775,7 @@ dependencies = [
 [[package]]
 name = "mochimo-crypto"
 version = "2.0.0"
-source = "git+https://github.com/patricksmithlaravel/mcm-rust-cli-windows?rev=121daf3773fbc7869ee56c2c795e21115044dfe7#121daf3773fbc7869ee56c2c795e21115044dfe7"
+source = "git+https://github.com/patricksmithlaravel/mcm-rust-cli-windows?rev=8c2f39a2cdc2710ac7363b1d64026b6875a16537#8c2f39a2cdc2710ac7363b1d64026b6875a16537"
 dependencies = [
  "argon2",
  "chacha20poly1305",

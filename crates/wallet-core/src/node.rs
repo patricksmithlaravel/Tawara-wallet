@@ -18,8 +18,8 @@
 //! [`HttpsNode`].
 
 use core::fmt;
-use core::net::IpAddr;
 
+use mochimo_crypto::cli::args::plaintext_off_loopback;
 use mochimo_crypto::mesh::Transport;
 use mochimo_crypto::mesh::http::UreqTransport;
 
@@ -90,6 +90,11 @@ impl std::error::Error for NodeRefused {}
 
 /// Check a node URL by the plan's rule and the library's transport, and
 /// build its transport.
+///
+/// Plaintext is judged by the command line's own test
+/// (`cli::args::plaintext_off_loopback`): `127.0.0.0/8`, `::1` and the name
+/// `localhost` are loopback, and any other name is not, whatever it resolves
+/// to. A scheme that is neither is left to the transport, which refuses it.
 pub(crate) fn check_node_url<C: Connect>(
     connect: &C,
     url: &str,
@@ -104,33 +109,6 @@ pub(crate) fn check_node_url<C: Connect>(
         url: url.to_owned(),
         why: e.to_string(),
     })
-}
-
-/// Whether `url` is plaintext HTTP to something other than the loopback
-/// interface. The command line's test (`cli::args::plaintext_off_loopback`,
-/// private there), applied the same way: `127.0.0.0/8`, `::1` and the name
-/// `localhost` are loopback; any other name is not, whatever it resolves
-/// to. A scheme that is neither is left to the transport, which refuses it.
-fn plaintext_off_loopback(url: &str) -> bool {
-    let url = url.strip_suffix('/').unwrap_or(url);
-    let Some(authority) = url.strip_prefix("http://") else {
-        return false;
-    };
-    let host = if let Some(rest) = authority.strip_prefix('[') {
-        match rest.split_once(']') {
-            Some((h, _)) => h,
-            None => return true,
-        }
-    } else {
-        authority.split(':').next().unwrap_or("")
-    };
-    if host.eq_ignore_ascii_case("localhost") {
-        return false;
-    }
-    match host.parse::<IpAddr>() {
-        Ok(ip) => !ip.is_loopback(),
-        Err(_) => true,
-    }
 }
 
 #[cfg(test)]

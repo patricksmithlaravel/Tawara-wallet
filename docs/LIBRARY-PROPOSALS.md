@@ -8,10 +8,31 @@ picked up here by moving the pinned `rev` (D1, D7).
 
 None of them changes what the command-line wallet does. Each is an
 addition beside what exists, so the command line keeps calling what it
-calls today. Line numbers are those of Rep-1 at `121daf3`, the pinned
-revision.
+calls today. Line numbers are those of Rep-1 at `121daf3`, the revision
+pinned when this was written.
 
 Order of work: 1, 2, 4, then 3, which can be taken one function at a time.
+
+## Status: all four landed and are in use
+
+Rep-0 made the four changes (its pull requests #7, #9, #10 and #11, merged
+at `cef8ed2`). Rep-1 merged them down (`8c2f39a`), and the pin moved there
+(docs/DECISIONS.md D7). wallet-core uses them and has dropped what each
+replaced (D26):
+
+| item | what the library now has | what wallet-core dropped |
+|---|---|---|
+| 1 | `_with` and `_with_progress` forms of `Wallet::open`, `restore_account`, `advance_acknowledged` and `sweep`; a cancel is `Unfinished::Cancelled`, and a cancelled call writes nothing | the `MAX_SCAN_TO` bound of 100,000 (the command line's `u32::MAX - 1` stands instead), and the note in D19 that these walks run to their end; the worker now sends `Event::Progress` |
+| 2 | `Wallet::open_or_return` and its cancellable forms, handing the store and the client back on a refusal and on a cancel | the checks before `Wallet::open`, the reopen with the password, and the `WalletRefused` closure |
+| 4 | `Outcome::Planned` and `Outcome::planned(&plan)`, rendered with the emptying warning when the change is zero | `PlanView::empties_account` as the only signal; `PlanView::text` carries the library's page |
+| 3 | `key_access`, `spend_all_amount`, `plan_spend`, `reconcile::scope_to`, `status_outcome`, `resign_outcome`, `create::nothing_was_created` and `args::plaintext_off_loopback`, all public | each copy |
+
+What is still repeated, and small: a spend's destinations with "everything"
+resolved (the library's `spend_destinations`), re-signing's resolution of
+"everything" (`resign_destinations`), and the parser's checks of a spend's
+arguments, all private in the library. A status read can be cancelled but
+reports no progress, because the library's walk for it takes no counter.
+Either is a small addition if the screens need it.
 
 ## 1. Cancellation and progress for the long operations
 
