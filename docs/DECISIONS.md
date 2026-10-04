@@ -346,3 +346,55 @@ sees nothing cannot pass.
 **proposed.** This workspace's crates use Rust edition 2024 and resolver
 3, as iced 0.14.0 does. The library keeps its own edition (2021); editions
 are per crate and do not interact.
+
+### D17. Phase 1: the spike patches iced_winit, in `spikes/` only
+
+**proposed.** docs/PLAN.md D2 allows a git revision of iced "only if mobile
+requires it, and record why". Mobile requires a change to iced's shell,
+`iced_winit` 0.14.1:
+
+- it does not compile for Android or iOS: it imports winit's
+  `modifier_supplement`, which winit provides only on desktop platforms;
+- on Android it has no way to receive the `AndroidApp` that winit needs,
+  since it builds the event loop itself;
+- on Android it opens its window before the system has given the app one,
+  and creating the surface then panics; when the app goes to the background
+  it keeps its surfaces on the native window being destroyed, which winit
+  forbids, and on return it does not rebuild them;
+- on iOS it sizes the window 1024×768 points.
+
+For phase 1 the change is a patch, `spikes/patches/iced_winit-0.14.1-mobile.patch`
+(+166/−19; most of it behind `cfg(target_os = ...)`, and the rest acts only
+on the `Suspended` and `Resumed` events, which iced receives only on
+Android), applied to the crates.io tarball by
+`spikes/tools/vendor-iced-winit.sh` after checking it against the checksum
+in `Cargo.lock`, and used through `[patch.crates-io]` in
+`spikes/Cargo.toml`. Patching the tarball rather than taking iced's git
+repository keeps one copy of every other iced crate in the build.
+
+The patch is confined to `spikes/`, which has its own workspace and is
+outside the policy checks of D15 and outside `cargo deny`; the
+application's manifests stay free of `[patch]`, as D15 requires. How
+production carries the change (a fork of iced at a git revision, which
+needs `allow-git` in deny.toml; an upstream change; or a shell crate of
+Tawara's own) is for the owner to choose after the phase 1 go/no-go,
+with the findings of `docs/spikes/P1-REPORT.md`.
+
+### D18. Phase 1 gate: iced goes ahead on mobile
+
+**owner, 2026-10-04.** After docs/spikes/P1-REPORT.md, the owner decided
+"Go for iced mobile": iced stays the toolkit for Android and iOS as well as
+the desktop (plan D2 and D3), and the mobile shells are not replaced.
+
+The report recommends three conditions before phase 4, which stand as open
+items for then:
+
+1. text entry checked on one real Android phone and one iPhone (composition,
+   accented and non-Latin text, the password field's keyboard, paste from
+   another app, the arm64 Android build), with the device steps in
+   `spikes/README.md`;
+2. a production route for the `iced_winit` change of D17 (a fork at a pinned
+   git revision, the change sent upstream, or a shell crate of Tawara's
+   own), chosen by the owner;
+3. insets and showing the keyboard again planned as phase 4 glue, and the
+   winit limits (activity recreation, UIScene) tracked upstream.

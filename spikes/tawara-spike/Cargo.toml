@@ -1,0 +1,59 @@
+[package]
+name = "tawara-spike"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license-file.workspace = true
+description = "Phase 1 feasibility spike: iced on desktop, Android and iOS, and the wallet library on device."
+
+[lib]
+name = "tawara_spike"
+# Android builds the shared library with `cargo rustc --crate-type cdylib`.
+crate-type = ["lib"]
+
+[[bin]]
+# Desktop, and the iOS app's executable.
+name = "tawara-spike"
+path = "src/main.rs"
+
+[features]
+default = ["tls"]
+# The node check over HTTPS. Off only to type-check for a device target on a
+# machine without that target's C compiler, which ring's build needs.
+tls = ["mochimo-crypto/mesh-https"]
+
+[dependencies]
+iced = { version = "=0.14.0", default-features = false, features = [
+    # The application's list (root Cargo.toml); x11 and wayland are inert on
+    # Android and iOS.
+    "wgpu",
+    "tiny-skia",
+    "crisp",
+    "web-colors",
+    "thread-pool",
+    "linux-theme-detection",
+    "x11",
+    "wayland",
+    # Neither Android nor iOS has system fonts that fontdb can find.
+    "fira-sans",
+] }
+mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-windows", rev = "121daf3773fbc7869ee56c2c795e21115044dfe7", default-features = false, features = ["native", "mesh-http"] }
+zeroize = "1"
+log = "0.4"
+libc = "0.2"
+png = "0.17"
+
+[target.'cfg(target_os = "android")'.dependencies]
+# The patched shell's set_android_app, and winit's NativeActivity backend
+# (exactly one android-activity backend must be on; iced_winit turns on none).
+iced_winit = { version = "=0.14.1", default-features = false }
+winit = { version = "=0.30.13", default-features = false, features = ["android-native-activity"] }
+jni = "0.22"
+ndk-context = "0.1"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+# The versions winit 0.30.13 already links.
+objc2 = "0.5.2"
+block2 = "0.5.1"
+objc2-foundation = { version = "0.2.2", features = ["NSString", "NSPathUtilities", "NSThread", "NSError", "block2"] }
+objc2-ui-kit = { version = "0.2.2", features = ["UIApplication", "UIResponder", "UIView", "UIWindow", "UIGeometry", "UIPasteboard", "UIScene", "UIWindowScene", "UIWindowSceneGeometryPreferences", "UIWindowSceneGeometryPreferencesIOS", "UIOrientation", "block2"] }

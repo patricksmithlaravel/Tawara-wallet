@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Phase 1 spike only. NativeActivity: no classes.dex, so hasCode is false
+     (an APK that claims code and has none fails to install). The native
+     libraries are stored uncompressed and 16 KB-aligned, so the system maps
+     them from the APK (extractNativeLibs false). Back is delivered as a key
+     event (enableOnBackInvokedCallback false); targetSdk 36 is measured with
+     a second APK built from this manifest. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.patricksmithlaravel.tawara.spike">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application
+        android:label="Tawara spike"
+        android:hasCode="false"
+        android:extractNativeLibs="false"
+        android:allowBackup="false"
+        android:enableOnBackInvokedCallback="false"
+        android:theme="@android:style/Theme.Material.NoActionBar">
+        <activity
+            android:name="android.app.NativeActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize|stateHidden"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboard|keyboardHidden|navigation|uiMode|fontScale|fontWeightAdjustment|locale|layoutDirection|touchscreen|colorMode">
+            <meta-data android:name="android.app.lib_name" android:value="tawara_spike" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
