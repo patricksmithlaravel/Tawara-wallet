@@ -4,7 +4,7 @@
 //! the shape wallet-core's worker will have.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use iced::futures::channel::{mpsc, oneshot};
@@ -20,12 +20,25 @@ pub enum Event {
 pub struct Running {
     cancel: Arc<AtomicBool>,
     handle: Handle,
+    /// The last step the thread finished, and whether it has returned: the
+    /// worker's own account, which the interface's lags behind when its
+    /// queue is long.
+    step: Arc<AtomicU32>,
+    stopped: Arc<AtomicBool>,
 }
 
 impl Running {
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
         self.handle.abort();
+    }
+
+    pub fn worker_step(&self) -> u32 {
+        self.step.load(Ordering::Relaxed)
+    }
+
+    pub fn has_stopped(&self) -> bool {
+        self.stopped.load(Ordering::Relaxed)
     }
 }
 
@@ -38,9 +51,20 @@ pub fn start<M: Send + 'static>(
     let cancel = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::unbounded();
     let flag = cancel.clone();
+    let step_seen = Arc::new(AtomicU32::new(0));
+    let stopped = Arc::new(AtomicBool::new(false));
+    let (step_out, stopped_out) = (step_seen.clone(), stopped.clone());
     let spawned = std::thread::Builder::new()
         .name("spike-worker".into())
         .spawn(move || {
+            // Set however the loop below ends.
+            struct Stopped(Arc<AtomicBool>);
+            impl Drop for Stopped {
+                fn drop(&mut self) {
+                    self.0.store(true, Ordering::Relaxed);
+                }
+            }
+            let _stopped = Stopped(stopped_out);
             let t0 = Instant::now();
             for step in 1..=steps {
                 if flag.load(Ordering::Relaxed) {
@@ -49,6 +73,7 @@ pub fn start<M: Send + 'static>(
                     return;
                 }
                 burn(Duration::from_millis(step_ms));
+                step_out.store(step, Ordering::Relaxed);
                 if tx
                     .unbounded_send(Event::Progress { step, of: steps })
                     .is_err()
@@ -66,7 +91,15 @@ pub fn start<M: Send + 'static>(
         crate::report::check("task.spawn", false, e);
     }
     let (task, handle) = Task::run(rx, to_message).abortable();
-    (task, Running { cancel, handle })
+    (
+        task,
+        Running {
+            cancel,
+            handle,
+            step: step_seen,
+            stopped,
+        },
+    )
 }
 
 /// Busy work rather than sleep, so the UI thread competes for CPU as it

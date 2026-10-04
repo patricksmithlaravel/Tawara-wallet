@@ -60,8 +60,11 @@ pub struct Spike {
     finished: bool,
     cancelled_at: Option<Instant>,
     progress_after_cancel: u32,
-    /// The step the task had reached when it was cancelled.
+    /// The step the task had reached when it was cancelled, as the interface
+    /// had seen it and as the worker had done it, and the cancelled task.
     progress_at_cancel: u32,
+    worker_step_at_cancel: u32,
+    cancelled: Option<Running>,
     frames: u64,
     last_frame: Option<Instant>,
     max_gap_while_running: Duration,
@@ -121,6 +124,8 @@ impl Spike {
             cancelled_at: None,
             progress_after_cancel: 0,
             progress_at_cancel: 0,
+            worker_step_at_cancel: 0,
+            cancelled: None,
             frames: 0,
             last_frame: None,
             max_gap_while_running: Duration::ZERO,
@@ -191,6 +196,8 @@ impl Spike {
                     running.cancel();
                     self.cancelled_at = Some(Instant::now());
                     self.progress_at_cancel = self.progress.0;
+                    self.worker_step_at_cancel = running.worker_step();
+                    self.cancelled = Some(running);
                     self.status =
                         format!("cancelled at {} of {}", self.progress.0, self.progress.1);
                 }
@@ -401,20 +408,26 @@ impl Spike {
                 Task::batch([Task::done(Message::Cancel), next(1500, 3)])
             }
             3 => {
-                // Updates already queued when the abort lands may still arrive
-                // (two did on the emulator); a task that kept running would
-                // have advanced about 15 steps in the 1.5 s since.
+                // Judged by the worker's own account: updates it had already
+                // queued may still reach the interface after the cancel (five
+                // did on the emulator, whose interface ran about 0.5 s behind),
+                // but the thread itself must have stopped within one step.
+                let (stopped, worker_now) = self
+                    .cancelled
+                    .as_ref()
+                    .map_or((false, u32::MAX), |c| (c.has_stopped(), c.worker_step()));
                 report::check(
                     "task.cancel",
                     self.running.is_none()
-                        && self.progress.0 <= self.progress_at_cancel + 3
-                        && self.progress.0 < 40,
+                        && stopped
+                        && worker_now <= self.worker_step_at_cancel + 1
+                        && worker_now < 40,
                     format!(
-                        "cancelled at step {}, now {:?}, {} updates after cancel, status {}",
+                        "worker at step {} when cancelled, stopped={stopped} at step {worker_now}; the interface had seen step {} then and {:?} now ({} updates after cancel)",
+                        self.worker_step_at_cancel,
                         self.progress_at_cancel,
                         self.progress,
-                        self.progress_after_cancel,
-                        self.status
+                        self.progress_after_cancel
                     ),
                 );
                 Task::batch([self.start(20, 100), next(4000, 4)])
