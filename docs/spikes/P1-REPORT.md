@@ -70,7 +70,14 @@ checks (timings too tight for a busy host, a script's quoting), each fixed
 and recorded in its commit. Runs 11 and 12 (`9bd98e4`) repeat every job
 after review fixes: the patch now drops each window's surface when Android
 suspends the app, and the macOS screenshots reach the log. They give the
-same results, with the same three expected failures.
+same results, with the same three expected failures. Runs 16 to 23
+(`0d23959` to `750e73a`) follow later review fixes to the checks: A17 and
+A18 need the relaunched app's first frame to pass, I6 needs both launches
+to succeed and a frame after the return, and I5 tries `simctl pbpaste`
+again after an error from the tool itself. Run 16 failed I5 on such an
+error, after the app had written and read back the pasteboard; run 20
+passed it on a second attempt. Runs 17 to 23 are green, again with the
+three expected Android failures.
 
 **Desktop** (Linux under Xvfb, macOS 26, and the windows-latest runner; runs
 1 to 9). The
@@ -115,7 +122,7 @@ on Metal by default; runs 8 and 9 green):
 | Typing and Return | Text sent through winit's own `insertText:` arrives; Return submits | I3 |
 | Paste | `UIPasteboard` write and read; the value read from outside with `simctl pbpaste` | I5 |
 | Rotation | The window resizes to 874×402 on request (run 1); the screenshot 2 s later still showed portrait, so the visual rotation is not confirmed | I9 |
-| Suspend and resume | Settings in front, then back: same process, drawing again after a 1.6 s gap, no Metal errors in the system log | I6 |
+| Suspend and resume | Settings in front, then back: both launches succeed, the same process returns, and it draws within 10 s (its `frames` heartbeat, runs 16, 20, 22 and 23). The app kept drawing for a few seconds behind Settings (4 to 8 heartbeats); the first frame after the return followed a gap of 1.4 to 21 s. No Metal errors in the system log. The app itself gets no notice of the switch (below) | I6 |
 | Crashes | None reported | I10 |
 
 **The library on a device.** Every check passes on the Android emulator and
@@ -144,6 +151,7 @@ is refused (mode 0771), which is why Tawara's Android store will live in
 | iced's clipboard does nothing | window_clipboard 0.5.1 (stub backends on Android and iOS) | Platform calls instead (done in the spike) | A8, I1 |
 | No system fonts | fontdb finds none on Android or iOS | Fonts are bundled (the spike: Fira Sans; Tawara: its own) | rendering |
 | The arm64 library under ARM translation | android-activity 0.6.1 start-up with `jni` 0.22.4, on the x86_64 image's translator | Crash before any Tawara code; the x86_64 build of the same code passes everything. A real arm64 device decides | A22 (expected) |
+| No notice of going to the background | iced (`iced_winit` 0.14.1 drops winit's `Occluded`, which iOS sends on entering the background; `Suspended` and `Resumed` reach iced only on Android, through the patch, and the app on neither) | The app cannot pause work or hide what is on screen before the system takes its app-switcher snapshot, which a wallet needs; production needs a platform hook (UIApplication's notifications) or a change in iced | I6 (no window event during the switch) |
 | No UIScene support | winit 0.30.13 | Apple's technical note TN3187 says apps built with the SDK after iOS 26 must adopt the scene life cycle; unless winit adds it, that SDK cannot be used (from the note; not testable today) | none |
 
 Emulator and simulator timings vary with the host: on a busy simulator host
