@@ -268,9 +268,39 @@ that a machine can check, with no network:
   test-only one, an `include!` in test-only code). The walk starts at the
   root of every non-test target (library, binaries, build script, examples)
   and follows `mod`, every `#[path]` and every `cfg_attr` path, and literal
-  `include!`s, as rustc may in some configuration; a non-literal `include!`
-  in non-test code, and a conditional path on an inline module, are refused
-  as unreadable rather than passed. In every scanned file, code under
+  `include!`s, as rustc may in some configuration. Declarations in an
+  `include!`d file resolve beside that file, as rustc 1.98.0 resolves them
+  (it makes the included file's directory the module directory), and a file
+  reached both as a module and by `include!` is followed in both contexts,
+  since rustc resolves its declarations in both. Every
+  file a non-test declaration can select must exist: a missing one is
+  refused, since the check cannot tell a configuration rustc never builds
+  from a path it resolved differently from rustc. So is a module file
+  reached through a symbolic link (the file, or a directory on its path
+  below the crate): rustc resolves the modules such a file declares from
+  the link's directory, while the walk compares files by their canonical
+  paths. What it does not follow
+  in non-test code it refuses as unreadable rather than passing: a
+  non-literal `include!`, a conditional path on an inline module, an
+  out-of-line `mod` inside a block (rustc loads one there by `#[path]`), a
+  macro whose tokens declare a module or use `include!`, `include` imported
+  under another name (`use std::include as load;`), and a macro given a
+  string that may name a `.rs` file (a macro from a dependency could expand
+  to `include!`). A string is judged by its value as rustc reads it, not its
+  spelling: escapes are decoded (`"shared.r\x73"` is `shared.rs`), a
+  `concat!` or `stringify!` is evaluated, a `concat!` with a part the check
+  cannot evaluate (an `env!`) counts as naming one, and the suffix is
+  compared without case (macOS and Windows open `shared.rs` for
+  `shared.RS`). A bare `env!` is not refused: its value is set outside the
+  source, and refusing it would refuse every version string. That keeps the
+  walk's production set complete, which is what makes the exemption sound: a
+  file a non-test build compiles is never exempt, even when a test also
+  reaches it. The crate's own code cannot reach `include!` by a route the
+  walk does not see; a macro defined in a dependency can build any path it
+  likes, so there the check refuses only what a hand-off looks like, and the
+  dependencies themselves are reviewed through `Cargo.lock` and deny.toml.
+  In test code, a `mod` inside a block is followed, so a fixture it loads is
+  exempt. In every scanned file, code under
   `#[cfg(test)]`, `#[cfg(all(test, ..))]`, `#[test]` or a file's own
   `#![cfg(test)]`, on items, statements, match arms, fields and variants,
   is removed before looking, and identifiers are compared raw or not, macro
@@ -290,12 +320,23 @@ dependency in `app`, a `paths` override in `.cargo/config.toml`,
 cheap KDF named in `app` (also as a raw identifier) and in a production
 module of `wallet-core` two files down, `mochimo_crypto` named in `app`,
 `pub use mochimo_crypto` at the top of `wallet-core`, inside a nested
-module and in an `include!`d file, the cheap KDF in an `include!`d file and
-in a file selected by `#[cfg_attr(unix, path = ..)]` beside a clean
-fallback, an unreferenced file naming it, and iced in `wallet-core`'s
-dependencies. Each passes on the tree as committed; an out-of-line
-`#[cfg(test)] mod tests;` naming the cheap KDF passes, as it should, and so
-does a conditional module path with no fallback file. Four more tests hold
+module and in an `include!`d file, the cheap KDF in an `include!`d file, in
+a file selected by `#[cfg_attr(unix, path = ..)]` beside a clean fallback,
+in an unreferenced file, in a file outside the crate or under its `tests/`
+loaded by a `mod` inside a function body (by `#[path]` and by `cfg_attr`),
+behind a `macro_rules!` that declares a `mod` or uses `include!`, in a file
+a test module also reaches, in a file a test fixture loads that production
+code also loads through `include!` imported as `load` and given
+`"shared.r\x73"`, and in the crate's `tests/shared.rs` loaded by
+`#[path = "../../tests/shared.rs"]` in `src/nested/inc.rs`, itself
+`include!`d from `src/lib.rs`, under `tests/` loaded by a `#[path]` in an
+inline module of a file that is both a module and `include!`d, and in
+`src/alias/shared.rs`, loaded by `src/alias/common.rs`, a link to
+`src/actual/common.rs`, beside a test fixture that also loads it; and iced
+in `wallet-core`'s dependencies.
+Each passes on the tree as committed; an out-of-line `#[cfg(test)] mod
+tests;` naming the cheap KDF passes, as it should, and so does a fixture
+loaded by a `mod` inside a `#[test]` function. Four more tests hold
 the detectors to fixed cases, the walk to a crate laid out on disk where the
 answer is known, and its refusals to what it cannot read, so a detector that
 sees nothing cannot pass.

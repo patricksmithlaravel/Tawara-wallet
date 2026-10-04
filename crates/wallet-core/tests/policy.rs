@@ -358,10 +358,14 @@ fn names_cheap_kdf_outside_tests(source: &str) -> Result<bool, syn::Error> {
 // ---------------------------------------------------------------------------
 
 /// A module context: where the `mod name;` declarations of a source file
-/// resolve. A crate root, a `mod.rs` or a `#[path]` file resolves them beside
-/// itself; any other file in a directory named after it. An `include!`d file
-/// shares the context of the file that includes it, since its items expand
-/// into that file's module.
+/// resolve. A crate root, a `mod.rs`, a `#[path]` file or an `include!`d file
+/// resolves them beside itself; any other file in a directory named after it.
+/// For `include!`, rustc makes the included file's directory the module
+/// directory, whatever module the `include!` sits in: measured on rustc
+/// 1.98.0, `src/nested/inc.rs` included from `src/lib.rs` loads
+/// `#[path = "x.rs"]` as `src/nested/x.rs` and `mod b;` as `src/nested/b.rs`,
+/// and a file included from `src/foo.rs`, or from inside `mod m { .. }`,
+/// loads `mod c;` as `src/c.rs`.
 #[derive(Clone)]
 struct ModFile {
     path: PathBuf,
@@ -524,7 +528,7 @@ impl<'ast> syn::visit::Visit<'ast> for Includes {
             .path
             .segments
             .last()
-            .is_some_and(|s| s.ident == "include")
+            .is_some_and(|s| s.ident.unraw() == "include")
         {
             self.0.push(
                 syn::parse2::<syn::LitStr>(mac.tokens.clone())
@@ -566,6 +570,247 @@ fn includes_in(parsed: &Parsed) -> Vec<Option<String>> {
         Parsed::Expr(e) => found.visit_expr(e),
     }
     found.0
+}
+
+/// Routes into source that the walk does not follow, in code a non-test
+/// build compiles. rustc accepts an out-of-line `mod` inside a block (a
+/// function body, a `const` initialiser) when it carries a `#[path]`, and the
+/// walk reads `mod` only at item level; a macro's tokens are raw to `syn`, so a
+/// `mod` or `include!` it expands to is not seen; `use std::include as load;`
+/// gives `include!` a name the walk does not know; and a macro from a
+/// dependency can expand to `include!` of a path it is given. Each of these is
+/// refused rather than modelled, which keeps the walk's set of production
+/// files complete, and the exemption of test-only files sound.
+///
+/// The crate's own code cannot reach `include!` by another route. A macro
+/// defined in a dependency can build any path it likes, so for those the walk
+/// refuses only what a hand-off looks like: a string, as rustc reads it, that
+/// may name a `.rs` file. Dependencies themselves are reviewed through
+/// `Cargo.lock` and `deny.toml`.
+#[derive(Default)]
+struct Unfollowed {
+    block_depth: usize,
+    found: Vec<String>,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for Unfollowed {
+    fn visit_block(&mut self, block: &'ast syn::Block) {
+        self.block_depth += 1;
+        syn::visit::visit_block(self, block);
+        self.block_depth -= 1;
+    }
+
+    fn visit_item_mod(&mut self, m: &'ast syn::ItemMod) {
+        if self.block_depth > 0 && m.content.is_none() {
+            self.found.push(format!(
+                "an out-of-line `mod {};` inside a block",
+                m.ident.unraw()
+            ));
+        }
+        syn::visit::visit_item_mod(self, m);
+    }
+
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        let is_include = mac
+            .path
+            .segments
+            .last()
+            .is_some_and(|s| s.ident.unraw() == "include");
+        if !is_include {
+            let name = mac.path.to_token_stream().to_string().replace(' ', "");
+            let mut words = Vec::new();
+            idents(mac.tokens.clone(), &mut words);
+            if words.iter().any(|w| w == "mod" || w == "include") {
+                self.found.push(format!(
+                    "a `{name}!` whose tokens declare a module or use `include!`"
+                ));
+            } else if names_rust_file(mac.tokens.clone()) {
+                self.found.push(format!(
+                    "a `{name}!` given a string that may name a `.rs` file"
+                ));
+            }
+        }
+        syn::visit::visit_macro(self, mac);
+    }
+
+    fn visit_use_rename(&mut self, rename: &'ast syn::UseRename) {
+        if rename.ident.unraw() == "include" {
+            self.found
+                .push(format!("`include` imported as `{}`", rename.rename.unraw()));
+        }
+        syn::visit::visit_use_rename(self, rename);
+    }
+}
+
+/// Whether a token stream holds a string that may name a `.rs` file, judged
+/// by its value as rustc reads it, not its spelling: a literal whose value
+/// ends in `.rs` once escapes are decoded (`"shared.r\x73"` is `shared.rs`),
+/// a `concat!` or `stringify!` whose value does, or a `concat!` with a part
+/// this check cannot evaluate (an `env!`, a macro variable), since `concat!`
+/// is how a path is put together from pieces. The suffix is compared without
+/// case: on macOS and Windows `shared.RS` opens `shared.rs`. A bare `env!` is
+/// not refused: its value is set outside the source, like any path a
+/// dependency's macro builds for itself, and refusing it would refuse every
+/// version string.
+fn names_rust_file(tokens: proc_macro2::TokenStream) -> bool {
+    let is_rust_file = |v: &str| v.to_ascii_lowercase().ends_with(".rs");
+    let tokens: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
+    tokens.iter().enumerate().any(|(i, tt)| match tt {
+        proc_macro2::TokenTree::Literal(lit) => literal_text(lit).is_some_and(|t| is_rust_file(&t)),
+        proc_macro2::TokenTree::Group(g) => names_rust_file(g.stream()),
+        proc_macro2::TokenTree::Ident(_) => {
+            string_macro(&tokens[i..]).is_some_and(|value| value.is_none_or(|v| is_rust_file(&v)))
+        }
+        proc_macro2::TokenTree::Punct(_) => false,
+    })
+}
+
+/// A literal's value as `concat!` would write it, with escapes decoded.
+fn literal_text(lit: &proc_macro2::Literal) -> Option<String> {
+    match syn::Lit::new(lit.clone()) {
+        syn::Lit::Str(s) => Some(s.value()),
+        syn::Lit::ByteStr(s) => Some(String::from_utf8_lossy(&s.value()).into_owned()),
+        syn::Lit::CStr(s) => Some(s.value().to_string_lossy().into_owned()),
+        syn::Lit::Char(c) => Some(c.value().to_string()),
+        syn::Lit::Int(n) => Some(n.base10_digits().to_string()),
+        syn::Lit::Float(n) => Some(n.base10_digits().to_string()),
+        _ => None,
+    }
+}
+
+/// For tokens that start with `concat!(..)` or `stringify!(..)`: `Some` of
+/// the string it expands to, where this check can evaluate it.
+fn string_macro(tokens: &[proc_macro2::TokenTree]) -> Option<Option<String>> {
+    use proc_macro2::TokenTree::{Group, Ident, Punct};
+    let [Ident(name), Punct(bang), Group(args), ..] = tokens else {
+        return None;
+    };
+    if bang.as_char() != '!' {
+        return None;
+    }
+    match name.unraw().to_string().as_str() {
+        // rustc's stringify! spaces tokens its own way; `.rs` at the end
+        // survives any spacing once whitespace is dropped.
+        "stringify" => Some(Some(args.stream().to_string().split_whitespace().collect())),
+        "concat" => Some(concat_value(args.stream())),
+        _ => None,
+    }
+}
+
+/// `concat!`'s value: each comma-separated part is a literal, a negative
+/// number, `true` or `false`, or a nested `concat!` or `stringify!`. Anything
+/// else is `None`.
+fn concat_value(args: proc_macro2::TokenStream) -> Option<String> {
+    use proc_macro2::TokenTree::{Ident, Literal, Punct};
+    let tokens: Vec<proc_macro2::TokenTree> = args.into_iter().collect();
+    let mut value = String::new();
+    for part in tokens.split(|tt| matches!(tt, Punct(p) if p.as_char() == ',')) {
+        match part {
+            [] => {}
+            [Literal(lit)] => value.push_str(&literal_text(lit)?),
+            [Punct(minus), Literal(lit)] if minus.as_char() == '-' => {
+                value.push('-');
+                value.push_str(&literal_text(lit)?);
+            }
+            [Ident(b)] if *b == "true" || *b == "false" => value.push_str(&b.to_string()),
+            [_, _, _] => value.push_str(&string_macro(part)??),
+            _ => return None,
+        }
+    }
+    Some(value)
+}
+
+fn unfollowed_in(parsed: &Parsed) -> Vec<String> {
+    use syn::visit::Visit;
+    let mut found = Unfollowed::default();
+    match parsed {
+        Parsed::File(f) => found.visit_file(f),
+        Parsed::Expr(e) => found.visit_expr(e),
+    }
+    found.found
+}
+
+/// Out-of-line `mod` declarations inside blocks, with the inline modules
+/// (outside any block) they sit in and their attributes, where the walk can
+/// resolve them: directly in a block, not under an inline module inside one
+/// (rustc resolves those by other rules). Once `Unfollowed` has refused them in
+/// non-test code, only test code holds them, and a test fixture loaded this way
+/// is then exempt.
+#[derive(Default)]
+struct BlockMods {
+    block_depth: usize,
+    inline_in_block: usize,
+    inline: Vec<String>,
+    found: Vec<(Vec<String>, Vec<syn::Attribute>)>,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for BlockMods {
+    fn visit_block(&mut self, block: &'ast syn::Block) {
+        self.block_depth += 1;
+        syn::visit::visit_block(self, block);
+        self.block_depth -= 1;
+    }
+
+    fn visit_item_mod(&mut self, m: &'ast syn::ItemMod) {
+        match (&m.content, self.block_depth > 0) {
+            (None, true) if self.inline_in_block == 0 => {
+                self.found.push((self.inline.clone(), m.attrs.clone()));
+            }
+            (None, _) => {}
+            (Some(_), true) => {
+                self.inline_in_block += 1;
+                syn::visit::visit_item_mod(self, m);
+                self.inline_in_block -= 1;
+            }
+            (Some(_), false) => {
+                let segment = path_choices(&m.attrs)
+                    .ok()
+                    .and_then(|c| c.into_iter().next())
+                    .map(|c| c.path)
+                    .unwrap_or_else(|| m.ident.unraw().to_string());
+                self.inline.push(segment);
+                syn::visit::visit_item_mod(self, m);
+                self.inline.pop();
+            }
+        }
+    }
+}
+
+fn block_mods_in(parsed: &Parsed) -> Vec<(Vec<String>, Vec<syn::Attribute>)> {
+    use syn::visit::Visit;
+    let mut found = BlockMods::default();
+    match parsed {
+        Parsed::File(f) => found.visit_file(f),
+        Parsed::Expr(e) => found.visit_expr(e),
+    }
+    found.found
+}
+
+/// The files a `#[path]` on a `mod` inside a block can load: relative to the
+/// enclosing module's directory, and to the declaring file's. Only test code
+/// reaches this, and every production route is followed or refused, so taking
+/// both cannot exempt a file a non-test build compiles.
+fn block_mod_targets(
+    context: &ModFile,
+    here: &Path,
+    inline: &[String],
+    attrs: &[syn::Attribute],
+) -> Result<Vec<Source>, String> {
+    let (module_dir, _) = module_dirs(context, inline);
+    let mut out = Vec::new();
+    for choice in path_choices(attrs)? {
+        for base in [module_dir.as_path(), here] {
+            let file = ModFile {
+                path: base.join(&choice.path),
+                mod_rs: true,
+            };
+            out.push(Source {
+                path: file.path.clone(),
+                context: file,
+            });
+        }
+    }
+    Ok(out)
 }
 
 fn strip(parsed: &Parsed) -> Parsed {
@@ -715,7 +960,52 @@ struct SourceWalk {
     scanned: BTreeSet<PathBuf>,
 }
 
+/// The file an `include!` in a file in `here` loads: its path is relative to
+/// the including file's directory, and it resolves its own declarations beside
+/// itself (see `ModFile`).
+fn included(here: &Path, rel: &str) -> Source {
+    let path = here.join(rel);
+    Source {
+        context: ModFile {
+            path: path.clone(),
+            mod_rs: true,
+        },
+        path,
+    }
+}
+
+/// A file and the context it is read in. One file can be reached in two
+/// contexts, as a module (`mod x;`) and by `include!("x.rs")`, and rustc then
+/// resolves its declarations in both: measured on rustc 1.98.0, a `#[path]`
+/// inside an inline module of such a `src/x.rs` loads one file below
+/// `src/x/` and another below `src/`. So the walk visits each pair once, not
+/// each file once. The paths are canonical, which is sound only because
+/// production code reached through a symbolic link is refused (see
+/// `through_link`): without links, two spellings of one file sit in one
+/// directory, and resolve alike.
+fn visit_key(source: &Source) -> (PathBuf, PathBuf, bool) {
+    (
+        normalise(&source.path),
+        normalise(&source.context.path),
+        source.context.mod_rs,
+    )
+}
+
+/// Whether `path` is reached through a symbolic link: the file itself, or a
+/// directory on its path below `crate_dir` (what lies above the crate
+/// directory is the checkout's business, not the crate's). rustc resolves the
+/// declarations of a file reached through a link from the link's directory:
+/// measured on rustc 1.98.0, `src/alias/common.rs`, a link to
+/// `src/actual/common.rs`, loads `#[path = "shared.rs"]` as
+/// `src/alias/shared.rs`, while the target loads `src/actual/shared.rs`.
+fn through_link(path: &Path, crate_dir: &Path) -> bool {
+    path.ancestors()
+        .take_while(|p| !crate_dir.starts_with(p))
+        .any(|p| fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink()))
+}
+
 fn walk_sources(crate_dir: &Path) -> Result<SourceWalk, String> {
+    let mut visited = BTreeSet::new();
     let mut reached = BTreeSet::new();
     let mut test_targets: Vec<Source> = Vec::new();
     let mut stack: Vec<Source> = non_test_roots(crate_dir)
@@ -730,12 +1020,35 @@ fn walk_sources(crate_dir: &Path) -> Result<SourceWalk, String> {
         .collect();
 
     while let Some(source) = stack.pop() {
-        if !reached.insert(normalise(&source.path)) {
+        // Before the visit key, which canonicalises: a link and its target
+        // would share a key, and the link's own context would go unread.
+        if through_link(&source.path, crate_dir) {
+            return Err(format!(
+                "{} is reached through a symbolic link in non-test code; rustc resolves the \
+                 modules it declares from the link's directory, which this check does not \
+                 model. Use the file's own path, or a copy",
+                source.path.display()
+            ));
+        }
+        if !visited.insert(visit_key(&source)) {
             continue;
         }
+        reached.insert(normalise(&source.path));
         let raw = parse_source(&source.path)?;
         let stripped = strip(&raw);
         let here = source.path.parent().expect("a source file has a directory");
+
+        if let Some(what) = unfollowed_in(&stripped).first() {
+            return Err(format!(
+                "{} has {what} in non-test code; this check cannot see what it loads",
+                source.path.display()
+            ));
+        }
+        // What is left of `mod` inside blocks is test code: a fixture it
+        // loads by `#[path]` is a test target.
+        for (inline, attrs) in block_mods_in(&raw) {
+            test_targets.extend(block_mod_targets(&source.context, here, &inline, &attrs)?);
+        }
 
         // Out-of-line modules: every non-test choice is compiled in some
         // configuration; a test-only choice is a test target.
@@ -756,13 +1069,18 @@ fn walk_sources(crate_dir: &Path) -> Result<SourceWalk, String> {
                     path: file.path.clone(),
                     context: file,
                 };
+                // Every file a non-test declaration can select must exist. A
+                // missing one may be a configuration rustc never builds, or a
+                // path this check resolves differently from rustc; it cannot
+                // tell which, so it refuses rather than skips.
                 if decl.test_only || choice.test_only {
                     test_targets.push(target);
                 } else if target.path.exists() {
                     stack.push(target);
-                } else if !choices.iter().any(|c| c.test_only) && has_direct {
+                } else {
                     return Err(format!(
-                        "`mod {};` in {} names {}, which does not exist",
+                        "`mod {};` in {} can select {}, which does not exist; this check \
+                         refuses a module file it cannot find",
                         decl.name,
                         source.path.display(),
                         target.path.display()
@@ -782,7 +1100,7 @@ fn walk_sources(crate_dir: &Path) -> Result<SourceWalk, String> {
                             stack.push(target);
                         }
                     }
-                    None if choices.is_empty() && !decl.test_only => {
+                    None if !decl.test_only => {
                         return Err(format!(
                             "`mod {};` in {} resolves to neither {name}.rs nor {name}/mod.rs \
                              under {}",
@@ -808,10 +1126,7 @@ fn walk_sources(crate_dir: &Path) -> Result<SourceWalk, String> {
                     source.path.display()
                 ));
             };
-            stack.push(Source {
-                path: here.join(rel),
-                context: source.context.clone(),
-            });
+            stack.push(included(here, rel));
         }
         let mut test_includes = includes_in(&raw);
         for inc in &non_test_includes {
@@ -820,19 +1135,18 @@ fn walk_sources(crate_dir: &Path) -> Result<SourceWalk, String> {
             }
         }
         for rel in test_includes.into_iter().flatten() {
-            test_targets.push(Source {
-                path: here.join(rel),
-                context: source.context.clone(),
-            });
+            test_targets.push(included(here, &rel));
         }
     }
 
     // Everything reachable from a test target, through any declaration.
+    let mut test_visited = BTreeSet::new();
     let mut test_reached = BTreeSet::new();
     while let Some(source) = test_targets.pop() {
-        if !source.path.exists() || !test_reached.insert(normalise(&source.path)) {
+        if !source.path.exists() || !test_visited.insert(visit_key(&source)) {
             continue;
         }
+        test_reached.insert(normalise(&source.path));
         let Ok(raw) = parse_source(&source.path) else {
             continue;
         };
@@ -861,10 +1175,10 @@ fn walk_sources(crate_dir: &Path) -> Result<SourceWalk, String> {
             }
         }
         for rel in includes_in(&raw).into_iter().flatten() {
-            test_targets.push(Source {
-                path: here.join(rel),
-                context: source.context.clone(),
-            });
+            test_targets.push(included(here, &rel));
+        }
+        for (inline, attrs) in block_mods_in(&raw) {
+            test_targets.extend(block_mod_targets(&source.context, here, &inline, &attrs)?);
         }
     }
 
@@ -1027,7 +1341,9 @@ fn probe_crate(tag: &str, files: &[(&str, &str)]) -> PathBuf {
 /// is known. Production code reached through a nested module, an
 /// `include!`, a `cfg_attr` path, or nothing at all is flagged; code reached
 /// only through test-only declarations is exempt; an integration test is not
-/// scanned.
+/// scanned, unless production code loads it. Declarations in an `include!`d
+/// file resolve beside it, as rustc 1.98.0 resolves them; the `decoy` files
+/// sit where they would resolve otherwise.
 #[test]
 fn the_source_walk_scans_what_rustc_may_compile() {
     const CHEAP: &str = "const K: Kdf = Kdf::CHEAP_FOR_TESTS;\n";
@@ -1047,8 +1363,47 @@ fn the_source_walk_scans_what_rustc_may_compile() {
                  #[cfg_attr(windows, path = \"win_only.rs\")] mod plat2;\n\
                  #[cfg_attr(test, path = \"test_path.rs\")] mod tp;\n\
                  #[cfg(test)] mod t2 { mod deep; }\n\
-                 #[cfg(test)] mod t3 { include!(\"fixture.rs\"); }\n",
+                 #[cfg(test)] mod t3 { include!(\"fixture.rs\"); }\n\
+                 #[test] fn fx() { #[path = \"fixture_fn.rs\"] mod f; }\n\
+                 #[cfg(test)] mod t5 { #[test] fn fx() { #[path = \"fixture_t5.rs\"] mod f; } }\n\
+                 mod shared;\n\
+                 #[cfg(test)] #[path = \"shared.rs\"] mod shared_t;\n\
+                 #[path = \"d.rs\"] #[cfg_attr(unix, path = \"d_unix.rs\")] mod dd;\n\
+                 include!(\"nested/inc.rs\");\n\
+                 mod m { include!(\"inc_m.rs\"); }\n\
+                 mod foo;\n\
+                 mod dual;\n\
+                 include!(\"dual.rs\");\n",
             ),
+            (
+                "src/dual.rs",
+                "mod inner { #[path = \"../../tests/dual_t.rs\"] mod y; }\n",
+            ),
+            // rustc resolves `..` only through directories that exist.
+            ("src/dual/inner/keep.txt", ""),
+            ("src/inner/keep.txt", ""),
+            ("src/tests/dual_t.rs", SAFE),
+            ("tests/dual_t.rs", CHEAP),
+            (
+                "src/nested/inc.rs",
+                "#[path = \"../../tests/shared_it.rs\"] mod imp;\n\
+                 mod nb;\n\
+                 mod ne { mod nf; }\n",
+            ),
+            ("tests/shared_it.rs", CHEAP),
+            ("src/nested/nb.rs", SAFE),
+            ("src/nested/ne/nf.rs", SAFE),
+            ("src/nb.rs", SAFE),
+            ("src/ne/nf.rs", SAFE),
+            ("src/inc_m.rs", "mod mc;\n"),
+            ("src/mc.rs", SAFE),
+            ("src/m/mc.rs", SAFE),
+            ("src/foo.rs", "include!(\"inc_foo.rs\");\n"),
+            ("src/inc_foo.rs", "mod fd;\n"),
+            ("src/fd.rs", SAFE),
+            ("src/foo/fd.rs", SAFE),
+            ("src/plat2.rs", SAFE),
+            ("src/d_unix.rs", SAFE),
             ("src/tests.rs", CHEAP),
             ("src/a.rs", "mod b;\n"),
             ("src/a/b.rs", CHEAP),
@@ -1062,6 +1417,10 @@ fn the_source_walk_scans_what_rustc_may_compile() {
             ("src/test_path.rs", CHEAP),
             ("src/t2/deep.rs", CHEAP),
             ("src/fixture.rs", CHEAP),
+            ("src/fixture_fn.rs", CHEAP),
+            ("src/t5/fixture_t5.rs", CHEAP),
+            ("src/shared.rs", CHEAP),
+            ("src/d.rs", SAFE),
             ("src/stray.rs", CHEAP),
             ("tests/it.rs", CHEAP),
         ],
@@ -1093,10 +1452,33 @@ fn the_source_walk_scans_what_rustc_may_compile() {
         "src/unix.rs",
         "src/win_only.rs",
         "src/tp.rs",
+        "src/shared.rs",
+        "src/d.rs",
+        "src/d_unix.rs",
+        "src/plat2.rs",
+        "src/nested/inc.rs",
+        "tests/shared_it.rs",
+        "src/nested/nb.rs",
+        "src/nested/ne/nf.rs",
+        "src/inc_m.rs",
+        "src/mc.rs",
+        "src/foo.rs",
+        "src/inc_foo.rs",
+        "src/fd.rs",
+        "src/dual.rs",
+        "src/tests/dual_t.rs",
+        "tests/dual_t.rs",
     ] {
         assert!(
             reached.contains(expected),
             "the walk did not reach {expected}: {reached:?}"
+        );
+    }
+    for decoy in ["src/nb.rs", "src/ne/nf.rs", "src/m/mc.rs", "src/foo/fd.rs"] {
+        assert!(
+            !reached.contains(decoy),
+            "the walk resolved a declaration in an included file to {decoy}, where rustc does \
+             not look: {reached:?}"
         );
     }
     assert_eq!(
@@ -1106,7 +1488,9 @@ fn the_source_walk_scans_what_rustc_may_compile() {
                 "src/tests.rs",
                 "src/test_path.rs",
                 "src/t2/deep.rs",
-                "src/fixture.rs"
+                "src/fixture.rs",
+                "src/fixture_fn.rs",
+                "src/t5/fixture_t5.rs"
             ]
             .map(String::from)
         ),
@@ -1119,40 +1503,163 @@ fn the_source_walk_scans_what_rustc_may_compile() {
                 "src/a/b.rs",
                 "src/kdf_impl.rs",
                 "src/unix.rs",
-                "src/stray.rs"
+                "src/stray.rs",
+                "src/shared.rs",
+                "tests/shared_it.rs",
+                "tests/dual_t.rs"
             ]
             .map(String::from)
         ),
-        "production code reached by any route, or by none, is flagged; tests/ is not scanned"
+        "production code reached by any route, or by none, is flagged, even when a test also \
+         reaches it; tests/ is not scanned unless production code loads it"
     );
 }
 
 /// What the walk cannot read, it refuses rather than passes.
 #[test]
 fn the_source_walk_refuses_what_it_cannot_read() {
-    let cases: [(&str, &str); 2] = [
+    // Each case: the probe crate's src/lib.rs, any other files, and what the
+    // refusal must say.
+    type Extra<'a> = &'a [(&'a str, &'a str)];
+    let cases: [(&str, Extra, &str); 17] = [
         (
             "include!(concat!(env!(\"OUT_DIR\"), \"/generated.rs\"));\n",
+            &[],
             "not a string literal",
         ),
         (
             "#[cfg_attr(unix, path = \"u\")] mod inline_cond { }\n",
+            &[],
             "conditional or repeated path",
         ),
+        (
+            "pub fn f() -> u32 { #[path = \"../../outside.rs\"] mod imp; 0 }\n",
+            &[],
+            "inside a block",
+        ),
+        (
+            "macro_rules! m { () => { #[path = \"x.rs\"] mod imp; }; }\n",
+            &[],
+            "declare a module or use `include!`",
+        ),
+        (
+            "macro_rules! l { () => { include!(\"x.rs\"); }; }\nl!();\n",
+            &[],
+            "declare a module or use `include!`",
+        ),
+        (
+            "some_dep::load!(\"../../outside.rs\");\n",
+            &[],
+            "may name a `.rs` file",
+        ),
+        // The value counts, not the spelling: this is `shared.rs`.
+        (
+            "some_dep::load!(\"shared.r\\x73\");\n",
+            &[],
+            "may name a `.rs` file",
+        ),
+        (
+            "some_dep::load!(\"shared.RS\");\n",
+            &[],
+            "may name a `.rs` file",
+        ),
+        (
+            "some_dep::load!(concat!(\"shared.\", 'r', stringify!(s)));\n",
+            &[],
+            "may name a `.rs` file",
+        ),
+        (
+            "some_dep::load!(concat!(\"shared\", env!(\"SUFFIX\")));\n",
+            &[],
+            "may name a `.rs` file",
+        ),
+        (
+            "use std::include as load;\nload!(\"shared.r\\x73\");\n",
+            &[],
+            "`include` imported as `load`",
+        ),
+        (
+            "pub fn f() { use core::{r#include as load}; }\n",
+            &[],
+            "`include` imported as `load`",
+        ),
+        (
+            "r#include!(concat!(\"shared\", \".rs\"));\n",
+            &[],
+            "not a string literal",
+        ),
+        // Every file a non-test declaration can select must exist.
+        (
+            "#[path = \"absent.rs\"] mod imp;\n",
+            &[],
+            "which does not exist",
+        ),
+        (
+            "#[cfg_attr(unix, path = \"absent.rs\")] mod imp;\n",
+            &[("src/imp.rs", "")],
+            "which does not exist",
+        ),
+        (
+            "#[cfg_attr(windows, path = \"win.rs\")] mod imp;\n",
+            &[("src/win.rs", "")],
+            "resolves to neither",
+        ),
+        (
+            "include!(\"nested/inc.rs\");\n",
+            &[("src/nested/inc.rs", "#[path = \"gone.rs\"] mod imp;\n")],
+            "which does not exist",
+        ),
     ];
-    for (i, (lib, expected)) in cases.into_iter().enumerate() {
-        let dir = probe_crate(
-            &format!("refuse{i}"),
-            &[
-                ("Cargo.toml", "[package]\nname = \"probe\"\n"),
-                ("src/lib.rs", lib),
-            ],
-        );
+    for (i, (lib, extra, expected)) in cases.into_iter().enumerate() {
+        let mut files = vec![
+            ("Cargo.toml", "[package]\nname = \"probe\"\n"),
+            ("src/lib.rs", lib),
+        ];
+        files.extend_from_slice(extra);
+        let dir = probe_crate(&format!("refuse{i}"), &files);
         let result = walk_sources(&dir).map(|_| ());
         let _ = fs::remove_dir_all(&dir);
         match result {
             Err(e) => assert!(e.contains(expected), "refused for the wrong reason: {e}"),
             Ok(()) => panic!("the walk accepted what it cannot read: {lib}"),
+        }
+    }
+
+    // A module file reached through a symbolic link: before its target and
+    // after it (the refusal must come before the canonical visit key merges
+    // the two), and through a linked directory. Unix only: making a link on
+    // Windows needs a privilege CI does not have.
+    #[cfg(unix)]
+    for (i, lib) in [
+        "#[path = \"alias/common.rs\"] mod first;\n#[path = \"actual/common.rs\"] mod second;\n",
+        "#[path = \"actual/common.rs\"] mod first;\n#[path = \"alias/common.rs\"] mod second;\n",
+        "#[path = \"linked/common.rs\"] mod first;\n",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let dir = probe_crate(
+            &format!("link{i}"),
+            &[
+                ("Cargo.toml", "[package]\nname = \"probe\"\n"),
+                ("src/lib.rs", lib),
+                ("src/actual/common.rs", "#[path = \"shared.rs\"] mod imp;\n"),
+                ("src/actual/shared.rs", ""),
+                ("src/alias/shared.rs", ""),
+            ],
+        );
+        std::os::unix::fs::symlink("../actual/common.rs", dir.join("src/alias/common.rs"))
+            .expect("make a file link");
+        std::os::unix::fs::symlink("actual", dir.join("src/linked"))
+            .expect("make a directory link");
+        let result = walk_sources(&dir).map(|_| ());
+        let _ = fs::remove_dir_all(&dir);
+        match result {
+            Err(e) => assert!(
+                e.contains("symbolic link"),
+                "refused for the wrong reason: {e}"
+            ),
+            Ok(()) => panic!("the walk accepted a module reached through a link: {lib}"),
         }
     }
 }
