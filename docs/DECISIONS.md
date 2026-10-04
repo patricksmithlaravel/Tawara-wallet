@@ -461,6 +461,13 @@ describes it, with these choices inside that design:
   one (a refresh, between accounts and inside each account's walk, and a
   status read), and nothing it read is applied. A spend is never stopped
   between its reservation and its submission.
+- **Accounts set aside at open.** `Wallet::open` sets aside an account
+  it cannot explain, and the library refuses to spend from it by that
+  observation. Settling is not refused on it: the library's
+  `settle_if_landed` reconciles the account afresh, so an account set
+  aside because the node could not see its outstanding spend settles once
+  the node shows it landed. A refresh that finds a set-aside account
+  reconciling opens the wallet again, so the account can spend.
 - **Walks are bounded.** The worker runs one command at a time, so a lock
   (idle, background, explicit) waits for the running command. The library
   walks every key position up to an index the person names, about 1.6 ms
@@ -516,9 +523,14 @@ about one optimised. The release profile is untouched.
 `~/Library/Application Support/Tawara/keystore` on macOS, and
 `$XDG_DATA_HOME/tawara/keystore` on Linux, falling back to
 `~/.local/share` when `$XDG_DATA_HOME` is unset or relative, as the XDG
-specification says. Nothing is created: the library makes the folder,
-mode `0700` or with a private access list, when it makes the store. On
-Android and iOS the shell passes its private directory to
+specification says. Finding the default creates nothing. When a store is
+created, the worker makes the application folder (`Tawara` or `tawara`,
+and any folder above it that is missing; mode `0700` on Unix), because
+the library makes only the store's own folder, in a parent that exists;
+the library then makes that folder, mode `0700` or with a private access
+list. Neither is made until the store is about to be written: after the
+confirmation words, for a new phrase. On Android
+and iOS the shell passes its private directory to
 `location::store_dir_in`.
 
 **Android: `no_backup/`, not `files/`.** Section 4.6 says "the app's

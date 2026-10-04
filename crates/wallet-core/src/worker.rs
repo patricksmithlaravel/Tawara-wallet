@@ -593,6 +593,34 @@ fn discover_bound(to: u32) -> Result<(), Refusal> {
     })
 }
 
+/// Make the folder the store's own folder goes in, when it is missing. The
+/// library makes only the store's folder, inside a parent that exists
+/// (`mkdirat` on Unix, `CreateDirectoryW` on Windows), and on a fresh
+/// profile the default location's application folder
+/// ([`crate::location::default_store_dir`]) is not there yet. Called only
+/// once the store is about to be written; folders made here are private to
+/// the user on Unix (mode `0700`), and on Windows take the access list of
+/// the folder they are made in.
+fn prepare_parent(dir: &Path) -> Result<(), Refusal> {
+    let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) else {
+        return Ok(());
+    };
+    let mut folders = std::fs::DirBuilder::new();
+    folders.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        folders.mode(0o700);
+    }
+    folders.create(parent).map_err(|e| Refusal {
+        kind: RefusalKind::Library,
+        text: format!(
+            "cannot make the folder {} to hold the store: {e}. Nothing was created.",
+            parent.display()
+        ),
+    })
+}
+
 /// What the node says before the wallet is opened (module doc).
 enum Precheck {
     /// At least one tag is on the ledger, or the store holds none: open.
@@ -1032,6 +1060,11 @@ impl<C: Connect> Worker<C> {
                 ),
             );
         }
+        // Before the phrase is taken, so a folder that cannot be made
+        // leaves it waiting.
+        if let Err(r) = prepare_parent(&pending.dir) {
+            return Reply::Refused(r);
+        }
         let Some(pending) = self.create.take() else {
             return refused(RefusalKind::NothingToConfirm, "Nothing was created.");
         };
@@ -1075,6 +1108,9 @@ impl<C: Connect> Worker<C> {
             Ok(n) => n,
             Err(e) => return Reply::Refused(entropy_refusal(e)),
         };
+        if let Err(r) = prepare_parent(&dir) {
+            return Reply::Refused(r);
+        }
         self.busy(id, Activity::DerivingKey);
         let created = match create::create(&dir, phrase.expose(), password.expose(), *salt, *nonce)
         {
@@ -1336,9 +1372,10 @@ impl<C: Connect> Worker<C> {
         }
     }
 
-    /// Each account's status read fresh, through the open wallet's client;
-    /// the partition stays the one `Wallet::open` made, so an account set
-    /// aside then stays refused for spending until the wallet is reopened.
+    /// Each account's status read fresh, through the open wallet's client.
+    /// The library refuses to spend from an account `Wallet::open` set
+    /// aside, by what it found then; so when such an account reconciles now,
+    /// the wallet is opened again and it rejoins.
     fn refresh_wallet(&mut self, id: RequestId) -> Reply {
         self.busy(id, Activity::AskingNode);
         let asked = self.stop_asked(id);
@@ -1347,6 +1384,7 @@ impl<C: Connect> Worker<C> {
         };
         let tags: Vec<Tag> = w.rows.iter().map(|r| r.id.tag()).collect();
         let mut fresh = Vec::with_capacity(tags.len());
+        let mut recovered = false;
         for tag in &tags {
             // Each account is a round trip or more; the rows change only
             // when every one was read, so a stop leaves them as they were.
@@ -1369,12 +1407,23 @@ impl<C: Connect> Worker<C> {
             if asked() {
                 return Reply::Refused(library(Error::Cancelled));
             }
+            recovered |= w.wallet.divergence_for(tag).is_some() && read.is_ok();
             let state = match read {
                 Ok(status) => AccountState::from_status(&status),
                 Err(d) => AccountState::from_divergence(&d),
             };
             let spendable = reconciled_at_open && matches!(state, AccountState::InSync { .. });
             fresh.push((*tag, state, spendable));
+        }
+        if recovered {
+            let Session::Wallet(w) = core::mem::replace(&mut self.session, Session::Locked) else {
+                return Self::not_unlocked();
+            };
+            let (store, _old) = w.wallet.into_parts();
+            return match self.reopen(id, w.dir, store, w.master) {
+                Ok(view) => Reply::Wallet(view),
+                Err(r) => Reply::Refused(r),
+            };
         }
         for (tag, state, spendable) in fresh {
             let index = w
@@ -1642,9 +1691,10 @@ impl<C: Connect> Worker<C> {
         let Session::Wallet(w) = &mut self.session else {
             return Self::not_open();
         };
-        if let Some(d) = w.wallet.divergence_for(&tag) {
-            return Self::diverged_refusal(d);
-        }
+        // Not refused on what `Wallet::open` found: `settle_if_landed`
+        // reconciles the account afresh and refuses on that, so an account
+        // set aside when the wallet opened (an outstanding spend the node
+        // could not see then) settles once the node shows it landed.
         let settled = match key_access(w.wallet.store(), &tag, w.master.as_ref()) {
             Ok(access) => w.wallet.settle_if_landed(&tag, &access),
             Err(e) => Err(e),

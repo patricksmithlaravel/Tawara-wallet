@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use mochimo_crypto::keystore::{self, Keystore, Unlock};
 use support::*;
+use tawara_wallet_core::location::{Environment, Platform, default_store_dir};
 use tawara_wallet_core::spend::{Amount, DestinationInput, SpendInputError, SpendRequest};
 use tawara_wallet_core::view::{AccountId, AccountState, ReservationState, WalletView};
 use tawara_wallet_core::{
@@ -1287,4 +1288,148 @@ fn queued_polls_do_not_keep_the_store_open() {
         Some(LockReason::Idle),
         "the store stayed open while polls were queued"
     );
+}
+
+// ------------------------------------------------- default folder, recovery
+
+#[test]
+fn creating_at_the_default_location_makes_its_application_folder() {
+    let scratch = Scratch::new("default-dir");
+    let root = scratch.0.to_str().expect("a UTF-8 scratch path");
+    let data = scratch.0.join("data");
+    let local = scratch.0.join("Local");
+    // A fresh profile: none of the folders the default path runs through
+    // exist yet below the home folder.
+    let env = Environment::of(&[
+        ("HOME", root),
+        ("XDG_DATA_HOME", data.to_str().expect("UTF-8")),
+        ("LOCALAPPDATA", local.to_str().expect("UTF-8")),
+    ]);
+    let Ok(dir) = default_store_dir(Platform::current(), &env) else {
+        return; // Android and iOS: the shell supplies the folder.
+    };
+    let app = dir.parent().expect("the application folder").to_path_buf();
+    assert!(!app.exists(), "{} should not exist yet", app.display());
+
+    let mut h = Harness::new();
+    let view = opened(h.create_from_phrase(&dir));
+    assert_eq!(view.dir, dir);
+    assert!(keystore::occupied(&dir).is_some());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&app)
+            .expect("app folder")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "the application folder is private: {mode:o}"
+        );
+    }
+
+    // The confirmed path makes it too, and only once the phrase is
+    // confirmed.
+    let other = scratch.0.join("elsewhere").join("Tawara").join("keystore");
+    let (words, positions) = match h.call(Command::CreateBegin {
+        dir: other.clone(),
+        password: secret(PASSWORD),
+        password_again: secret(PASSWORD),
+    }) {
+        Reply::CreatePhrase {
+            phrase,
+            confirm_positions,
+        } => (
+            phrase.words().map(str::to_owned).collect::<Vec<_>>(),
+            confirm_positions,
+        ),
+        other => panic!("expected a phrase, got {other:?}"),
+    };
+    assert!(
+        !scratch.0.join("elsewhere").exists(),
+        "nothing is made before the confirmation"
+    );
+    let answer = positions
+        .iter()
+        .map(|&p| words[p - 1].as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    match h.call(Command::CreateConfirm {
+        answer: secret(&answer),
+    }) {
+        Reply::Created {
+            opened: Ok(view), ..
+        } => assert_eq!(view.dir, other),
+        other => panic!("expected a written store, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_account_set_aside_at_open_settles_and_rejoins_once_it_reconciles() {
+    let scratch = Scratch::new("recover");
+    let dir = scratch.store();
+    let (mut h, _) = funded(&scratch);
+    let account1 = AccountId::from_tag(tag(1));
+    h.chain.hold(tag(1), address(1, 0), 1_000_000);
+    match h.call(Command::Restore {
+        account_index: 1,
+        scan_to: None,
+    }) {
+        Reply::Restored { ok: true, .. } => {}
+        other => panic!("expected a restore, got {other:?}"),
+    }
+    let from1 = |amount| SpendRequest {
+        from: account1,
+        ..pay(destination(2), amount)
+    };
+    let plan = planned(h.call(Command::PlanSend {
+        spend: from1(Amount::Nano(100_000)),
+    }));
+    let _ = sent(h.call(Command::ConfirmSend { plan: plan.plan }));
+
+    // Opened again while the node answers "account not found" for account
+    // 1: the wallet opens with account 0 and sets account 1 aside.
+    h.chain.forget(tag(1));
+    assert!(matches!(h.call(Command::Lock), Reply::Locked));
+    let view = opened(h.unlock(&dir, PASSWORD));
+    assert!(view.opened, "{view:?}");
+    let row = |v: &WalletView| {
+        v.accounts
+            .iter()
+            .find(|r| r.id == account1)
+            .cloned()
+            .expect("account 1")
+    };
+    assert!(
+        matches!(row(&view).state, AccountState::Diverged { .. }),
+        "{:?}",
+        row(&view)
+    );
+
+    // The spend landed: the node now holds account 1 at its change key.
+    // Settling asks the node afresh, as the library's settle does, rather
+    // than refusing on what it found when the wallet opened.
+    h.chain.hold(tag(1), address(1, 1), plan.change_total);
+    match h.call(Command::Settle { account: account1 }) {
+        Reply::Settled { view, text } => {
+            assert_eq!(
+                row(&view).state,
+                AccountState::InSync {
+                    balance: plan.change_total
+                },
+                "{text}"
+            );
+            assert_eq!(row(&view).index, 1);
+        }
+        other => panic!("expected the settlement, got {other:?}"),
+    }
+
+    // A refresh opens the wallet again so the account can spend.
+    let view = opened(h.call(Command::Refresh));
+    assert!(view.opened);
+    assert!(row(&view).spendable, "{:?}", row(&view));
+    let _ = planned(h.call(Command::PlanSend {
+        spend: from1(Amount::Nano(1_000)),
+    }));
 }

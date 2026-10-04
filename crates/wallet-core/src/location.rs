@@ -181,8 +181,10 @@ impl fmt::Display for NoDefaultLocation {
 /// - Linux: `$XDG_DATA_HOME/tawara/keystore`, with `~/.local/share` when
 ///   `$XDG_DATA_HOME` is unset or relative, as the specification says.
 ///
-/// Nothing is created. The library creates the directory, mode `0700` or
-/// with a private access list, when the store is made.
+/// Nothing is created here. When a store is created, the worker makes the
+/// application folder (and any folder above it that is missing), private to
+/// the user on Unix, and the library makes the store's own folder inside
+/// it, mode `0700` or with a private access list.
 pub fn default_store_dir(
     platform: Platform,
     env: &Environment,
