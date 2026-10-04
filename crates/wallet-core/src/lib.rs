@@ -71,6 +71,16 @@ pub const CONFIRM_POSITIONS: [usize; 3] = mochimo_crypto::cli::create::CONFIRM_P
 /// wallets do not agree on how a phrase becomes a seed.
 pub const SCHEME_WARNING: &str = mochimo_crypto::cli::create::SCHEME_WARNING;
 
+/// The furthest key index a scan or an acknowledged advance goes to
+/// (`Command::Status`'s and `Command::Restore`'s `scan_to`,
+/// `Command::Reconcile`'s `advance_to`). The library walks every position up
+/// to it, about 1.6 ms each in a release build, and its restore and advance
+/// cannot be stopped once started, while the worker runs one command at a
+/// time: an idle lock or a move to the background waits for the walk. This
+/// bound keeps that wait to a few minutes at most. The command line takes
+/// any index below `u32::MAX`; docs/DECISIONS.md D19.
+pub const MAX_SCAN_TO: u32 = 100_000;
+
 /// How far a discovery sweep goes when the person does not say: the
 /// library's default (`cli::args::DISCOVER_DEFAULT_TO`).
 pub const DISCOVER_DEFAULT_TO: u32 = mochimo_crypto::cli::args::DISCOVER_DEFAULT_TO;

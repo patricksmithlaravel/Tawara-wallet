@@ -8,15 +8,15 @@
 
 mod support;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mochimo_crypto::keystore::{self, Keystore, Unlock};
 use support::*;
 use tawara_wallet_core::spend::{Amount, DestinationInput, SpendInputError, SpendRequest};
 use tawara_wallet_core::view::{AccountId, AccountState, ReservationState, WalletView};
 use tawara_wallet_core::{
-    Activity, CONFIRM_POSITIONS, Command, Config, Event, LockReason, PlanView, Refusal,
-    RefusalKind, Reply, SentView,
+    Activity, CONFIRM_POSITIONS, Command, Config, DISCOVER_MAX_TO, Event, LockReason, MAX_SCAN_TO,
+    PlanView, Refusal, RefusalKind, Reply, SentView,
 };
 
 const FUNDS: u64 = 5_000_000;
@@ -362,6 +362,12 @@ fn receiving_shows_the_destination_and_the_ledger_entry() {
         }
         other => panic!("expected a destination, got {other:?}"),
     }
+    // A tag the store does not hold: the command line's page, which echoes
+    // it in hex so it cannot be taken for a destination.
+    let other = refusal(h.call(Command::Receive {
+        account: AccountId::from_tag(tag(5)),
+    }));
+    assert!(other.text.contains(&hex_of(&tag(5))), "{}", other.text);
 }
 
 // ------------------------------------------------------------------- spend
@@ -586,17 +592,23 @@ fn a_diverged_store_is_reopened_and_advanced_on_acknowledgement() {
     let start = view.accounts[0].index;
 
     // The chain holds the account three keys ahead: another wallet spent
-    // from it. Every account diverged, so the library refuses the wallet;
-    // the worker reopens the store with the password and says why.
+    // from it. Every account diverged, so the library would refuse the
+    // wallet and drop the store; the store stays open with its page.
     h.chain.hold(tag(0), address(0, start + 3), FUNDS);
     assert!(matches!(
         h.call(Command::SetNode { url: NODE.into() }),
         Reply::NodeSet { .. }
     ));
     assert!(matches!(h.call(Command::Lock), Reply::Locked));
+    assert_eq!(h.wait_locked(Duration::from_secs(5)), LockReason::Asked);
     let view = opened(h.unlock(&dir, PASSWORD));
     assert!(!view.opened, "{view:?}");
-    assert!(view.notice.is_some());
+    let notice = view.notice.clone().expect("the refusal page");
+    assert!(notice.starts_with("WALLET WILL NOT START"), "{notice}");
+    // Asking again keeps it open: nothing needs the password twice.
+    let again = opened(h.call(Command::Refresh));
+    assert!(!again.opened);
+    assert_eq!(again.notice, view.notice);
     let advance_to = match &view.accounts[0].state {
         AccountState::Diverged {
             advance_to: Some(to),
@@ -611,15 +623,42 @@ fn a_diverged_store_is_reopened_and_advanced_on_acknowledgement() {
     }));
     assert_eq!(refused.kind, RefusalKind::WalletNotOpen);
 
+    // An index the report does not name: the library refuses it, and the
+    // store is still open afterwards.
+    match h.call(Command::Reconcile {
+        account: account0(),
+        advance_to: advance_to - 1,
+    }) {
+        Reply::Reconciled {
+            ok,
+            advanced_to,
+            text,
+            view: Some(view),
+        } => {
+            assert!(!ok, "{text}");
+            assert_eq!(advanced_to, None, "{text}");
+            assert!(!view.opened);
+            assert_eq!(view.accounts[0].index, start);
+        }
+        other => panic!("expected the refused advance, got {other:?}"),
+    }
+    assert!(
+        !h.seen.iter().any(|e| matches!(e, Event::Locked { .. })),
+        "the store was never closed: {:?}",
+        h.seen
+    );
+
     match h.call(Command::Reconcile {
         account: account0(),
         advance_to,
     }) {
         Reply::Reconciled {
+            ok,
             advanced_to,
             text,
             view: Some(view),
         } => {
+            assert!(ok, "{text}");
             assert_eq!(advanced_to, Some(advance_to), "{text}");
             assert!(view.opened, "{view:?}");
             assert_eq!(view.accounts[0].index, advance_to);
@@ -656,9 +695,11 @@ fn restoring_and_discovering_derived_accounts() {
         scan_to: None,
     }) {
         Reply::Restored {
+            ok,
             text,
             view: Some(view),
         } => {
+            assert!(ok, "{text}");
             assert!(view.opened, "{text}");
             assert_eq!(view.accounts.len(), 2, "{text}");
             let row = view
@@ -686,6 +727,68 @@ fn an_idle_store_locks_itself() {
     assert_eq!(h.wait_locked(Duration::from_secs(10)), LockReason::Idle);
     let locked = refusal(h.call(Command::Refresh));
     assert_eq!(locked.kind, RefusalKind::NotUnlocked);
+}
+
+#[test]
+fn an_idle_lock_drops_a_waiting_phrase_and_says_so() {
+    let scratch = Scratch::new("idle-phrase");
+    let mut h = Harness::with(Config {
+        idle_lock: Duration::from_millis(300),
+    });
+    assert!(matches!(
+        h.call(Command::CreateBegin {
+            dir: scratch.store(),
+            password: secret(PASSWORD),
+            password_again: secret(PASSWORD),
+        }),
+        Reply::CreatePhrase { .. }
+    ));
+    assert_eq!(h.wait_locked(Duration::from_secs(10)), LockReason::Idle);
+    let none = refusal(h.call(Command::CreateConfirm {
+        answer: secret("a b c"),
+    }));
+    assert_eq!(none.kind, RefusalKind::NothingToConfirm);
+    assert_eq!(keystore::occupied(&scratch.store()), None);
+}
+
+#[test]
+fn touching_keeps_the_store_open_and_polling_does_not() {
+    let scratch = Scratch::new("polling");
+    let mut h = Harness::with(Config {
+        idle_lock: Duration::from_secs(1),
+    });
+    assert!(matches!(
+        h.call(Command::SetNode { url: NODE.into() }),
+        Reply::NodeSet { .. }
+    ));
+    let _ = opened(h.create_from_phrase(&scratch.store()));
+
+    let until = Instant::now() + Duration::from_millis(1_500);
+    while Instant::now() < until {
+        h.handle.touch();
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    while let Ok(event) = h.events.try_recv() {
+        assert!(
+            !matches!(event, Event::Locked { .. }),
+            "locked while touched"
+        );
+    }
+
+    // Asking the node over and over is not the person doing anything.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !h.seen.iter().any(|e| matches!(e, Event::Locked { .. })) {
+        assert!(
+            Instant::now() < deadline,
+            "the store never locked while it was polled"
+        );
+        assert!(matches!(
+            h.call(Command::NetworkStatus),
+            Reply::Network { .. }
+        ));
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(h.wait_locked(Duration::ZERO), LockReason::Idle);
 }
 
 #[test]
@@ -781,6 +884,7 @@ fn a_cancel_stops_what_was_sent_before_it_and_nothing_after() {
         scan_to: None,
     }) {
         Reply::Restored {
+            ok: true,
             view: Some(view),
             text,
         } => assert_eq!(view.accounts.len(), 2, "{text}"),
@@ -803,6 +907,143 @@ fn a_cancel_stops_what_was_sent_before_it_and_nothing_after() {
     let view = opened(h.call(Command::Refresh));
     assert!(view.opened);
     assert_eq!(view.total(), u128::from(FUNDS) + 1_000);
+
+    // A Lock sent before a cancel still locks.
+    let gate = h.chain.close_gate();
+    let id = h.handle.send(Command::Refresh).expect("worker running");
+    assert_eq!(h.wait_busy(id), Activity::AskingNode);
+    let lock = h.handle.send(Command::Lock).expect("worker running");
+    h.handle.cancel();
+    gate.open();
+    assert_eq!(refusal(h.wait_for(id)).kind, RefusalKind::Cancelled);
+    assert!(matches!(h.wait_for(lock), Reply::Locked));
+    assert_eq!(h.wait_locked(Duration::from_secs(5)), LockReason::Asked);
+}
+
+#[test]
+fn moving_to_the_background_stops_a_queued_spend_before_it_signs() {
+    let scratch = Scratch::new("background-spend");
+    let dir = scratch.store();
+    let (mut h, start) = funded(&scratch);
+    let plan = planned(h.call(Command::PlanSend {
+        spend: pay(destination(1), Amount::Nano(100_000)),
+    }));
+
+    // A refresh waits on the node, and the confirmation is queued behind
+    // it when the app goes to the background.
+    let gate = h.chain.close_gate();
+    let refresh = h.handle.send(Command::Refresh).expect("worker running");
+    assert_eq!(h.wait_busy(refresh), Activity::AskingNode);
+    let confirm = h
+        .handle
+        .send(Command::ConfirmSend { plan: plan.plan })
+        .expect("worker running");
+    h.handle.background();
+    gate.open();
+
+    assert_eq!(refusal(h.wait_for(refresh)).kind, RefusalKind::Cancelled);
+    assert_eq!(refusal(h.wait_for(confirm)).kind, RefusalKind::Cancelled);
+    assert_eq!(
+        h.wait_locked(Duration::from_secs(10)),
+        LockReason::Background
+    );
+    assert!(h.chain.submits().is_empty(), "nothing was sent");
+
+    // Nothing was reserved either: the account is as it was.
+    let view = opened(h.unlock(&dir, PASSWORD));
+    assert_eq!(
+        view.accounts[0].state,
+        AccountState::InSync { balance: FUNDS }
+    );
+    assert_eq!(view.accounts[0].index, start);
+    assert!(view.accounts[0].spendable);
+}
+
+#[test]
+fn a_cancelled_status_is_not_a_report() {
+    let scratch = Scratch::new("cancel-status");
+    let (mut h, _) = funded(&scratch);
+    h.chain.hold(tag(1), address(1, 0), 1_000);
+    match h.call(Command::Restore {
+        account_index: 1,
+        scan_to: None,
+    }) {
+        Reply::Restored { ok: true, .. } => {}
+        other => panic!("expected a restore, got {other:?}"),
+    }
+    // Another wallet spends from account 1: the chain is three keys ahead,
+    // so reading it walks the key positions, which a cancel stops.
+    h.chain.hold(tag(1), address(1, 3), 900);
+    let account1 = AccountId::from_tag(tag(1));
+
+    let gate = h.chain.close_gate();
+    let id = h
+        .handle
+        .send(Command::Status {
+            account: account1,
+            scan_to: None,
+        })
+        .expect("worker running");
+    assert_eq!(h.wait_busy(id), Activity::AskingNode);
+    h.handle.cancel();
+    gate.open();
+    assert_eq!(refusal(h.wait_for(id)).kind, RefusalKind::Cancelled);
+
+    match h.call(Command::Status {
+        account: account1,
+        scan_to: None,
+    }) {
+        Reply::Status {
+            state:
+                AccountState::Diverged {
+                    advance_to: Some(3),
+                    ..
+                },
+            ..
+        } => {}
+        other => panic!("expected the divergence and its advance, got {other:?}"),
+    }
+}
+
+#[test]
+fn scans_advances_and_sweeps_are_bounded() {
+    let scratch = Scratch::new("bounds");
+    let mut h = Harness::with_node();
+    let _ = opened(h.create_from_phrase(&scratch.store()));
+    let calls = h.chain.calls();
+    for command in [
+        Command::Status {
+            account: account0(),
+            scan_to: Some(MAX_SCAN_TO + 1),
+        },
+        Command::Restore {
+            account_index: 1,
+            scan_to: Some(MAX_SCAN_TO + 1),
+        },
+        Command::Reconcile {
+            account: account0(),
+            advance_to: u32::MAX,
+        },
+        Command::Discover { to: 0 },
+        Command::Discover {
+            to: DISCOVER_MAX_TO + 1,
+        },
+    ] {
+        let name = format!("{command:?}");
+        let r = refusal(h.call(command));
+        assert_eq!(r.kind, RefusalKind::OutOfRange, "{name}");
+        assert!(r.text.contains("Nothing was done"), "{name}: {}", r.text);
+    }
+    assert_eq!(h.chain.calls(), calls, "nothing reached the node");
+    assert!(
+        matches!(
+            h.call(Command::Receive {
+                account: account0()
+            }),
+            Reply::Receive(_)
+        ),
+        "the store is still open"
+    );
 }
 
 #[test]

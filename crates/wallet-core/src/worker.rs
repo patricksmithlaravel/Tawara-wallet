@@ -23,16 +23,21 @@
 //!
 //! `Wallet::open` takes the store by value and, when it refuses, drops it:
 //! the store is closed and reopening it needs the password, which the worker
-//! keeps only for the length of the command that brought it. So before
-//! opening, the worker asks the node about each account's tag, which is the
-//! first request `Wallet::open` makes for each anyway. If the node does not
-//! answer, or answers "account not found" for every tag, the wallet cannot
-//! open, and the store stays open in the Store state instead of being
-//! handed to a constructor that would refuse it and drop it. The one
-//! refusal this does not foresee, every account on the ledger and every one
-//! diverged, still drops the store: when the password is at hand (unlock,
-//! create) the store is reopened with it, and otherwise the worker locks and
-//! says why ([`LockReason::WalletRefused`]).
+//! keeps only for the length of the command that brought it. So the worker
+//! opens the wallet only when it would open:
+//!
+//! 1. It asks the node about each account's tag, the first request
+//!    `Wallet::open` makes for each. If the node does not answer, or answers
+//!    "account not found" for every tag, the store stays open in the Store
+//!    state.
+//! 2. It makes the comparison `Wallet::open` makes for each account. If
+//!    every account diverges, `Wallet::open` would refuse, so the store
+//!    stays open in the Store state with the library's own refusal page,
+//!    the one `Wallet::open`'s refusal renders.
+//! 3. Otherwise it opens the wallet. That can still be refused if the chain
+//!    moved between the comparison and the open; then the store is reopened
+//!    with the password when it is at hand (unlock, create), and otherwise
+//!    reported closed ([`LockReason::WalletRefused`]).
 //!
 //! # Lifecycle (docs/PLAN.md section 4.1)
 //!
@@ -43,19 +48,35 @@
 //! ([`WorkerHandle::background`]), when the worker shuts down, and when the
 //! last handle is dropped.
 //!
+//! The idle period restarts on [`WorkerHandle::touch`] and on a command that
+//! carries something the person typed (unlock, create, the confirmation
+//! words). Other commands do not restart it, so an interface that polls
+//! the tip or refreshes on a timer cannot keep the store open; the time a
+//! command spends running is not counted as idle. Commands run one at a
+//! time, so an idle lock waits for the running command to finish; that is
+//! why every walk the person can widen is bounded ([`crate::MAX_SCAN_TO`]).
+//!
 //! # Cancellation
 //!
 //! [`WorkerHandle::cancel`] asks every command sent so far to stop. The
-//! handle records the newest request id it has given out, and a command
-//! reads that record through the library's `recon::Cancel`, so a cancel
-//! raised after a command finished cannot stop the next one: the next one
-//! has a later id. It is read in the operations that can stop: a refresh
-//! with the wallet open (between accounts, and inside the library's scan of
-//! each) and a status read with the wallet open. The library's other walks
-//! (`Wallet::open`, restore, the acknowledged advance before the gate,
-//! discovery) take no `Cancel` today and run to their end; docs/DECISIONS.md
-//! D23 proposes the library change. A spend is never stopped between its
-//! reservation and its submission.
+//! handle records the newest request id it has given out and each command
+//! compares its own, so a cancel raised after a command finished cannot
+//! stop the next one: the next one has a later id.
+//!
+//! - A command the cancel reached before it started does nothing and is
+//!   answered `Cancelled`, except one that only drops something (Lock,
+//!   discarding a plan or a phrase, forgetting the node). So a spend queued
+//!   behind a slow command does not sign after a cancel, nor after a move to
+//!   the background, which cancels first.
+//! - A running command reads it through the library's `recon::Cancel` where
+//!   the library takes one (a refresh with the wallet open, between accounts
+//!   and inside each account's walk, and a status read), and is answered
+//!   `Cancelled` with nothing it read applied.
+//! - The library's other walks (`Wallet::open`, restore, the acknowledged
+//!   advance, discovery) take no `Cancel` today and run to their end;
+//!   docs/DECISIONS.md D23 proposes the library change.
+//! - A spend is never stopped between its reservation and its submission:
+//!   the last point it can be stopped is before it starts.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -75,7 +96,7 @@ use mochimo_crypto::mesh::spend::SpendPlan;
 use mochimo_crypto::mesh::{MeshClient, Transport};
 use mochimo_crypto::recon::{self, Cancel, Divergence, ScanScope};
 use mochimo_crypto::tx::wire::Destination;
-use mochimo_crypto::wallet::Wallet;
+use mochimo_crypto::wallet::{StartupRefusal, Wallet};
 use mochimo_crypto::{Error, Secret, mnemonic};
 use zeroize::Zeroizing;
 
@@ -151,13 +172,16 @@ impl WorkerHandle {
         Ok(id)
     }
 
-    /// The person did something: restart the idle period. No answer.
+    /// The person did something: restart the idle period. No answer. Call it
+    /// on the person's input; commands do not restart the period unless they
+    /// carry something the person typed (module doc, "Lifecycle").
     pub fn touch(&self) {
         let _ = self.tx.send(Envelope::Touch);
     }
 
-    /// Ask every command sent so far to stop, where it can be stopped (see
-    /// the module doc); one that was stopped answers with a refusal of kind
+    /// Ask every command sent so far to stop (module doc, "Cancellation"):
+    /// one not yet started does nothing, and a running one stops where the
+    /// library lets it. Either answers with a refusal of kind
     /// [`RefusalKind::Cancelled`]. Commands sent afterwards are not
     /// affected.
     pub fn cancel(&self) {
@@ -293,6 +317,30 @@ struct Worker<C: Connect> {
     idle: Duration,
     last_activity: Instant,
     next_plan: u64,
+}
+
+/// Whether a command does nothing when a cancel reached it before it
+/// started. Not the ones that only drop something: a Lock sent before a
+/// cancel still locks.
+fn stops_before_starting(command: &Command) -> bool {
+    !matches!(
+        command,
+        Command::Lock | Command::DiscardPlan | Command::CreateAbandon | Command::ClearNode
+    )
+}
+
+/// Whether a command carries something the person typed (a password, a
+/// phrase, confirmation words), which restarts the idle period. Other
+/// commands do not: an interface that polls the tip or refreshes on a timer
+/// must not keep the store open (docs/DECISIONS.md D24).
+fn typed_by_the_person(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Unlock { .. }
+            | Command::CreateBegin { .. }
+            | Command::CreateConfirm { .. }
+            | Command::CreateFromPhrase { .. }
+    )
 }
 
 fn refused(kind: RefusalKind, text: impl Into<String>) -> Reply {
@@ -450,6 +498,55 @@ fn reference_text(field: &[u8]) -> String {
     String::from_utf8_lossy(&field[..end]).into_owned()
 }
 
+/// Refuse a key index past [`crate::MAX_SCAN_TO`] for a walk the person
+/// named (`what` is "a scan to key index" or "an advance to key index").
+fn within_scan_bound(what: &str, index: u32) -> Result<(), Refusal> {
+    if index <= crate::MAX_SCAN_TO {
+        return Ok(());
+    }
+    Err(Refusal {
+        kind: RefusalKind::OutOfRange,
+        text: format!(
+            "{what} {index} is further than this wallet goes, which is {}. The library derives \
+             every key position up to the index named, and the wallet cannot lock while it \
+             does. Nothing was done.",
+            crate::MAX_SCAN_TO
+        ),
+    })
+}
+
+/// The diagnostic scope for a scan to `to`, inclusive: the command line's
+/// (`cli::reconcile::scope_to`). `to` is bounded by [`within_scan_bound`].
+fn scan_scope(base: ScanScope, to: Option<u32>) -> ScanScope {
+    match to {
+        Some(m) => base.with_ceiling(m.saturating_add(1)),
+        None => base,
+    }
+}
+
+/// The command line's bounds on a discovery sweep (`cli::args`'s `--to`),
+/// for its two reasons.
+fn discover_bound(to: u32) -> Result<(), Refusal> {
+    const AT_ZERO: &str = "A sweep to account 0 asks only about the account a new store \
+                           already holds, so it can find nothing the store does not record.";
+    const PAST_MAX: &str = "Every account in the sweep is one request to the node, so the \
+                            bound is this wallet's own: it keeps a mistyped number from \
+                            becoming thousands of requests.";
+    let max = crate::DISCOVER_MAX_TO;
+    let why = match to {
+        0 => AT_ZERO,
+        t if t > max => PAST_MAX,
+        _ => return Ok(()),
+    };
+    Err(Refusal {
+        kind: RefusalKind::OutOfRange,
+        text: format!(
+            "a discovery sweep goes to an account from 1 to {max}, and {to} is outside that. \
+             {why} Nothing was done."
+        ),
+    })
+}
+
 /// What the node says before the wallet is opened (module doc).
 enum Precheck {
     /// At least one tag is on the ledger, or the store holds none: open.
@@ -601,10 +698,28 @@ impl<C: Connect> Worker<C> {
             };
             match envelope {
                 Envelope::Command(id, command) => {
-                    self.last_activity = Instant::now();
-                    let reply = self.handle(id, command);
+                    let started = Instant::now();
+                    let typed = typed_by_the_person(&command);
+                    let reply = if stops_before_starting(&command) && self.stop_asked(id)() {
+                        // Sent before a cancel and not yet started: it does
+                        // nothing at all (module doc). This is what keeps a
+                        // spend queued behind a slow command from signing
+                        // after a cancel or a move to the background.
+                        Reply::Refused(library(Error::Cancelled))
+                    } else {
+                        self.handle(id, command)
+                    };
                     self.emit(Event::Done { id, reply });
-                    self.last_activity = Instant::now();
+                    // The idle period (module doc, "Lifecycle"): the time a
+                    // command ran is not idle, and a command is not itself
+                    // activity unless the person typed it.
+                    self.last_activity = if typed {
+                        Instant::now()
+                    } else {
+                        self.last_activity
+                            .checked_add(started.elapsed())
+                            .unwrap_or_else(Instant::now)
+                    };
                 }
                 Envelope::Touch => self.last_activity = Instant::now(),
                 Envelope::Background => self.lock(LockReason::Background),
@@ -617,13 +732,26 @@ impl<C: Connect> Worker<C> {
     }
 
     /// Drop the session and everything pending. `Locked` is reported when a
-    /// store was open.
+    /// store was open or a recovery phrase was waiting, so a screen showing
+    /// either learns that it is gone.
     fn lock(&mut self, reason: LockReason) {
+        let phrase = self.create.take().is_some();
+        self.plan = None;
+        let was_open = !matches!(
+            core::mem::replace(&mut self.session, Session::Locked),
+            Session::Locked
+        );
+        if was_open || phrase {
+            self.emit(Event::Locked { reason });
+        }
+    }
+
+    /// The store was dropped on the way to reopening it (`reopen`): report
+    /// it as closed, with everything pending.
+    fn closed(&mut self, reason: LockReason) {
         self.create = None;
         self.plan = None;
-        if let Session::Locked = core::mem::replace(&mut self.session, Session::Locked) {
-            return;
-        }
+        self.session = Session::Locked;
         self.emit(Event::Locked { reason });
     }
 
@@ -950,56 +1078,128 @@ impl<C: Connect> Worker<C> {
                 });
                 self.view().ok_or_else(Self::lost)
             }
-            Precheck::OnLedger => match Wallet::open(store, client, master.as_ref()) {
-                Ok(wallet) => {
-                    let rows = wallet_rows(&wallet)?;
-                    self.session = Session::Wallet(WalletSession {
-                        dir,
-                        node: url,
-                        wallet,
-                        master,
-                        rows,
-                    });
-                    self.view().ok_or_else(Self::lost)
-                }
-                Err(refusal) => {
-                    let text = text::page(&[], Outcome::StartupRefused(Box::new(refusal.clone())));
-                    let Some(password) = password else {
-                        self.session = Session::Locked;
-                        self.emit(Event::Locked {
-                            reason: LockReason::WalletRefused,
-                        });
-                        return Err(Refusal {
-                            kind: RefusalKind::WalletRefused,
-                            text,
-                        });
-                    };
-                    self.busy(id, Activity::DerivingKey);
-                    let store = open_store(&dir, password)?;
-                    let master = master_of(&store)?;
-                    let (mut rows, _) = store_rows::<C::Transport>(&store, None, master.as_ref())?;
-                    for d in &refusal.diverged {
-                        update_row(
-                            &mut rows,
-                            &d.tag(),
-                            AccountState::from_divergence(d),
-                            false,
-                            None,
-                        );
-                    }
-                    let client = self.client().ok();
+            Precheck::OnLedger => {
+                // The comparison `Wallet::open` makes for each account, made
+                // first: when every account diverges it would refuse and drop
+                // the store, so the store stays open here instead, with the
+                // library's own refusal page.
+                let (rows, diverged) = store_rows(&store, Some(&client), master.as_ref())?;
+                if !rows.is_empty() && diverged.len() == rows.len() {
+                    let accounts = rows.len();
                     self.session = Session::Store(StoreSession {
                         dir,
                         store,
                         master,
-                        client,
+                        client: Some((url, client)),
                         rows,
-                        notice: Some(text),
+                        notice: Some(text::page(
+                            &[],
+                            Outcome::StartupRefused(Box::new(StartupRefusal {
+                                diverged,
+                                accounts,
+                            })),
+                        )),
                     });
-                    self.view().ok_or_else(Self::lost)
+                    return self.view().ok_or_else(Self::lost);
                 }
-            },
+                self.open_wallet(id, dir, store, master, url, client, password)
+            }
         }
+    }
+
+    /// `Wallet::open`, once at least one account reconciled. It can still
+    /// refuse if the chain moved since; then the library has dropped the
+    /// store, and it is reopened with the password when one is at hand.
+    #[allow(clippy::too_many_arguments)]
+    fn open_wallet(
+        &mut self,
+        id: RequestId,
+        dir: PathBuf,
+        store: Keystore<Disk>,
+        master: Option<Secret<SEED_LEN>>,
+        url: String,
+        client: MeshClient<C::Transport>,
+        password: Option<&SecretText>,
+    ) -> Result<WalletView, Refusal> {
+        match Wallet::open(store, client, master.as_ref()) {
+            Ok(wallet) => {
+                let rows = wallet_rows(&wallet)?;
+                self.session = Session::Wallet(WalletSession {
+                    dir,
+                    node: url,
+                    wallet,
+                    master,
+                    rows,
+                });
+                self.view().ok_or_else(Self::lost)
+            }
+            Err(refusal) => {
+                let text = text::page(&[], Outcome::StartupRefused(Box::new(refusal.clone())));
+                let Some(password) = password else {
+                    // `reopen` reports the store as closed.
+                    return Err(Refusal {
+                        kind: RefusalKind::WalletRefused,
+                        text,
+                    });
+                };
+                self.busy(id, Activity::DerivingKey);
+                // The startup page goes out whatever happens next: it
+                // says why the wallet did not open.
+                let with_page = |r: Refusal| Refusal {
+                    kind: r.kind,
+                    text: format!("{text}\n\n{}", r.text),
+                };
+                let store = open_store(&dir, password).map_err(with_page)?;
+                let master = master_of(&store).map_err(with_page)?;
+                let (mut rows, _) =
+                    store_rows::<C::Transport>(&store, None, master.as_ref()).map_err(with_page)?;
+                for d in &refusal.diverged {
+                    update_row(
+                        &mut rows,
+                        &d.tag(),
+                        AccountState::from_divergence(d),
+                        false,
+                        None,
+                    );
+                }
+                let client = self.client().ok();
+                self.session = Session::Store(StoreSession {
+                    dir,
+                    store,
+                    master,
+                    client,
+                    rows,
+                    notice: Some(text),
+                });
+                self.view().ok_or_else(Self::lost)
+            }
+        }
+    }
+
+    /// Reopen a store taken out of an open session (a refresh against a new
+    /// node, an advance, a restore). Any pending plan is dropped: it was laid
+    /// out against the session that is gone. When the store is lost on the
+    /// way (the library refused the wallet, or the store could not be read
+    /// back), it is reported closed.
+    fn reopen(
+        &mut self,
+        id: RequestId,
+        dir: PathBuf,
+        store: Keystore<Disk>,
+        master: Option<Secret<SEED_LEN>>,
+    ) -> Result<WalletView, Refusal> {
+        self.plan = None;
+        let opened = self.open_session(id, dir, store, master, None);
+        if let Err(r) = &opened
+            && matches!(self.session, Session::Locked)
+        {
+            self.closed(if r.kind == RefusalKind::WalletRefused {
+                LockReason::WalletRefused
+            } else {
+                LockReason::ReopenFailed
+            });
+        }
+        opened
     }
 
     fn lost() -> Refusal {
@@ -1039,12 +1239,12 @@ impl<C: Connect> Worker<C> {
             }
             Session::Wallet(w) => {
                 let (store, _old) = w.wallet.into_parts();
-                match self.open_session(id, w.dir, store, w.master, None) {
+                match self.reopen(id, w.dir, store, w.master) {
                     Ok(view) => Reply::Wallet(view),
                     Err(r) => Reply::Refused(r),
                 }
             }
-            Session::Store(s) => match self.open_session(id, s.dir, s.store, s.master, None) {
+            Session::Store(s) => match self.reopen(id, s.dir, s.store, s.master) {
                 Ok(view) => Reply::Wallet(view),
                 Err(r) => Reply::Refused(r),
             },
@@ -1069,24 +1269,24 @@ impl<C: Connect> Worker<C> {
                 return Reply::Refused(library(Error::Cancelled));
             }
             let reconciled_at_open = w.wallet.accounts().iter().any(|(t, _)| t == tag);
-            let state = match key_access(w.wallet.store(), tag, w.master.as_ref()) {
-                Err(e) => AccountState::Diverged {
-                    report: text::refusal(e),
-                    advance_to: None,
-                },
-                Ok(access) => match w.wallet.status_with(
+            let read = match recon::access_for(w.wallet.store(), tag, w.master.as_ref()) {
+                Ok(access) => w.wallet.status_with(
                     tag,
                     &access,
                     &ScanScope::DIAGNOSTIC,
                     &Cancel::when(&asked),
-                ) {
-                    Ok(status) => AccountState::from_status(&status),
-                    Err(Divergence::CannotReconcile {
-                        cause: Error::Cancelled,
-                        ..
-                    }) => return Reply::Refused(library(Error::Cancelled)),
-                    Err(d) => AccountState::from_divergence(&d),
-                },
+                ),
+                Err(d) => Err(d),
+            };
+            // The library reports a walk it was told to stop as a
+            // divergence whose search was cut short; that is not a finding
+            // about the account, so nothing read is applied.
+            if asked() {
+                return Reply::Refused(library(Error::Cancelled));
+            }
+            let state = match read {
+                Ok(status) => AccountState::from_status(&status),
+                Err(d) => AccountState::from_divergence(&d),
             };
             let spendable = reconciled_at_open && matches!(state, AccountState::InSync { .. });
             fresh.push((*tag, state, spendable));
@@ -1113,6 +1313,7 @@ impl<C: Connect> Worker<C> {
             Session::Store(s) => (&s.store, s.master.as_ref()),
             Session::Wallet(w) => (w.wallet.store(), w.master.as_ref()),
         };
+        // The command line's `address <tag>` (`cli::cmd_address`).
         let found = key_access(store, &tag, master)
             .and_then(|access| address::address_of(store, &tag, &access));
         match found {
@@ -1130,6 +1331,10 @@ impl<C: Connect> Worker<C> {
                     },
                 ),
             }),
+            Err(Error::NoSuchAccount) => refused(
+                RefusalKind::Library,
+                text::page(&[], Outcome::NoAccountToAddress { tag }),
+            ),
             Err(e) => Reply::Refused(library(e)),
         }
     }
@@ -1315,15 +1520,13 @@ impl<C: Connect> Worker<C> {
             return;
         };
         let reconciled_at_open = w.wallet.accounts().iter().any(|(t, _)| t == tag);
-        let state = match key_access(w.wallet.store(), tag, w.master.as_ref()) {
-            Err(e) => AccountState::Diverged {
-                report: text::refusal(e),
-                advance_to: None,
-            },
-            Ok(access) => match w.wallet.status(tag, &access) {
-                Ok(status) => AccountState::from_status(&status),
-                Err(d) => AccountState::from_divergence(&d),
-            },
+        let read = match recon::access_for(w.wallet.store(), tag, w.master.as_ref()) {
+            Ok(access) => w.wallet.status(tag, &access),
+            Err(d) => Err(d),
+        };
+        let state = match read {
+            Ok(status) => AccountState::from_status(&status),
+            Err(d) => AccountState::from_divergence(&d),
         };
         let spendable = reconciled_at_open && matches!(state, AccountState::InSync { .. });
         let index = w
@@ -1512,34 +1715,51 @@ impl<C: Connect> Worker<C> {
 
     fn status(&mut self, id: RequestId, account: AccountId, scan_to: Option<u32>) -> Reply {
         let tag = account.tag();
-        let scope = match scan_to {
-            Some(m) => ScanScope::DIAGNOSTIC.with_ceiling(m.saturating_add(1)),
-            None => ScanScope::DIAGNOSTIC,
-        };
+        if let Some(m) = scan_to
+            && let Err(r) = within_scan_bound("a scan to key index", m)
+        {
+            return Reply::Refused(r);
+        }
+        let scope = scan_scope(ScanScope::DIAGNOSTIC, scan_to);
         let asked = self.stop_asked(id);
-        let result = match &self.session {
+        let fresh;
+        let (store, client, master) = match &self.session {
             Session::Locked => return Self::not_unlocked(),
             Session::Store(s) => {
-                let Some((_, client)) = &s.client else {
-                    return refused(
-                        RefusalKind::NoNode,
-                        "no node was asked; choose one and refresh first",
-                    );
+                let client = match &s.client {
+                    Some((_, c)) => c,
+                    None => match self.client() {
+                        Ok((_, c)) => {
+                            fresh = c;
+                            &fresh
+                        }
+                        Err(r) => return Reply::Refused(r),
+                    },
                 };
-                self.busy(id, Activity::AskingNode);
-                reconcile::account_status(&s.store, client, &tag, s.master.as_ref(), scan_to)
+                (&s.store, client, s.master.as_ref())
             }
-            Session::Wallet(w) => {
-                self.busy(id, Activity::AskingNode);
-                match key_access(w.wallet.store(), &tag, w.master.as_ref()) {
-                    Ok(access) => {
-                        w.wallet
-                            .status_with(&tag, &access, &scope, &Cancel::when(&asked))
-                    }
-                    Err(e) => Err(Divergence::CannotReconcile { tag, cause: e }),
-                }
-            }
+            Session::Wallet(w) => (w.wallet.store(), w.wallet.client(), w.master.as_ref()),
         };
+        self.busy(id, Activity::AskingNode);
+        // The command line's `status` (`cli::reconcile::account_status`):
+        // the same two public calls, with a cancel the person can raise.
+        let result = match recon::access_for(store, &tag, master) {
+            Ok(access) => recon::reconcile_account_with(
+                store,
+                client,
+                &tag,
+                &access,
+                &scope,
+                &Cancel::when(&asked),
+            ),
+            Err(d) => Err(d),
+        };
+        // A walk told to stop comes back as a divergence whose search was
+        // cut short; it says nothing about the account, so it is not shown
+        // as a report or applied to the row.
+        if asked() {
+            return Reply::Refused(library(Error::Cancelled));
+        }
         // The command line's classification (`cli::cmd_status`): a report
         // about the account is an answer, not a refusal.
         let (state, outcome) = match result {
@@ -1547,10 +1767,6 @@ impl<C: Connect> Worker<C> {
                 AccountState::from_status(&status),
                 Outcome::Status { tag, status },
             ),
-            Err(Divergence::CannotReconcile {
-                cause: Error::Cancelled,
-                ..
-            }) => return Reply::Refused(library(Error::Cancelled)),
             Err(Divergence::CannotReconcile {
                 cause: Error::NoSuchAccount,
                 ..
@@ -1625,6 +1841,9 @@ impl<C: Connect> Worker<C> {
 
     fn reconcile(&mut self, id: RequestId, account: AccountId, advance_to: u32) -> Reply {
         let tag = account.tag();
+        if let Err(r) = within_scan_bound("an advance to key index", advance_to) {
+            return Reply::Refused(r);
+        }
         let TakenStore {
             dir,
             mut store,
@@ -1637,7 +1856,8 @@ impl<C: Connect> Worker<C> {
         self.busy(id, Activity::AskingNode);
         let reviewed =
             reconcile::advance_acknowledged(&mut store, &client, &tag, master.as_ref(), advance_to);
-        let (advanced_to, page) = match reviewed {
+        // The command line's `cmd_reconcile`: an error is `Outcome::Failed`.
+        let (advanced_to, outcome) = match reviewed {
             Ok(reviewed) => {
                 let advanced = match &reviewed.outcome {
                     reconcile::Outcome::Advanced { index } => Some(*index),
@@ -1646,21 +1866,20 @@ impl<C: Connect> Worker<C> {
                 let upgraded = store.upgraded_from();
                 (
                     advanced,
-                    text::page(
-                        &[],
-                        Outcome::Reconciled {
-                            tag,
-                            advance_to,
-                            reviewed,
-                            upgraded,
-                        },
-                    ),
+                    Outcome::Reconciled {
+                        tag,
+                        advance_to,
+                        reviewed,
+                        upgraded,
+                    },
                 )
             }
-            Err(e) => (None, text::refusal(e)),
+            Err(e) => (None, Outcome::Failed(e)),
         };
-        let view = self.open_session(id, dir, store, master, None).ok();
+        let (page, ok) = text::report(&[], outcome);
+        let view = self.reopen(id, dir, store, master).ok();
         Reply::Reconciled {
+            ok,
             advanced_to,
             text: page,
             view,
@@ -1668,6 +1887,11 @@ impl<C: Connect> Worker<C> {
     }
 
     fn restore(&mut self, id: RequestId, account_index: u32, scan_to: Option<u32>) -> Reply {
+        if let Some(m) = scan_to
+            && let Err(r) = within_scan_bound("a scan to key index", m)
+        {
+            return Reply::Refused(r);
+        }
         let TakenStore {
             dir,
             mut store,
@@ -1695,13 +1919,19 @@ impl<C: Connect> Worker<C> {
                 }
             }
         };
-        let page = text::page(&[], outcome);
-        let view = self.open_session(id, dir, store, master, None).ok();
-        Reply::Restored { text: page, view }
+        let (page, ok) = text::report(&[], outcome);
+        let view = self.reopen(id, dir, store, master).ok();
+        Reply::Restored {
+            ok,
+            text: page,
+            view,
+        }
     }
 
     fn discover(&mut self, id: RequestId, to: u32) -> Reply {
-        let to = to.min(crate::DISCOVER_MAX_TO);
+        if let Err(r) = discover_bound(to) {
+            return Reply::Refused(r);
+        }
         let fresh;
         let (store, master, client) = match &self.session {
             Session::Locked => return Self::not_unlocked(),

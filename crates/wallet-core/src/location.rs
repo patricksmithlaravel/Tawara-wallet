@@ -425,11 +425,18 @@ fn starts_with(dir: &Path, base: &Path, platform: Platform) -> bool {
 
 /// A path's components by the platform's own rules, whichever platform runs
 /// the code: Windows separates on `\` and `/`, the others on `/`. `.` and
-/// empty components are dropped; nothing else is normalised.
+/// empty components are dropped; nothing else is normalised, except that a
+/// Windows verbatim prefix is read as the path it spells: `canonicalize`
+/// returns `\\?\C:\Users\..` and `\\?\UNC\server\share\..`, which must
+/// compare equal to `C:\Users\..` and `\\server\share\..`.
 fn parts(path: &Path, platform: Platform) -> Vec<String> {
     let text = path.to_string_lossy();
     let split: Vec<&str> = if platform == Platform::Windows {
-        text.split(['\\', '/']).collect()
+        let plain = text
+            .strip_prefix(r"\\?\UNC\")
+            .or_else(|| text.strip_prefix(r"\\?\"))
+            .unwrap_or(&text);
+        plain.split(['\\', '/']).collect()
     } else {
         text.split('/').collect()
     };
@@ -655,6 +662,30 @@ mod tests {
         )
         .unwrap();
         assert_eq!(w.service, "Dropbox");
+    }
+
+    #[test]
+    fn a_windows_verbatim_path_is_the_path_it_spells() {
+        // What `canonicalize` returns for a folder reached through a link.
+        let env = Environment::of(&[
+            ("USERPROFILE", r"C:\Users\ann"),
+            ("OneDrive", r"C:\Users\ann\OneDrive"),
+        ]);
+        let w = sync_warning_lexical(
+            Path::new(r"\\?\C:\Users\ann\OneDrive\w"),
+            Platform::Windows,
+            &env,
+        )
+        .unwrap();
+        assert_eq!(w.service, "OneDrive");
+        assert_eq!(
+            parts(Path::new(r"\\?\UNC\srv\share\w"), Platform::Windows),
+            parts(Path::new(r"\\srv\share\w"), Platform::Windows)
+        );
+        assert_eq!(
+            parts(Path::new(r"\\?\C:\Users"), Platform::Windows),
+            ["C:", "Users"]
+        );
     }
 
     #[test]

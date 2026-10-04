@@ -23,7 +23,8 @@ pub enum Event {
     Done { id: RequestId, reply: Reply },
     /// The store was closed: its secret is dropped and its lock released.
     /// Sent whenever an open store closes, for any reason, including in
-    /// answer to [`crate::Command::Lock`].
+    /// answer to [`crate::Command::Lock`], and whenever a recovery phrase
+    /// waiting for its confirmation is dropped by locking.
     Locked { reason: LockReason },
     /// The worker has stopped and will answer nothing more. `panicked` is
     /// true when it stopped because of a fault rather than a shutdown; the
@@ -53,10 +54,16 @@ pub enum LockReason {
     Background,
     /// Another store was unlocked in its place.
     Replaced,
-    /// The wallet was reopened to reconcile again and the library refused
-    /// it: every account diverged. The library drops the store when it
-    /// refuses, so it cannot stay open; unlocking again shows why.
+    /// The wallet was reopened (a refresh against a new node, an advance,
+    /// a restore) and the library refused it. The worker opens the wallet
+    /// only once an account has reconciled, so this means the chain moved in
+    /// between. The library drops the store when it refuses, so it cannot
+    /// stay open; the command's refusal says why, and unlocking again shows
+    /// the state.
     WalletRefused,
+    /// The store was reopened after an operation and could not be read
+    /// back; the command's refusal says why.
+    ReopenFailed,
     /// The worker is shutting down.
     Shutdown,
 }
@@ -109,17 +116,20 @@ pub enum Reply {
         state: AccountState,
         text: String,
     },
-    /// What an acknowledged advance did. `advanced_to` is the new index
-    /// when it moved. `view` is the store reopened afterwards, or `None`
-    /// when reopening it was refused (see [`LockReason::WalletRefused`]).
+    /// What an acknowledged advance did. `ok` is whether the library counts
+    /// it as done (the command line's exit status 0); `advanced_to` is the
+    /// new index when it moved. `view` is the store reopened afterwards, or
+    /// `None` when it could not be ([`Event::Locked`] says why).
     Reconciled {
+        ok: bool,
         advanced_to: Option<u32>,
         text: String,
         view: Option<WalletView>,
     },
-    /// What a restore did, and the store reopened afterwards (or `None`, as
-    /// for [`Reply::Reconciled`]).
+    /// What a restore did, with `ok` and `view` as for
+    /// [`Reply::Reconciled`].
     Restored {
+        ok: bool,
         text: String,
         view: Option<WalletView>,
     },
@@ -273,6 +283,10 @@ pub enum RefusalKind {
     Entropy,
     /// The person cancelled it.
     Cancelled,
+    /// A number is outside what the worker takes: a scan or an advance
+    /// further than [`crate::MAX_SCAN_TO`], or a discovery bound outside
+    /// `1..=`[`crate::DISCOVER_MAX_TO`].
+    OutOfRange,
     /// Any other refusal from the library; `text` is its own.
     Library,
 }

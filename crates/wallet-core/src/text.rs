@@ -15,6 +15,7 @@
 //! paraphrase, is phase 3's, with the owner's approval.
 
 use mochimo_crypto::Error;
+use mochimo_crypto::cli::Code;
 use mochimo_crypto::cli::outcome::{Decided, Outcome};
 use mochimo_crypto::cli::render;
 use mochimo_crypto::recon::Divergence;
@@ -27,6 +28,16 @@ pub(crate) fn page(standing: &[Divergence], outcome: Outcome) -> String {
         outcome,
     })
     .text
+}
+
+/// [`page`], and whether the command line would exit 0 with it: whether
+/// the library counts what it reports as done.
+pub(crate) fn report(standing: &[Divergence], outcome: Outcome) -> (String, bool) {
+    let report = render::render(&Decided {
+        standing: standing.to_vec(),
+        outcome,
+    });
+    (report.text, report.code == Code::Ok)
 }
 
 /// The library's notice that a store is not whole, for these diverged

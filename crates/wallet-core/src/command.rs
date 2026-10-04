@@ -66,7 +66,9 @@ pub enum Command {
     /// the node when one is chosen. Any store already open is locked first.
     Unlock { dir: PathBuf, password: SecretText },
     /// Lock: drop the store, its secret and its lock, and any pending phrase
-    /// or plan.
+    /// or plan. Like every command it runs after the ones sent before it;
+    /// [`crate::WorkerHandle::cancel`] first stops those, as
+    /// [`crate::WorkerHandle::background`] does.
     Lock,
     /// Ask the node about every account again. With the wallet open, each
     /// account's status is read fresh; with only the store open, opening
@@ -96,7 +98,9 @@ pub enum Command {
     SubmitArtifact { artifact_hex: String },
 
     /// Reconcile one account now and report, whatever its state. `scan_to`
-    /// widens the search for where the chain holds it.
+    /// sets how far the search for where the chain holds it goes (key
+    /// indices `0..=scan_to`, beside the window around the store's index),
+    /// at most [`crate::MAX_SCAN_TO`].
     Status {
         account: AccountId,
         scan_to: Option<u32>,
@@ -104,15 +108,19 @@ pub enum Command {
     /// The acknowledged advance for a diverged account: move it to
     /// `advance_to` only if the library's live report names exactly that
     /// index. The whole store is reconciled and reported first.
+    /// `advance_to` is at most [`crate::MAX_SCAN_TO`].
     Reconcile { account: AccountId, advance_to: u32 },
     /// Find where derived account `account_index` sits on the chain and put
-    /// it in the store at that index.
+    /// it in the store at that index. `scan_to`, at most
+    /// [`crate::MAX_SCAN_TO`], widens the search as for
+    /// [`Command::Status`].
     Restore {
         account_index: u32,
         scan_to: Option<u32>,
     },
-    /// Ask the node about derived accounts `0..=to` (at most
-    /// [`crate::DISCOVER_MAX_TO`]); nothing is written.
+    /// Ask the node about derived accounts `0..=to`, `to` from 1 to
+    /// [`crate::DISCOVER_MAX_TO`] as at the command line; nothing is
+    /// written.
     Discover { to: u32 },
 
     /// The node's chain tip.
