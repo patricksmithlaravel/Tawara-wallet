@@ -524,7 +524,7 @@ impl<'ast> syn::visit::Visit<'ast> for Includes {
             .path
             .segments
             .last()
-            .is_some_and(|s| s.ident == "include")
+            .is_some_and(|s| s.ident.unraw() == "include")
         {
             self.0.push(
                 syn::parse2::<syn::LitStr>(mac.tokens.clone())
@@ -572,10 +572,17 @@ fn includes_in(parsed: &Parsed) -> Vec<Option<String>> {
 /// build compiles. rustc accepts an out-of-line `mod` inside a block (a
 /// function body, a `const` initialiser) when it carries a `#[path]`, and the
 /// walk reads `mod` only at item level; a macro's tokens are raw to `syn`, so a
-/// `mod` or `include!` it expands to is not seen; and a macro from a
+/// `mod` or `include!` it expands to is not seen; `use std::include as load;`
+/// gives `include!` a name the walk does not know; and a macro from a
 /// dependency can expand to `include!` of a path it is given. Each of these is
 /// refused rather than modelled, which keeps the walk's set of production
 /// files complete, and the exemption of test-only files sound.
+///
+/// The crate's own code cannot reach `include!` by another route. A macro
+/// defined in a dependency can build any path it likes, so for those the walk
+/// refuses only what a hand-off looks like: a string, as rustc reads it, that
+/// may name a `.rs` file. Dependencies themselves are reviewed through
+/// `Cargo.lock` and `deny.toml`.
 #[derive(Default)]
 struct Unfollowed {
     block_depth: usize,
@@ -604,7 +611,7 @@ impl<'ast> syn::visit::Visit<'ast> for Unfollowed {
             .path
             .segments
             .last()
-            .is_some_and(|s| s.ident == "include");
+            .is_some_and(|s| s.ident.unraw() == "include");
         if !is_include {
             let name = mac.path.to_token_stream().to_string().replace(' ', "");
             let mut words = Vec::new();
@@ -614,25 +621,99 @@ impl<'ast> syn::visit::Visit<'ast> for Unfollowed {
                     "a `{name}!` whose tokens declare a module or use `include!`"
                 ));
             } else if names_rust_file(mac.tokens.clone()) {
-                self.found
-                    .push(format!("a `{name}!` given the name of a `.rs` file"));
+                self.found.push(format!(
+                    "a `{name}!` given a string that may name a `.rs` file"
+                ));
             }
         }
         syn::visit::visit_macro(self, mac);
     }
+
+    fn visit_use_rename(&mut self, rename: &'ast syn::UseRename) {
+        if rename.ident.unraw() == "include" {
+            self.found
+                .push(format!("`include` imported as `{}`", rename.rename.unraw()));
+        }
+        syn::visit::visit_use_rename(self, rename);
+    }
 }
 
-/// Whether a token stream holds a string literal naming a `.rs` file.
+/// Whether a token stream holds a string that may name a `.rs` file, judged
+/// by its value as rustc reads it, not its spelling: a literal whose value
+/// ends in `.rs` once escapes are decoded (`"shared.r\x73"` is `shared.rs`),
+/// a `concat!` or `stringify!` whose value does, or a `concat!` with a part
+/// this check cannot evaluate (an `env!`, a macro variable), since `concat!`
+/// is how a path is put together from pieces. The suffix is compared without
+/// case: on macOS and Windows `shared.RS` opens `shared.rs`. A bare `env!` is
+/// not refused: its value is set outside the source, like any path a
+/// dependency's macro builds for itself, and refusing it would refuse every
+/// version string.
 fn names_rust_file(tokens: proc_macro2::TokenStream) -> bool {
-    tokens.into_iter().any(|tt| match tt {
-        proc_macro2::TokenTree::Literal(lit) => lit
-            .to_string()
-            .trim_end_matches('#')
-            .trim_end_matches('"')
-            .ends_with(".rs"),
+    let is_rust_file = |v: &str| v.to_ascii_lowercase().ends_with(".rs");
+    let tokens: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
+    tokens.iter().enumerate().any(|(i, tt)| match tt {
+        proc_macro2::TokenTree::Literal(lit) => literal_text(lit).is_some_and(|t| is_rust_file(&t)),
         proc_macro2::TokenTree::Group(g) => names_rust_file(g.stream()),
-        _ => false,
+        proc_macro2::TokenTree::Ident(_) => {
+            string_macro(&tokens[i..]).is_some_and(|value| value.is_none_or(|v| is_rust_file(&v)))
+        }
+        proc_macro2::TokenTree::Punct(_) => false,
     })
+}
+
+/// A literal's value as `concat!` would write it, with escapes decoded.
+fn literal_text(lit: &proc_macro2::Literal) -> Option<String> {
+    match syn::Lit::new(lit.clone()) {
+        syn::Lit::Str(s) => Some(s.value()),
+        syn::Lit::ByteStr(s) => Some(String::from_utf8_lossy(&s.value()).into_owned()),
+        syn::Lit::CStr(s) => Some(s.value().to_string_lossy().into_owned()),
+        syn::Lit::Char(c) => Some(c.value().to_string()),
+        syn::Lit::Int(n) => Some(n.base10_digits().to_string()),
+        syn::Lit::Float(n) => Some(n.base10_digits().to_string()),
+        _ => None,
+    }
+}
+
+/// For tokens that start with `concat!(..)` or `stringify!(..)`: `Some` of
+/// the string it expands to, where this check can evaluate it.
+fn string_macro(tokens: &[proc_macro2::TokenTree]) -> Option<Option<String>> {
+    use proc_macro2::TokenTree::{Group, Ident, Punct};
+    let [Ident(name), Punct(bang), Group(args), ..] = tokens else {
+        return None;
+    };
+    if bang.as_char() != '!' {
+        return None;
+    }
+    match name.unraw().to_string().as_str() {
+        // rustc's stringify! spaces tokens its own way; `.rs` at the end
+        // survives any spacing once whitespace is dropped.
+        "stringify" => Some(Some(args.stream().to_string().split_whitespace().collect())),
+        "concat" => Some(concat_value(args.stream())),
+        _ => None,
+    }
+}
+
+/// `concat!`'s value: each comma-separated part is a literal, a negative
+/// number, `true` or `false`, or a nested `concat!` or `stringify!`. Anything
+/// else is `None`.
+fn concat_value(args: proc_macro2::TokenStream) -> Option<String> {
+    use proc_macro2::TokenTree::{Ident, Literal, Punct};
+    let tokens: Vec<proc_macro2::TokenTree> = args.into_iter().collect();
+    let mut value = String::new();
+    for part in tokens.split(|tt| matches!(tt, Punct(p) if p.as_char() == ',')) {
+        match part {
+            [] => {}
+            [Literal(lit)] => value.push_str(&literal_text(lit)?),
+            [Punct(minus), Literal(lit)] if minus.as_char() == '-' => {
+                value.push('-');
+                value.push_str(&literal_text(lit)?);
+            }
+            [Ident(b)] if *b == "true" || *b == "false" => value.push_str(&b.to_string()),
+            [_, _, _] => value.push_str(&string_macro(part)??),
+            _ => return None,
+        }
+    }
+    Some(value)
 }
 
 fn unfollowed_in(parsed: &Parsed) -> Vec<String> {
@@ -1315,7 +1396,7 @@ fn the_source_walk_scans_what_rustc_may_compile() {
 /// What the walk cannot read, it refuses rather than passes.
 #[test]
 fn the_source_walk_refuses_what_it_cannot_read() {
-    let cases: [(&str, &str); 6] = [
+    let cases: [(&str, &str); 13] = [
         (
             "include!(concat!(env!(\"OUT_DIR\"), \"/generated.rs\"));\n",
             "not a string literal",
@@ -1338,7 +1419,33 @@ fn the_source_walk_refuses_what_it_cannot_read() {
         ),
         (
             "some_dep::load!(\"../../outside.rs\");\n",
-            "given the name of a `.rs` file",
+            "may name a `.rs` file",
+        ),
+        // The value counts, not the spelling: this is `shared.rs`.
+        (
+            "some_dep::load!(\"shared.r\\x73\");\n",
+            "may name a `.rs` file",
+        ),
+        ("some_dep::load!(\"shared.RS\");\n", "may name a `.rs` file"),
+        (
+            "some_dep::load!(concat!(\"shared.\", 'r', stringify!(s)));\n",
+            "may name a `.rs` file",
+        ),
+        (
+            "some_dep::load!(concat!(\"shared\", env!(\"SUFFIX\")));\n",
+            "may name a `.rs` file",
+        ),
+        (
+            "use std::include as load;\nload!(\"shared.r\\x73\");\n",
+            "`include` imported as `load`",
+        ),
+        (
+            "pub fn f() { use core::{r#include as load}; }\n",
+            "`include` imported as `load`",
+        ),
+        (
+            "r#include!(concat!(\"shared\", \".rs\"));\n",
+            "not a string literal",
         ),
     ];
     for (i, (lib, expected)) in cases.into_iter().enumerate() {

@@ -272,12 +272,24 @@ that a machine can check, with no network:
   in non-test code it refuses as unreadable rather than passing: a
   non-literal `include!`, a conditional path on an inline module, an
   out-of-line `mod` inside a block (rustc loads one there by `#[path]`), a
-  macro whose tokens declare a module or use `include!`, and a macro given
-  the name of a `.rs` file (a macro from a dependency could expand to
-  `include!`). That keeps the walk's production set complete, which is what
-  makes the exemption sound: a file a non-test build compiles is never
-  exempt, even when a test also reaches it. In test code, a `mod` inside a
-  block is followed, so a fixture it loads is exempt. In every scanned file, code under
+  macro whose tokens declare a module or use `include!`, `include` imported
+  under another name (`use std::include as load;`), and a macro given a
+  string that may name a `.rs` file (a macro from a dependency could expand
+  to `include!`). A string is judged by its value as rustc reads it, not its
+  spelling: escapes are decoded (`"shared.r\x73"` is `shared.rs`), a
+  `concat!` or `stringify!` is evaluated, a `concat!` with a part the check
+  cannot evaluate (an `env!`) counts as naming one, and the suffix is
+  compared without case (macOS and Windows open `shared.rs` for
+  `shared.RS`). A bare `env!` is not refused: its value is set outside the
+  source, and refusing it would refuse every version string. That keeps the
+  walk's production set complete, which is what makes the exemption sound: a
+  file a non-test build compiles is never exempt, even when a test also
+  reaches it. The crate's own code cannot reach `include!` by a route the
+  walk does not see; a macro defined in a dependency can build any path it
+  likes, so there the check refuses only what a hand-off looks like, and the
+  dependencies themselves are reviewed through `Cargo.lock` and deny.toml.
+  In test code, a `mod` inside a block is followed, so a fixture it loads is
+  exempt. In every scanned file, code under
   `#[cfg(test)]`, `#[cfg(all(test, ..))]`, `#[test]` or a file's own
   `#![cfg(test)]`, on items, statements, match arms, fields and variants,
   is removed before looking, and identifiers are compared raw or not, macro
@@ -301,8 +313,11 @@ module and in an `include!`d file, the cheap KDF in an `include!`d file, in
 a file selected by `#[cfg_attr(unix, path = ..)]` beside a clean fallback,
 in an unreferenced file, in a file outside the crate or under its `tests/`
 loaded by a `mod` inside a function body (by `#[path]` and by `cfg_attr`),
-behind a `macro_rules!` that declares a `mod` or uses `include!`, and in a
-file a test module also reaches, and iced in `wallet-core`'s dependencies. Each passes on the tree as committed; an out-of-line
+behind a `macro_rules!` that declares a `mod` or uses `include!`, in a file
+a test module also reaches, and in a file a test fixture loads that
+production code also loads through `include!` imported as `load` and given
+`"shared.r\x73"`; and iced in `wallet-core`'s dependencies. Each passes on
+the tree as committed; an out-of-line
 `#[cfg(test)] mod tests;` naming the cheap KDF passes, as it should, and so
 do a conditional module path with no fallback file and a fixture loaded by a
 `mod` inside a `#[test]` function. Four more tests hold
