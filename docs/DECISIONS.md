@@ -268,7 +268,14 @@ that a machine can check, with no network:
   test-only one, an `include!` in test-only code). The walk starts at the
   root of every non-test target (library, binaries, build script, examples)
   and follows `mod`, every `#[path]` and every `cfg_attr` path, and literal
-  `include!`s, as rustc may in some configuration. What it does not follow
+  `include!`s, as rustc may in some configuration. Declarations in an
+  `include!`d file resolve beside that file, as rustc 1.98.0 resolves them
+  (it makes the included file's directory the module directory), and a file
+  reached both as a module and by `include!` is followed in both contexts,
+  since rustc resolves its declarations in both. Every
+  file a non-test declaration can select must exist: a missing one is
+  refused, since the check cannot tell a configuration rustc never builds
+  from a path it resolved differently from rustc. What it does not follow
   in non-test code it refuses as unreadable rather than passing: a
   non-literal `include!`, a conditional path on an inline module, an
   out-of-line `mod` inside a block (rustc loads one there by `#[path]`), a
@@ -314,13 +321,16 @@ a file selected by `#[cfg_attr(unix, path = ..)]` beside a clean fallback,
 in an unreferenced file, in a file outside the crate or under its `tests/`
 loaded by a `mod` inside a function body (by `#[path]` and by `cfg_attr`),
 behind a `macro_rules!` that declares a `mod` or uses `include!`, in a file
-a test module also reaches, and in a file a test fixture loads that
-production code also loads through `include!` imported as `load` and given
-`"shared.r\x73"`; and iced in `wallet-core`'s dependencies. Each passes on
-the tree as committed; an out-of-line
-`#[cfg(test)] mod tests;` naming the cheap KDF passes, as it should, and so
-do a conditional module path with no fallback file and a fixture loaded by a
-`mod` inside a `#[test]` function. Four more tests hold
+a test module also reaches, in a file a test fixture loads that production
+code also loads through `include!` imported as `load` and given
+`"shared.r\x73"`, and in the crate's `tests/shared.rs` loaded by
+`#[path = "../../tests/shared.rs"]` in `src/nested/inc.rs`, itself
+`include!`d from `src/lib.rs`, and under `tests/` loaded by a `#[path]` in
+an inline module of a file that is both a module and `include!`d; and iced
+in `wallet-core`'s dependencies.
+Each passes on the tree as committed; an out-of-line `#[cfg(test)] mod
+tests;` naming the cheap KDF passes, as it should, and so does a fixture
+loaded by a `mod` inside a `#[test]` function. Four more tests hold
 the detectors to fixed cases, the walk to a crate laid out on disk where the
 answer is known, and its refusals to what it cannot read, so a detector that
 sees nothing cannot pass.
