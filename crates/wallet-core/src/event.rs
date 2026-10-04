@@ -71,10 +71,17 @@ pub enum LockReason {
 /// The answer to one command.
 #[derive(Debug)]
 pub enum Reply {
-    /// The node was set.
-    NodeSet { url: String },
-    /// The node was forgotten.
-    NodeCleared,
+    /// The node was set. When it is a different node, an open store was
+    /// detached from the previous one: `view` is the store afterwards, open
+    /// but not reconciled against the new node until
+    /// [`crate::Command::Refresh`].
+    NodeSet {
+        url: String,
+        view: Option<WalletView>,
+    },
+    /// The node was forgotten, and an open store detached from it: `view`
+    /// is the store afterwards.
+    NodeCleared { view: Option<WalletView> },
     /// A new store's recovery phrase, to be shown once and then confirmed
     /// by the words at `confirm_positions` (one-based). Nothing is written.
     CreatePhrase {

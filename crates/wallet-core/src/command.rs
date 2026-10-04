@@ -29,10 +29,13 @@ pub struct PlanId(pub(crate) u64);
 pub enum Command {
     /// Choose the node to ask (docs/PLAN.md section 4.8). There is no
     /// default. `https://` only, or `http://` to the loopback interface.
-    /// Takes effect for the next command that asks a node; an unlocked
-    /// store is not reconciled again until [`Command::Refresh`].
+    /// Takes effect for the next command that asks a node. A different node
+    /// detaches an open store from the previous one, dropping a pending
+    /// plan; nothing can be sent until [`Command::Refresh`] reconciles the
+    /// store against the new node.
     SetNode { url: String },
-    /// Forget the node. Nothing asks a node until another is set.
+    /// Forget the node. Nothing asks a node until another is set, and an
+    /// open store is detached from it as for [`Command::SetNode`].
     ClearNode,
 
     /// Start a new store in `dir`: check that nothing is there and that the

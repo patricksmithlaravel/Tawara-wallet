@@ -560,6 +560,12 @@ node. http to 127.0.0.0/8, ::1 or localhost is accepted." instead of
 offering `--allow-plaintext-node`. Those changes are for the owner's
 approval (D25).
 
+Changing or clearing the node detaches an open store from the node it
+was opened against: a wallet open against it becomes the store alone,
+with no node, and a pending plan is dropped, so nothing goes on asking
+that node or sending to it. The next command that asks a node asks the
+one chosen then, and a refresh reconciles the store against it.
+
 Trust roots (section 4.8 asks for them to be recorded): the library's
 transport with `mesh-https`, which is rustls with `ring` and the bundled
 `webpki-roots` (Mozilla's store, compiled in), on every platform. That is
@@ -606,11 +612,13 @@ blocks phase 2.
 **proposed.** `DEFAULT_IDLE_LOCK` is five minutes, the period the
 dashboard rendering shows ("auto-locks in 5 min"). The interface can set
 another (`Config::idle_lock`) and calls `WorkerHandle::touch` when the
-person does something. A command restarts the period only when it carries
-something the person typed (unlock, create, the confirmation words); any
-other command does not, so an interface that polls the chain tip or
-refreshes on a timer cannot keep the store open, and the time a command
-spends running is not counted as idle. Locking drops the `Keystore` (its key, master seed
+person does something, which counts at once even while a command runs.
+The period is measured from the person's last input: that call, or a
+command carrying something they typed (unlock, create, the confirmation
+words). Any other command is not input, so an interface that polls the
+chain tip or refreshes on a timer cannot keep the store open, and the
+period is checked before each queued command is taken, so polls queued
+behind a slow node cannot either. Locking drops the `Keystore` (its key, master seed
 and lock), the worker's copy of the seed, any pending recovery phrase and
 any pending plan. It also happens on `Command::Lock`, when the app moves
 to the background (`WorkerHandle::background`, which first cancels every
@@ -629,8 +637,9 @@ changed in one place:
 - the plaintext-node refusal, in the three places where the command
   line's text names its flags (D22);
 - the standing notice without the command line's rule under it (D19);
-- the *Store* session's notices: no node chosen, and the node not
-  answering (`worker.rs`, `NO_NODE` and `open_session`);
+- the *Store* session's notices: no node chosen, the node changed, and
+  the node not answering (`worker.rs`, `NO_NODE`, `NODE_CHANGED` and
+  `open_session`);
 - the create refusals before a phrase is shown (a store already in the
   folder, the passwords differing) and at confirmation (the wrong words,
   nothing to confirm), each ending with the library's "Nothing was

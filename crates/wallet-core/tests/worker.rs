@@ -1124,7 +1124,7 @@ fn the_node_is_chosen_https_or_loopback_only() {
     ));
     assert!(matches!(
         h.call(Command::SetNode { url: format!(" {NODE} ") }),
-        Reply::NodeSet { url } if url == NODE
+        Reply::NodeSet { url, view: None } if url == NODE
     ));
     match h.call(Command::NetworkStatus) {
         Reply::Network {
@@ -1136,9 +1136,155 @@ fn the_node_is_chosen_https_or_loopback_only() {
         }
         other => panic!("expected the tip, got {other:?}"),
     }
-    assert!(matches!(h.call(Command::ClearNode), Reply::NodeCleared));
+    assert!(matches!(
+        h.call(Command::ClearNode),
+        Reply::NodeCleared { view: None }
+    ));
     assert_eq!(
         refusal(h.call(Command::NetworkStatus)).kind,
         RefusalKind::NoNode
+    );
+}
+
+// ------------------------------------------------------- node and idle edges
+
+#[test]
+fn clearing_or_changing_the_node_stops_the_open_wallet_using_the_old_one() {
+    let scratch = Scratch::new("node-change");
+    let (mut h, start) = funded(&scratch);
+    let plan = planned(h.call(Command::PlanSend {
+        spend: pay(destination(1), Amount::Nano(100_000)),
+    }));
+
+    // Forget the node: the spend laid out against it does not go to it,
+    // and the store stays open without it.
+    match h.call(Command::ClearNode) {
+        Reply::NodeCleared { view: Some(view) } => {
+            assert!(!view.opened, "{view:?}");
+            assert_eq!(view.accounts[0].state, AccountState::NotReconciled);
+            assert!(
+                view.notice
+                    .as_deref()
+                    .is_some_and(|n| n.contains("No node is chosen")),
+                "{:?}",
+                view.notice
+            );
+        }
+        other => panic!("expected the store detached, got {other:?}"),
+    }
+    let r = refusal(h.call(Command::ConfirmSend { plan: plan.plan }));
+    assert_eq!(r.kind, RefusalKind::WalletNotOpen, "{}", r.text);
+    assert!(
+        h.chain.submits().is_empty(),
+        "nothing went to the node that was cleared"
+    );
+    let calls = h.chain.calls();
+    assert_eq!(
+        refusal(h.call(Command::Status {
+            account: account0(),
+            scan_to: None,
+        }))
+        .kind,
+        RefusalKind::NoNode
+    );
+    assert_eq!(
+        refusal(h.call(Command::Discover { to: 3 })).kind,
+        RefusalKind::NoNode
+    );
+    assert_eq!(h.chain.calls(), calls, "the cleared node is asked nothing");
+
+    // Another node: every command that asks a node asks it from now on.
+    h.chain_b.hold(tag(0), address(0, start), FUNDS);
+    match h.call(Command::SetNode { url: NODE_B.into() }) {
+        Reply::NodeSet {
+            url,
+            view: Some(view),
+        } => {
+            assert_eq!(url, NODE_B);
+            assert!(!view.opened, "{view:?}");
+        }
+        other => panic!("expected the node set, got {other:?}"),
+    }
+    let r = refusal(h.call(Command::PlanSend {
+        spend: pay(destination(1), Amount::Nano(100_000)),
+    }));
+    assert_eq!(r.kind, RefusalKind::WalletNotOpen, "{}", r.text);
+    match h.call(Command::Status {
+        account: account0(),
+        scan_to: None,
+    }) {
+        Reply::Status {
+            state: AccountState::InSync { balance },
+            ..
+        } => assert_eq!(balance, FUNDS),
+        other => panic!("expected the new node's answer, got {other:?}"),
+    }
+    assert!(h.chain_b.calls() > 0, "the new node was asked");
+    let view = opened(h.call(Command::Refresh));
+    assert!(view.opened, "{view:?}");
+    assert_eq!(
+        view.accounts[0].state,
+        AccountState::InSync { balance: FUNDS }
+    );
+    assert_eq!(
+        h.chain.calls(),
+        calls,
+        "the first node is asked nothing after the change"
+    );
+    assert!(h.chain.submits().is_empty() && h.chain_b.submits().is_empty());
+
+    // Choosing the node already chosen changes nothing.
+    match h.call(Command::SetNode { url: NODE_B.into() }) {
+        Reply::NodeSet {
+            view: Some(view), ..
+        } => assert!(view.opened, "{view:?}"),
+        other => panic!("expected the node set, got {other:?}"),
+    }
+}
+
+#[test]
+fn queued_polls_do_not_keep_the_store_open() {
+    let scratch = Scratch::new("poll-backlog");
+    let mut h = Harness::with(Config {
+        idle_lock: Duration::from_secs(1),
+    });
+    assert!(matches!(
+        h.call(Command::SetNode { url: NODE.into() }),
+        Reply::NodeSet { .. }
+    ));
+    let _ = opened(h.create_from_phrase(&scratch.store()));
+
+    // The interface polls faster than the node answers, so polls queue up:
+    // a three-second backlog against a one-second idle period.
+    h.chain.slow(Duration::from_millis(250));
+    let ids: Vec<_> = (0..12)
+        .map(|_| {
+            h.handle
+                .send(Command::NetworkStatus)
+                .expect("worker running")
+        })
+        .collect();
+    let last = ids[ids.len() - 1];
+    let mut locked = None;
+    loop {
+        match h
+            .events
+            .recv_timeout(Duration::from_secs(60))
+            .expect("an event")
+        {
+            Event::Locked { reason } => locked = Some(reason),
+            Event::Done { id, reply } => {
+                assert!(matches!(reply, Reply::Network { .. }), "{reply:?}");
+                if id == last {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        locked,
+        Some(LockReason::Idle),
+        "the store stayed open while polls were queued"
     );
 }

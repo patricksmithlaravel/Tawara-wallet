@@ -53,6 +53,10 @@ pub const PASSWORD: &str = "correct horse battery";
 
 pub const NODE: &str = "https://node.test";
 
+/// A second node, answered by its own chain ([`Harness::chain_b`]), so a
+/// test can tell which node the worker asked.
+pub const NODE_B: &str = "https://other-node.test";
+
 pub fn master() -> Secret<SEED_LEN> {
     mnemonic::master_seed_from_phrase(PHRASE, "").expect("the test phrase parses")
 }
@@ -102,6 +106,7 @@ struct State {
     submits: Vec<Vec<u8>>,
     calls: usize,
     gate: Option<Gate>,
+    delay: Duration,
 }
 
 /// Holds every request at the chain until it is opened, so a test can act
@@ -168,6 +173,11 @@ impl Chain {
         self.0.lock().expect("chain").calls
     }
 
+    /// Take `delay` to answer every request from now on, as a slow node does.
+    pub fn slow(&self, delay: Duration) {
+        self.0.lock().expect("chain").delay = delay;
+    }
+
     /// Hold every request from now on until the returned gate is opened.
     pub fn close_gate(&self) -> Gate {
         let gate = Gate::default();
@@ -184,15 +194,14 @@ impl Transport for Chain {
     fn post(&self, path: &str, body: &[u8]) -> mochimo_crypto::Result<Vec<u8>> {
         // Waited at with the chain's lock released, so the test can script
         // the chain meanwhile.
-        let gate = self
-            .0
-            .lock()
-            .map_err(|_| mesh("test: chain lock"))?
-            .gate
-            .clone();
+        let (gate, delay) = {
+            let s = self.0.lock().map_err(|_| mesh("test: chain lock"))?;
+            (s.gate.clone(), s.delay)
+        };
         if let Some(gate) = gate {
             gate.pass();
         }
+        std::thread::sleep(delay);
         let mut s = self.0.lock().map_err(|_| mesh("test: chain lock"))?;
         s.calls += 1;
         if s.unreachable {
@@ -245,13 +254,22 @@ impl Transport for Chain {
 }
 
 /// The worker's [`Connect`] for the scripted chain.
-pub struct FakeNode(pub Chain);
+/// The worker's [`Connect`]: [`NODE_B`] is answered by the second chain,
+/// any other URL by the first.
+pub struct FakeNode {
+    pub chain: Chain,
+    pub chain_b: Chain,
+}
 
 impl Connect for FakeNode {
     type Transport = Chain;
 
-    fn connect(&self, _url: &str) -> Result<Chain, Error> {
-        Ok(self.0.clone())
+    fn connect(&self, url: &str) -> Result<Chain, Error> {
+        Ok(if url == NODE_B {
+            self.chain_b.clone()
+        } else {
+            self.chain.clone()
+        })
     }
 }
 
@@ -297,6 +315,8 @@ pub struct Harness {
     pub handle: WorkerHandle,
     pub events: Receiver<Event>,
     pub chain: Chain,
+    /// The chain behind [`NODE_B`].
+    pub chain_b: Chain,
     /// Every event that was not the answer being waited for.
     pub seen: Vec<Event>,
 }
@@ -310,11 +330,17 @@ impl Harness {
 
     pub fn with(config: Config) -> Harness {
         let chain = Chain::new();
-        let (handle, events) = spawn(config, FakeNode(chain.clone())).expect("worker starts");
+        let chain_b = Chain::new();
+        let node = FakeNode {
+            chain: chain.clone(),
+            chain_b: chain_b.clone(),
+        };
+        let (handle, events) = spawn(config, node).expect("worker starts");
         Harness {
             handle,
             events,
             chain,
+            chain_b,
             seen: Vec::new(),
         }
     }

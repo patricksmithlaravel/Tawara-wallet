@@ -48,13 +48,23 @@
 //! ([`WorkerHandle::background`]), when the worker shuts down, and when the
 //! last handle is dropped.
 //!
-//! The idle period restarts on [`WorkerHandle::touch`] and on a command that
-//! carries something the person typed (unlock, create, the confirmation
-//! words). Other commands do not restart it, so an interface that polls
-//! the tip or refreshes on a timer cannot keep the store open; the time a
-//! command spends running is not counted as idle. Commands run one at a
-//! time, so an idle lock waits for the running command to finish; that is
-//! why every walk the person can widen is bounded ([`crate::MAX_SCAN_TO`]).
+//! The idle period is measured from the person's last input:
+//! [`WorkerHandle::touch`], which counts at once even while a command runs,
+//! and a command that carries something they typed (unlock, create, the
+//! confirmation words). Other commands are not input, so an interface that
+//! polls the tip or refreshes on a timer cannot keep the store open, and
+//! the period is checked before each queued command is taken, so polls
+//! queued behind a slow node cannot either. Commands run one at a time, so
+//! an idle lock waits for the running command to finish; that is why every
+//! walk the person can widen is bounded ([`crate::MAX_SCAN_TO`]).
+//!
+//! # The node
+//!
+//! Changing or clearing the node detaches the open session from the node
+//! it was opened against: a wallet open against it becomes the store alone,
+//! and a pending plan is dropped, so nothing goes on asking that node or
+//! sending to it. The next command that asks a node asks the one chosen
+//! then.
 //!
 //! # Cancellation
 //!
@@ -146,9 +156,40 @@ impl std::error::Error for WorkerStopped {}
 
 enum Envelope {
     Command(RequestId, Command),
-    Touch,
     Background,
     Shutdown,
+}
+
+/// When the person last did something, shared by the handle and the worker
+/// so that input during a long command counts at once rather than queueing
+/// behind it (module doc, "Lifecycle").
+struct PersonActivity {
+    epoch: Instant,
+    /// Milliseconds after `epoch`.
+    last: AtomicU64,
+}
+
+impl PersonActivity {
+    fn new() -> PersonActivity {
+        PersonActivity {
+            epoch: Instant::now(),
+            last: AtomicU64::new(0),
+        }
+    }
+
+    fn now(&self) -> u64 {
+        u64::try_from(self.epoch.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    /// The person did something now.
+    fn mark(&self) {
+        self.last.fetch_max(self.now(), Ordering::Relaxed);
+    }
+
+    /// How long since the person last did something.
+    fn idle_for(&self) -> Duration {
+        Duration::from_millis(self.now().saturating_sub(self.last.load(Ordering::Relaxed)))
+    }
 }
 
 /// The interface's side of the worker. Cloneable; when the last clone is
@@ -159,6 +200,7 @@ pub struct WorkerHandle {
     /// The newest request id to stop (0 for none); see the module doc.
     cancel: Arc<AtomicU64>,
     next: Arc<AtomicU64>,
+    activity: Arc<PersonActivity>,
 }
 
 impl WorkerHandle {
@@ -174,9 +216,10 @@ impl WorkerHandle {
 
     /// The person did something: restart the idle period. No answer. Call it
     /// on the person's input; commands do not restart the period unless they
-    /// carry something the person typed (module doc, "Lifecycle").
+    /// carry something the person typed (module doc, "Lifecycle"). It takes
+    /// effect at once, even while a command is running.
     pub fn touch(&self) {
-        let _ = self.tx.send(Envelope::Touch);
+        self.activity.mark();
     }
 
     /// Ask every command sent so far to stop (module doc, "Cancellation"):
@@ -213,6 +256,8 @@ pub fn spawn<C: Connect>(
     let (events, received) = mpsc::channel();
     let cancel = Arc::new(AtomicU64::new(0));
     let flag = Arc::clone(&cancel);
+    let activity = Arc::new(PersonActivity::new());
+    let person = Arc::clone(&activity);
     thread::Builder::new()
         .name("tawara-wallet-core".into())
         .spawn(move || {
@@ -229,7 +274,7 @@ pub fn spawn<C: Connect>(
                 events,
                 cancel: flag,
                 idle: config.idle_lock,
-                last_activity: Instant::now(),
+                activity: person,
                 next_plan: 1,
             };
             worker.run(&rx);
@@ -239,6 +284,7 @@ pub fn spawn<C: Connect>(
             tx,
             cancel,
             next: Arc::new(AtomicU64::new(1)),
+            activity,
         },
         received,
     ))
@@ -315,7 +361,7 @@ struct Worker<C: Connect> {
     events: Sender<Event>,
     cancel: Arc<AtomicU64>,
     idle: Duration,
-    last_activity: Instant,
+    activity: Arc<PersonActivity>,
     next_plan: u64,
 }
 
@@ -653,6 +699,11 @@ fn update_row(
     }
 }
 
+const NODE_CHANGED: &str = "The node was changed, so nothing is reconciled against the new one \
+                            yet and nothing can be sent. The store is open: its accounts and \
+                            their destinations can be shown. Refresh to reconcile against the \
+                            new node.";
+
 const NO_NODE: &str = "No node is chosen, so nothing was reconciled and nothing can be sent. \
                        The store is open: its accounts and their destinations can be shown. \
                        Choose a node to reconcile them.";
@@ -681,16 +732,17 @@ impl<C: Connect> Worker<C> {
 
     fn run(&mut self, rx: &Receiver<Envelope>) {
         loop {
+            // Checked before anything more is taken from the queue: commands
+            // queued behind a slow one (polls outrunning a slow node) must
+            // not keep the store open past the idle period.
+            if self.holds_secrets() && self.activity.idle_for() >= self.idle {
+                self.lock(LockReason::Idle);
+            }
             let envelope = if self.holds_secrets() {
-                let left = self.idle.saturating_sub(self.last_activity.elapsed());
+                let left = self.idle.saturating_sub(self.activity.idle_for());
                 match rx.recv_timeout(left) {
                     Ok(e) => e,
-                    Err(RecvTimeoutError::Timeout) => {
-                        if self.last_activity.elapsed() >= self.idle {
-                            self.lock(LockReason::Idle);
-                        }
-                        continue;
-                    }
+                    Err(RecvTimeoutError::Timeout) => continue,
                     Err(RecvTimeoutError::Disconnected) => Envelope::Shutdown,
                 }
             } else {
@@ -698,7 +750,6 @@ impl<C: Connect> Worker<C> {
             };
             match envelope {
                 Envelope::Command(id, command) => {
-                    let started = Instant::now();
                     let typed = typed_by_the_person(&command);
                     let reply = if stops_before_starting(&command) && self.stop_asked(id)() {
                         // Sent before a cancel and not yet started: it does
@@ -709,19 +760,14 @@ impl<C: Connect> Worker<C> {
                     } else {
                         self.handle(id, command)
                     };
+                    // A command is the person's activity only when they
+                    // typed it (module doc, "Lifecycle"), and counts from
+                    // when it finished: a store has just opened.
+                    if typed {
+                        self.activity.mark();
+                    }
                     self.emit(Event::Done { id, reply });
-                    // The idle period (module doc, "Lifecycle"): the time a
-                    // command ran is not idle, and a command is not itself
-                    // activity unless the person typed it.
-                    self.last_activity = if typed {
-                        Instant::now()
-                    } else {
-                        self.last_activity
-                            .checked_add(started.elapsed())
-                            .unwrap_or_else(Instant::now)
-                    };
                 }
-                Envelope::Touch => self.last_activity = Instant::now(),
                 Envelope::Background => self.lock(LockReason::Background),
                 Envelope::Shutdown => {
                     self.lock(LockReason::Shutdown);
@@ -777,8 +823,10 @@ impl<C: Connect> Worker<C> {
         match command {
             Command::SetNode { url } => self.set_node(&url),
             Command::ClearNode => {
-                self.node = None;
-                Reply::NodeCleared
+                if self.node.take().is_some() {
+                    self.detach_node(NO_NODE);
+                }
+                Reply::NodeCleared { view: self.view() }
             }
             Command::CreateBegin {
                 dir,
@@ -833,10 +881,47 @@ impl<C: Connect> Worker<C> {
         match node::check_node_url(&self.connect, url) {
             Ok(_) => {
                 let url = url.trim().to_owned();
-                self.node = Some(url.clone());
-                Reply::NodeSet { url }
+                if self.node.as_deref() != Some(url.as_str()) {
+                    self.node = Some(url.clone());
+                    self.detach_node(NODE_CHANGED);
+                }
+                Reply::NodeSet {
+                    url,
+                    view: self.view(),
+                }
             }
             Err(e) => refused(RefusalKind::NodeRefused, e.to_string()),
+        }
+    }
+
+    /// The node choice changed: nothing open may go on asking the node it
+    /// was opened against, or send to it. A wallet open against it becomes
+    /// the store alone, with no node, and a pending plan (laid out against
+    /// it) is dropped. The next command that asks a node asks the one now
+    /// chosen; [`Command::Refresh`] reconciles against it and opens the
+    /// wallet again.
+    fn detach_node(&mut self, notice: &str) {
+        self.plan = None;
+        let (dir, store, master) = match core::mem::replace(&mut self.session, Session::Locked) {
+            Session::Locked => return,
+            Session::Store(s) => (s.dir, s.store, s.master),
+            Session::Wallet(w) => {
+                let (store, _old) = w.wallet.into_parts();
+                (w.dir, store, w.master)
+            }
+        };
+        match store_rows::<C::Transport>(&store, None, master.as_ref()) {
+            Ok((rows, _)) => {
+                self.session = Session::Store(StoreSession {
+                    dir,
+                    store,
+                    master,
+                    client: None,
+                    rows,
+                    notice: Some(notice.to_owned()),
+                });
+            }
+            Err(_) => self.closed(LockReason::ReopenFailed),
         }
     }
 
