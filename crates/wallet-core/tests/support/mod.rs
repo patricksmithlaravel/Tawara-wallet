@@ -263,8 +263,14 @@ pub struct Scratch(pub PathBuf);
 
 impl Scratch {
     pub fn new(name: &str) -> Scratch {
+        // Unique per run as well as per test: on Windows a store the worker
+        // has not yet released cannot be removed, and must not be found by
+        // the next run.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
-            .join(format!("wallet-core-{}-{name}", std::process::id()));
+            .join(format!("wallet-core-{}-{name}-{nanos}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch dir");
         Scratch(dir)

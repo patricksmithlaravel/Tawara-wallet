@@ -110,33 +110,40 @@ impl Environment {
         }
     }
 
-    /// A variable's value as an absolute path, or `None` when it is unset,
-    /// empty or relative. The XDG specification says a relative
+    /// A variable's value as an absolute path on `platform`, or `None` when
+    /// it is unset, empty or relative. The XDG specification says a relative
     /// `$XDG_DATA_HOME` is to be ignored, and no other variable used here
     /// means anything relative.
-    fn absolute(&self, name: &str) -> Option<PathBuf> {
+    fn absolute(&self, name: &str, platform: Platform) -> Option<PathBuf> {
         let value = self.vars.get(name)?;
         if value.is_empty() {
             return None;
         }
         let path = PathBuf::from(value);
-        is_absolute_for_any_platform(&path).then_some(path)
+        is_absolute_on(&path, platform).then_some(path)
     }
 }
 
-/// Absolute on the platform this runs on, or a drive-rooted Windows path
-/// when the code is exercised elsewhere (the unit tests describe all five
-/// platforms on whichever one runs them).
-fn is_absolute_for_any_platform(path: &Path) -> bool {
-    if path.is_absolute() {
-        return true;
-    }
+/// Absolute by `platform`'s rules, whichever platform runs the code, as
+/// [`parts`] splits by them (the unit tests describe all five platforms on
+/// each of the three that run them): rooted at `/` on the Unix platforms;
+/// on Windows, drive-rooted (`C:\`, `C:/`) or a UNC or verbatim path
+/// (`\\server\share`, `\\?\C:\`).
+fn is_absolute_on(path: &Path, platform: Platform) -> bool {
     let text = path.to_string_lossy();
     let bytes = text.as_bytes();
-    bytes.len() >= 3
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b':'
-        && (bytes[2] == b'\\' || bytes[2] == b'/')
+    match platform {
+        Platform::Windows => {
+            let drive = bytes.len() >= 3
+                && bytes[0].is_ascii_alphabetic()
+                && bytes[1] == b':'
+                && matches!(bytes[2], b'\\' | b'/');
+            drive || text.starts_with(r"\\") || text.starts_with("//")
+        }
+        Platform::MacOs | Platform::Linux | Platform::Android | Platform::Ios => {
+            bytes.first() == Some(&b'/')
+        }
+    }
 }
 
 /// Why there is no default location.
@@ -181,20 +188,21 @@ pub fn default_store_dir(
     env: &Environment,
 ) -> Result<PathBuf, NoDefaultLocation> {
     let base = match platform {
-        Platform::Windows => env
-            .absolute("LOCALAPPDATA")
-            .ok_or(NoDefaultLocation::Unset {
-                variable: "LOCALAPPDATA",
-            })?,
+        Platform::Windows => {
+            env.absolute("LOCALAPPDATA", platform)
+                .ok_or(NoDefaultLocation::Unset {
+                    variable: "LOCALAPPDATA",
+                })?
+        }
         Platform::MacOs => env
-            .absolute("HOME")
+            .absolute("HOME", platform)
             .ok_or(NoDefaultLocation::Unset { variable: "HOME" })?
             .join("Library")
             .join("Application Support"),
-        Platform::Linux => match env.absolute("XDG_DATA_HOME") {
+        Platform::Linux => match env.absolute("XDG_DATA_HOME", platform) {
             Some(data) => data,
             None => env
-                .absolute("HOME")
+                .absolute("HOME", platform)
                 .ok_or(NoDefaultLocation::Unset { variable: "HOME" })?
                 .join(".local")
                 .join("share"),
@@ -352,11 +360,11 @@ fn sync_warning_lexical(dir: &Path, platform: Platform, env: &Environment) -> Op
     };
     match platform {
         Platform::MacOs => env
-            .absolute("HOME")
+            .absolute("HOME", platform)
             .and_then(|home| check(&home, MACOS_HOME)),
         Platform::Windows => {
             for var in ["OneDrive", "OneDriveConsumer", "OneDriveCommercial"] {
-                if let Some(folder) = env.absolute(var)
+                if let Some(folder) = env.absolute(var, platform)
                     && starts_with(dir, &folder, platform)
                 {
                     return Some(SyncWarning {
@@ -366,7 +374,7 @@ fn sync_warning_lexical(dir: &Path, platform: Platform, env: &Environment) -> Op
                     });
                 }
             }
-            if let Some(roaming) = env.absolute("APPDATA")
+            if let Some(roaming) = env.absolute("APPDATA", platform)
                 && starts_with(dir, &roaming, platform)
             {
                 return Some(SyncWarning {
@@ -375,11 +383,11 @@ fn sync_warning_lexical(dir: &Path, platform: Platform, env: &Environment) -> Op
                     only_if_enabled: false,
                 });
             }
-            env.absolute("USERPROFILE")
+            env.absolute("USERPROFILE", platform)
                 .and_then(|profile| check(&profile, WINDOWS_PROFILE))
         }
         Platform::Linux => env
-            .absolute("HOME")
+            .absolute("HOME", platform)
             .and_then(|home| check(&home, LINUX_HOME)),
         Platform::Android | Platform::Ios => None,
     }
@@ -662,6 +670,31 @@ mod tests {
         )
         .unwrap();
         assert_eq!(w.service, "Dropbox");
+    }
+
+    #[test]
+    fn absolute_is_judged_by_the_target_platform_not_the_host() {
+        let cases: &[(&str, Platform, bool)] = &[
+            ("/Users/ann", Platform::MacOs, true),
+            ("/home/ann", Platform::Linux, true),
+            ("/Users/ann", Platform::Windows, false),
+            (r"C:\Users\ann", Platform::Windows, true),
+            ("C:/Users/ann", Platform::Windows, true),
+            (r"\\srv\share\ann", Platform::Windows, true),
+            (r"\\?\C:\Users\ann", Platform::Windows, true),
+            (r"C:\Users\ann", Platform::MacOs, false),
+            (r"C:\Users\ann", Platform::Linux, false),
+            ("C:", Platform::Windows, false),
+            ("Users/ann", Platform::Linux, false),
+            (r"Users\ann", Platform::Windows, false),
+        ];
+        for (text, platform, expected) in cases {
+            assert_eq!(
+                is_absolute_on(Path::new(text), *platform),
+                *expected,
+                "{text} on {platform:?}"
+            );
+        }
     }
 
     #[test]
