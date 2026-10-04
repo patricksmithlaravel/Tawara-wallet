@@ -1,0 +1,249 @@
+diff --git a/src/conversion.rs b/src/conversion.rs
+index 54260e1..ea8cd9a 100644
+--- a/src/conversion.rs
++++ b/src/conversion.rs
+@@ -136,6 +136,15 @@ pub fn window_attributes(
+             );
+     }
+ 
++    // iOS: winit makes the `UIWindow` frame `inner_size` points when one is
++    // given (winit 0.30.13 src/platform_impl/ios/window.rs:511-521), so the
++    // default 1024x768 would overflow a phone screen. `None` means the
++    // screen bounds.
++    #[cfg(target_os = "ios")]
++    {
++        attributes.inner_size = None;
++    }
++
+     #[cfg(target_os = "linux")]
+     {
+         #[cfg(feature = "x11")]
+@@ -233,13 +242,21 @@ pub fn window_event(
+         WindowEvent::KeyboardInput { is_synthetic, .. } if is_synthetic => None,
+         WindowEvent::KeyboardInput { event, .. } => Some(Event::Keyboard({
+             let key = {
+-                #[cfg(not(target_arch = "wasm32"))]
++                #[cfg(not(any(
++                    target_arch = "wasm32",
++                    target_os = "android",
++                    target_os = "ios"
++                )))]
+                 {
+                     use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+                     event.key_without_modifiers()
+                 }
+ 
+-                #[cfg(target_arch = "wasm32")]
++                #[cfg(any(
++                    target_arch = "wasm32",
++                    target_os = "android",
++                    target_os = "ios"
++                ))]
+                 {
+                     // TODO: Fix inconsistent API on Wasm
+                     event.logical_key.clone()
+@@ -247,7 +264,11 @@ pub fn window_event(
+             };
+ 
+             let text = {
+-                #[cfg(not(target_arch = "wasm32"))]
++                #[cfg(not(any(
++                    target_arch = "wasm32",
++                    target_os = "android",
++                    target_os = "ios"
++                )))]
+                 {
+                     use crate::core::SmolStr;
+                     use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+@@ -255,7 +276,11 @@ pub fn window_event(
+                     event.text_with_all_modifiers().map(SmolStr::new)
+                 }
+ 
+-                #[cfg(target_arch = "wasm32")]
++                #[cfg(any(
++                    target_arch = "wasm32",
++                    target_os = "android",
++                    target_os = "ios"
++                ))]
+                 {
+                     // TODO: Fix inconsistent API on Wasm
+                     event.text
+diff --git a/src/lib.rs b/src/lib.rs
+index fe3269c..8533330 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -64,6 +64,19 @@ use std::mem::ManuallyDrop;
+ use std::slice;
+ use std::sync::Arc;
+ 
++#[cfg(target_os = "android")]
++static ANDROID_APP: std::sync::Mutex<
++    Option<winit::platform::android::activity::AndroidApp>,
++> = std::sync::Mutex::new(None);
++
++/// Hands the `AndroidApp` received by `android_main` to the shell.
++///
++/// Must be called before [`run`] (or `iced::application(..).run()`).
++#[cfg(target_os = "android")]
++pub fn set_android_app(app: winit::platform::android::activity::AndroidApp) {
++    *ANDROID_APP.lock().expect("Lock AndroidApp") = Some(app);
++}
++
+ /// Runs a [`Program`] with the provided settings.
+ pub fn run<P>(program: P) -> Result<(), Error>
+ where
+@@ -76,9 +89,23 @@ where
+     let settings = program.settings();
+     let window_settings = program.window();
+ 
+-    let event_loop = EventLoop::with_user_event()
+-        .build()
+-        .expect("Create event loop");
++    #[allow(unused_mut)]
++    let mut builder = EventLoop::with_user_event();
++
++    #[cfg(target_os = "android")]
++    {
++        use winit::platform::android::EventLoopBuilderExtAndroid;
++
++        let app = ANDROID_APP
++            .lock()
++            .expect("Lock AndroidApp")
++            .take()
++            .expect("Call iced_winit::set_android_app in android_main first");
++
++        let _ = builder.with_android_app(app);
++    }
++
++    let event_loop = builder.build().expect("Create event loop");
+ 
+     let graphics_settings = settings.clone().into();
+     let display_handle = event_loop.owned_display_handle();
+@@ -153,6 +180,11 @@ where
+ 
+         #[cfg(target_arch = "wasm32")]
+         canvas: Option<web_sys::HtmlCanvasElement>,
++
++        #[cfg(target_os = "android")]
++        has_resumed: bool,
++        #[cfg(target_os = "android")]
++        deferred: Vec<Action<Message>>,
+     }
+ 
+     let runner = Runner {
+@@ -166,6 +198,11 @@ where
+ 
+         #[cfg(target_arch = "wasm32")]
+         canvas: None,
++
++        #[cfg(target_os = "android")]
++        has_resumed: false,
++        #[cfg(target_os = "android")]
++        deferred: Vec::new(),
+     };
+ 
+     boot_span.finish();
+@@ -184,6 +221,40 @@ where
+                         .unwrap_or_default(),
+                 );
+             }
++
++            // Android: there is no native window (surface) before the first
++            // `Resumed`, and it is replaced after every `Suspended`.
++            #[cfg(target_os = "android")]
++            {
++                if self.has_resumed {
++                    self.process_event(
++                        event_loop,
++                        Event::EventLoopAwakened(winit::event::Event::Resumed),
++                    );
++                }
++
++                self.has_resumed = true;
++
++                for action in std::mem::take(&mut self.deferred) {
++                    self.process_event(
++                        event_loop,
++                        Event::EventLoopAwakened(
++                            winit::event::Event::UserEvent(action),
++                        ),
++                    );
++                }
++            }
++        }
++
++        #[cfg(target_os = "android")]
++        fn suspended(
++            &mut self,
++            event_loop: &winit::event_loop::ActiveEventLoop,
++        ) {
++            self.process_event(
++                event_loop,
++                Event::EventLoopAwakened(winit::event::Event::Suspended),
++            );
+         }
+ 
+         fn new_events(
+@@ -240,6 +311,14 @@ where
+             event_loop: &winit::event_loop::ActiveEventLoop,
+             action: Action<Message>,
+         ) {
++            // Android: hold every action (the first one opens the window)
++            // until the first `Resumed`, when the native window exists.
++            #[cfg(target_os = "android")]
++            if !self.has_resumed {
++                self.deferred.push(action);
++                return;
++            }
++
+             self.process_event(
+                 event_loop,
+                 Event::EventLoopAwakened(winit::event::Event::UserEvent(
+@@ -512,6 +591,7 @@ async fn run_instance<P>(
+ 
+     let mut window_manager = WindowManager::new();
+     let mut is_window_opening = !is_daemon;
++    let mut is_suspended = false;
+ 
+     let mut compositor = None;
+     let mut events = Vec::new();
+@@ -768,6 +848,10 @@ async fn run_instance<P>(
+                         event: event::WindowEvent::RedrawRequested,
+                         ..
+                     } => {
++                        if is_suspended {
++                            continue;
++                        }
++
+                         let Some(mut current_compositor) = compositor.as_mut()
+                         else {
+                             continue;
+@@ -1266,6 +1350,28 @@ async fn run_instance<P>(
+                             );
+                         }
+                     }
++                    event::Event::Suspended => {
++                        is_suspended = true;
++                    }
++                    event::Event::Resumed => {
++                        is_suspended = false;
++
++                        // The old native window is gone: build a new surface
++                        // on the new one for every window.
++                        if let Some(compositor) = compositor.as_mut() {
++                            for (_id, window) in window_manager.iter_mut() {
++                                let size = window.state.physical_size();
++
++                                window.surface = compositor.create_surface(
++                                    window.raw.clone(),
++                                    size.width,
++                                    size.height,
++                                );
++
++                                window.raw.request_redraw();
++                            }
++                        }
++                    }
+                     _ => {}
+                 }
+             }

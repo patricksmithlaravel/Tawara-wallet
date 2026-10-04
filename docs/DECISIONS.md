@@ -346,3 +346,33 @@ sees nothing cannot pass.
 **proposed.** This workspace's crates use Rust edition 2024 and resolver
 3, as iced 0.14.0 does. The library keeps its own edition (2021); editions
 are per crate and do not interact.
+
+### D17. Phase 1: the spike patches iced_winit, in `spikes/` only
+
+**proposed.** docs/PLAN.md D2 allows a git revision of iced "only if mobile
+requires it, and record why". Mobile requires a change to iced's shell,
+`iced_winit` 0.14.1:
+
+- it does not compile for Android or iOS: it imports winit's
+  `modifier_supplement`, which winit provides only on desktop platforms;
+- on Android it has no way to receive the `AndroidApp` that winit needs,
+  since it builds the event loop itself;
+- on Android it opens its window before the system has given the app one,
+  and creating the surface then panics; after a return from the background
+  it does not rebuild the surface;
+- on iOS it sizes the window 1024×768 points.
+
+For phase 1 the change is a patch, `spikes/patches/iced_winit-0.14.1-mobile.patch`
+(+138/−7, almost all behind `cfg(target_os = ...)`), applied to the crates.io
+tarball by `spikes/tools/vendor-iced-winit.sh` after checking it against
+the checksum in `Cargo.lock`, and used through `[patch.crates-io]` in
+`spikes/Cargo.toml`. Patching the tarball rather than taking iced's git
+repository keeps one copy of every other iced crate in the build.
+
+The patch is confined to `spikes/`, which has its own workspace and is
+outside the policy checks of D15 and outside `cargo deny`; the
+application's manifests stay free of `[patch]`, as D15 requires. How
+production carries the change (a fork of iced at a git revision, which
+needs `allow-git` in deny.toml; an upstream change; or a shell crate of
+Tawara's own) is for the owner to choose after the phase 1 go/no-go,
+with the findings of `docs/spikes/P1-REPORT.md`.

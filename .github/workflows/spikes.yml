@@ -1,0 +1,175 @@
+# Phase 1 feasibility spikes (docs/PLAN.md section 7) on CI runners: the
+# desktop on three systems, Android on an emulator, iOS on a simulator, and
+# an iOS device build. spikes/README.md lists what each job checks.
+#
+# As in ci.yml: no actions, plain commands against the runner's own tools,
+# no token permissions, an anonymous clone of the commit by its SHA. A run's
+# only output is its job log and step summary: `SPIKE` lines from the app,
+# `CHECK` lines from the scripts, and screenshots as base64 between
+# `-----BEGIN SHOT name-----` markers. docs/spikes/P1-REPORT.md is written
+# from these logs. Nothing here gates a merge of the application; it runs
+# when a push or a pull request changes spikes/ or this file, or by hand.
+
+name: spikes
+
+on:
+  push:
+    paths:
+      - "spikes/**"
+      - ".github/workflows/spikes.yml"
+  pull_request:
+    paths:
+      - "spikes/**"
+      - ".github/workflows/spikes.yml"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: spikes-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  desktop:
+    name: desktop, ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-26, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - name: Clone the commit under the user's profile
+        run: |
+          base=$HOME
+          if [ -n "${USERPROFILE:-}" ]; then base=$(cygpath -u "$USERPROFILE"); fi
+          git clone --quiet --no-checkout "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$base/tawara"
+          git -C "$base/tawara" fetch --quiet origin "$GITHUB_SHA"
+          git -C "$base/tawara" checkout --quiet --detach "$GITHUB_SHA"
+          echo "TAWARA=$base/tawara" >> "$GITHUB_ENV"
+
+      - name: Toolchain and host
+        run: |
+          cd "$TAWARA"
+          rustup toolchain install --no-self-update
+          echo "commit  $(git rev-parse HEAD)"
+          echo "image   ${ImageOS:-unnamed} ${ImageVersion:-unversioned}"
+          echo "host    $(uname -srm)"
+          rustc -vV
+
+      - name: Unpack and patch iced_winit 0.14.1
+        run: bash "$TAWARA/spikes/tools/vendor-iced-winit.sh"
+
+      - name: Linux display, typing and Vulkan (lavapipe) packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends xvfb xdotool imagemagick \
+            libxkbcommon-x11-0 libxcursor1 libxrandr2 libxi6 libx11-xcb1 mesa-vulkan-drivers
+
+      - name: Build the spike (release)
+        run: |
+          cd "$TAWARA/spikes"
+          cargo build --locked --release --bin tawara-spike
+
+      - name: Self-test with each renderer
+        run: bash "$TAWARA/spikes/ci/desktop.sh"
+
+  android:
+    name: android, emulator
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Clone the commit
+        run: |
+          git clone --quiet --no-checkout "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$HOME/tawara"
+          git -C "$HOME/tawara" fetch --quiet origin "$GITHUB_SHA"
+          git -C "$HOME/tawara" checkout --quiet --detach "$GITHUB_SHA"
+          echo "TAWARA=$HOME/tawara" >> "$GITHUB_ENV"
+
+      - name: Toolchain, Android targets and host
+        run: |
+          cd "$TAWARA"
+          rustup toolchain install --no-self-update
+          rustup target add aarch64-linux-android x86_64-linux-android
+          echo "image   ${ImageOS:-unnamed} ${ImageVersion:-unversioned}"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls "$ANDROID_HOME/ndk" "$ANDROID_HOME/build-tools" "$ANDROID_HOME/platforms" || true
+          nproc; free -g; df -h / | tail -1
+          rustc -vV
+
+      - name: Unpack and patch iced_winit 0.14.1
+        run: bash "$TAWARA/spikes/tools/vendor-iced-winit.sh"
+
+      - name: Build libtawara_spike.so (arm64-v8a, x86_64)
+        run: bash "$TAWARA/spikes/ci/android.sh" build
+
+      - name: Package, align, sign and verify the APKs (targetSdk 34 and 36)
+        run: bash "$TAWARA/spikes/ci/android.sh" apk
+
+      - name: Emulator, checklist and evidence
+        run: bash "$TAWARA/spikes/ci/android.sh" emulator
+
+  ios-simulator:
+    name: ios, simulator
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+    steps:
+      - name: Clone the commit
+        run: |
+          git clone --quiet --no-checkout "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$HOME/tawara"
+          git -C "$HOME/tawara" fetch --quiet origin "$GITHUB_SHA"
+          git -C "$HOME/tawara" checkout --quiet --detach "$GITHUB_SHA"
+          echo "TAWARA=$HOME/tawara" >> "$GITHUB_ENV"
+
+      - name: Toolchain, simulator target and host
+        run: |
+          cd "$TAWARA"
+          rustup toolchain install --no-self-update
+          rustup target add aarch64-apple-ios-sim
+          echo "image   ${ImageOS:-unnamed} ${ImageVersion:-unversioned}"
+          xcode-select -p
+          rustc -vV
+
+      - name: Unpack and patch iced_winit 0.14.1
+        run: bash "$TAWARA/spikes/tools/vendor-iced-winit.sh"
+
+      - name: Build, bundle, simulator, checklist and evidence
+        run: bash "$TAWARA/spikes/ci/ios.sh" simulator
+
+  ios-device:
+    name: ios, device build
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+    steps:
+      - name: Clone the commit
+        run: |
+          git clone --quiet --no-checkout "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$HOME/tawara"
+          git -C "$HOME/tawara" fetch --quiet origin "$GITHUB_SHA"
+          git -C "$HOME/tawara" checkout --quiet --detach "$GITHUB_SHA"
+          echo "TAWARA=$HOME/tawara" >> "$GITHUB_ENV"
+
+      - name: Toolchain, device target and host
+        run: |
+          cd "$TAWARA"
+          rustup toolchain install --no-self-update
+          rustup target add aarch64-apple-ios
+          xcode-select -p
+          rustc -vV
+
+      - name: Unpack and patch iced_winit 0.14.1
+        run: bash "$TAWARA/spikes/tools/vendor-iced-winit.sh"
+
+      - name: Build and link for a device
+        run: bash "$TAWARA/spikes/ci/ios.sh" device

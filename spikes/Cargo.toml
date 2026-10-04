@@ -1,0 +1,28 @@
+# Phase 1 feasibility spikes (docs/PLAN.md section 7). Throwaway quality, by
+# the owner's instructions: this workspace is separate from the application's,
+# shares nothing with crates/, and nothing in it ships.
+[workspace]
+resolver = "3"
+members = ["tawara-spike"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+publish = false
+license-file = "../LICENSE.md"
+
+# iced_winit 0.14.1 does not compile for Android or iOS (it imports winit's
+# modifier_supplement, which exists only on desktop platforms), cannot be
+# handed winit's AndroidApp, and opens its window before Android has given
+# the app one. vendor/iced_winit is the crates.io 0.14.1 tarball, checked
+# against the Cargo.lock checksum, plus patches/iced_winit-0.14.1-mobile.patch;
+# tools/vendor-iced-winit.sh makes it. See README.md and docs/DECISIONS.md.
+[patch.crates-io]
+iced_winit = { path = "vendor/iced_winit" }
+
+# Profiles are read only from the root of the workspace being built, so the
+# library's requirements are restated here as in the application's manifest.
+[profile.release]
+panic = "unwind"
+overflow-checks = true
+debug = "line-tables-only"
