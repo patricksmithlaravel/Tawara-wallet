@@ -38,7 +38,8 @@ die() { echo "::error::$*"; exit 1; }
 ndk_paths() {
   NDK=$(ls -d "$SDK"/ndk/29.* 2>/dev/null | sort -V | tail -1 || true)
   if [ -z "$NDK" ]; then
-    yes 2>/dev/null | sdkmanager --install "ndk;$NDK_PIN" >/dev/null
+    # `yes` dies of SIGPIPE when sdkmanager exits; only sdkmanager's status counts.
+    (yes 2>/dev/null || true) | sdkmanager --install "ndk;$NDK_PIN" >/dev/null
     NDK=$SDK/ndk/$NDK_PIN
   fi
   TC=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
