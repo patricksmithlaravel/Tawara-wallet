@@ -27,20 +27,23 @@ iced 0.14 cannot run on Android or iOS as published:
    `iced_winit::run` builds the event loop itself with no way to pass it in.
 3. On Android, iced opens its window at start-up, before the system has given
    the app a native window; creating the surface then fails, and iced panics.
-   After the app has been in the background, the old surface is gone and
-   iced does not build a new one.
+   When the app goes to the background, iced keeps its surfaces on the
+   native window the system is destroying, which winit forbids, and on
+   return it does not build new ones.
 4. On iOS, iced gives winit a 1024×768 window size, which winit uses as the
    window's frame in points.
 
-The patch (+138/−7 lines, almost all behind `cfg(target_os = ...)`) fixes the
-two compile errors, adds `iced_winit::set_android_app`, holds iced's start-up
-actions until the first `Resumed`, rebuilds every window's surface on each
-`Resumed` after a `Suspended`, skips drawing while suspended, and leaves the
-window size to the screen on iOS. It is applied to the crates.io tarball, so
-the build has one copy of every other iced crate. Choosing how production
-carries this (a fork at a git revision, an upstream change, or a shell crate
-of Tawara's own) is a decision for after the go/no-go; docs/DECISIONS.md
-records it.
+The patch (+166/−19 lines) fixes the two compile errors, adds
+`iced_winit::set_android_app`, holds iced's start-up actions until the first
+`Resumed`, drops every window's surface on `Suspended` before winit's
+callback returns (winit requires it), builds new ones on the next
+`Resumed`, skips drawing while suspended, and leaves the window size to the
+screen on iOS. Most of it is behind `cfg(target_os = ...)`; the rest acts
+only on `Suspended` and `Resumed`, which iced receives only on Android. It
+is applied to the crates.io tarball, so the build has one copy of every
+other iced crate. Choosing how production carries this (a fork at a git
+revision, an upstream change, or a shell crate of Tawara's own) is a
+decision for after the go/no-go; docs/DECISIONS.md records it.
 
 `spikes/` is outside the application's policy checks and outside `cargo
 deny`: the `[patch]` here would fail both, by design. The spike uses public

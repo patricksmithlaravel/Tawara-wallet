@@ -69,7 +69,7 @@ index 54260e1..ea8cd9a 100644
                      // TODO: Fix inconsistent API on Wasm
                      event.text
 diff --git a/src/lib.rs b/src/lib.rs
-index fe3269c..8533330 100644
+index fe3269c..42137fa 100644
 --- a/src/lib.rs
 +++ b/src/lib.rs
 @@ -64,6 +64,19 @@ use std::mem::ManuallyDrop;
@@ -218,27 +218,91 @@ index fe3269c..8533330 100644
                          let Some(mut current_compositor) = compositor.as_mut()
                          else {
                              continue;
-@@ -1266,6 +1350,28 @@ async fn run_instance<P>(
+@@ -802,11 +886,13 @@ async fn run_instance<P>(
+                             );
+                             layout_span.finish();
+ 
+-                            current_compositor.configure_surface(
+-                                &mut window.surface,
+-                                physical_size.width,
+-                                physical_size.height,
+-                            );
++                            if let Some(surface) = window.surface.as_mut() {
++                                current_compositor.configure_surface(
++                                    surface,
++                                    physical_size.width,
++                                    physical_size.height,
++                                );
++                            }
+ 
+                             window.surface_version =
+                                 window.state.surface_version();
+@@ -978,10 +1064,14 @@ async fn run_instance<P>(
+ 
+                         window.draw_preedit();
+ 
++                        let Some(surface) = window.surface.as_mut() else {
++                            continue;
++                        };
++
+                         let present_span = debug::present(id);
+                         match current_compositor.present(
+                             &mut window.renderer,
+-                            &mut window.surface,
++                            surface,
+                             window.state.viewport(),
+                             window.state.background_color(),
+                             || window.raw.pre_present_notify(),
+@@ -1003,15 +1093,16 @@ async fn run_instance<P>(
+                                         window.state.physical_size();
+ 
+                                     if error == compositor::SurfaceError::Lost {
+-                                        window.surface = current_compositor
+-                                            .create_surface(
++                                        window.surface = Some(
++                                            current_compositor.create_surface(
+                                                 window.raw.clone(),
+                                                 physical_size.width,
+                                                 physical_size.height,
+-                                            );
++                                            ),
++                                        );
+                                     } else {
+                                         current_compositor.configure_surface(
+-                                            &mut window.surface,
++                                            surface,
+                                             physical_size.width,
+                                             physical_size.height,
+                                         );
+@@ -1266,6 +1357,36 @@ async fn run_instance<P>(
                              );
                          }
                      }
 +                    event::Event::Suspended => {
 +                        is_suspended = true;
++
++                        // The native window is about to be destroyed: winit
++                        // requires every surface on it to be dropped before
++                        // `suspended` returns, which this does, since the
++                        // runner polls this future until it waits again.
++                        for (_id, window) in window_manager.iter_mut() {
++                            window.surface = None;
++                        }
 +                    }
 +                    event::Event::Resumed => {
 +                        is_suspended = false;
 +
-+                        // The old native window is gone: build a new surface
-+                        // on the new one for every window.
++                        // A new native window: build a surface on it for
++                        // every window.
 +                        if let Some(compositor) = compositor.as_mut() {
 +                            for (_id, window) in window_manager.iter_mut() {
 +                                let size = window.state.physical_size();
 +
-+                                window.surface = compositor.create_surface(
++                                window.surface = Some(compositor.create_surface(
 +                                    window.raw.clone(),
 +                                    size.width,
 +                                    size.height,
-+                                );
++                                ));
 +
 +                                window.raw.request_redraw();
 +                            }
@@ -247,3 +311,26 @@ index fe3269c..8533330 100644
                      _ => {}
                  }
              }
+diff --git a/src/window.rs b/src/window.rs
+index 24d6356..5ce9a5e 100644
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -75,7 +75,7 @@ where
+                 raw: window,
+                 state,
+                 exit_on_close_request,
+-                surface,
++                surface: Some(surface),
+                 surface_version,
+                 renderer,
+                 mouse_interaction: mouse::Interaction::None,
+@@ -167,7 +167,8 @@ where
+     pub state: State<P>,
+     pub exit_on_close_request: bool,
+     pub mouse_interaction: mouse::Interaction,
+-    pub surface: C::Surface,
++    /// `None` between `Suspended` and `Resumed` (Android).
++    pub surface: Option<C::Surface>,
+     pub surface_version: u64,
+     pub renderer: P::Renderer,
+     pub redraw_at: Option<Instant>,

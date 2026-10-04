@@ -11,7 +11,7 @@ a physical device.
 
 iced 0.14 runs Tawara's kind of interface on Windows, macOS, Linux, an
 Android emulator and an iOS simulator, from one code base, once its shell
-(`iced_winit`) carries a 138-line patch. Rendering, touch, scrolling, the
+(`iced_winit`) carries a 166-line patch. Rendering, touch, scrolling, the
 soft keyboard appearing and going with focus, typing through key events,
 Return, Back, rotation, density changes, going to the background and coming
 back, a cold start, the clipboard (through platform calls), the worker
@@ -48,13 +48,14 @@ as published, so all three need a modified iced:
 2. On Android it builds winit's event loop itself, with no way to hand it
    the `AndroidApp` that winit requires.
 3. On Android it opens its window at start-up, before the system has given
-   the app a native window; creating the surface then panics. After a
-   return from the background it does not rebuild the surface.
+   the app a native window; creating the surface then panics. When the app
+   goes to the background it keeps its surfaces on the native window being
+   destroyed, which winit forbids, and on return it does not rebuild them.
 4. On iOS it sizes the window 1024×768 points.
 
 | Approach | Finding | Chosen |
 |---|---|---|
-| iced's own shell with `android-activity`, NativeActivity | Built and run (this report). A 138-line patch to `iced_winit` (`spikes/patches/`, docs/DECISIONS.md D17) fixes all four; iced's tasks, subscriptions and executor are unchanged, so the worker, progress and cancellation are the desktop code. No Java, no Gradle: the APK is built with aapt2, zip, zipalign and apksigner. | **yes** |
+| iced's own shell with `android-activity`, NativeActivity | Built and run (this report). A 166-line patch to `iced_winit` (`spikes/patches/`, docs/DECISIONS.md D17) fixes all four; iced's tasks, subscriptions and executor are unchanged, so the worker, progress and cancellation are the desktop code. No Java, no Gradle: the APK is built with aapt2, zip, zipalign and apksigner. | **yes** |
 | iced's own shell with GameActivity | Read, not built: needs Gradle and AndroidX, and winit 0.30.13 drops GameActivity's text events, so it would gain nothing today. | no |
 | The community example with Java interop | Read, not built: it writes its own shell, which discards iced's tasks, and still needs a fork of iced, Java and Gradle. | no |
 | `iced_mobile` | Read, not built: it has no licence and does not compile against iced 0.14. | no |

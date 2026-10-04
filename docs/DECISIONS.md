@@ -358,14 +358,17 @@ requires it, and record why". Mobile requires a change to iced's shell,
 - on Android it has no way to receive the `AndroidApp` that winit needs,
   since it builds the event loop itself;
 - on Android it opens its window before the system has given the app one,
-  and creating the surface then panics; after a return from the background
-  it does not rebuild the surface;
+  and creating the surface then panics; when the app goes to the background
+  it keeps its surfaces on the native window being destroyed, which winit
+  forbids, and on return it does not rebuild them;
 - on iOS it sizes the window 1024×768 points.
 
 For phase 1 the change is a patch, `spikes/patches/iced_winit-0.14.1-mobile.patch`
-(+138/−7, almost all behind `cfg(target_os = ...)`), applied to the crates.io
-tarball by `spikes/tools/vendor-iced-winit.sh` after checking it against
-the checksum in `Cargo.lock`, and used through `[patch.crates-io]` in
+(+166/−19; most of it behind `cfg(target_os = ...)`, and the rest acts only
+on the `Suspended` and `Resumed` events, which iced receives only on
+Android), applied to the crates.io tarball by
+`spikes/tools/vendor-iced-winit.sh` after checking it against the checksum
+in `Cargo.lock`, and used through `[patch.crates-io]` in
 `spikes/Cargo.toml`. Patching the tarball rather than taking iced's git
 repository keeps one copy of every other iced crate in the build.
 
