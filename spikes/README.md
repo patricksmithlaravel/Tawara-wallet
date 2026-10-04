@@ -186,12 +186,49 @@ CI keeps no APK (a `run:` step cannot upload artifacts), so build one with
 the Android SDK and NDK installed: `ci/android.sh build`, then
 `ci/android.sh apk`.
 
-**iOS device.** Create a provisioning profile for
-`com.patricksmithlaravel.tawara.spike` (letting Xcode manage signing for an
-empty app with that bundle ID once is the simplest way). Build with
-`--target aarch64-apple-ios`, make `TawaraSpike.app` as `ci/ios.sh` does
-with `@PLATFORM@=iPhoneOS`, copy the profile in as `embedded.mobileprovision`,
-sign it with `codesign --force --sign "Apple Development: ..."`, then:
+**iOS device.** CI builds for a device but signs nothing (D1), so this is
+by hand on a Mac. You need a development provisioning profile that covers
+`com.patricksmithlaravel.tawara.spike` (an explicit or wildcard App ID) and
+lists the phone, and its Apple Development certificate in your keychain.
+Letting Xcode manage signing once for an empty app with that bundle ID,
+run on the phone, is the simplest way to get both; Xcode keeps the profile
+under `~/Library/Developer/Xcode/UserData/Provisioning Profiles/`.
+
+The signature must carry the entitlements: a profile copied into the
+bundle does not supply them, and without `application-identifier` the
+phone refuses the app (Apple's TN2319). From `spikes/`:
+
+```
+bash tools/vendor-iced-winit.sh
+IPHONEOS_DEPLOYMENT_TARGET=16.0 cargo build --locked --release \
+  --target aarch64-apple-ios --bin tawara-spike
+APP=TawaraSpike.app
+rm -rf "$APP" && mkdir "$APP"
+cp target/aarch64-apple-ios/release/tawara-spike "$APP/"
+sed -e 's/@PLATFORM@/iPhoneOS/' -e 's/@MINOS@/16.0/' \
+  platform/ios/Info.plist.in >"$APP/Info.plist"
+cp /path/to/the.mobileprovision "$APP/embedded.mobileprovision"
+security cms -D -i "$APP/embedded.mobileprovision" >profile.plist
+PREFIX=$(/usr/libexec/PlistBuddy -c 'Print :ApplicationIdentifierPrefix:0' profile.plist)
+TEAM=$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' profile.plist)
+cat >entitlements.plist <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>application-identifier</key><string>$PREFIX.com.patricksmithlaravel.tawara.spike</string>
+  <key>com.apple.developer.team-identifier</key><string>$TEAM</string>
+  <key>get-task-allow</key><true/>
+</dict>
+</plist>
+EOF
+codesign --force --sign "Apple Development: ..." --entitlements entitlements.plist \
+  --timestamp=none "$APP"
+codesign -d --entitlements - "$APP"
+```
+
+The last command should show `application-identifier` as the prefix
+followed by the bundle ID. Then:
 
 ```
 xcrun devicectl device install app --device <id> TawaraSpike.app
