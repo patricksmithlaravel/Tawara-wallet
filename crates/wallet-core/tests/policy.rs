@@ -568,6 +568,166 @@ fn includes_in(parsed: &Parsed) -> Vec<Option<String>> {
     found.0
 }
 
+/// Routes into source that the walk does not follow, in code a non-test
+/// build compiles. rustc accepts an out-of-line `mod` inside a block (a
+/// function body, a `const` initialiser) when it carries a `#[path]`, and the
+/// walk reads `mod` only at item level; a macro's tokens are raw to `syn`, so a
+/// `mod` or `include!` it expands to is not seen; and a macro from a
+/// dependency can expand to `include!` of a path it is given. Each of these is
+/// refused rather than modelled, which keeps the walk's set of production
+/// files complete, and the exemption of test-only files sound.
+#[derive(Default)]
+struct Unfollowed {
+    block_depth: usize,
+    found: Vec<String>,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for Unfollowed {
+    fn visit_block(&mut self, block: &'ast syn::Block) {
+        self.block_depth += 1;
+        syn::visit::visit_block(self, block);
+        self.block_depth -= 1;
+    }
+
+    fn visit_item_mod(&mut self, m: &'ast syn::ItemMod) {
+        if self.block_depth > 0 && m.content.is_none() {
+            self.found.push(format!(
+                "an out-of-line `mod {};` inside a block",
+                m.ident.unraw()
+            ));
+        }
+        syn::visit::visit_item_mod(self, m);
+    }
+
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        let is_include = mac
+            .path
+            .segments
+            .last()
+            .is_some_and(|s| s.ident == "include");
+        if !is_include {
+            let name = mac.path.to_token_stream().to_string().replace(' ', "");
+            let mut words = Vec::new();
+            idents(mac.tokens.clone(), &mut words);
+            if words.iter().any(|w| w == "mod" || w == "include") {
+                self.found.push(format!(
+                    "a `{name}!` whose tokens declare a module or use `include!`"
+                ));
+            } else if names_rust_file(mac.tokens.clone()) {
+                self.found
+                    .push(format!("a `{name}!` given the name of a `.rs` file"));
+            }
+        }
+        syn::visit::visit_macro(self, mac);
+    }
+}
+
+/// Whether a token stream holds a string literal naming a `.rs` file.
+fn names_rust_file(tokens: proc_macro2::TokenStream) -> bool {
+    tokens.into_iter().any(|tt| match tt {
+        proc_macro2::TokenTree::Literal(lit) => lit
+            .to_string()
+            .trim_end_matches('#')
+            .trim_end_matches('"')
+            .ends_with(".rs"),
+        proc_macro2::TokenTree::Group(g) => names_rust_file(g.stream()),
+        _ => false,
+    })
+}
+
+fn unfollowed_in(parsed: &Parsed) -> Vec<String> {
+    use syn::visit::Visit;
+    let mut found = Unfollowed::default();
+    match parsed {
+        Parsed::File(f) => found.visit_file(f),
+        Parsed::Expr(e) => found.visit_expr(e),
+    }
+    found.found
+}
+
+/// Out-of-line `mod` declarations inside blocks, with the inline modules
+/// (outside any block) they sit in and their attributes, where the walk can
+/// resolve them: directly in a block, not under an inline module inside one
+/// (rustc resolves those by other rules). Once `Unfollowed` has refused them in
+/// non-test code, only test code holds them, and a test fixture loaded this way
+/// is then exempt.
+#[derive(Default)]
+struct BlockMods {
+    block_depth: usize,
+    inline_in_block: usize,
+    inline: Vec<String>,
+    found: Vec<(Vec<String>, Vec<syn::Attribute>)>,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for BlockMods {
+    fn visit_block(&mut self, block: &'ast syn::Block) {
+        self.block_depth += 1;
+        syn::visit::visit_block(self, block);
+        self.block_depth -= 1;
+    }
+
+    fn visit_item_mod(&mut self, m: &'ast syn::ItemMod) {
+        match (&m.content, self.block_depth > 0) {
+            (None, true) if self.inline_in_block == 0 => {
+                self.found.push((self.inline.clone(), m.attrs.clone()));
+            }
+            (None, _) => {}
+            (Some(_), true) => {
+                self.inline_in_block += 1;
+                syn::visit::visit_item_mod(self, m);
+                self.inline_in_block -= 1;
+            }
+            (Some(_), false) => {
+                let segment = path_choices(&m.attrs)
+                    .ok()
+                    .and_then(|c| c.into_iter().next())
+                    .map(|c| c.path)
+                    .unwrap_or_else(|| m.ident.unraw().to_string());
+                self.inline.push(segment);
+                syn::visit::visit_item_mod(self, m);
+                self.inline.pop();
+            }
+        }
+    }
+}
+
+fn block_mods_in(parsed: &Parsed) -> Vec<(Vec<String>, Vec<syn::Attribute>)> {
+    use syn::visit::Visit;
+    let mut found = BlockMods::default();
+    match parsed {
+        Parsed::File(f) => found.visit_file(f),
+        Parsed::Expr(e) => found.visit_expr(e),
+    }
+    found.found
+}
+
+/// The files a `#[path]` on a `mod` inside a block can load: relative to the
+/// enclosing module's directory, and to the declaring file's. Only test code
+/// reaches this, and every production route is followed or refused, so taking
+/// both cannot exempt a file a non-test build compiles.
+fn block_mod_targets(
+    context: &ModFile,
+    here: &Path,
+    inline: &[String],
+    attrs: &[syn::Attribute],
+) -> Result<Vec<Source>, String> {
+    let (module_dir, _) = module_dirs(context, inline);
+    let mut out = Vec::new();
+    for choice in path_choices(attrs)? {
+        for base in [module_dir.as_path(), here] {
+            let file = ModFile {
+                path: base.join(&choice.path),
+                mod_rs: true,
+            };
+            out.push(Source {
+                path: file.path.clone(),
+                context: file,
+            });
+        }
+    }
+    Ok(out)
+}
+
 fn strip(parsed: &Parsed) -> Parsed {
     match parsed {
         Parsed::File(f) => {
@@ -737,6 +897,18 @@ fn walk_sources(crate_dir: &Path) -> Result<SourceWalk, String> {
         let stripped = strip(&raw);
         let here = source.path.parent().expect("a source file has a directory");
 
+        if let Some(what) = unfollowed_in(&stripped).first() {
+            return Err(format!(
+                "{} has {what} in non-test code; this check cannot see what it loads",
+                source.path.display()
+            ));
+        }
+        // What is left of `mod` inside blocks is test code: a fixture it
+        // loads by `#[path]` is a test target.
+        for (inline, attrs) in block_mods_in(&raw) {
+            test_targets.extend(block_mod_targets(&source.context, here, &inline, &attrs)?);
+        }
+
         // Out-of-line modules: every non-test choice is compiled in some
         // configuration; a test-only choice is a test target.
         let mut decls = Vec::new();
@@ -756,17 +928,12 @@ fn walk_sources(crate_dir: &Path) -> Result<SourceWalk, String> {
                     path: file.path.clone(),
                     context: file,
                 };
+                // A chosen file that does not exist is one rustc cannot compile
+                // either, in the configurations that choose it.
                 if decl.test_only || choice.test_only {
                     test_targets.push(target);
                 } else if target.path.exists() {
                     stack.push(target);
-                } else if !choices.iter().any(|c| c.test_only) && has_direct {
-                    return Err(format!(
-                        "`mod {};` in {} names {}, which does not exist",
-                        decl.name,
-                        source.path.display(),
-                        target.path.display()
-                    ));
                 }
             }
             if !has_direct {
@@ -865,6 +1032,9 @@ fn walk_sources(crate_dir: &Path) -> Result<SourceWalk, String> {
                 path: here.join(rel),
                 context: source.context.clone(),
             });
+        }
+        for (inline, attrs) in block_mods_in(&raw) {
+            test_targets.extend(block_mod_targets(&source.context, here, &inline, &attrs)?);
         }
     }
 
@@ -1047,7 +1217,12 @@ fn the_source_walk_scans_what_rustc_may_compile() {
                  #[cfg_attr(windows, path = \"win_only.rs\")] mod plat2;\n\
                  #[cfg_attr(test, path = \"test_path.rs\")] mod tp;\n\
                  #[cfg(test)] mod t2 { mod deep; }\n\
-                 #[cfg(test)] mod t3 { include!(\"fixture.rs\"); }\n",
+                 #[cfg(test)] mod t3 { include!(\"fixture.rs\"); }\n\
+                 #[test] fn fx() { #[path = \"fixture_fn.rs\"] mod f; }\n\
+                 #[cfg(test)] mod t5 { #[test] fn fx() { #[path = \"fixture_t5.rs\"] mod f; } }\n\
+                 mod shared;\n\
+                 #[cfg(test)] #[path = \"shared.rs\"] mod shared_t;\n\
+                 #[path = \"d.rs\"] #[cfg_attr(unix, path = \"missing.rs\")] mod dd;\n",
             ),
             ("src/tests.rs", CHEAP),
             ("src/a.rs", "mod b;\n"),
@@ -1062,6 +1237,10 @@ fn the_source_walk_scans_what_rustc_may_compile() {
             ("src/test_path.rs", CHEAP),
             ("src/t2/deep.rs", CHEAP),
             ("src/fixture.rs", CHEAP),
+            ("src/fixture_fn.rs", CHEAP),
+            ("src/t5/fixture_t5.rs", CHEAP),
+            ("src/shared.rs", CHEAP),
+            ("src/d.rs", SAFE),
             ("src/stray.rs", CHEAP),
             ("tests/it.rs", CHEAP),
         ],
@@ -1093,6 +1272,8 @@ fn the_source_walk_scans_what_rustc_may_compile() {
         "src/unix.rs",
         "src/win_only.rs",
         "src/tp.rs",
+        "src/shared.rs",
+        "src/d.rs",
     ] {
         assert!(
             reached.contains(expected),
@@ -1106,7 +1287,9 @@ fn the_source_walk_scans_what_rustc_may_compile() {
                 "src/tests.rs",
                 "src/test_path.rs",
                 "src/t2/deep.rs",
-                "src/fixture.rs"
+                "src/fixture.rs",
+                "src/fixture_fn.rs",
+                "src/t5/fixture_t5.rs"
             ]
             .map(String::from)
         ),
@@ -1119,18 +1302,20 @@ fn the_source_walk_scans_what_rustc_may_compile() {
                 "src/a/b.rs",
                 "src/kdf_impl.rs",
                 "src/unix.rs",
-                "src/stray.rs"
+                "src/stray.rs",
+                "src/shared.rs"
             ]
             .map(String::from)
         ),
-        "production code reached by any route, or by none, is flagged; tests/ is not scanned"
+        "production code reached by any route, or by none, is flagged, even when a test also \
+         reaches it; tests/ is not scanned"
     );
 }
 
 /// What the walk cannot read, it refuses rather than passes.
 #[test]
 fn the_source_walk_refuses_what_it_cannot_read() {
-    let cases: [(&str, &str); 2] = [
+    let cases: [(&str, &str); 6] = [
         (
             "include!(concat!(env!(\"OUT_DIR\"), \"/generated.rs\"));\n",
             "not a string literal",
@@ -1138,6 +1323,22 @@ fn the_source_walk_refuses_what_it_cannot_read() {
         (
             "#[cfg_attr(unix, path = \"u\")] mod inline_cond { }\n",
             "conditional or repeated path",
+        ),
+        (
+            "pub fn f() -> u32 { #[path = \"../../outside.rs\"] mod imp; 0 }\n",
+            "inside a block",
+        ),
+        (
+            "macro_rules! m { () => { #[path = \"x.rs\"] mod imp; }; }\n",
+            "declare a module or use `include!`",
+        ),
+        (
+            "macro_rules! l { () => { include!(\"x.rs\"); }; }\nl!();\n",
+            "declare a module or use `include!`",
+        ),
+        (
+            "some_dep::load!(\"../../outside.rs\");\n",
+            "given the name of a `.rs` file",
         ),
     ];
     for (i, (lib, expected)) in cases.into_iter().enumerate() {

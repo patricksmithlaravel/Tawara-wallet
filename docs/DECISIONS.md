@@ -268,9 +268,16 @@ that a machine can check, with no network:
   test-only one, an `include!` in test-only code). The walk starts at the
   root of every non-test target (library, binaries, build script, examples)
   and follows `mod`, every `#[path]` and every `cfg_attr` path, and literal
-  `include!`s, as rustc may in some configuration; a non-literal `include!`
-  in non-test code, and a conditional path on an inline module, are refused
-  as unreadable rather than passed. In every scanned file, code under
+  `include!`s, as rustc may in some configuration. What it does not follow
+  in non-test code it refuses as unreadable rather than passing: a
+  non-literal `include!`, a conditional path on an inline module, an
+  out-of-line `mod` inside a block (rustc loads one there by `#[path]`), a
+  macro whose tokens declare a module or use `include!`, and a macro given
+  the name of a `.rs` file (a macro from a dependency could expand to
+  `include!`). That keeps the walk's production set complete, which is what
+  makes the exemption sound: a file a non-test build compiles is never
+  exempt, even when a test also reaches it. In test code, a `mod` inside a
+  block is followed, so a fixture it loads is exempt. In every scanned file, code under
   `#[cfg(test)]`, `#[cfg(all(test, ..))]`, `#[test]` or a file's own
   `#![cfg(test)]`, on items, statements, match arms, fields and variants,
   is removed before looking, and identifiers are compared raw or not, macro
@@ -290,12 +297,15 @@ dependency in `app`, a `paths` override in `.cargo/config.toml`,
 cheap KDF named in `app` (also as a raw identifier) and in a production
 module of `wallet-core` two files down, `mochimo_crypto` named in `app`,
 `pub use mochimo_crypto` at the top of `wallet-core`, inside a nested
-module and in an `include!`d file, the cheap KDF in an `include!`d file and
-in a file selected by `#[cfg_attr(unix, path = ..)]` beside a clean
-fallback, an unreferenced file naming it, and iced in `wallet-core`'s
-dependencies. Each passes on the tree as committed; an out-of-line
+module and in an `include!`d file, the cheap KDF in an `include!`d file, in
+a file selected by `#[cfg_attr(unix, path = ..)]` beside a clean fallback,
+in an unreferenced file, in a file outside the crate or under its `tests/`
+loaded by a `mod` inside a function body (by `#[path]` and by `cfg_attr`),
+behind a `macro_rules!` that declares a `mod` or uses `include!`, and in a
+file a test module also reaches, and iced in `wallet-core`'s dependencies. Each passes on the tree as committed; an out-of-line
 `#[cfg(test)] mod tests;` naming the cheap KDF passes, as it should, and so
-does a conditional module path with no fallback file. Four more tests hold
+do a conditional module path with no fallback file and a fixture loaded by a
+`mod` inside a `#[test]` function. Four more tests hold
 the detectors to fixed cases, the walk to a crate laid out on disk where the
 answer is known, and its refusals to what it cannot read, so a detector that
 sees nothing cannot pass.
