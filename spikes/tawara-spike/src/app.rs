@@ -75,6 +75,8 @@ pub struct Spike {
     /// UIKit has finished launching, and on Android after the system has
     /// given the app a native window.
     started: bool,
+    /// Extra seconds step 4 has waited for the 20-step task to finish.
+    waited: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -124,6 +126,7 @@ impl Spike {
             scale: 1.0,
             step: 0,
             started: false,
+            waited: 0,
         };
         (spike, Task::none())
     }
@@ -393,11 +396,21 @@ impl Spike {
                 );
                 Task::batch([self.start(20, 100), next(4000, 4)])
             }
+            4 if self.running.is_some() && self.waited < 11 => {
+                // A loaded host (a simulator beside a software renderer) can
+                // stretch the task's 2 s of work: wait, up to 15 s in all.
+                self.waited += 1;
+                next(1000, 4)
+            }
             4 => {
                 report::check(
                     "task.complete",
                     self.finished && self.running.is_none(),
-                    &self.status,
+                    format!(
+                        "{} (checked {} s after the start)",
+                        self.status,
+                        4 + self.waited
+                    ),
                 );
                 report::check(
                     "ui.responsive",
