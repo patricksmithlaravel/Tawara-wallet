@@ -14,8 +14,10 @@
 //!   models ([`view`]): plain data that holds no secret. The one exception
 //!   is the recovery phrase, shown once when a store is created
 //!   ([`PhraseForDisplay`]).
-//! - **Cancellation** through the library's `recon::Cancel`, where the
-//!   library takes one.
+//! - **Cancellation and progress** through the library's `recon::Cancel`
+//!   and `recon::Progress`: opening the wallet, a refresh, a status read, a
+//!   restore, an acknowledged advance and a discovery sweep can each be
+//!   stopped, and the long ones report how far they have got.
 //! - **Store location, entropy and secret input** ([`location`],
 //!   [`entropy`], [`SecretText`]; docs/PLAN.md section 4).
 //! - **Lifecycle.** An idle timer, an explicit Lock, and a move to the
@@ -49,8 +51,8 @@ pub mod worker;
 
 pub use command::{Command, PlanId, RequestId};
 pub use event::{
-    Activity, Discovered, Event, LockReason, PlanView, PlannedDestination, ReceiveView, Refusal,
-    RefusalKind, Reply, SentView,
+    Activity, Discovered, Event, LockReason, PlanView, PlannedDestination, Progress, ReceiveView,
+    Refusal, RefusalKind, Reply, SentView,
 };
 pub use node::{Connect, HttpsNode, NodeRefused};
 pub use secret::{PhraseForDisplay, SecretText};
@@ -71,15 +73,19 @@ pub const CONFIRM_POSITIONS: [usize; 3] = mochimo_crypto::cli::create::CONFIRM_P
 /// wallets do not agree on how a phrase becomes a seed.
 pub const SCHEME_WARNING: &str = mochimo_crypto::cli::create::SCHEME_WARNING;
 
-/// The furthest key index a scan or an acknowledged advance goes to
+/// The furthest key index a scan or an acknowledged advance names
 /// (`Command::Status`'s and `Command::Restore`'s `scan_to`,
-/// `Command::Reconcile`'s `advance_to`). The library walks every position up
-/// to it, about 1.6 ms each in a release build, and its restore and advance
-/// cannot be stopped once started, while the worker runs one command at a
-/// time: an idle lock or a move to the background waits for the walk. This
-/// bound keeps that wait to a few minutes at most. The command line takes
-/// any index below `u32::MAX`; docs/DECISIONS.md D19.
-pub const MAX_SCAN_TO: u32 = 100_000;
+/// `Command::Reconcile`'s `advance_to`): the command line's own bound
+/// (`cli::args`, its `--scan-to` and `--advance-to`). `u32::MAX` is refused
+/// as well as anything above it: the last position cannot be advanced from,
+/// so an account placed there could never reserve a spend, and a walk "to"
+/// it would end at a position the walk never derives.
+///
+/// The library walks every position up to the index named, about 1.6 ms
+/// each in a release build, so a far index is a long wait. Each of these
+/// walks can be stopped, by a cancel and when the idle period passes, so
+/// none of them holds a lock back; docs/DECISIONS.md D19.
+pub const MAX_KEY_INDEX: u32 = u32::MAX - 1;
 
 /// How far a discovery sweep goes when the person does not say: the
 /// library's default (`cli::args::DISCOVER_DEFAULT_TO`).
