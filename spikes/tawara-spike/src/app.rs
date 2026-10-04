@@ -80,6 +80,8 @@ pub struct Spike {
     started: bool,
     /// Extra seconds step 4 has waited for the 20-step task to finish.
     waited: u32,
+    /// Quarter seconds step 2 has waited for the task's first progress.
+    waited_progress: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +133,7 @@ impl Spike {
             step: 0,
             started: false,
             waited: 0,
+            waited_progress: 0,
         };
         (spike, Task::none())
     }
@@ -379,11 +382,21 @@ impl Spike {
                 };
                 Task::batch([synthetic, self.start(40, 100), next(450, 2)])
             }
+            2 if self.progress.0 < 2 && self.waited_progress < 10 => {
+                // A loaded host (a simulator still finishing its own start-up)
+                // can delay the worker's first steps: wait, up to 2.95 s.
+                self.waited_progress += 1;
+                next(250, 2)
+            }
             2 => {
                 report::check(
                     "task.progress",
                     self.progress.0 >= 2,
-                    format!("{:?}", self.progress),
+                    format!(
+                        "{:?} after {} ms",
+                        self.progress,
+                        450 + 250 * self.waited_progress
+                    ),
                 );
                 Task::batch([Task::done(Message::Cancel), next(1500, 3)])
             }

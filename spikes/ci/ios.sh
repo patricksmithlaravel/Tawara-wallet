@@ -165,7 +165,11 @@ checklist() {
     record I9 rotation INFO "${l:-no Resized after the orientation request}"
   fi
   if wait_line "$err" '^SPIKE DONE ' 180 >/dev/null; then
-    record I1 self-test PASS "$(grep -m1 '^SPIKE DONE' "$err")"
+    l=$(grep -m1 '^SPIKE DONE' "$err")
+    case $l in
+      *" fail=0") record I1 self-test PASS "$l" ;;
+      *) record I1 self-test FAIL "$l" ;;
+    esac
   else
     record I1 self-test FAIL "no SPIKE DONE within 180 s"
   fi
