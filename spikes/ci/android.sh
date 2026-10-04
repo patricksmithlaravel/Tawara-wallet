@@ -142,6 +142,15 @@ emulator_up() {
   (yes 2>/dev/null || true) | sdkmanager --licenses >/dev/null 2>&1 || true
   sdkmanager --install platform-tools emulator "$IMG" >"$OUT/sdkmanager.txt" 2>&1 \
     || { tail -30 "$OUT/sdkmanager.txt"; die "sdkmanager failed"; }
+  # The emulator links against desktop libraries the runner image lacks
+  # (libpulse first); -no-window still loads them.
+  sudo apt-get update -q >/dev/null
+  sudo apt-get install -y -q --no-install-recommends libpulse0 libnss3 libxcomposite1 \
+    libxcursor1 libxdamage1 libxi6 libxtst6 libxkbfile1 libgl1 libegl1 libasound2t64 \
+    libbsd0 libxkbcommon-x11-0 libx11-xcb1 >/dev/null
+  local missing
+  missing=$(ldd "$SDK/emulator/qemu/linux-x86_64/qemu-system-x86_64" | grep 'not found' || true)
+  [ -z "$missing" ] || die "the emulator still lacks: $(echo "$missing" | xargs)"
   emulator -version | head -1
   endgroup
 
@@ -573,23 +582,8 @@ checklist() {
 }
 
 evidence() {
-  group "results"
-  column -t -s $'\t' "$OUT/results.tsv" 2>/dev/null || cat "$OUT/results.tsv"
-  endgroup
-  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-    {
-      echo "### Android emulator checklist"
-      echo "| id | check | result | detail |"
-      echo "|---|---|---|---|"
-      awk -F'\t' '{gsub(/\|/,"/",$4); printf "| %s | %s | %s | %s |\n", $1, $2, $3, substr($4,1,200)}' "$OUT/results.tsv"
-    } >>"$GITHUB_STEP_SUMMARY"
-  fi
-  group "app log (SPIKE lines, all launches)"
-  grep -E "$TAG: SPIKE " "$LOG" | sed -E "s/.*$TAG: //" | grep -vE '^SPIKE INFO pw_len=[0-6]$' || true
-  endgroup
-  group "logcat around the app (errors and the activity manager)"
-  grep -E "AndroidRuntime|DEBUG|libc|ActivityTaskManager.*$PKG|InputMethodManagerService|android_activity|winit|wgpu|$TAG: (thread|note|stack)" "$LOG" | tail -200 || true
-  endgroup
+  # Screenshots first and the results table last: a job log is read from
+  # its end.
   for raw in "$OUT"/raw/*.raw; do
     [ -f "$raw" ] || continue
     local n
@@ -599,6 +593,22 @@ evidence() {
     base64 -w 76 "$OUT/shots/$n.png"
     echo "-----END SHOT $n-----"
   done
+  group "logcat around the app (errors and the activity manager)"
+  grep -E "AndroidRuntime|DEBUG|libc|ActivityTaskManager.*$PKG|InputMethodManagerService|android_activity|winit|wgpu|$TAG: (thread|note|stack)" "$LOG" | tail -200 || true
+  endgroup
+  group "app log (SPIKE lines, all launches)"
+  grep -E "$TAG: SPIKE " "$LOG" | sed -E "s/.*$TAG: //" | grep -vE '^SPIKE INFO pw_len=[0-6]$' || true
+  endgroup
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    {
+      echo "### Android emulator checklist"
+      echo "| id | check | result | detail |"
+      echo "|---|---|---|---|"
+      awk -F'\t' '{gsub(/\|/,"/",$4); printf "| %s | %s | %s | %s |\n", $1, $2, $3, substr($4,1,200)}' "$OUT/results.tsv"
+    } >>"$GITHUB_STEP_SUMMARY"
+  fi
+  echo "===== results ====="
+  awk -F'\t' '{printf "CHECK %s %s %s: %s\n", $3, $1, $2, $4}' "$OUT/results.tsv"
   local fatal
   fatal=$(awk -F'\t' -v e="$EXPECTED_FAIL" '$3=="FAIL" && index(e, " " $1 " ")==0' "$OUT/results.tsv")
   if [ -n "$fatal" ]; then

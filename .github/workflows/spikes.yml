@@ -25,9 +25,8 @@ on:
 
 permissions: {}
 
-concurrency:
-  group: spikes-${{ github.ref }}
-  cancel-in-progress: true
+# No concurrency group: each run is evidence, and a newer push must not
+# cancel an older run's checklist half way.
 
 defaults:
   run:

@@ -238,15 +238,7 @@ summary() {
 }
 
 evidence() {
-  summary
-  for f in app app-tiny-skia; do
-    group "app stderr ($f)"
-    grep -vE '^SPIKE INFO pw_len=[0-6]$' "$OUT/$f.err" 2>/dev/null || true
-    endgroup
-  done
-  group "os log (errors and faults)"
-  grep -iE 'error|fault|crash|terminat' "$OUT/os.log" | tail -150 || true
-  endgroup
+  # Screenshots first and the results last: a job log is read from its end.
   for f in "$OUT"/shots/*.png; do
     [ -f "$f" ] || continue
     local j=${f%.png}.jpg
@@ -255,6 +247,17 @@ evidence() {
     base64 -i "$j" | fold -w 76
     echo "-----END SHOT $(basename "$j" .jpg)-----"
   done
+  group "os log (errors and faults)"
+  grep -iE 'error|fault|crash|terminat' "$OUT/os.log" | tail -150 || true
+  endgroup
+  for f in app app-tiny-skia; do
+    group "app stderr ($f)"
+    grep -vE '^SPIKE INFO pw_len=[0-6]$' "$OUT/$f.err" 2>/dev/null || true
+    endgroup
+  done
+  summary
+  echo "===== results ====="
+  awk -F'\t' '{printf "CHECK %s %s %s: %s\n", $3, $1, $2, $4}' "$OUT/results.tsv"
   if grep -q $'\tFAIL\t' "$OUT/results.tsv"; then
     echo "::error::iOS checklist has failures"
     return 1

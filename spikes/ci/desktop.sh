@@ -78,12 +78,12 @@ for label in default tiny-skia wgpu; do
   fi
   echo "::endgroup::"
   if [ ${#problems[@]} -eq 0 ]; then
-    echo "CHECK PASS desktop.$label"
+    echo "CHECK PASS desktop.$label" | tee -a "$OUT/checks.txt"
   elif [ "$label" = wgpu ]; then
-    echo "CHECK INFO desktop.$label: ${problems[*]} (informational)"
+    echo "CHECK INFO desktop.$label: ${problems[*]} (informational)" | tee -a "$OUT/checks.txt"
   else
     echo "::error::desktop self-test ($label): ${problems[*]}"
-    echo "CHECK FAIL desktop.$label: ${problems[*]}"
+    echo "CHECK FAIL desktop.$label: ${problems[*]}" | tee -a "$OUT/checks.txt"
     failed=1
   fi
   [ -n "${GITHUB_STEP_SUMMARY:-}" ] && grep -E '^SPIKE (PASS|FAIL|DONE)' "$log" | sed "s/^/    [$label] /" >>"$GITHUB_STEP_SUMMARY"
@@ -92,4 +92,10 @@ done
 echo "::group::screenshots (base64 PNG)"
 for f in "$OUT"/*.png; do shot "$(basename "$f" .png)" "$f"; done
 echo "::endgroup::"
+# The results again, last: a job log is read from its end.
+echo "===== results ====="
+for label in default tiny-skia wgpu; do
+  grep -E '^SPIKE (PASS|FAIL|DONE)|^SPIKE INFO lib: create|unlock' "$OUT/$label.log" 2>/dev/null | sed "s/^/[$label] /"
+done
+grep -h '^CHECK ' "$OUT"/checks.txt 2>/dev/null
 exit "$failed"
