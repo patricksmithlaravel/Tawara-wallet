@@ -21,9 +21,11 @@
 //!
 //! Backup exclusion on mobile is platform glue, made in phase 4:
 //! `android:allowBackup="false"` and `dataExtractionRules` on Android,
-//! `NSURLIsExcludedFromBackupKey` on iOS. Desktop backup programs (Time
-//! Machine, File History) are outside the plan's list; docs/DECISIONS.md D21
-//! puts the question to the owner.
+//! `NSURLIsExcludedFromBackupKey` on iOS. On the desktop the owner decided
+//! that backups may archive the store (Time Machine, Windows' File History
+//! and shadow copies), so nothing here or in the desktop shell excludes it;
+//! docs/DECISIONS.md D21 records what a restored copy is protected by and
+//! what remains.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;

@@ -11,8 +11,9 @@
 //! here exactly as they read at the command line.
 //!
 //! The rendered pages name command-line verbs in places (`settle`,
-//! `reconcile ... --advance-to N`). How the interface presents them, and any
-//! paraphrase, is phase 3's, with the owner's approval.
+//! `reconcile ... --advance-to N`). The owner decided (docs/DECISIONS.md
+//! D25) that the pages are shown word for word, with a note on the screen
+//! naming the control each verb corresponds to.
 
 use mochimo_crypto::Error;
 use mochimo_crypto::cli::Code;

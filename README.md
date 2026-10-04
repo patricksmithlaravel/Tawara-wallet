@@ -40,8 +40,9 @@ design/
   renderings/    the owner's reference renderings
   INDEX.md       what each rendering shows, and its size
 docs/
-  PLAN.md        the approved plan
-  DECISIONS.md   every decision and deviation, with its reason
+  PLAN.md               the approved plan
+  DECISIONS.md          every decision and deviation, with its reason
+  LIBRARY-PROPOSALS.md  changes to the library proposed for Rep-0
 ```
 
 ## Building
