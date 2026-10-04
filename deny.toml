@@ -47,12 +47,14 @@ ignore = [
     # `metal` that iced 0.14.0's wgpu accepts drops it.
     { id = "RUSTSEC-2024-0436", reason = "paste is a compile-time proc macro reached only through metal -> wgpu-hal under iced 0.14.0's renderer; it puts no code in the executable and no compatible upgrade exists" },
     # `ttf-parser` 0.25.1: its author has stated it will receive no further
-    # fixes. It reads font files, through `fontdb` and `cosmic-text`, which
-    # iced uses for all text. What it parses is the fonts this application
-    # bundles (docs/PLAN.md section 5) and the fonts installed on the user's
-    # own system, both already trusted; it never sees data from the node.
-    # No release of iced 0.14 uses another parser.
-    { id = "RUSTSEC-2026-0192", reason = "ttf-parser parses only bundled and locally installed fonts, never node data; it is iced 0.14.0's text stack and has no maintained drop-in within this iced pin" },
+    # fixes. It reads font files, and arrives two ways: through `fontdb` and
+    # `cosmic-text`, which iced uses for all text, and on Linux through
+    # `owned_ttf_parser` -> `ab_glyph` -> `sctk-adwaita` -> winit, which
+    # draws Wayland window decorations with a system font. What it parses is
+    # the fonts this application bundles (docs/PLAN.md section 5) and the
+    # fonts installed on the user's own system, both already trusted; it never
+    # sees data from the node. No release of iced 0.14 uses another parser.
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser parses only bundled and locally installed fonts, never node data; it is reached through iced 0.14.0's text stack (fontdb, cosmic-text) and winit's Wayland decorations (sctk-adwaita, ab_glyph), with no maintained drop-in within this iced pin" },
 ]
 # Unmaintained crates anywhere in the graph, not just the ones this workspace
 # names directly, as in Rep-1: an application inherits the maintenance status
@@ -64,9 +66,18 @@ unmaintained = "all"
 yanked = "deny"
 
 [licenses]
+# Dev-dependencies are licence-checked too. cargo-deny leaves them out by
+# default, and then a GPL crate used only by a test would pass this file
+# unseen; a test dependency is still code this repository carries and runs.
+include-dev = true
+# An exception no crate matches is an error, not a warning: a stale exception
+# is an allowance nobody is using, and the licence-text pin below relies on
+# its exception failing loudly when the text it was written for changes.
+unused-license-exception = "deny"
 # PERMISSIVE LICENCES ONLY (docs/PLAN.md section 6). Every identifier below is
 # here because a crate in this graph needs it; cargo-deny reports an entry no
-# crate uses. GPL in any version is absent, and so it can never be satisfied:
+# crate uses. GPL in any version is absent, and so it can never be satisfied,
+# by a dependency of any kind:
 # FORK.md's Licence section explains that a GPL dependency would fail on the
 # Mochimo licence's field-of-use restriction. Two crates in this graph offer
 # a GPL or LGPL arm in an OR expression (`self_cell`: `Apache-2.0 OR
@@ -104,8 +115,9 @@ allow = [
     # `hexf-parse`, under `naga`, wgpu's shader translator: a public-domain
     # dedication with a fallback licence.
     "CC0-1.0",
-    # `foldhash` and `slotmap`, under wgpu and iced's layout: the zlib
-    # licence.
+    # `foldhash`, under wgpu (through `hashbrown`), and `slotmap`, under the
+    # text stack (`cosmic-text` -> `fontdb`) and wgpu-hal's GL backend
+    # (`glow`): the zlib licence.
     "Zlib",
 ]
 
@@ -130,8 +142,9 @@ allow = [
 # the same bytes. If the library's licence text changes when `rev` moves,
 # this check goes red, and someone reads the new text before this
 # application's licence follows it. That is the moment a licence gate exists
-# for. A changed text is reported as the crate being unlicensed and its
-# exception below unmatched, and the second is an error, so the check fails.
+# for. A changed text is reported as the crate being unlicensed, which is an
+# error, and its exception below as unmatched, which `unused-license-exception
+# = "deny"` above also makes an error; either way the check fails.
 # The identifier is allowed for these five crates alone, as exceptions,
 # never in the list above.
 [licenses.private]
@@ -183,19 +196,22 @@ crate = "tawara-mobile"
 allow = ["LicenseRef-Mochimo-Engine-1.0"]
 
 [bans]
-# DUPLICATE VERSIONS ARE ALLOWED. The interface's graph carries several
-# (`foldhash` 0.1 and 0.2, `bitflags` 1 and 2, `rustix` 0.38 and 1, among
-# others), every one arriving through iced, winit or wgpu; none touches key
-# material, and denying them would make this gate red for a condition no
-# change here can fix. The duplicate that would matter is denied by name
-# below, as in Rep-1.
+# DUPLICATE VERSIONS ARE ALLOWED. Most of this graph's duplicates (`foldhash`
+# 0.1 and 0.2, `bitflags` 1 and 2, `rustix` 0.38 and 1, the `objc2` and
+# `calloop` families, among others) arrive through iced, winit or wgpu. Some
+# do not: `windows-sys` 0.52 and 0.61 are the library's own pair, carried
+# over from Rep-1 (0.52 is `ring`'s, on aarch64 Windows only), and
+# `getrandom` 0.2 is `ring`'s, beside the interface's 0.3 and 0.4. None of
+# them is a second copy of a trait the library's key handling depends on, and
+# denying them would make this gate red for a condition no change here can
+# fix. The duplicate that would matter is denied by name below, as in Rep-1.
 multiple-versions = "allow"
 # A `*` version requirement would mean a dependency whose version the
-# lockfile does not choose. This workspace's own crates refer to each other
-# by path, which is not that, and `allow-wildcard-paths` admits exactly those
-# (it applies only to unpublished crates, which all four are). The library's
-# git line carries a version requirement as well as its `rev`, so it is not a
-# wildcard either.
+# lockfile does not choose. `allow-wildcard-paths` admits, for unpublished
+# crates (all four of this workspace's), every dependency that does not come
+# from a registry: the path dependencies between the four, and the library's
+# git line, whose commit `rev` fixes and the lockfile records. A registry
+# dependency with a `*` requirement is still denied.
 wildcards = "deny"
 allow-wildcard-paths = true
 
@@ -213,9 +229,34 @@ reason = "the library's hash crates are pinned to the digest 0.10 line; see the 
 # library's `ureq`, and the library's argument against each (a decompressor
 # over untrusted input, `serde` pulled back in, a second TLS stack in C) does
 # not change because the crate that asked for it is a toolkit.
+#
+# `native-tls-no-default` is added here and is not in Rep-1's list: in ureq
+# 3.4.2 it is `["dep:native-tls", "dep:der", "_tls"]`, the same C TLS stack
+# under another feature name, so denying `native-tls` alone left it open.
+# The crates themselves are denied below as well, so the C stack is refused
+# whichever crate or feature brings it in.
 [[bans.features]]
 crate = "ureq"
-deny = ["gzip", "brotli", "json", "cookies", "socks-proxy", "win-system-proxy", "native-tls"]
+deny = ["gzip", "brotli", "json", "cookies", "socks-proxy", "win-system-proxy", "native-tls", "native-tls-no-default"]
+
+[[bans.deny]]
+crate = "native-tls"
+reason = "mesh-https is defined as rustls; a platform TLS stack in C would move the TLS path without the feature that names it"
+
+[[bans.deny]]
+crate = "openssl-sys"
+reason = "mesh-https is defined as rustls; OpenSSL would put a second, C, TLS stack in the graph"
+
+# THE LIBRARY'S TEST-ONLY FEATURE. `raw-backend` makes the primitive layer,
+# including the raw WOTS+ signer, nameable from outside the library; with it
+# off, the only path to a signature is `Keystore::sign_spend` behind an
+# `AdvanceReceipt` (the library's I1). The root manifest never names it, and
+# this rule holds the resolved graph to that, whatever route would turn it on:
+# a crate's `[features]` table, a renamed dependency, or a crate in the graph
+# that depends on the library itself.
+[[bans.features]]
+crate = "mochimo-crypto"
+deny = ["raw-backend"]
 
 # From Rep-1, unchanged: the KDF's working memory is the library's own,
 # zeroized on drop, only while `alloc` and `password-hash` stay off.

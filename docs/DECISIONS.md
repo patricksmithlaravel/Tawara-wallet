@@ -62,8 +62,14 @@ and `rustfmt`.
 
 **proposed, following plan D2** ("Pin the latest released iced at the
 start of the work"). iced's latest release on 2026-10-03 was 0.14.0
-(crates.io). It is pinned with `=0.14.0`, so `cargo update` cannot move it.
-`default-features = false`, with the features listed in the root
+(crates.io). `=0.14.0` fixes the `iced` crate itself. Its subcrates
+(`iced_core`, `iced_widget`, `iced_winit`, `iced_renderer`, `iced_wgpu`,
+`iced_tiny_skia` and the rest) are required by it at `^0.14.0`, so the
+committed `Cargo.lock` is what holds them, and CI builds with `--locked`. At
+this commit they resolve to `iced_widget` 0.14.2, `iced_winit` 0.14.1 and
+`iced_tiny_skia` 0.14.1, the rest at 0.14.0. A `cargo update` can move them
+within 0.14.x; that is a deliberate change, reviewed with `cargo deny check`
+like any other. `default-features = false`, with the features listed in the root
 `Cargo.toml`: `wgpu`, `tiny-skia`, `crisp`, `web-colors`, `thread-pool`,
 `linux-theme-detection`, `x11`, `wayland`. These are iced 0.14.0's own
 defaults, written out so that what ships is a list in this repository.
@@ -73,25 +79,25 @@ owner's approval) are added by the change that needs them, with
 
 ### D7. The library pin: Rep-1 at `121daf3`
 
-**owner, 2026-10-03.** The prompt names Rep-1's `02239c1`; by the time the
-work began, Rep-1's `main` was at
+**owner, 2026-10-03.** The owner's instructions for phase 0 named Rep-1's
+`02239c1`, or a later commit the owner named; by the time the work began, Rep-1's `main` was at
 `121daf3773fbc7869ee56c2c795e21115044dfe7`, which adds the name Tawara, the
 binary `tawara`, and the updated `FORK.md` (Rep-2 as a dependent, iced in
 place of egui). The library's API did not change between the two. The owner
 chose `121daf3`.
 
-The workspace line is
+The workspace line takes the plan's form (D1) exactly:
 
 ```toml
 mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-windows",
-                   rev = "121daf3773fbc7869ee56c2c795e21115044dfe7", version = "2.0.0",
+                   rev = "121daf3773fbc7869ee56c2c795e21115044dfe7",
                    default-features = false, features = ["native", "mesh-https"] }
 ```
 
-`version = "2.0.0"` is the one addition to the plan's form. cargo-deny
-reads a git dependency with no version requirement as a wildcard, which
-`deny.toml` denies; with it, cargo also checks that the commit carries a
-2.x crate. It does not loosen the pin: `rev` decides the commit.
+Phase 0 first added `version = "2.0.0"` to it, on the belief that
+cargo-deny would otherwise deny the line as a wildcard. That was wrong:
+`allow-wildcard-paths` admits a version-less git dependency of an
+unpublished crate. The key was removed, so the line is the plan's again.
 
 ### D8. Names and identifiers
 
@@ -150,8 +156,14 @@ library and are restated in the root `Cargo.toml`:
 - `overflow-checks = true`: a release build otherwise wraps a bare `+` on a
   balance silently.
 
-`crates/wallet-core/tests/policy.rs` fails if either changes or if any
-profile sets `panic = "abort"`.
+`crates/wallet-core/tests/policy.rs` fails if either changes, and if
+anything else in the repository undoes them: any profile, per-package
+override (`[profile.*.package.*]`) or `build-override` in the root manifest
+that turns overflow checks off or sets `panic = "abort"`, the same in a
+profile in any `.cargo/config(.toml)` in the repository, or rustflags there
+that do either. It cannot see cargo configuration outside the repository
+(`$CARGO_HOME/config.toml`) or the environment (`RUSTFLAGS`,
+`CARGO_PROFILE_*`); CI sets neither.
 
 ### D12. What deny.toml admits beyond Rep-1's
 
@@ -160,38 +172,64 @@ entry in `ignore` carries a written reason").
 
 - **Licences:** `BSD-2-Clause` (`arrayref`, under `tiny-skia`), `BSL-1.0`
   (`clipboard-win`, `error-code`), `CC0-1.0` (`hexf-parse`, under `naga`),
-  `Zlib` (`foldhash`, `slotmap`). These are the four `FORK.md` R2-2
-  measured iced as needing, and its Licence section reads all four as
-  permissive. No GPL or LGPL identifier is allowed; the two crates that
-  offer one (`self_cell`, `r-efi`) do so in an OR and are admitted through
-  their permissive arm.
+  `Zlib` (`foldhash`, under wgpu; `slotmap`, under the text stack and
+  wgpu-hal's GL backend). These are the four `FORK.md` R2-2 measured iced
+  as needing, and its Licence section reads all four as permissive. No GPL
+  or LGPL identifier is allowed; the two crates that offer one (`self_cell`,
+  `r-efi`) do so in an OR and are admitted through their permissive arm.
+  Dev-dependencies are licence-checked too (`include-dev = true`), and an
+  exception no crate matches is an error (`unused-license-exception =
+  "deny"`).
 - **Advisories ignored, both maintenance notices that arrive with iced
   0.14.0:** `RUSTSEC-2024-0436` (`paste`, a compile-time proc macro under
   `metal`, contributing no code to the executable) and
-  `RUSTSEC-2026-0192` (`ttf-parser`, which parses only bundled and
-  locally installed fonts, never node data). `FORK.md` R2-2 measured iced
+  `RUSTSEC-2026-0192` (`ttf-parser`, under iced's text stack and, on
+  Linux, winit's Wayland decorations; it parses only bundled and locally
+  installed fonts, never node data). `FORK.md` R2-2 measured iced
   as tripping `unmaintained` twice; these are the two. Both are
   re-examined when the iced pin moves.
-- **Kept from Rep-1 unchanged:** `unmaintained = "all"`,
-  `yanked = "deny"`, the `digest` 0.11 ban, and the denied features of
-  `ureq`, `argon2` and `serde_json`. Feature unification means a crate in
-  the interface's graph could switch one of those on in the library's
-  dependencies, so the bans matter more here, not less.
+- **Kept from Rep-1:** `unmaintained = "all"`, `yanked = "deny"`, the
+  `digest` 0.11 ban, and the denied features of `ureq`, `argon2` and
+  `serde_json`. Feature unification means a crate in the interface's graph
+  could switch one of those on in the library's dependencies, so the bans
+  matter more here, not less.
+- **Added to Rep-1's bans:** `ureq`'s `native-tls-no-default`, which in
+  ureq 3.4.2 is the same C TLS stack as `native-tls` under another name;
+  the `native-tls` and `openssl-sys` crates themselves; and the library's
+  `raw-backend` feature, refused in the resolved graph whatever route would
+  turn it on (a crate's `[features]`, a renamed dependency, another crate
+  depending on the library).
 - **Sources:** crates.io, and Rep-1 by git. Nothing else.
-- **Wildcards:** denied; `allow-wildcard-paths` admits this workspace's own
-  path dependencies between its four unpublished crates.
+- **Wildcards:** a registry dependency with a `*` requirement is denied.
+  `allow-wildcard-paths` admits, for the four unpublished crates, every
+  dependency that does not come from a registry: the path dependencies
+  between them, and the library's git line, whose commit `rev` fixes.
 
 ### D13. CI without actions
 
-**proposed, following the prompt and Rep-1's board workflow.**
+**proposed, following the owner's instructions for phase 0 ("Prefer plain
+commands against the runner's own tools (git, rustup) over third-party
+actions, as Rep-1's workflow does") and Rep-1's board workflow.**
 `.github/workflows/ci.yml` runs on Windows, macOS and Linux (`-latest`
 images): build, clippy with `-D warnings`, tests, docs with
 `RUSTDOCFLAGS=-D warnings`, `cargo fmt --check`, and `cargo deny check`.
 Every step is a plain command against the runner's own git, rustup and C
-compiler; no `uses:` line. cargo-deny is built from crates.io at 0.20.2
-with `--locked` rather than downloaded prebuilt. Every cargo command uses
-`--locked`. The token has no permissions; the clone is anonymous because
-the repository is public. The cost is a cold build on every run.
+compiler; no `uses:` line. The commit is fetched by its SHA, so a re-run
+after the base branch moves still checks out the commit it ran for.
+cargo-deny is built from crates.io at 0.20.2 with `--locked` rather than
+downloaded prebuilt. Every command that resolves the dependency graph uses
+`--locked` (`cargo fmt` reads no lockfile). After a failed build the other
+checks still run; after a failed clone, line-ending refusal or toolchain
+install, nothing runs. The token has no permissions; the clone is
+anonymous because the repository is public.
+
+The costs: a cold build on every run, and **no uploaded artifacts**. The
+runner gives the token an artifact upload needs only to actions, never to
+`run:` steps, so a run's only output is its log. That conflicts with
+docs/PLAN.md section 5, "Keep the screenshots as CI artifacts", which phase
+3 needs. Before phase 3 the owner decides between an artifact-upload action
+pinned by commit hash, as the one exception to this rule, and keeping the
+screenshots some other way (for example committed to a branch).
 
 ### D14. The renderings are committed as images, not as the supplied bundle
 
@@ -209,28 +247,58 @@ identified. The owner keeps the source file.
 **proposed.** `crates/wallet-core/tests/policy.rs` holds the standing rules
 that a machine can check, with no network:
 
-- the library pinned by a 40-hex `rev` to Rep-1, `default-features =
-  false`, exactly `native` and `mesh-https`, never `raw-backend`; no
-  `[patch]` or `[replace]` in any manifest or cargo configuration; no
-  `vendor/`; and `Cargo.lock` resolved at that commit;
+- the library line in the plan's form (D7): Rep-1, a 40-hex `rev` and
+  nothing else to choose the commit, `default-features = false`, exactly
+  `native` and `mesh-https`. The library is found by the package a
+  dependency resolves to, not by its key, so a rename does not hide it.
+  Every crate takes it as `mochimo-crypto.workspace = true` and nothing
+  more, and no crate's `[features]` forwards any of its features. No
+  `[patch]` or `[replace]` in any manifest, no `patch`, `source` or `paths`
+  in any `.cargo/config(.toml)` in the repository, no `vendor/`, and
+  `Cargo.lock` resolved at that commit. (deny.toml separately refuses
+  `raw-backend` in the resolved graph.)
 - the release profile of D11;
-- `Kdf::CHEAP_FOR_TESTS` nowhere outside test code (the prompt: "Add a
-  check that it never appears outside test code"). The check parses every
-  source file under `crates/`, removes what only test builds compile
-  (`#[cfg(test)]`, `#[cfg(all(test, ..))]`, `#[test]`, and the `tests/`
-  and `benches/` directories), and looks for the identifier in what is
-  left, macro bodies included. `spikes/` is outside the walk: it is phase
-  1's throwaway code and is never built into a shipped artifact;
-- `wallet-core` has no interface dependency, the interface crates never
-  depend on or name `mochimo_crypto`, and `wallet-core` does not re-export
-  the library wholesale.
+- `Kdf::CHEAP_FOR_TESTS` nowhere outside test code (the owner's
+  instructions for phase 0: "Add a check that it never appears outside test
+  code"). The scan is conservative by construction: it reads every Rust file
+  under each crate except its top-level `tests/` and `benches/`, plus every
+  file the module walk reaches wherever it lives, and exempts a file only
+  when it is reachable solely through test-only declarations (a
+  `#[cfg(test)] mod`, a `cfg_attr(test, path = ..)`, a module nested in a
+  test-only one, an `include!` in test-only code). The walk starts at the
+  root of every non-test target (library, binaries, build script, examples)
+  and follows `mod`, every `#[path]` and every `cfg_attr` path, and literal
+  `include!`s, as rustc may in some configuration; a non-literal `include!`
+  in non-test code, and a conditional path on an inline module, are refused
+  as unreadable rather than passed. In every scanned file, code under
+  `#[cfg(test)]`, `#[cfg(all(test, ..))]`, `#[test]` or a file's own
+  `#![cfg(test)]`, on items, statements, match arms, fields and variants,
+  is removed before looking, and identifiers are compared raw or not, macro
+  bodies included. `spikes/` is outside the scan: it is phase 1's throwaway
+  code and is never built into a shipped artifact;
+- `wallet-core` has no interface dependency anywhere in its dependency
+  closure as `Cargo.lock` resolved it; the interface crates never depend on
+  the library (by any name) or name `mochimo_crypto` in any source; and no
+  file the scan reads in `wallet-core` re-exports the library wholesale.
 
-Each check was seen to fail on a deliberately broken copy of the tree (a
-`[patch]` section, `raw-backend`, `overflow-checks = false`, the cheap KDF
-named in `app`, `mochimo_crypto` named in `app`, `pub use mochimo_crypto`
-in `wallet-core`, iced in `wallet-core`'s dependencies) and to pass on the
-tree as committed. A second test holds the detector to fixed cases, so a
-detector that sees nothing cannot pass.
+Each check was seen to fail on a deliberately broken copy of the tree: a
+`[patch]` section, `raw-backend` on the workspace line, a crate's
+`[features]` forwarding `mochimo-crypto/raw-backend`, a renamed library
+dependency in `app`, a `paths` override in `.cargo/config.toml`,
+`overflow-checks = false` at the top level and in
+`[profile.release.package."*"]`, rustflags turning overflow checks off, the
+cheap KDF named in `app` (also as a raw identifier) and in a production
+module of `wallet-core` two files down, `mochimo_crypto` named in `app`,
+`pub use mochimo_crypto` at the top of `wallet-core`, inside a nested
+module and in an `include!`d file, the cheap KDF in an `include!`d file and
+in a file selected by `#[cfg_attr(unix, path = ..)]` beside a clean
+fallback, an unreferenced file naming it, and iced in `wallet-core`'s
+dependencies. Each passes on the tree as committed; an out-of-line
+`#[cfg(test)] mod tests;` naming the cheap KDF passes, as it should, and so
+does a conditional module path with no fallback file. Four more tests hold
+the detectors to fixed cases, the walk to a crate laid out on disk where the
+answer is known, and its refusals to what it cannot read, so a detector that
+sees nothing cannot pass.
 
 ### D16. Edition 2024
 

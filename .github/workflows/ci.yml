@@ -10,7 +10,11 @@
 # `ring`. A `uses:` line is another repository's code run inside this job,
 # and nothing this job needs is something `git` and `rustup` do not supply.
 # The cost is stated rather than hidden: no dependency cache, so every run
-# builds cold.
+# builds cold; and no uploaded artifact, because the runner gives the upload
+# token only to actions and not to `run:` steps, so a run's only output is its
+# job log. docs/PLAN.md section 5 asks for phase 3's screenshots to be kept as
+# CI artifacts; that needs an action, and it is put to the owner before phase
+# 3 (docs/DECISIONS.md, D13).
 #
 # WHAT A GREEN RUN SAYS. That this commit builds, lints clean, passes its
 # tests (including the policy checks in crates/wallet-core/tests/policy.rs)
@@ -63,13 +67,15 @@ jobs:
         # access-list check refuses once tests open stores (phase 2). On
         # Windows the profile is read from USERPROFILE.
         #
-        # `GITHUB_REF` is fetched by name because a pull request's commit is
-        # its merge ref, which a plain clone does not fetch.
+        # `GITHUB_SHA` is fetched by id. A pull request's commit is a merge
+        # commit that no branch reaches, and the merge ref that named it moves
+        # when the base moves, while a re-run keeps the original SHA; fetching
+        # the ref by name would then bring a different commit.
         run: |
           base=$HOME
           if [ -n "${USERPROFILE:-}" ]; then base=$(cygpath -u "$USERPROFILE"); fi
           git clone --quiet --no-checkout "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$base/tawara"
-          git -C "$base/tawara" fetch --quiet origin "$GITHUB_REF"
+          git -C "$base/tawara" fetch --quiet origin "$GITHUB_SHA"
           git -C "$base/tawara" checkout --quiet --detach "$GITHUB_SHA"
           echo "TAWARA=$base/tawara" >> "$GITHUB_ENV"
 
@@ -86,6 +92,9 @@ jobs:
           fi
 
       - name: Name the commit, the host and the toolchain
+        # Its outcome gates every step after the build: it succeeds only when
+        # the clone, the line-ending refusal and the toolchain install did.
+        id: toolchain
         # `rustup toolchain install` with no argument installs what
         # rust-toolchain.toml pins, and the versions printed show which
         # compiler ran. `--no-self-update` leaves the image's rustup alone.
@@ -100,27 +109,31 @@ jobs:
           cargo -V
 
       - name: cargo build --workspace
-        # `--locked` on every cargo command: the committed Cargo.lock is used
-        # exactly, and a run that would have to change it fails instead.
+        # `--locked` on every command that resolves the dependency graph: the
+        # committed Cargo.lock is used exactly, and a run that would have to
+        # change it fails instead. (`cargo fmt` reads no lockfile.)
         run: |
           cd "$TAWARA"
           cargo build --workspace --locked
 
       - name: cargo clippy --workspace --all-targets --locked -- -D warnings
-        if: ${{ !cancelled() }}
+        # After a failed build the remaining checks still run, so one red
+        # step does not hide another; after a failed clone, refusal or
+        # toolchain install, nothing runs.
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: |
           cd "$TAWARA"
           cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: cargo test --workspace
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: |
           cd "$TAWARA"
           cargo test --workspace --locked
 
       - name: cargo doc --workspace --no-deps
         # Zero warnings, as in Rep-1: a broken intra-doc link is a defect.
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         env:
           RUSTDOCFLAGS: -D warnings
         run: |
@@ -128,19 +141,19 @@ jobs:
           cargo doc --workspace --no-deps --locked
 
       - name: cargo fmt --all --check
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: |
           cd "$TAWARA"
           cargo fmt --all --check
 
-      - name: cargo deny check
+      - name: cargo deny --locked check
         # cargo-deny is built from crates.io at a pinned version with its own
         # lockfile, rather than downloaded as a prebuilt binary or run through
         # an action. Its verdict does not depend on the host, and it runs on
         # all three so each platform's run is complete on its own.
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: |
           cd "$TAWARA"
           cargo install --quiet --locked cargo-deny --version 0.20.2
           cargo deny --version
-          cargo deny check
+          cargo deny --locked check
