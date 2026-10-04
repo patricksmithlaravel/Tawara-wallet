@@ -433,8 +433,10 @@ describes it, with these choices inside that design:
   is opened only when an account reconciled, so `Wallet::open` refuses only
   if the chain moved in between; then the store is reopened with the
   password when it is at hand, and otherwise reported closed
-  (`LockReason::WalletRefused`). D23 proposes the library change that would
-  make the checks unnecessary.
+  (`LockReason::WalletRefused`), with the library's refusal page in the
+  command's answer (an advance's or a restore's `opened`), so the reason
+  reaches the interface. D23 proposes the library change that would make
+  the checks unnecessary.
 - **The library's words.** The worker makes each decision through the
   library's `Wallet` and `Keystore` methods, builds the `cli::outcome::
   Outcome` the command line would, and has `cli::render::render` write the
@@ -635,7 +637,9 @@ and lock), the worker's copy of the seed, any pending recovery phrase and
 any pending plan. It also happens on `Command::Lock`, when the app moves
 to the background (`WorkerHandle::background`, which first cancels every
 command sent so far), when another store is unlocked in its place, on
-shutdown, and when the last handle is dropped. Each reports `Locked` with
+shutdown, and when the last handle is dropped (both of which also cancel
+every command sent so far, so nothing still queued, a spend among it,
+runs on the way out). Each reports `Locked` with
 its reason, and so does an idle or background lock that drops a recovery
 phrase waiting for its confirmation.
 

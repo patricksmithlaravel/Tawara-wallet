@@ -107,6 +107,10 @@ struct State {
     calls: usize,
     gate: Option<Gate>,
     delay: Duration,
+    /// How many times each tag was resolved.
+    resolved: BTreeMap<Tag, usize>,
+    /// From this resolve of this tag on, answer "account not found".
+    vanish: Option<(Tag, usize)>,
 }
 
 /// Holds every request at the chain until it is opened, so a test can act
@@ -173,6 +177,24 @@ impl Chain {
         self.0.lock().expect("chain").calls
     }
 
+    /// How many times `tag` has been resolved.
+    pub fn resolves(&self, tag: Tag) -> usize {
+        self.0
+            .lock()
+            .expect("chain")
+            .resolved
+            .get(&tag)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Answer "account not found" for `tag` from its `nth` resolve on
+    /// (counted as [`Chain::resolves`] counts), whatever the ledger holds:
+    /// the node changing its answer partway through a command.
+    pub fn vanish_from(&self, tag: Tag, nth: usize) {
+        self.0.lock().expect("chain").vanish = Some((tag, nth));
+    }
+
     /// Take `delay` to answer every request from now on, as a slow node does.
     pub fn slow(&self, delay: Duration) {
         self.0.lock().expect("chain").delay = delay;
@@ -226,7 +248,13 @@ impl Transport for Chain {
                     .and_then(unhex)
                     .ok_or(mesh("test: tag hex"))?;
                 let tag: Tag = raw.try_into().map_err(|_| mesh("test: tag length"))?;
-                match s.ledger.get(&tag) {
+                let nth = {
+                    let count = s.resolved.entry(tag).or_default();
+                    *count += 1;
+                    *count
+                };
+                let vanished = matches!(s.vanish, Some((t, from)) if t == tag && nth >= from);
+                match s.ledger.get(&tag).filter(|_| !vanished) {
                     Some((address, balance)) => Ok(format!(
                         r#"{{"result":{{"address":"0x{}","amount":{balance}}},"idempotent":true}}"#,
                         hex_of(address)

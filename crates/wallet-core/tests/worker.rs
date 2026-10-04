@@ -634,7 +634,7 @@ fn a_diverged_store_is_reopened_and_advanced_on_acknowledgement() {
             ok,
             advanced_to,
             text,
-            view: Some(view),
+            opened: Ok(view),
         } => {
             assert!(!ok, "{text}");
             assert_eq!(advanced_to, None, "{text}");
@@ -657,7 +657,7 @@ fn a_diverged_store_is_reopened_and_advanced_on_acknowledgement() {
             ok,
             advanced_to,
             text,
-            view: Some(view),
+            opened: Ok(view),
         } => {
             assert!(ok, "{text}");
             assert_eq!(advanced_to, Some(advance_to), "{text}");
@@ -698,7 +698,7 @@ fn restoring_and_discovering_derived_accounts() {
         Reply::Restored {
             ok,
             text,
-            view: Some(view),
+            opened: Ok(view),
         } => {
             assert!(ok, "{text}");
             assert!(view.opened, "{text}");
@@ -886,7 +886,7 @@ fn a_cancel_stops_what_was_sent_before_it_and_nothing_after() {
     }) {
         Reply::Restored {
             ok: true,
-            view: Some(view),
+            opened: Ok(view),
             text,
         } => assert_eq!(view.accounts.len(), 2, "{text}"),
         other => panic!("expected a restore, got {other:?}"),
@@ -1432,4 +1432,129 @@ fn an_account_set_aside_at_open_settles_and_rejoins_once_it_reconciles() {
     let _ = planned(h.call(Command::PlanSend {
         spend: from1(Amount::Nano(1_000)),
     }));
+}
+
+// ------------------------------------------------- teardown, failed reopen
+
+#[test]
+fn dropping_the_last_handle_stops_a_queued_spend_before_it_signs() {
+    let scratch = Scratch::new("drop-queued");
+    let (mut h, _) = funded(&scratch);
+    let plan = planned(h.call(Command::PlanSend {
+        spend: pay(destination(1), Amount::Nano(100_000)),
+    }));
+
+    // A refresh waits on the node, the confirmation is queued behind it,
+    // and the interface goes away.
+    let gate = h.chain.close_gate();
+    let refresh = h.handle.send(Command::Refresh).expect("worker running");
+    assert_eq!(h.wait_busy(refresh), Activity::AskingNode);
+    let confirm = h
+        .handle
+        .send(Command::ConfirmSend { plan: plan.plan })
+        .expect("worker running");
+    let Harness {
+        handle,
+        events,
+        chain,
+        ..
+    } = h;
+    drop(handle);
+    gate.open();
+
+    let mut answers = Vec::new();
+    let mut locked = None;
+    loop {
+        match events
+            .recv_timeout(Duration::from_secs(60))
+            .expect("an event")
+        {
+            Event::Done { id, reply } => answers.push((id, reply)),
+            Event::Locked { reason } => locked = Some(reason),
+            Event::Stopped { panicked } => {
+                assert!(!panicked);
+                break;
+            }
+            Event::Busy { .. } => {}
+        }
+    }
+    assert!(chain.submits().is_empty(), "nothing was signed or sent");
+    assert_eq!(locked, Some(LockReason::Shutdown));
+    for (id, reply) in &answers {
+        if *id == refresh || *id == confirm {
+            assert!(
+                matches!(reply, Reply::Refused(r) if r.kind == RefusalKind::Cancelled),
+                "{reply:?}"
+            );
+        }
+    }
+}
+
+/// A single-account store whose account diverged three keys ahead, open in
+/// the Store session against [`NODE`], and the index the advance goes to.
+fn diverged_store(scratch: &Scratch) -> (Harness, u32) {
+    let mut h = Harness::new();
+    let view = opened(h.create_from_phrase(&scratch.store()));
+    let advance_to = view.accounts[0].index + 3;
+    h.chain.hold(tag(0), address(0, advance_to), FUNDS);
+    let _ = h.call(Command::SetNode { url: NODE.into() });
+    let view = opened(h.call(Command::Refresh));
+    assert!(!view.opened, "{view:?}");
+    (h, advance_to)
+}
+
+#[test]
+fn a_refused_reopen_after_an_advance_says_why() {
+    // How many times the advance and the reopen after it resolve the tag.
+    let dry = Scratch::new("reopen-dry");
+    let (mut h, advance_to) = diverged_store(&dry);
+    let before = h.chain.resolves(tag(0));
+    match h.call(Command::Reconcile {
+        account: account0(),
+        advance_to,
+    }) {
+        Reply::Reconciled { ok: true, .. } => {}
+        other => panic!("expected the advance, got {other:?}"),
+    }
+    let per_command = h.chain.resolves(tag(0)) - before;
+    drop(h);
+
+    // The same again, with the node answering "account not found" from the
+    // last of those on: after the worker saw the account reconcile, and
+    // when `Wallet::open` asks. The library refuses the wallet and drops
+    // the store; its page has to reach the interface.
+    let scratch = Scratch::new("reopen");
+    let (mut h, advance_to) = diverged_store(&scratch);
+    let from = h.chain.resolves(tag(0)) + per_command;
+    h.chain.vanish_from(tag(0), from);
+    match h.call(Command::Reconcile {
+        account: account0(),
+        advance_to,
+    }) {
+        Reply::Reconciled {
+            ok,
+            advanced_to: Some(index),
+            text,
+            opened: Err(refusal),
+        } => {
+            assert!(ok, "{text}");
+            assert_eq!(index, advance_to, "the advance stands");
+            assert_eq!(refusal.kind, RefusalKind::WalletRefused);
+            assert!(
+                refusal.text.starts_with("WALLET WILL NOT START"),
+                "the library's report: {}",
+                refusal.text
+            );
+            assert!(
+                refusal.text.contains("account not found"),
+                "with the account's own report: {}",
+                refusal.text
+            );
+        }
+        other => panic!("expected the advance and the refused reopen, got {other:?}"),
+    }
+    assert_eq!(
+        h.wait_locked(Duration::from_secs(5)),
+        LockReason::WalletRefused
+    );
 }

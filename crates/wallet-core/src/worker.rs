@@ -46,7 +46,9 @@
 //! pending plan. It happens on [`Command::Lock`], when nothing has been done
 //! for the idle period, when the app moves to the background
 //! ([`WorkerHandle::background`]), when the worker shuts down, and when the
-//! last handle is dropped.
+//! last handle is dropped. The last two first stop every command still
+//! queued, as a move to the background does, so nothing queued (a spend
+//! among it) runs on the way out.
 //!
 //! The idle period is measured from the person's last input:
 //! [`WorkerHandle::touch`], which counts at once even while a command runs,
@@ -192,14 +194,41 @@ impl PersonActivity {
     }
 }
 
-/// The interface's side of the worker. Cloneable; when the last clone is
-/// dropped the worker locks and stops.
-#[derive(Clone)]
-pub struct WorkerHandle {
-    tx: Sender<Envelope>,
+/// The request ids, shared by every clone of a handle and dropped with the
+/// last one.
+struct Requests {
     /// The newest request id to stop (0 for none); see the module doc.
     cancel: Arc<AtomicU64>,
-    next: Arc<AtomicU64>,
+    next: AtomicU64,
+}
+
+impl Requests {
+    /// Stop every command sent so far (module doc, "Cancellation").
+    fn cancel_sent(&self) {
+        let newest = self.next.load(Ordering::Relaxed).saturating_sub(1);
+        self.cancel.fetch_max(newest, Ordering::Relaxed);
+    }
+}
+
+impl Drop for Requests {
+    /// The last handle is gone, so nobody will read an answer: every
+    /// command still queued is stopped, as [`WorkerHandle::shutdown`] stops
+    /// them. Without this the worker would run what is queued before it
+    /// noticed, a spend among them.
+    fn drop(&mut self) {
+        self.cancel_sent();
+    }
+}
+
+/// The interface's side of the worker. Cloneable; when the last clone is
+/// dropped, every command still queued is stopped and the worker locks
+/// and stops.
+#[derive(Clone)]
+pub struct WorkerHandle {
+    // Declared before `tx`, so it is dropped first: the last handle stops
+    // the queued commands before the channel closes.
+    requests: Arc<Requests>,
+    tx: Sender<Envelope>,
     activity: Arc<PersonActivity>,
 }
 
@@ -207,7 +236,7 @@ impl WorkerHandle {
     /// Queue a command. Its answer is the [`Event::Done`] with the id
     /// returned here.
     pub fn send(&self, command: Command) -> Result<RequestId, WorkerStopped> {
-        let id = RequestId(self.next.fetch_add(1, Ordering::Relaxed));
+        let id = RequestId(self.requests.next.fetch_add(1, Ordering::Relaxed));
         self.tx
             .send(Envelope::Command(id, command))
             .map_err(|_| WorkerStopped)?;
@@ -228,8 +257,7 @@ impl WorkerHandle {
     /// [`RefusalKind::Cancelled`]. Commands sent afterwards are not
     /// affected.
     pub fn cancel(&self) {
-        let newest = self.next.load(Ordering::Relaxed).saturating_sub(1);
-        self.cancel.fetch_max(newest, Ordering::Relaxed);
+        self.requests.cancel_sent();
     }
 
     /// The app moved to the background: stop what can be stopped, then lock
@@ -281,9 +309,11 @@ pub fn spawn<C: Connect>(
         })?;
     Ok((
         WorkerHandle {
+            requests: Arc::new(Requests {
+                cancel,
+                next: AtomicU64::new(1),
+            }),
             tx,
-            cancel,
-            next: Arc::new(AtomicU64::new(1)),
             activity,
         },
         received,
@@ -930,27 +960,30 @@ impl<C: Connect> Worker<C> {
     /// wallet again.
     fn detach_node(&mut self, notice: &str) {
         self.plan = None;
-        let (dir, store, master) = match core::mem::replace(&mut self.session, Session::Locked) {
-            Session::Locked => return,
-            Session::Store(s) => (s.dir, s.store, s.master),
-            Session::Wallet(w) => {
-                let (store, _old) = w.wallet.into_parts();
-                (w.dir, store, w.master)
-            }
-        };
-        match store_rows::<C::Transport>(&store, None, master.as_ref()) {
-            Ok((rows, _)) => {
-                self.session = Session::Store(StoreSession {
-                    dir,
-                    store,
-                    master,
-                    client: None,
-                    rows,
-                    notice: Some(notice.to_owned()),
-                });
-            }
-            Err(_) => self.closed(LockReason::ReopenFailed),
+        let (dir, store, master, mut rows) =
+            match core::mem::replace(&mut self.session, Session::Locked) {
+                Session::Locked => return,
+                Session::Store(s) => (s.dir, s.store, s.master, s.rows),
+                Session::Wallet(w) => {
+                    let (store, _old) = w.wallet.into_parts();
+                    (w.dir, store, w.master, w.rows)
+                }
+            };
+        // The rows the session already holds, with what the old node said
+        // taken off them: nothing is read from the store, so nothing here
+        // can fail and close it.
+        for row in &mut rows {
+            row.state = AccountState::NotReconciled;
+            row.spendable = false;
         }
+        self.session = Session::Store(StoreSession {
+            dir,
+            store,
+            master,
+            client: None,
+            rows,
+            notice: Some(notice.to_owned()),
+        });
     }
 
     /// A client for the chosen node.
@@ -2012,12 +2045,12 @@ impl<C: Connect> Worker<C> {
             Err(e) => (None, Outcome::Failed(e)),
         };
         let (page, ok) = text::report(&[], outcome);
-        let view = self.reopen(id, dir, store, master).ok();
+        let opened = self.reopen(id, dir, store, master);
         Reply::Reconciled {
             ok,
             advanced_to,
             text: page,
-            view,
+            opened,
         }
     }
 
@@ -2055,11 +2088,11 @@ impl<C: Connect> Worker<C> {
             }
         };
         let (page, ok) = text::report(&[], outcome);
-        let view = self.reopen(id, dir, store, master).ok();
+        let opened = self.reopen(id, dir, store, master);
         Reply::Restored {
             ok,
             text: page,
-            view,
+            opened,
         }
     }
 

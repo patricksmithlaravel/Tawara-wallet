@@ -125,20 +125,22 @@ pub enum Reply {
     },
     /// What an acknowledged advance did. `ok` is whether the library counts
     /// it as done (the command line's exit status 0); `advanced_to` is the
-    /// new index when it moved. `view` is the store reopened afterwards, or
-    /// `None` when it could not be ([`Event::Locked`] says why).
+    /// new index when it moved. `opened` is the store reopened afterwards,
+    /// or why it could not be: then it is closed ([`Event::Locked`]), and
+    /// the refusal carries the library's own report, the startup refusal
+    /// when the library refused the wallet. The advance stands either way.
     Reconciled {
         ok: bool,
         advanced_to: Option<u32>,
         text: String,
-        view: Option<WalletView>,
+        opened: Result<WalletView, Refusal>,
     },
-    /// What a restore did, with `ok` and `view` as for
+    /// What a restore did, with `ok` and `opened` as for
     /// [`Reply::Reconciled`].
     Restored {
         ok: bool,
         text: String,
-        view: Option<WalletView>,
+        opened: Result<WalletView, Refusal>,
     },
     /// What a discovery sweep found.
     Discovered {
