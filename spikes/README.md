@@ -95,8 +95,10 @@ starts: on iOS the window opens only once UIKit has finished launching.
    `network_status` from `https://api.mochimo.org` over TLS.
 7. iOS only: ask UIKit to rotate to landscape and back.
 8. `SPIKE DONE`. The desktop exits (code 1 if anything failed); mobile
-   starts a 60-second task and prints `READY lifecycle` for CI's lifecycle
-   checks.
+   prints `READY lifecycle` for CI's lifecycle checks, starts a 60-second
+   task, and from then on keeps drawing and logs `frames N` about once a
+   second (on iOS, where iced reports no move to the background, this
+   heartbeat is how CI sees the app draw again after a return).
 
 ## What CI checks
 
@@ -149,7 +151,7 @@ well as the in-app screenshot.
 | I3 | Typing and Return through winit's `insertText:` |
 | I4 | The keyboard on screen while the field is focused (screenshot) |
 | I5 | The app's pasteboard write, read from outside with `simctl pbpaste` |
-| I6 | Settings in front, then back: same process, drawing again |
+| I6 | Settings in front, then back: both launches succeed, the same process returns, and it draws a frame (its `frames N` heartbeat) within 10 s. How many heartbeats came while Settings was in front (informational) |
 | I7 | The whole self-test with tiny-skia forced |
 | I8 | The safe-area insets (informational) |
 | I9 | Rotation on request (informational) |

@@ -68,6 +68,11 @@ pub struct Spike {
     frames: u64,
     last_frame: Option<Instant>,
     max_gap_while_running: Duration,
+    /// Mobile, after the self-test: frames keep coming and a heartbeat
+    /// line is logged about once a second, so CI can tell whether the
+    /// interface draws after a return from the background.
+    lifecycle: bool,
+    last_beat: Option<Instant>,
     fingers: u32,
     taps: u32,
     /// The scroll offset last logged, and the largest seen.
@@ -129,6 +134,8 @@ impl Spike {
             frames: 0,
             last_frame: None,
             max_gap_while_running: Duration::ZERO,
+            lifecycle: false,
+            last_beat: None,
             fingers: 0,
             taps: 0,
             scroll_logged: 0.0,
@@ -234,6 +241,14 @@ impl Spike {
                 }
                 self.frames += 1;
                 self.last_frame = Some(now);
+                if self.lifecycle
+                    && self
+                        .last_beat
+                        .is_none_or(|beat| now - beat >= Duration::from_secs(1))
+                {
+                    report::note(format!("frames {}", self.frames));
+                    self.last_beat = Some(now);
+                }
                 Task::none()
             }
             Message::Window(_, event) => {
@@ -514,6 +529,7 @@ impl Spike {
                     // A long task keeps the program busy through the
                     // lifecycle checks CI runs next (background and return).
                     report::note("READY lifecycle");
+                    self.lifecycle = true;
                     self.start(600, 100)
                 } else {
                     iced::exit()
@@ -602,9 +618,10 @@ impl Spike {
 
     pub fn subscription(&self) -> Subscription<Message> {
         // Listening to frames makes iced redraw continuously (unthrottled on
-        // tiny-skia), so only while a task runs: the largest gap between
-        // frames then is how long the interface stalled.
-        let frames = if self.running.is_some() {
+        // tiny-skia), so only while a task runs, when the largest gap between
+        // frames is how long the interface stalled, and in the lifecycle
+        // phase on mobile, for its heartbeat.
+        let frames = if self.running.is_some() || self.lifecycle {
             window::frames().map(Message::Frame)
         } else {
             Subscription::none()

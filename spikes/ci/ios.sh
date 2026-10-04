@@ -61,6 +61,16 @@ wait_line() { # wait_line FILE ERE SECONDS: prints the first match
     t=$((t + 1))
   done
 }
+wait_after() { # wait_after FILE LINE ERE SECONDS: the first match after line LINE
+  local t=0 line
+  while :; do
+    line=$(tail -n +"$(($2 + 1))" "$1" 2>/dev/null | grep -E -m1 "$3" || true)
+    [ -n "$line" ] && { echo "$line"; return 0; }
+    [ "$t" -ge "$4" ] && return 1
+    sleep 1
+    t=$((t + 1))
+  done
+}
 shot() { xcrun simctl io "$UDID" screenshot --type=png "$OUT/shots/$1.png" >/dev/null 2>&1 || true; }
 app_checks() { # app_checks FILE ID PREFIX
   local line name result detail
@@ -183,25 +193,39 @@ checklist() {
   record I2 renderer INFO "$(grep -E 'iced_wgpu.*(Selected|Available adapters)' "$err" | head -2 | xargs)"
   endgroup
 
+  # The checklist runs with errexit off (`checklist || true`), so each
+  # command's status is checked here. iced reports no move to the background
+  # on iOS; the app's heartbeat (`frames N`, about once a second in the
+  # lifecycle phase) shows whether it draws after the return.
   group "I6 background and return"
-  if wait_line "$err" 'READY lifecycle' 10 >/dev/null; then
-    xcrun simctl launch "$UDID" com.apple.Preferences >/dev/null
+  local out front back beat gap
+  if ! wait_line "$err" 'READY lifecycle' 10 >/dev/null; then
+    record I6 return-same-process FAIL "no READY lifecycle line"
+  elif ! out=$(xcrun simctl launch "$UDID" com.apple.Preferences 2>&1); then
+    record I6 return-same-process FAIL "Settings did not launch: $(tr -s '\n' ' ' <<<"$out" | cut -c1-160)"
+  else
+    front=$(wc -l <"$err")
     sleep 4
     shot 04-settings-in-front
-    local before
-    before=$(wc -l <"$err")
-    pid2=$(xcrun simctl launch "$UDID" "$BUNDLE" | awk '{print $NF}')
-    sleep 4
-    shot 05-returned
-    l=$(tail -n +"$((before + 1))" "$err" | grep -m1 'frame after gap' || true)
-    if [ "$pid" = "$pid2" ]; then
-      record I6 return-same-process PASS "pid $pid; ${l:-no frame-after-gap line}"
+    back=$(wc -l <"$err")
+    if ! out=$(xcrun simctl launch "$UDID" "$BUNDLE" 2>&1); then
+      record I6 return-same-process FAIL "the app did not relaunch: $(tr -s '\n' ' ' <<<"$out" | cut -c1-160)"
     else
-      record I6 return-same-process FAIL "pid $pid -> $pid2"
+      pid2=$(awk 'END {print $NF}' <<<"$out")
+      beat=$(wait_after "$err" "$(wc -l <"$err")" '^SPIKE INFO frames [0-9]+$' 10 || true)
+      sleep 2
+      shot 05-returned
+      gap=$(tail -n +"$((back + 1))" "$err" | grep -m1 'frame after gap' || true)
+      if [ "$pid" != "$pid2" ]; then
+        record I6 return-same-process FAIL "pid $pid -> $pid2"
+      elif [ -z "$beat" ]; then
+        record I6 return-same-process FAIL "pid $pid; no frame within 10 s of the return"
+      else
+        record I6 return-same-process PASS "pid $pid; drawing after the return (${beat#SPIKE INFO }); ${gap:-no gap over 1 s}"
+      fi
     fi
+    record I6 frames-behind-settings INFO "$(awk -v a="$front" -v b="$back" 'NR > a && NR <= b && /^SPIKE INFO frames [0-9]+$/ {n++} END {print n + 0}' "$err") heartbeats while Settings was in front"
     record I6 background-gpu INFO "$(grep -cE 'Insufficient Permission|BackgroundExecutionNotPermitted|IOGPU|MTLCommandBuffer.*error' "$OUT/os.log" || true) Metal/background error lines in os.log"
-  else
-    record I6 return-same-process FAIL "no READY lifecycle line"
   fi
   endgroup
 
