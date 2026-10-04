@@ -3116,11 +3116,14 @@ dependencies = [
 name = "tawara-wallet-core"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.2.17",
  "mochimo-crypto",
  "proc-macro2",
  "quote",
+ "serde_json",
  "syn 2.0.119",
  "toml",
+ "zeroize",
 ]
 
 [[package]]

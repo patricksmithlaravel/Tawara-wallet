@@ -15,9 +15,15 @@ Tawara is not an official product of the Mochimo cryptocurrency.
 
 ## Status
 
-**Phase 0: the repository, its rules and CI.** There is no interface yet.
-The plan, its phases and what each is done when are in
-[docs/PLAN.md](docs/PLAN.md).
+**Phase 2: `wallet-core`.** There is no interface yet. Phase 0 (the
+repository, its rules and CI) and phase 1 (the feasibility spikes, in
+`spikes/`, with the owner's decision to go ahead with iced on mobile) are
+done. `crates/wallet-core` holds the worker that owns the store and the
+wallet, its commands and events, locking, secret input, entropy and the
+store's location, tested end to end against a scripted node. The plan, its
+phases and what each is done when are in [docs/PLAN.md](docs/PLAN.md); the
+decisions made along the way, and the questions open for the owner, are in
+[docs/DECISIONS.md](docs/DECISIONS.md).
 
 ## Layout
 
