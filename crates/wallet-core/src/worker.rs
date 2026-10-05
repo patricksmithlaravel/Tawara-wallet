@@ -139,7 +139,7 @@ use crate::node::{self, Connect};
 use crate::secret::{PhraseForDisplay, SecretText};
 use crate::spend::{self, SpendRequest};
 use crate::text;
-use crate::view::{AccountId, AccountRow, AccountState, WalletView};
+use crate::view::{AccountId, AccountRow, AccountState, Notice, NoticeKind, WalletView};
 
 /// How long the wallet stays unlocked with nothing done, unless the
 /// interface sets another period. Five minutes, as the dashboard rendering
@@ -388,7 +388,7 @@ struct StoreSession<T: Transport> {
     /// The node it was last reconciled against, when one was asked.
     client: Option<(String, MeshClient<T>)>,
     rows: Vec<AccountRow>,
-    notice: Option<String>,
+    notice: Option<Notice>,
 }
 
 struct WalletSession<T: Transport> {
@@ -590,7 +590,7 @@ fn destinations(spend: &Spend, everything: u64) -> Vec<Destination> {
         .collect()
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -696,7 +696,7 @@ fn store_rows(store: &Keystore<Disk>) -> Result<Vec<AccountRow>, Refusal> {
 /// one whose every account was emptied), the notice is the library's "THIS
 /// STORE IS NOT WHOLE", naming each. Anything else is the library's own
 /// "WALLET WILL NOT START" page.
-fn refused_notice(rows: &mut [AccountRow], refusal: StartupRefusal) -> Option<String> {
+fn refused_notice(rows: &mut [AccountRow], refusal: StartupRefusal) -> Option<Notice> {
     let lookups_only = refusal.diverged.iter().all(|d| {
         matches!(
             d,
@@ -708,7 +708,10 @@ fn refused_notice(rows: &mut [AccountRow], refusal: StartupRefusal) -> Option<St
         _ => None,
     });
     if lookups_only && let Some(cause) = silent {
-        return Some(format!("{NODE_SILENT}\n\n{}", text::refusal(cause)));
+        return Some(Notice {
+            kind: NoticeKind::NodeSilent,
+            text: format!("{NODE_SILENT}\n\n{}", text::refusal(cause)),
+        });
     }
     for d in &refusal.diverged {
         update_row(
@@ -720,9 +723,21 @@ fn refused_notice(rows: &mut [AccountRow], refusal: StartupRefusal) -> Option<St
         );
     }
     if lookups_only {
-        return text::standing_notice(&refusal.diverged);
+        return not_whole(&refusal.diverged);
     }
-    Some(text::page(&[], Outcome::StartupRefused(Box::new(refusal))))
+    Some(Notice {
+        kind: NoticeKind::WillNotStart,
+        text: text::page(&[], Outcome::StartupRefused(Box::new(refusal))),
+    })
+}
+
+/// The library's notice that the store is not whole, for these diverged
+/// accounts, or none for a whole store.
+fn not_whole(diverged: &[Divergence]) -> Option<Notice> {
+    text::standing_notice(diverged).map(|text| Notice {
+        kind: NoticeKind::NotWhole,
+        text,
+    })
 }
 
 /// The store's accounts with the wallet open: the partition it opened with.
@@ -778,9 +793,9 @@ const NO_NODE: &str = "No node is chosen, so nothing was reconciled and nothing 
                        The store is open: its accounts and their destinations can be shown. \
                        Choose a node to reconcile them.";
 
-pub(crate) const NODE_SILENT: &str = "The node did not answer, so nothing was reconciled and nothing can be \
-                           sent. The store is open: its accounts and their destinations can be \
-                           shown.";
+pub(crate) const NODE_SILENT: &str = "The node did not answer, so nothing was reconciled and \
+                                      nothing can be sent. The store is open: its accounts and \
+                                      their destinations can be shown.";
 
 const OPEN_CANCELLED: &str = "Reconciling the store was cancelled, so nothing can be sent. The \
                               store is open: its accounts and their destinations can be shown. \
@@ -921,7 +936,7 @@ impl<C: Connect> Worker<C> {
                 dir: w.dir.clone(),
                 accounts: w.rows.clone(),
                 opened: true,
-                notice: text::standing_notice(w.wallet.diverged()),
+                notice: not_whole(w.wallet.diverged()),
             }),
         }
     }
@@ -931,7 +946,7 @@ impl<C: Connect> Worker<C> {
             Command::SetNode { url } => self.set_node(&url),
             Command::ClearNode => {
                 if self.node.take().is_some() {
-                    self.detach_node(NO_NODE);
+                    self.detach_node(NoticeKind::NoNode, NO_NODE);
                 }
                 Reply::NodeCleared { view: self.view() }
             }
@@ -990,7 +1005,7 @@ impl<C: Connect> Worker<C> {
                 let url = url.trim().to_owned();
                 if self.node.as_deref() != Some(url.as_str()) {
                     self.node = Some(url.clone());
-                    self.detach_node(NODE_CHANGED);
+                    self.detach_node(NoticeKind::NodeChanged, NODE_CHANGED);
                 }
                 Reply::NodeSet {
                     url,
@@ -1007,7 +1022,7 @@ impl<C: Connect> Worker<C> {
     /// it) is dropped. The next command that asks a node asks the one now
     /// chosen; [`Command::Refresh`] reconciles against it and opens the
     /// wallet again.
-    fn detach_node(&mut self, notice: &str) {
+    fn detach_node(&mut self, kind: NoticeKind, notice: &str) {
         self.plan = None;
         let (dir, store, master, mut rows) =
             match core::mem::replace(&mut self.session, Session::Locked) {
@@ -1031,7 +1046,10 @@ impl<C: Connect> Worker<C> {
             master,
             client: None,
             rows,
-            notice: Some(notice.to_owned()),
+            notice: Some(Notice {
+                kind,
+                text: notice.to_owned(),
+            }),
         });
     }
 
@@ -1238,9 +1256,15 @@ impl<C: Connect> Worker<C> {
             Err(r) => {
                 let rows = store_rows(&store)?;
                 let notice = if r.kind == RefusalKind::NoNode {
-                    NO_NODE.to_owned()
+                    Notice {
+                        kind: NoticeKind::NoNode,
+                        text: NO_NODE.to_owned(),
+                    }
                 } else {
-                    r.text
+                    Notice {
+                        kind: NoticeKind::NodeRefused,
+                        text: r.text,
+                    }
                 };
                 self.session = Session::Store(StoreSession {
                     dir,
@@ -1276,7 +1300,10 @@ impl<C: Connect> Worker<C> {
             Err(Unopened { why, store, client }) => {
                 let mut rows = store_rows(&store)?;
                 let notice = match why {
-                    Unfinished::Cancelled => Some(OPEN_CANCELLED.to_owned()),
+                    Unfinished::Cancelled => Some(Notice {
+                        kind: NoticeKind::Cancelled,
+                        text: OPEN_CANCELLED.to_owned(),
+                    }),
                     Unfinished::Refused(refusal) => refused_notice(&mut rows, refusal),
                 };
                 self.session = Session::Store(StoreSession {
@@ -1844,18 +1871,23 @@ impl<C: Connect> Worker<C> {
         if matches!(outcome, Outcome::NoSuchAccount { .. }) {
             return refused(RefusalKind::Library, text::page(&[], outcome));
         }
-        match &mut self.session {
-            Session::Store(s) => update_row(&mut s.rows, &tag, state.clone(), false, None),
+        let spendable = match &mut self.session {
+            Session::Store(s) => {
+                update_row(&mut s.rows, &tag, state.clone(), false, None);
+                false
+            }
             Session::Wallet(w) => {
                 let spendable = w.wallet.accounts().iter().any(|(t, _)| *t == tag)
                     && matches!(state, AccountState::InSync { .. });
                 update_row(&mut w.rows, &tag, state.clone(), spendable, None);
+                spendable
             }
-            Session::Locked => {}
-        }
+            Session::Locked => false,
+        };
         Reply::Status {
             account,
             state,
+            spendable,
             text: text::page(&[], outcome),
         }
     }
@@ -2126,6 +2158,38 @@ pub fn save_artifact(path: &Path, artifact_hex: &str) -> std::io::Result<()> {
     file.sync_all()
 }
 
+/// [`save_artifact`] into `dir` under a name of its own, `stem.hex`, or
+/// `stem-2.hex`, `stem-3.hex` and so on when that is taken, so no file is
+/// ever overwritten, and answer with the path written (docs/DECISIONS.md
+/// D27, item 5). `dir` is made when it is missing.
+pub fn save_artifact_in(
+    dir: &Path,
+    stem: &str,
+    artifact_hex: &str,
+) -> std::io::Result<std::path::PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    for n in 1..=999u32 {
+        let name = if n == 1 {
+            format!("{stem}.hex")
+        } else {
+            format!("{stem}-{n}.hex")
+        };
+        let path = dir.join(name);
+        match save_artifact(&path, artifact_hex) {
+            Ok(()) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!(
+            "{stem}.hex and 998 more names after it are already taken in {}",
+            dir.display()
+        ),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2201,5 +2265,18 @@ mod tests {
             std::io::ErrorKind::AlreadyExists
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_artifact_saved_in_a_folder_takes_a_name_of_its_own() {
+        let dir = std::env::temp_dir().join(format!("tawara-artifacts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let first = save_artifact_in(&dir, "spend", "abcd").unwrap();
+        assert_eq!(first, dir.join("spend.hex"));
+        let second = save_artifact_in(&dir, "spend", "ef").unwrap();
+        assert_eq!(second, dir.join("spend-2.hex"));
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "abcd\n");
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "ef\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

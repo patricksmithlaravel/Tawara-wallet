@@ -974,7 +974,9 @@ to them.
     a command-line verb, a note under it names the control that does the
     same (D25): `settle` is "Settle", `resign` is "Re-sign", `submit` is
     "Submit saved artifact", `reconcile ... --advance-to N` is the
-    account-recovery screen.
+    account-recovery screen. *Superseded by D28 for how a page is shown:
+    it is now one click behind a summary; when shown, it is as described
+    here.*
 14. **D14: the renderings as images.** Recommended to confirm: the eight
     PNGs are drawn from the bundle unretouched, the bundle's hash
     identifies the source, and the owner keeps the bundle.
@@ -999,4 +1001,66 @@ to them.
     dashboard, receive, adding an account, the send flow, the account
     states of section 4.9, settling, re-signing and submitting a saved
     artifact; (c) activity, settings and account recovery; (d) the
-    explorer.
+    explorer. *In (b), proposed:* the dashboard's recent activity and its
+    network card (the last block's age, the latest blocks) need the
+    explorer's reads, which the worker does not make yet, and turning a
+    tag's history into rows is Activity's own question (W10); both come
+    with (c). The sidebar's network panel shows the node, the tip and the
+    latency meanwhile.
+
+### D28. The library's pages: a banner, a summary, then the page
+
+**owner; decided on 2026-10-05, on seeing PR (b)'s screens, which showed
+the library's pages whole in a terminal face at the top of the window.**
+
+The owner's words: "Slim warning banner that opens up into a summary,
+with a link at the bottom of the summary that opens up the full
+reproduced library output", the summary "along with common causes so
+they don't freak out".
+
+So every library page on a wallet screen is shown in three steps:
+
+1. **A slim banner**, closed: one line saying what happened ("1 account
+   paused: look at it before spending from it", "Written to the node's
+   socket: not yet accepted by the network"), in the warning colour where
+   something stopped or needs the person, in the accent colour where it
+   is something to know.
+2. **Opened, a summary** in Tawara's own words (D25's rules for the
+   application's texts), with the causes that commonly lie behind it,
+   so that what is usually ordinary (an account not paid yet, a store
+   restored from a backup) does not read as an alarm.
+3. **At the summary's foot, a link** to the library's full output, shown
+   word for word as D27 item 13 describes.
+
+What this changes: D25's "the library's pages are shown word for word"
+and D27 item 13 now describe the third step, not what the screen shows
+first. docs/PLAN.md section 3 still holds: the library's protective text
+is reused, not rewritten, and is always one step from the summary; the
+summary says what the page says and nothing it does not.
+
+How it is kept honest:
+
+- **The summaries are built from what the worker reports, never from
+  reading the page.** wallet-core now says what a store's notice is about
+  (`view::Notice` and `NoticeKind`: no node, node changed, node silent,
+  cancelled, node refused, not whole, will not start) and what kind of
+  divergence an account has (`view::DivergenceKind`: the chain ahead or
+  behind by so many keys, unlocated, an unexplained reservation, not
+  found, unreachable, no master seed, reconciling failed), from the
+  library's own types.
+- **The causes are the library's**, from its reports and its types'
+  documentation: a chain ahead is an older copy of the store (a backup, a
+  restore) or a second wallet on the same recovery phrase, and never a
+  crash during a send; "account not found" is never paid, emptied to
+  zero, or a lookup that failed; and so on, case by case
+  (`crates/app/src/screens/wallet/report.rs`).
+- **The worker's own texts** (no node chosen, node changed, reconciling
+  cancelled) are already Tawara's words: their summary is the text, and
+  there is no further page to open.
+- **The sent page opens its summary from the start**: its three facts
+  (a submission is a socket write, not acceptance; the node's checks run
+  after Tawara has gone; the signed bytes can be lost, so save them) are
+  the page's point and are never softened (docs/PLAN.md section 4.9).
+  Every other banner starts closed.
+- A refusal that reads as a line stays a line; a longer one is a banner
+  whose summary is its first paragraph.

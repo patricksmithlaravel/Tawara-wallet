@@ -25,12 +25,16 @@ use iced::theme::Base;
 use iced::{Event, Size, window};
 use iced_runtime::user_interface::{Cache, UserInterface};
 use tawara_app::app::{
-    Back, Busy, Model, NodeForm, NodeState, PasswordForm, PhraseState, RestoreForm, Screen,
-    StartChoice, UnlockForm, WalletPage,
+    AccountPage, AddAccountPage, Back, Busy, DestinationRow, Level, Model, NodeForm, NodeState,
+    Page, PasswordForm, PhraseState, ReceivePage, ReportKey, ResignPage, RestoreForm, Screen,
+    SendPage, SendStage, SentPage, Signed, SpendForm, StartChoice, SubmitPage, UnlockForm,
+    WalletPage,
 };
 use tawara_app::{fonts, screens, theme};
 use tawara_wallet_core::location::SyncWarning;
 use tawara_wallet_core::preferences::Preferences;
+use tawara_wallet_core::sample;
+use tawara_wallet_core::view::AccountState;
 use tawara_wallet_core::{Activity, CONFIRM_POSITIONS, PhraseForDisplay, Progress};
 
 /// The rendering's frame size for each screen (`design/INDEX.md`), and the
@@ -58,6 +62,29 @@ fn base() -> Model {
         choice: StartChoice::Create,
     };
     model
+}
+
+/// `model` with its page's report `key` open to `level` (D28).
+fn opened(mut model: Model, key: ReportKey, level: Level) -> Model {
+    if let Screen::Wallet(p) = &mut model.screen {
+        p.open.insert(key, level);
+    }
+    model
+}
+
+/// The sent page opens its summary, as the application does.
+fn opened_sent(model: Model) -> Model {
+    opened(model, ReportKey::Sent, Level::Summary)
+}
+
+/// The sample store open on a wallet page.
+fn on(page: Page) -> Model {
+    let mut m = with(Screen::Wallet(WalletPage {
+        page,
+        ..WalletPage::default()
+    }));
+    m.wallet = Some(sample::wallet_view());
+    m
 }
 
 fn with(screen: Screen) -> Model {
@@ -112,11 +139,73 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
             ceiling: 10_017,
         }),
     ));
-    let wallet = || {
-        let mut m = with(Screen::Wallet(WalletPage::default()));
-        m.wallet = Some(tawara_wallet_core::sample::wallet_view());
+    let wallet = || on(Page::Dashboard);
+    let accounts = sample::wallet_view().accounts;
+    let plan = sample::plan_view();
+    let typed = SpendForm {
+        rows: plan
+            .destinations
+            .iter()
+            .map(|d| DestinationRow {
+                to: d.destination.clone(),
+                // As a person types it.
+                amount: tawara_wallet_core::amount::format_mcm(d.amount)
+                    .trim_end_matches('0')
+                    .trim_end_matches('.')
+                    .to_owned(),
+                reference: d.reference.clone(),
+            })
+            .collect(),
+        ..SpendForm::default()
+    };
+    let compose = || {
+        on(Page::Send(SendPage {
+            from: Some(accounts[0].id),
+            form: typed.clone(),
+            stage: SendStage::Compose,
+        }))
+    };
+    let mut sent = opened_sent(on(Page::Send(SendPage {
+        from: Some(accounts[0].id),
+        form: typed.clone(),
+        stage: SendStage::Sent(Box::new(SentPage {
+            sent: sample::sent_view(),
+            resigned: false,
+            saved: Some(Ok(PathBuf::from(
+                "/home/you/Downloads/tawara-spend-5e5e5e5e5e5e5e5e.hex",
+            ))),
+        })),
+    })));
+    sent.wallet = Some(sample::sent_view().view);
+    // The same spend, its page left before its bytes were saved.
+    let kept = || Signed {
+        sent: SentPage {
+            sent: sample::sent_view(),
+            resigned: false,
+            saved: None,
+        },
+        form: typed.clone(),
+        open: Default::default(),
+        resume: false,
+        copied: false,
+    };
+    let mut unsaved = wallet();
+    unsaved.wallet = Some(sample::sent_view().view);
+    unsaved.signed = vec![kept()];
+    // The second account in sync now, and set aside when the wallet opened.
+    let mut aside = sample::wallet_view();
+    aside.accounts[1].state = AccountState::InSync {
+        balance: 3_180_000_000_000,
+    };
+    aside.accounts[1].spendable = false;
+    let set_aside = |page| {
+        let mut m = on(page);
+        m.wallet = Some(aside.clone());
         m
     };
+    let mut stopped = base();
+    stopped.stopped = Some(true);
+    stopped.signed = vec![kept()];
     let mut unreconciled = with(Screen::Wallet(WalletPage::default()));
     unreconciled.wallet = Some(tawara_wallet_core::sample::unreconciled_view());
     unreconciled.node.tip = None;
@@ -225,14 +314,136 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
                 ..UnlockForm::default()
             })),
         ),
+        (
+            "s7-unlock-spend-kept",
+            FIRST_RUN,
+            with(Screen::Unlock(UnlockForm {
+                dir: DIR.to_owned(),
+                note: Some(
+                    "A signed spend's page was open when the wallet locked. It is kept, with \
+                     the signed bytes, and shown again when this store is unlocked: save the \
+                     bytes then."
+                        .to_owned(),
+                ),
+                ..UnlockForm::default()
+            })),
+        ),
         ("s8-waiting", FIRST_RUN, waiting),
         ("s8-opening", FIRST_RUN, opening),
         ("s8-reconciling", FIRST_RUN, reconciling),
         ("w1-wallet", DASHBOARD, wallet()),
+        (
+            "w1-wallet-notice-open",
+            DASHBOARD,
+            opened(wallet(), ReportKey::Notice, Level::Summary),
+        ),
         ("w1-wallet-refreshing", DASHBOARD, refreshing),
+        ("w1-wallet-unsaved-spend", DASHBOARD, unsaved),
+        (
+            "w2-receive",
+            DASHBOARD,
+            on(Page::Receive(ReceivePage {
+                account: Some(accounts[0].id),
+                view: Some(sample::receive_view()),
+            })),
+        ),
+        (
+            "w3-add-account",
+            DASHBOARD,
+            on(Page::AddAccount(AddAccountPage {
+                found: Some(sample::discovered()),
+                ..AddAccountPage::default()
+            })),
+        ),
+        ("w4-send", DASHBOARD, compose()),
+        (
+            "w4-send-cannot-spend",
+            DASHBOARD,
+            set_aside(Page::Send(SendPage {
+                from: Some(accounts[1].id),
+                form: typed.clone(),
+                stage: SendStage::Compose,
+            })),
+        ),
+        (
+            "w5-review",
+            DASHBOARD,
+            on(Page::Send(SendPage {
+                from: Some(accounts[0].id),
+                form: typed.clone(),
+                stage: SendStage::Review(Box::new(plan.clone())),
+            })),
+        ),
+        ("w6-sent", DASHBOARD, sent),
+        (
+            "w7-account-outstanding",
+            DASHBOARD,
+            on(Page::Account(AccountPage {
+                account: accounts[1].id,
+                report: None,
+            })),
+        ),
+        (
+            "w7-account-set-aside",
+            DASHBOARD,
+            set_aside(Page::Account(AccountPage {
+                account: accounts[1].id,
+                report: None,
+            })),
+        ),
+        (
+            "w7-account-diverged",
+            DASHBOARD,
+            on(Page::Account(AccountPage {
+                account: accounts[2].id,
+                report: None,
+            })),
+        ),
+        (
+            "w7-account-diverged-open",
+            DASHBOARD,
+            opened(
+                on(Page::Account(AccountPage {
+                    account: accounts[2].id,
+                    report: None,
+                })),
+                ReportKey::Diverged,
+                Level::Summary,
+            ),
+        ),
+        (
+            "w7-account-diverged-full",
+            DASHBOARD,
+            opened(
+                on(Page::Account(AccountPage {
+                    account: accounts[2].id,
+                    report: None,
+                })),
+                ReportKey::Diverged,
+                Level::Full,
+            ),
+        ),
+        (
+            "w8-resign",
+            DASHBOARD,
+            on(Page::Resign(ResignPage {
+                account: accounts[1].id,
+                form: typed.clone(),
+            })),
+        ),
+        (
+            "w9-submit",
+            DASHBOARD,
+            on(Page::Submit(SubmitPage {
+                hex: sample::sent_view().artifact_hex,
+                result: Some((true, sample::submitted_text())),
+            })),
+        ),
         ("w1-wallet-unreconciled", DASHBOARD, unreconciled),
+        ("stopped-spends", FIRST_RUN, stopped),
         ("narrow-s1-get-started", SMALLEST, base()),
         ("narrow-w1-wallet", DASHBOARD_NARROW, wallet()),
+        ("narrow-w4-send", DASHBOARD_NARROW, compose()),
     ]
 }
 
@@ -323,7 +534,12 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     let mut failed = false;
-    for (name, size, model) in samples() {
+    for (name, size, mut model) in samples() {
+        // The window the screen is drawn in is this wide (D27, item 9).
+        #[allow(clippy::cast_precision_loss)]
+        {
+            model.width = size.0 as f32;
+        }
         let rgba = draw(&mut renderer, &model, size);
         let path = dir.join(format!("{name}.png"));
         if check {
