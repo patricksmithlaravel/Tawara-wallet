@@ -34,6 +34,7 @@ use tawara_app::{fonts, screens, theme};
 use tawara_wallet_core::location::SyncWarning;
 use tawara_wallet_core::preferences::Preferences;
 use tawara_wallet_core::sample;
+use tawara_wallet_core::view::AccountState;
 use tawara_wallet_core::{Activity, CONFIRM_POSITIONS, PhraseForDisplay, Progress};
 
 /// The rendering's frame size for each screen (`design/INDEX.md`), and the
@@ -191,6 +192,17 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
     let mut unsaved = wallet();
     unsaved.wallet = Some(sample::sent_view().view);
     unsaved.signed = vec![kept()];
+    // The second account in sync now, and set aside when the wallet opened.
+    let mut aside = sample::wallet_view();
+    aside.accounts[1].state = AccountState::InSync {
+        balance: 3_180_000_000_000,
+    };
+    aside.accounts[1].spendable = false;
+    let set_aside = |page| {
+        let mut m = on(page);
+        m.wallet = Some(aside.clone());
+        m
+    };
     let mut stopped = base();
     stopped.stopped = Some(true);
     stopped.signed = vec![kept()];
@@ -345,6 +357,15 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         ),
         ("w4-send", DASHBOARD, compose()),
         (
+            "w4-send-cannot-spend",
+            DASHBOARD,
+            set_aside(Page::Send(SendPage {
+                from: Some(accounts[1].id),
+                form: typed.clone(),
+                stage: SendStage::Compose,
+            })),
+        ),
+        (
             "w5-review",
             DASHBOARD,
             on(Page::Send(SendPage {
@@ -358,6 +379,14 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
             "w7-account-outstanding",
             DASHBOARD,
             on(Page::Account(AccountPage {
+                account: accounts[1].id,
+                report: None,
+            })),
+        ),
+        (
+            "w7-account-set-aside",
+            DASHBOARD,
+            set_aside(Page::Account(AccountPage {
                 account: accounts[1].id,
                 report: None,
             })),

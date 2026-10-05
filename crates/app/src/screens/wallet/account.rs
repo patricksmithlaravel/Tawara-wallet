@@ -102,7 +102,7 @@ fn panel<'a>(
     };
     let (callout, buttons): (Element<'a, Message>, Vec<Element<'a, Message>>) = match &account.state
     {
-        AccountState::InSync { .. } => (
+        AccountState::InSync { .. } if account.spendable => (
             ui::accent_callout(
                 Icon::ShieldCheck,
                 "Reconciled",
@@ -120,6 +120,22 @@ fn panel<'a>(
                     WalletMsg::Open(To::Receive(Some(id))),
                 ),
             ],
+        ),
+        // In sync now, and set aside when the wallet opened: it spends only
+        // once a refresh opens the wallet with it.
+        AccountState::InSync { .. } => (
+            ui::accent_callout(
+                Icon::ShieldCheck,
+                "Reconciled, not yet spendable",
+                "The chain holds this account at the key this store expects. It was set aside \
+                 when the wallet opened, so it spends again once Refresh on the wallet's page \
+                 opens the wallet with it.",
+            ),
+            vec![button(
+                "Receive",
+                theme::Button::Secondary,
+                WalletMsg::Open(To::Receive(Some(id))),
+            )],
         ),
         AccountState::SpendOutstanding { reservation, .. } => {
             let why = match reservation {

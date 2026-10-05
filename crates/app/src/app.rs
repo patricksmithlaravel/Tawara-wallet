@@ -2272,6 +2272,57 @@ mod tests {
             &wallet_page(&app).page,
             Page::Send(SendPage { from, .. }) if *from == Some(accounts[0].id)
         ));
+        wallet(&mut app, WalletMsg::DestinationTo(0, "dest".to_owned()));
+        wallet(&mut app, WalletMsg::Amount(0, "1".to_owned()));
+        wallet(&mut app, WalletMsg::Review);
+        assert_eq!(wallet_page(&app).error, None, "laid out from it");
+    }
+
+    #[test]
+    fn a_spend_asked_from_an_account_that_cannot_spend_keeps_it_and_says_why() {
+        let accounts = tawara_wallet_core::sample::wallet_view().accounts;
+        let (able, aside) = (accounts[0].id, accounts[1].id);
+        assert!(accounts[0].spendable && !accounts[1].spendable);
+        let mut app = on_wallet(Page::Account(AccountPage {
+            account: aside,
+            report: None,
+        }));
+        let from = |app: &App| match &wallet_page(app).page {
+            Page::Send(s) => s.from,
+            other => panic!("expected the send page, got {other:?}"),
+        };
+
+        // Asked for by name: kept, never swapped for the account that can.
+        wallet(&mut app, WalletMsg::Open(To::Send(Some(aside))));
+        assert_eq!(from(&app), Some(aside));
+        wallet(&mut app, WalletMsg::DestinationTo(0, "dest".to_owned()));
+        wallet(&mut app, WalletMsg::Amount(0, "1".to_owned()));
+        wallet(&mut app, WalletMsg::Review);
+        assert!(
+            wallet_page(&app)
+                .error
+                .as_deref()
+                .is_some_and(|e| e.starts_with("This account cannot spend now")),
+            "{:?}",
+            wallet_page(&app).error
+        );
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Compose,
+                ..
+            })
+        ));
+
+        // Another chosen on purpose: that one, and it is laid out.
+        wallet(&mut app, WalletMsg::From(able));
+        wallet(&mut app, WalletMsg::Review);
+        assert_eq!(from(&app), Some(able));
+        assert_eq!(wallet_page(&app).error, None);
+
+        // With none asked for, the first that can spend.
+        wallet(&mut app, WalletMsg::Open(To::Send(None)));
+        assert_eq!(from(&app), Some(able));
     }
 
     #[test]

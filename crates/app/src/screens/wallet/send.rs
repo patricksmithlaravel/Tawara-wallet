@@ -45,30 +45,46 @@ fn compose<'a>(model: &'a Model, page: &'a WalletPage, s: &'a SendPage) -> Eleme
         .filter(|a| a.spendable)
         .map(|a| a.id)
         .collect();
+    // The account asked for, when it cannot spend now: it stays the one
+    // chosen, and the page says why, rather than spending from another.
+    let blocked = s.from.filter(|f| !spendable.contains(f));
     let mut form = column![ui::section_label("From account")].spacing(sp::S12);
-    if spendable.is_empty() {
+    if let Some(id) = blocked {
+        form = form.push(ui::warning_callout(
+            "The account chosen cannot spend now",
+            format!(
+                "{} spends once the wallet has reconciled it on opening and it is in sync; an \
+                 account set aside when the wallet opened spends again after Refresh. Choose \
+                 another account, or Refresh the wallet first.",
+                name(id)
+            ),
+        ));
+    } else if spendable.is_empty() {
         form = form.push(ui::warning_callout(
             "No account can spend now",
             "A spend needs the wallet open against the node, from an account that reconciled \
              and is in sync. Refresh, or open an account's page from the wallet to see why it \
              cannot.",
         ));
-    } else {
+    }
+    if !spendable.is_empty() {
         form = form.push(account_choice(model, spendable.into_iter(), s.from, |id| {
             WalletMsg::From(id).into()
         }));
     }
     form = form.push(destinations(model, &s.form));
     let summary = column![
-        summary(model, s),
-        key_callout(model, s.from),
+        // What signing would do is said only of an account that can sign.
+        summary(model, s, s.from.filter(|_| blocked.is_none())),
+        key_callout(model, s.from.filter(|_| blocked.is_none())),
         steps(Step::Pending, Step::Pending, Step::Pending),
         ui::button_with(
             "Review spend",
             theme::Button::Primary,
             Size::Xl,
             None,
-            (model.busy.is_none() && s.from.is_some()).then_some(WalletMsg::Review.into()),
+            (model.busy.is_none() && s.from.is_some() && blocked.is_none())
+                .then_some(WalletMsg::Review.into()),
         ),
         ui::helper(
             "Nothing is signed yet: the next step shows the spend as the wallet library lays \
@@ -225,8 +241,13 @@ fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> 
 }
 
 /// W4's summary (03): what the typed figures come to, as far as they can be
-/// read. The figures that are signed are the library's, on the next step.
-fn summary<'a>(model: &'a Model, s: &'a SendPage) -> Element<'a, Message> {
+/// read, and the change left on `from`. The figures that are signed are the
+/// library's, on the next step.
+fn summary<'a>(
+    model: &'a Model,
+    s: &'a SendPage,
+    from: Option<tawara_wallet_core::view::AccountId>,
+) -> Element<'a, Message> {
     let unit = model.prefs.unit;
     let rows: Vec<_> = s
         .form
@@ -249,7 +270,7 @@ fn summary<'a>(model: &'a Model, s: &'a SendPage) -> Element<'a, Message> {
     };
     let shown = |v: Option<u64>| v.map_or_else(|| "—".to_owned(), |v| ui::amount(v, unit));
     let total = sent.zip(fee).and_then(|(a, b)| a.checked_add(b));
-    let from = s.from.and_then(|id| row_of(model, id));
+    let from = from.and_then(|id| row_of(model, id));
     let change = from
         .and_then(|a| a.state.balance())
         .zip(total)

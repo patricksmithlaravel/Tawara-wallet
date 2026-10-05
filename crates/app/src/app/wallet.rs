@@ -327,6 +327,13 @@ pub fn spend_request(from: AccountId, form: &SpendForm) -> Result<SpendRequest, 
     })
 }
 
+/// Why a spend is not laid out from the account chosen: it cannot spend
+/// now (`AccountRow::spendable`).
+const CANNOT_SPEND: &str = "This account cannot spend now. An account spends once the wallet \
+                                has reconciled it on opening and it is in sync; one set aside \
+                                when the wallet opened spends again after Refresh. Choose another \
+                                account, or Refresh the wallet first.";
+
 /// The accounts a spend may be planned from now.
 fn spendable(wallet: Option<&WalletView>) -> impl Iterator<Item = AccountId> + '_ {
     wallet
@@ -567,10 +574,11 @@ impl App {
                 })
             }
             To::AddAccount => Page::AddAccount(AddAccountPage::default()),
+            // An account asked for stays the one chosen, even one that
+            // cannot spend now: the page says so, and never puts another in
+            // its place. With none asked for, the first that can spend.
             To::Send(from) => Page::Send(SendPage {
-                from: from
-                    .filter(|f| spendable(wallet).any(|a| a == *f))
-                    .or_else(|| spendable(wallet).next()),
+                from: from.or_else(|| spendable(wallet).next()),
                 ..SendPage::default()
             }),
             To::Account(account) => Page::Account(AccountPage {
@@ -743,6 +751,7 @@ impl App {
                 }
             }
             WalletMsg::Review => {
+                let can: Vec<AccountId> = spendable(self.model.wallet.as_ref()).collect();
                 let Some(WalletPage {
                     page:
                         Page::Send(SendPage {
@@ -755,7 +764,13 @@ impl App {
                 else {
                     return Task::none();
                 };
-                match spend_request(*from, form) {
+                let from = *from;
+                let request = spend_request(from, form);
+                if !can.contains(&from) {
+                    self.page_error(Some(CANNOT_SPEND.to_owned()));
+                    return Task::none();
+                }
+                match request {
                     Ok(spend) => {
                         self.page_error(None);
                         self.send(Command::PlanSend { spend }, Purpose::PlanSend);
