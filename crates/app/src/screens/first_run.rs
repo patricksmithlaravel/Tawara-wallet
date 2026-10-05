@@ -168,6 +168,11 @@ fn start(model: &Model, choice: StartChoice) -> Element<'_, Message> {
             None,
             Some(Message::Continue),
         ),
+        ui::link(
+            "Open a wallet already on this computer",
+            ty::LINK,
+            Message::Go(Go::Unlock),
+        ),
         node_footer(model, Back::Start),
     ]
     .spacing(sp::S24)

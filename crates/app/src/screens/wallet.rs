@@ -7,6 +7,7 @@
 //! the next pull requests (docs/DECISIONS.md D27, item 16); their items are
 //! shown and not yet enabled.
 
+use iced::widget::text::Wrapping;
 use iced::widget::{column, container, row, rule, scrollable, space};
 use iced::{Alignment, Element, Length, Padding};
 use tawara_wallet_core::preferences::AmountUnit;
@@ -257,14 +258,21 @@ fn balance(model: &Model, total: u128, count: usize) -> Element<'_, Message> {
 }
 
 /// The accounts table (02, `design/TOKENS.md` 5.12).
+///
+/// Its columns share the card's width in proportion, so it fits from the
+/// rendering's 1440 px down to the smallest window, 1024 px, where the card
+/// has about 660 px (docs/DECISIONS.md D27, item 9); a destination or a
+/// balance too long for its column breaks between characters rather than
+/// being cut off.
 fn accounts(rows: &[AccountRow], unit: AmountUnit) -> Element<'_, Message> {
-    const ACCOUNT: f32 = 170.0;
-    const BALANCE: f32 = 180.0;
-    const KEY: f32 = 100.0;
-    const STATUS: f32 = 230.0;
-    let head = |label: &'static str, width: Length, right: bool| {
+    const ACCOUNT: u16 = 4;
+    const DESTINATION: u16 = 7;
+    const BALANCE: u16 = 4;
+    const KEY: u16 = 2;
+    const STATUS: u16 = 4;
+    let head = |label: &'static str, portion: u16, right: bool| {
         container(t(label, ty::TABLE_HEADER, color::TEXT_MUTED))
-            .width(width)
+            .width(Length::FillPortion(portion))
             .align_x(if right {
                 Alignment::End
             } else {
@@ -273,21 +281,21 @@ fn accounts(rows: &[AccountRow], unit: AmountUnit) -> Element<'_, Message> {
     };
     let mut table = column![
         row![
-            head("Account", Length::Fixed(ACCOUNT), false),
-            head("Destination", Length::Fill, false),
+            head("Account", ACCOUNT, false),
+            head("Destination", DESTINATION, false),
             head(
                 if matches!(unit, AmountUnit::Mcm) {
                     "Balance (MCM)"
                 } else {
                     "Balance (nanoMCM)"
                 },
-                Length::Fixed(BALANCE),
+                BALANCE,
                 true,
             ),
-            container(space()).width(Length::Fixed(sp::S24)),
-            head("Next key", Length::Fixed(KEY), false),
-            head("Status", Length::Fixed(STATUS), false),
+            head("Next key", KEY, false),
+            head("Status", STATUS, false),
         ]
+        .spacing(sp::S12)
         .padding(Padding::from([sp::S10, 0.0])),
         ui::divider(),
     ];
@@ -312,19 +320,28 @@ fn accounts(rows: &[AccountRow], unit: AmountUnit) -> Element<'_, Message> {
                     ),
                 ]
                 .spacing(sp::S2)
-                .width(Length::Fixed(ACCOUNT)),
-                t(destination, ty::MONO, color::TEXT_SECONDARY).width(Length::Fill),
-                container(t(balance, ty::TABLE_AMOUNT, color::TEXT_PRIMARY))
-                    .width(Length::Fixed(BALANCE))
-                    .align_x(Alignment::End),
-                container(space()).width(Length::Fixed(sp::S24)),
+                .width(Length::FillPortion(ACCOUNT)),
+                t(destination, ty::MONO, color::TEXT_SECONDARY)
+                    .wrapping(Wrapping::WordOrGlyph)
+                    .width(Length::FillPortion(DESTINATION)),
+                container(
+                    t(balance, ty::TABLE_AMOUNT, color::TEXT_PRIMARY)
+                        .wrapping(Wrapping::WordOrGlyph)
+                        .align_x(Alignment::End),
+                )
+                .width(Length::FillPortion(BALANCE))
+                .align_x(Alignment::End),
                 t(format!("#{}", account.index), ty::MONO, color::TEXT_PRIMARY)
-                    .width(Length::Fixed(KEY)),
-                row![ui::dot(ink, 6.0), t(status, ty::TABLE_BODY, ink)]
-                    .spacing(sp::S6)
-                    .align_y(Alignment::Center)
-                    .width(Length::Fixed(STATUS)),
+                    .width(Length::FillPortion(KEY)),
+                row![
+                    ui::dot(ink, 6.0),
+                    t(status, ty::TABLE_BODY, ink).width(Length::Fill),
+                ]
+                .spacing(sp::S6)
+                .align_y(Alignment::Center)
+                .width(Length::FillPortion(STATUS)),
             ]
+            .spacing(sp::S12)
             .align_y(Alignment::Center)
             .padding(Padding::from([sp::S14, 0.0])),
         );

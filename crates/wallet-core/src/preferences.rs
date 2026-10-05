@@ -1,6 +1,6 @@
 //! What the application remembers between runs (docs/DECISIONS.md D27,
-//! item 10): the node the person chose, the unit amounts are shown in, and
-//! the auto-lock period.
+//! item 10): the node the person chose, the store they last opened, the
+//! unit amounts are shown in, and the auto-lock period.
 //!
 //! Nothing secret is kept here, and nothing the library reads: the file is
 //! `preferences` in the application's folder, beside the store's own
@@ -38,6 +38,10 @@ pub struct Preferences {
     /// The node last chosen, as typed. The worker checks it again when it is
     /// set (`Command::SetNode`), so a stored value is never trusted.
     pub node: Option<String>,
+    /// The folder of the store last opened, so the application offers to
+    /// unlock it at the next start wherever it is. A path, nothing more:
+    /// the library checks the folder again when it is opened.
+    pub store: Option<String>,
     pub unit: AmountUnit,
     /// One of [`IDLE_LOCK_MINUTES`].
     pub idle_lock: Duration,
@@ -47,6 +51,7 @@ impl Default for Preferences {
     fn default() -> Preferences {
         Preferences {
             node: None,
+            store: None,
             unit: AmountUnit::Mcm,
             idle_lock: crate::DEFAULT_IDLE_LOCK,
         }
@@ -78,6 +83,7 @@ pub fn parse(text: &str) -> Preferences {
         let value = value.trim();
         match key.trim() {
             "node" if !value.is_empty() => out.node = Some(value.to_owned()),
+            "store" if !value.is_empty() => out.store = Some(value.to_owned()),
             "unit" => match value {
                 "mcm" => out.unit = AmountUnit::Mcm,
                 "nanomcm" => out.unit = AmountUnit::NanoMcm,
@@ -103,10 +109,13 @@ pub fn render(prefs: &Preferences) -> String {
         "# Tawara's preferences. Nothing secret is kept here, and nothing the wallet\n\
          # library reads; deleting this file resets them.\n",
     );
+    // One line each: a line break would end the value and start a new key.
+    let one_line = |s: &str| -> String { s.chars().filter(|c| !c.is_control()).collect() };
     if let Some(node) = &prefs.node {
-        // One line: a line break would end the value and start a new key.
-        let node: String = node.chars().filter(|c| !c.is_control()).collect();
-        out.push_str(&format!("node = {node}\n"));
+        out.push_str(&format!("node = {}\n", one_line(node)));
+    }
+    if let Some(store) = &prefs.store {
+        out.push_str(&format!("store = {}\n", one_line(store)));
     }
     out.push_str(match prefs.unit {
         AmountUnit::Mcm => "unit = mcm\n",
@@ -159,6 +168,7 @@ mod tests {
     fn what_is_written_reads_back() {
         let prefs = Preferences {
             node: Some("https://node.example".into()),
+            store: Some("/home/p/wallets/savings".into()),
             unit: AmountUnit::NanoMcm,
             idle_lock: Duration::from_secs(10 * 60),
         };

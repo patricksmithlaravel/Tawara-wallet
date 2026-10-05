@@ -33,9 +33,12 @@ use tawara_wallet_core::location::SyncWarning;
 use tawara_wallet_core::preferences::Preferences;
 use tawara_wallet_core::{Activity, CONFIRM_POSITIONS, PhraseForDisplay, Progress};
 
-/// The rendering's frame size for each screen (`design/INDEX.md`).
+/// The rendering's frame size for each screen (`design/INDEX.md`), and the
+/// smallest window (`tawara_app::WINDOW_MIN`, docs/DECISIONS.md D27 item 9).
 const FIRST_RUN: (u32, u32) = (1440, 900);
 const DASHBOARD: (u32, u32) = (1440, 1160);
+const SMALLEST: (u32, u32) = (1024, 700);
+const DASHBOARD_NARROW: (u32, u32) = (1024, 1160);
 
 const NODE: &str = "https://node.example";
 const DIR: &str = "/home/you/.local/share/tawara/keystore";
@@ -105,8 +108,11 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
             ceiling: 10_017,
         }),
     ));
-    let mut wallet = with(Screen::Wallet(WalletPage::default()));
-    wallet.wallet = Some(tawara_wallet_core::sample::wallet_view());
+    let wallet = || {
+        let mut m = with(Screen::Wallet(WalletPage::default()));
+        m.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        m
+    };
     vec![
         ("s1-get-started", FIRST_RUN, base()),
         (
@@ -190,7 +196,9 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         ),
         ("s8-opening", FIRST_RUN, opening),
         ("s8-reconciling", FIRST_RUN, reconciling),
-        ("w1-wallet", DASHBOARD, wallet),
+        ("w1-wallet", DASHBOARD, wallet()),
+        ("narrow-s1-get-started", SMALLEST, base()),
+        ("narrow-w1-wallet", DASHBOARD_NARROW, wallet()),
     ]
 }
 

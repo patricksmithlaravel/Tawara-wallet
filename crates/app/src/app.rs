@@ -303,28 +303,15 @@ fn replace(field: &mut String, typed: Typed) {
 
 impl Model {
     /// The model at start-up: the first screen, before the worker has said
-    /// anything.
+    /// anything. When a store is there to open (the one last opened,
+    /// wherever it is, or else the one in the default folder) it is the
+    /// unlock screen for it; otherwise it is the start.
     #[must_use]
     pub fn new(prefs: Preferences, default_dir: Option<PathBuf>) -> Model {
-        let dir_text = default_dir
-            .as_ref()
-            .map(|d| d.display().to_string())
-            .unwrap_or_default();
-        let existing = default_dir
-            .as_deref()
-            .is_some_and(tawara_wallet_core::store_exists);
-        let screen = if existing {
-            Screen::Unlock(UnlockForm {
-                dir: dir_text,
-                ..UnlockForm::default()
-            })
-        } else {
-            Screen::Start {
+        let mut model = Model {
+            screen: Screen::Start {
                 choice: StartChoice::Create,
-            }
-        };
-        Model {
-            screen,
+            },
             node: NodeState {
                 url: prefs.node.clone(),
                 ..NodeState::default()
@@ -334,7 +321,14 @@ impl Model {
             busy: None,
             wallet: None,
             stopped: None,
+        };
+        if let Some(dir) = model.store_to_open() {
+            model.screen = Screen::Unlock(UnlockForm {
+                dir,
+                ..UnlockForm::default()
+            });
         }
+        model
     }
 
     fn default_dir_text(&self) -> String {
@@ -342,6 +336,22 @@ impl Model {
             .as_ref()
             .map(|d| d.display().to_string())
             .unwrap_or_default()
+    }
+
+    /// The store to offer to unlock: the one last opened when it is still
+    /// there, or else the one in the default folder when there is one.
+    fn store_to_open(&self) -> Option<String> {
+        let remembered = self
+            .prefs
+            .store
+            .clone()
+            .filter(|s| tawara_wallet_core::store_exists(std::path::Path::new(s)));
+        remembered.or_else(|| {
+            self.default_dir
+                .as_deref()
+                .filter(|d| tawara_wallet_core::store_exists(d))
+                .map(|d| d.display().to_string())
+        })
     }
 
     /// Leave the current screen, zeroizing whatever secret it held.
@@ -381,8 +391,11 @@ impl Model {
     /// The unlock screen for `dir`, or the default folder.
     fn unlock_screen(&mut self, dir: Option<String>, error: Option<String>, note: Option<String>) {
         let _ = self.leave();
+        let dir = dir
+            .or_else(|| self.store_to_open())
+            .unwrap_or_else(|| self.default_dir_text());
         self.screen = Screen::Unlock(UnlockForm {
-            dir: dir.unwrap_or_else(|| self.default_dir_text()),
+            dir,
             password: String::new(),
             error,
             note,
@@ -673,6 +686,13 @@ impl App {
                 }
             }
             Message::Lock => {
+                // Stop what is running and queued first, so the store does
+                // not stay open behind a slow refresh (docs/PLAN.md 4.1): a
+                // cancel reaches every command sent before it, and the Lock
+                // sent after it runs as soon as the worker is free.
+                if let Some(w) = &self.worker {
+                    w.handle.cancel();
+                }
                 self.send(Command::Lock, Purpose::Lock);
             }
             Message::Refresh => {
@@ -901,8 +921,18 @@ impl App {
     fn opened(&mut self, view: WalletView) {
         let m = &mut self.model;
         let _ = m.leave();
+        // Remembered, so the next start offers to unlock this store wherever
+        // it is (docs/DECISIONS.md D27, item 10).
+        let dir = view.dir.display().to_string();
+        let remember = m.prefs.store.as_deref() != Some(dir.as_str());
+        if remember {
+            m.prefs.store = Some(dir);
+        }
         m.wallet = Some(view);
         m.screen = Screen::Wallet(WalletPage::default());
+        if remember {
+            self.save_prefs();
+        }
         self.ask_tip();
     }
 
@@ -1061,8 +1091,12 @@ mod tests {
     fn a_restored_wallet_locks_and_unlocks_only_with_its_password() {
         let scratch = Scratch::new("restore");
         let (mut app, events) = app(&scratch);
+        // Not the default folder: the application has to remember where it
+        // is to offer it again.
+        let elsewhere = scratch.0.join("elsewhere").join("keystore");
         let _ = app.update(Message::Choose(StartChoice::Restore));
         let _ = app.update(Message::Continue);
+        let _ = app.update(Message::Dir(elsewhere.display().to_string()));
         let _ = app.update(Message::Password(typed(PASSWORD)));
         let _ = app.update(Message::Again(typed(PASSWORD)));
         let _ = app.update(Message::PhraseText(typed(PHRASE)));
@@ -1074,12 +1108,36 @@ mod tests {
         pump(&mut app, &events, |a| {
             matches!(a.model.screen, Screen::Wallet(_))
         });
+        let remembered = elsewhere.display().to_string();
+        assert_eq!(app.model.prefs.store.as_deref(), Some(remembered.as_str()));
 
         let _ = app.update(Message::Lock);
         pump(&mut app, &events, |a| {
             matches!(a.model.screen, Screen::Unlock(_))
         });
         assert!(app.model.wallet.is_none(), "nothing of the store is kept");
+        assert!(
+            matches!(&app.model.screen, Screen::Unlock(u) if u.dir == remembered),
+            "{:?}",
+            app.model.screen
+        );
+
+        // At the next start, with nothing in the default folder, the store
+        // last opened is the one offered; and from the start screen, opening
+        // an existing wallet leads to it too.
+        let next = Model::new(app.model.prefs.clone(), app.model.default_dir.clone());
+        assert!(
+            matches!(&next.screen, Screen::Unlock(u) if u.dir == remembered),
+            "{:?}",
+            next.screen
+        );
+        let _ = app.update(Message::Go(Go::Start));
+        let _ = app.update(Message::Go(Go::Unlock));
+        assert!(
+            matches!(&app.model.screen, Screen::Unlock(u) if u.dir == remembered),
+            "{:?}",
+            app.model.screen
+        );
 
         let _ = app.update(Message::Password(typed("not the password at all")));
         let _ = app.update(Message::UnlockWallet);

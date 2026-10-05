@@ -37,7 +37,7 @@ the form on the right, the node footer under it.
 
 | id | screen | rendering | PR | commands | notes |
 |---|---|---|---|---|---|
-| S1 | **Get started**: create, or restore from a recovery phrase | 01 | a | — | "Import a legacy .mcm file" is not built: the library has no import (D27, item 4). When a store already exists at the default location, S7 is shown instead, with a link here. |
+| S1 | **Get started**: create, or restore from a recovery phrase | 01 | a | — | "Import a legacy .mcm file" is not built: the library has no import (D27, item 4). When a store is there to open (the one last opened, wherever it is, or else the default folder's), S7 is shown instead, with a link here; S1 links to S7 too ("Open a wallet already on this computer"). |
 | S2 | **Choose a node**: the URL, a test, save | 01 footer, 05 node card | a | `SetNode`, `NetworkStatus`, `ClearNode` | No default node (section 4.8). The plaintext refusal is the library's, with D22's three changes. Remembered in preferences (D27, item 10). |
 | S3 | **New wallet: folder and password** | — | a | `CreateBegin` | The default folder (D21) with the sync warning when the chosen one is synced (section 4.5). The password floor is the library's (`MIN_PASSWORD_LEN`). Masked fields (section 4.2). |
 | S4 | **New wallet: the recovery phrase**, shown once | — | a | — | 24 words in a numbered grid. No copy button, no clipboard (section 4.3). Continuing asks the person to confirm they wrote it down. Leaving drops it (`CreateAbandon`). |
