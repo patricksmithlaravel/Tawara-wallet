@@ -2048,8 +2048,7 @@ fn activity_reads_every_account_from_the_index_and_says_when_there_is_none() {
     let scratch = Scratch::new("activity");
     let (mut h, _) = funded(&scratch);
     let payee = AccountId::from_tag(tag(5));
-    h.chain
-        .index_transfer(tag(0), tag(5), 400_000, 1_000, 990, "INV-7");
+    h.chain.index_transfer(tag(0), tag(5), 400_000, 1_000, 990);
 
     let id = h.handle.send(Command::Activity).expect("worker running");
     assert_eq!(h.wait_busy(id), Activity::ReadingIndex);
@@ -2071,10 +2070,6 @@ fn activity_reads_every_account_from_the_index_and_says_when_there_is_none() {
     assert_eq!(tx.paid_out(account0()).count(), 1);
     assert_eq!(tx.fee(), 500);
     assert_eq!(tx.net(payee), 400_000);
-    assert!(
-        tx.operations.iter().all(|o| o.memo.is_empty()),
-        "the index's rows carry no references"
-    );
 
     // A node that runs no index: the library's reading, for every account.
     h.chain.set_no_index(true);
@@ -2111,82 +2106,6 @@ fn the_newest_blocks_are_read_down_from_the_tip_without_a_store() {
     }
     assert_eq!(
         refusal(Harness::new().call(Command::Blocks)).kind,
-        RefusalKind::NoNode
-    );
-}
-
-#[test]
-fn a_transactions_references_are_read_from_its_block_without_a_store() {
-    use tawara_wallet_core::explorer::{OperationKind, Party};
-    let mut h = Harness::with_node();
-    let id = h
-        .chain
-        .index_transfer(tag(0), tag(5), 400_000, 1_000, 990, "INV-7");
-    let other = h
-        .chain
-        .index_transfer(tag(2), tag(3), 1, 0, 990, "A\u{202e}B");
-    let read = |h: &mut Harness, block, transaction: &str| {
-        h.call(Command::References {
-            block,
-            transaction: transaction.to_owned(),
-        })
-    };
-    match read(&mut h, 990, &id) {
-        Reply::References {
-            transaction,
-            read: Ok(r),
-        } => {
-            assert_eq!(transaction, id, "the reply names what was asked");
-            assert_eq!(r.block, 990);
-            let paid = r.destinations.expect("the block carries it");
-            assert_eq!(paid.len(), 1, "the block lists no change: {paid:?}");
-            assert_eq!(paid[0].kind, OperationKind::Destination);
-            assert_eq!(paid[0].party, Party::Account(AccountId::from_tag(tag(5))));
-            assert_eq!(paid[0].amount, 400_000);
-            assert_eq!(paid[0].memo, "INV-7");
-            assert!(r.text.contains("block 990"), "{}", r.text);
-        }
-        other => panic!("expected the references, got {other:?}"),
-    }
-    // Text from the node is made safe to show, and the id is matched
-    // whatever its case.
-    assert_ne!(other, other.to_ascii_uppercase());
-    match read(&mut h, 990, &other.to_ascii_uppercase()) {
-        Reply::References { read: Ok(r), .. } => {
-            assert_eq!(r.destinations.expect("carried")[0].memo, "A\\u{202e}B");
-        }
-        other => panic!("expected the references, got {other:?}"),
-    }
-    // A block that does not carry it: said so, nothing guessed.
-    match read(&mut h, 991, &id) {
-        Reply::References { read: Ok(r), .. } => assert_eq!(r.destinations, None),
-        other => panic!("expected the block read, got {other:?}"),
-    }
-    // A block the node does not serve: the library's page for it.
-    match read(&mut h, 5_000, &id) {
-        Reply::References {
-            read: Err(refused), ..
-        } => {
-            assert!(!refused.no_index);
-            assert!(!refused.text.is_empty());
-        }
-        other => panic!("expected the block refused, got {other:?}"),
-    }
-    // Block 0 is the node's current block, not genesis: not asked for.
-    let calls = h.chain.calls();
-    match read(&mut h, 0, &id) {
-        Reply::References {
-            transaction,
-            read: Err(refused),
-        } => {
-            assert_eq!(transaction, id);
-            assert!(refused.text.contains("Block 0"));
-        }
-        other => panic!("expected block 0 refused, got {other:?}"),
-    }
-    assert_eq!(h.chain.calls(), calls, "nothing was asked");
-    assert_eq!(
-        refusal(read(&mut Harness::new(), 990, &id)).kind,
         RefusalKind::NoNode
     );
 }

@@ -23,7 +23,7 @@ use crate::command::PlanId;
 use crate::event::{
     AccountReport, Discovered, PlanView, PlannedDestination, ReceiveView, SentView,
 };
-use crate::explorer::{AccountHistory, BlockSummary, BlocksView, References};
+use crate::explorer::{AccountHistory, BlockSummary, BlocksView};
 use crate::text;
 use crate::view::{
     AccountId, AccountKind, AccountRow, AccountState, Notice, NoticeKind, ReservationState,
@@ -407,63 +407,6 @@ fn spend(
 }
 
 const MCM: i128 = 1_000_000_000;
-
-/// The newest sample transaction's id (the batch send in
-/// [`activity`]) and its references, read from its block: the block lists
-/// it as it was sent, the source debited net and no change, and carries
-/// each destination's reference.
-#[must_use]
-pub fn references() -> (String, References) {
-    let fee = i128::from(mochimo_crypto::consts::MFEE) * 2;
-    let op = |index: u64, kind: &str, t: Option<[u8; 20]>, amount: i128, memo: &str| Operation {
-        index,
-        kind: kind.to_owned(),
-        address: t.map(|t| format!("0x{}", hex(&t))).unwrap_or_default(),
-        amount,
-        memo: memo.to_owned(),
-    };
-    let sent = MeshTransaction {
-        hash: [0x91; 32],
-        block: None,
-        timestamp_ms: None,
-        operations: vec![
-            op(0, OP_SOURCE, Some(tag(1)), -(800 * MCM + fee), ""),
-            op(1, OP_DESTINATION, Some(tag(7)), 420 * MCM, "INV-0412"),
-            op(2, OP_DESTINATION, Some(tag(8)), 380 * MCM, ""),
-            op(3, OP_FEE, None, fee, ""),
-        ],
-        metadata: Vec::new(),
-    };
-    let reward = MeshTransaction {
-        hash: [0x92; 32],
-        block: None,
-        timestamp_ms: None,
-        operations: vec![op(0, OP_REWARD, Some(tag(13)), 85_135_096_906, "")],
-        metadata: Vec::new(),
-    };
-    let index = 870_668;
-    let block = MeshBlock {
-        block: ChainTip {
-            index,
-            hash: [u8::try_from(index % 251).unwrap_or(0); 32],
-        },
-        parent: ChainTip {
-            index: index - 1,
-            hash: [u8::try_from((index - 1) % 251).unwrap_or(0); 32],
-        },
-        timestamp_ms: 1_791_036_200_000,
-        transactions: vec![reward, sent],
-    };
-    let id = hex(&[0x91; 32]);
-    let text = text::page(
-        &[],
-        Outcome::Block {
-            block: Box::new(block.clone()),
-        },
-    );
-    let read = References::of(&id, &block, text);
-    (id, read)
-}
 
 /// What the node's index holds for each account of the sample store, newest
 /// first, and the library's page for each. The index carries no references

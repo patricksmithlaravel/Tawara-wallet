@@ -165,12 +165,6 @@ pub enum Command {
     /// `recent-transactions` for each account. One request per account; a
     /// cancel stops it between two, and it then reports nothing.
     Activity,
-    /// One transaction's references, read from the block it landed in: the
-    /// command line's `block`. The index's rows carry no references; the
-    /// block's do (docs/DECISIONS.md D29, item 3). `transaction` is its id
-    /// in hex, as [`crate::explorer::TransactionView::id`] gives it. No
-    /// store is needed.
-    References { block: u64, transaction: String },
     /// Reconcile every account in the store now and report each, whatever
     /// its state: what account recovery shows before anything else
     /// (docs/DECISIONS.md D19). As [`Command::Status`] for each account, in

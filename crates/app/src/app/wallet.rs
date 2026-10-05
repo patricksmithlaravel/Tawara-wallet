@@ -267,9 +267,6 @@ pub enum ReportKey {
     History,
     /// What the index or the newest blocks could not be read for (W1, W10).
     Explorer,
-    /// The block a transaction's references were read from, or why it was
-    /// not served (W10).
-    Block,
     /// The n-th account's report on the recovery page (W12).
     Review(u16),
     /// What the last advance did (W12).
@@ -368,10 +365,7 @@ pub enum WalletMsg {
     /// W10.
     Filter(Filter),
     Search(String),
-    /// W10: choose a transaction, and read its references from its block.
     Select(String),
-    /// W10: read a transaction's references from its block (again).
-    ReadReferences(String),
     /// W10: read the node's index again.
     ReadActivity,
     /// W11.
@@ -1098,12 +1092,9 @@ impl App {
                     ..
                 }) = self.wallet_page()
                 {
-                    a.selected = Some(id.clone());
-                    // On click, once (D29, item 3).
-                    self.read_references(&id);
+                    a.selected = Some(id);
                 }
             }
-            WalletMsg::ReadReferences(id) => self.read_references(&id),
             WalletMsg::ReadActivity => self.read_activity(),
             WalletMsg::Unit(unit) => {
                 self.model.prefs.unit = unit;

@@ -501,16 +501,6 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
                 ..ActivityPage::default()
             })),
         ),
-        // The batch send clicked: its references read from its block.
-        ("w10-activity-references", DASHBOARD, {
-            let (id, found) = sample::references();
-            let mut m = on(Page::Activity(ActivityPage {
-                selected: Some(id.clone()),
-                ..ActivityPage::default()
-            }));
-            m.references.insert(id, read(found));
-            m
-        }),
         ("w10-activity-no-index", DASHBOARD, no_index),
         (
             "w11-settings",

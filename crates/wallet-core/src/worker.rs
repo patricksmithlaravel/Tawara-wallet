@@ -128,7 +128,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use mochimo_crypto::addr::Tag;
-use mochimo_crypto::cli::args::{self, Spend};
+use mochimo_crypto::cli::args::Spend;
 use mochimo_crypto::cli::create::{self, CONFIRM_POSITIONS, CreateEntropy, nothing_was_created};
 use mochimo_crypto::cli::outcome::{Outcome, Shipped};
 use mochimo_crypto::cli::{self, Code, address, discover, reconcile, restore};
@@ -148,9 +148,7 @@ use crate::event::{
     AccountReport, Activity, Discovered, Event, LockReason, PlanView, PlannedDestination, Progress,
     ReceiveView, Refusal, RefusalKind, Reply, SentView,
 };
-use crate::explorer::{
-    self, AccountHistory, BlockSummary, BlocksView, ExplorerRefusal, References,
-};
+use crate::explorer::{self, AccountHistory, BlockSummary, BlocksView, ExplorerRefusal};
 use crate::node::{self, Connect};
 use crate::secret::{PhraseForDisplay, SecretText};
 use crate::spend::{self, SpendRequest};
@@ -1105,7 +1103,6 @@ impl<C: Connect> Worker<C> {
             Command::NetworkStatus => self.network_status(id),
             Command::Blocks => self.blocks(id),
             Command::Activity => self.activity(id),
-            Command::References { block, transaction } => self.references(id, block, &transaction),
             Command::Review => self.review(id),
         }
     }
@@ -2283,52 +2280,6 @@ impl<C: Connect> Worker<C> {
             Ok((tip, blocks)) => Ok(BlocksView { tip, blocks, text }),
             Err(no_index) => Err(ExplorerRefusal { no_index, text }),
         })
-    }
-
-    /// The command line's `block`, for one transaction's references.
-    fn references(&self, id: RequestId, block: u64, transaction: &str) -> Reply {
-        // The node serves index 0 as its current block, not as genesis, so
-        // the command line refuses `block 0`; no transaction names it.
-        if block == 0 {
-            return Reply::References {
-                transaction: transaction.to_owned(),
-                read: Err(ExplorerRefusal {
-                    no_index: false,
-                    text: "Block 0 was not asked for: the node serves index 0 as its current \
-                           block, not as genesis, so its page would be another block under \
-                           that name. Nothing was read."
-                        .to_owned(),
-                }),
-            };
-        }
-        let fresh;
-        let client = match &self.session {
-            Session::Wallet(w) if self.node.as_deref() == Some(w.node.as_str()) => {
-                w.wallet.client()
-            }
-            _ => match self.client() {
-                Ok((_, c)) => {
-                    fresh = c;
-                    &fresh
-                }
-                Err(r) => return Reply::Refused(r),
-            },
-        };
-        self.busy(id, Activity::ReadingIndex);
-        let outcome = cli::cmd_block(client, &args::BlockAt::Index(block));
-        let read = match &outcome {
-            Outcome::Block { block } => Ok(block.clone()),
-            Outcome::BlockNotServed { cause, .. } => Err(explorer::no_index(cause)),
-            _ => Err(false),
-        };
-        let text = text::page(&[], outcome);
-        Reply::References {
-            transaction: transaction.to_owned(),
-            read: match read {
-                Ok(found) => Ok(References::of(transaction, &found, text)),
-                Err(no_index) => Err(ExplorerRefusal { no_index, text }),
-            },
-        }
     }
 
     /// The command line's `recent-transactions`, for every account in the

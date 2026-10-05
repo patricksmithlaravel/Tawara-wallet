@@ -1089,26 +1089,11 @@ cards that D27 item 16 moved here. The choices it makes:
    accounts' rows and is listed once, from the account it left. The words
    (sent, received, between own accounts, mining reward) are Tawara's;
    they say nothing a row does not.
-3. **A transaction's references are read from its block when it is
-   clicked** (the owner, on PR (c)'s first draft, which showed none). The
-   index's rows carry none: the library reads `metadata` on no `/search`
-   operation, because the endpoint sends none. The block does, on each
-   destination (`/block`, `Operation::memo`). So when a transaction is
-   chosen on Activity, the worker reads the block the index names for it
-   (`Command::References`, the command line's `block`), finds the
-   transaction by its id, and returns its destinations as the block lists
-   them; it is read once, in the background, and kept until the store
-   locks or the node changes, as the index's rows are. Each payee is
-   matched to the block's destination to the same party for the same
-   amount; a payment received shows the reference on the destination that
-   reached the account; the list row shows them from then on, in place of
-   the transaction's id. Nothing is inferred: a block that does not list
-   the transaction says so, a block not served offers to read again, and
-   a mining reward, which pays no destination, is not read for. One block
-   read per transaction clicked, and never for every row, so opening
-   Activity costs the node one request per account as before. Text the
-   node sends is made safe to show by the command line's rule for
-   external text (`cli::terminal_text`, repeated likewise).
+3. **References appear only where the node sends them.** The library
+   notes that the index carries none on these rows, so Activity shows the
+   transaction's id under a row instead, and no reference is inferred.
+   Text the node sends is made safe to show by the command line's rule
+   for external text (`cli::terminal_text`, repeated likewise).
 4. **Dates are shown in the system's time zone** (the owner, on PR (c)'s
    first draft, which showed UTC). The library carries no calendar and
    prints the raw count, so the application reads the zone with `chrono`,
