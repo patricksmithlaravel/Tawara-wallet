@@ -55,12 +55,17 @@ mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-wi
 # ships is a list in this file rather than whatever iced's default becomes:
 # `wgpu` and `tiny-skia` (the pure-Rust software renderer, D2), `crisp`,
 # `web-colors`, `thread-pool`, and on Linux `x11`, `wayland` and
-# `linux-theme-detection`. Features the renderings may need later (`svg` for
-# the line icons, `qr_code` only with the owner's approval) are added by the
-# change that needs them, with deny.toml run against the result.
+# `linux-theme-detection`. Two are added for phase 3 (docs/DECISIONS.md
+# D27): `canvas`, which draws the line icons from the renderings' path data
+# (six crates, `lyon` and its parts, where `svg` would add 35), and
+# `advanced`, which adds no crate and opens the renderer's headless
+# screenshot (`Headless`) to the screenshot example. `qr_code` comes only
+# with the owner's approval, with deny.toml run against the result.
 iced = { version = "=0.14.0", default-features = false, features = [
     "wgpu",
     "tiny-skia",
+    "canvas",
+    "advanced",
     "crisp",
     "web-colors",
     "thread-pool",
@@ -68,6 +73,14 @@ iced = { version = "=0.14.0", default-features = false, features = [
     "x11",
     "wayland",
 ] }
+
+# The screenshot example only (docs/DECISIONS.md D27, item 1), as
+# dev-dependencies of `tawara-app`; neither reaches a shipped build.
+# `iced_runtime` is iced's own (already in every build at this version, and
+# held there by the lockfile) and gives the example `UserInterface`, which
+# iced does not re-export; `png` writes and reads the images.
+iced_runtime = "0.14.0"
+png = "0.18"
 
 tawara-wallet-core = { path = "crates/wallet-core" }
 tawara-app = { path = "crates/app" }

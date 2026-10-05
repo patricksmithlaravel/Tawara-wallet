@@ -14,3 +14,7 @@ repository.workspace = true
 [dependencies]
 iced.workspace = true
 tawara-wallet-core.workspace = true
+
+[dev-dependencies]
+iced_runtime.workspace = true
+png.workspace = true
