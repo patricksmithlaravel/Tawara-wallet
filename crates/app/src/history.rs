@@ -128,6 +128,14 @@ fn names_own(op: &OperationView, own: &[AccountId]) -> bool {
     matches!(&op.party, Party::Account(a) if own.contains(a))
 }
 
+/// The store's account `tx` left, by its source operation.
+fn left_from(tx: &TransactionView, own: &[AccountId]) -> Option<AccountId> {
+    tx.operations.iter().find_map(|o| match &o.party {
+        Party::Account(a) if o.kind == OperationKind::Source && own.contains(a) => Some(*a),
+        _ => None,
+    })
+}
+
 /// What `tx` was, seen from `account`, given the store's accounts `own`.
 fn classify<'a>(
     tx: &'a TransactionView,
@@ -174,31 +182,27 @@ fn classify<'a>(
 /// left none of them (a payment from elsewhere to several of them) is
 /// listed once for each account it reached, with what it did to that
 /// account and that account's references.
+///
+/// The account it left is read from its own operations, not from whose
+/// history it was found in, so a row is the same whichever pages have been
+/// read: a send from an account whose older pages are not read yet is still
+/// that account's send when only its payee's page holds it.
 #[must_use]
 pub fn rows(histories: &[AccountHistory]) -> Vec<Row<'_>> {
     let own: Vec<AccountId> = histories.iter().map(|h| h.account).collect();
     let mut out: Vec<Row<'_>> = Vec::new();
     for history in histories {
         for tx in &history.transactions {
-            let row = classify(tx, history.account, &own, history);
-            let from_store = tx
-                .operations
+            let account = left_from(tx, &own).unwrap_or(history.account);
+            match out
                 .iter()
-                .any(|o| o.kind == OperationKind::Source && names_own(o, &own));
-            let listed = out
-                .iter()
-                .position(|r| r.tx.id == tx.id && (from_store || r.account == history.account));
-            match listed {
-                Some(at) => {
-                    let left = matches!(
-                        tx.direction(history.account),
-                        Direction::Out | Direction::Both
-                    );
-                    if left {
-                        out[at] = row;
-                    }
-                }
-                None => out.push(row),
+                .position(|r| r.tx.id == tx.id && r.account == account)
+            {
+                // Its library page is the one of the account it is seen
+                // from, once that account's history holds it.
+                Some(at) if history.account == account => out[at].history = history,
+                Some(_) => {}
+                None => out.push(classify(tx, account, &own, history)),
             }
         }
     }
@@ -403,6 +407,55 @@ mod tests {
             "each account's own reference"
         );
         assert!(rows[1].is(&rows[1].id()) && !rows[0].is(&rows[1].id()));
+    }
+
+    #[test]
+    fn a_send_is_its_senders_whichever_page_holds_it() {
+        use OperationKind::{Destination, Fee, Source};
+        let (a, b) = (
+            AccountId::from_tag([0xa1; 20]),
+            AccountId::from_tag([0xb2; 20]),
+        );
+        let outside = AccountId::from_tag([0xee; 20]);
+        // A pays B 7 and someone else 8, with 14 back as change and a fee
+        // of 1: A is 16 down.
+        let batch = tx(
+            "batch",
+            900,
+            &[
+                (Source, a, -30, ""),
+                (Destination, b, 7, ""),
+                (Destination, outside, 8, ""),
+                (Destination, a, 14, ""),
+                (Fee, outside, 1, ""),
+            ],
+        );
+        let seen = |histories: &[AccountHistory]| {
+            rows(histories)
+                .iter()
+                .map(|r| {
+                    (
+                        r.tx.id.clone(),
+                        r.account,
+                        r.kind,
+                        r.amount,
+                        r.history.account,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let sent = ("batch".to_owned(), a, Kind::Sent, -16);
+        // Only B's page holds it: A's copy is on a page not read yet.
+        let unread = [history(a, vec![]), history(b, vec![batch.clone()])];
+        assert_eq!(seen(&unread), [(sent.0.clone(), sent.1, sent.2, sent.3, b)]);
+        // Both pages hold it, in either order: the same row, from A's page.
+        let both = [
+            history(a, vec![batch.clone()]),
+            history(b, vec![batch.clone()]),
+        ];
+        assert_eq!(seen(&both), [(sent.0.clone(), sent.1, sent.2, sent.3, a)]);
+        let reversed = [history(b, vec![batch.clone()]), history(a, vec![batch])];
+        assert_eq!(seen(&reversed), [(sent.0, sent.1, sent.2, sent.3, a)]);
     }
 
     #[test]

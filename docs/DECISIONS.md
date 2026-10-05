@@ -1109,7 +1109,11 @@ cards that D27 item 16 moved here. The choices it makes:
    elsewhere to several of them, is listed once for each account it
    reached, with what it did to that account and that account's
    references (the owner's review of PR (c)); a row is chosen by its
-   transaction and its account together. The words
+   transaction and its account together. The account it left is read from
+   its own source operation, not from whose history held it, so a row is
+   the same whichever pages have been read: a send from an account whose
+   older pages are not read yet is that account's send, debit and all,
+   when only its payee's page holds it (the owner's second review). The words
    (sent, received, between own accounts, mining reward) are Tawara's;
    they say nothing a row does not.
 3. **References come from the index's rows** (the owner, on PR (c)'s
