@@ -77,7 +77,7 @@ Features the renderings may need later (`svg`, and `qr_code` only with the
 owner's approval) are added by the change that needs them, with
 `cargo deny check` run against the result. No git revision of iced is used.
 
-### D7. The library pin: Rep-1 at `8c2f39a`
+### D7. The library pin: Rep-1 at `e41f8c1`
 
 **owner, 2026-10-03.** The owner's instructions for phase 0 named Rep-1's
 `02239c1`, or a later commit the owner named; by the time the work began, Rep-1's `main` was at
@@ -99,11 +99,22 @@ library's own line and nowhere else. What wallet-core does with the new
 API is D26. The phase 1 spikes keep `121daf3`: they are the record of that
 phase, and nothing in them uses what changed.
 
+**Moved again, 2026-10-05, when the owner reported Rep-1's merge.** The pin
+is now `e41f8c13e605b9fd098c913784bc9eadc20543bd`, Rep-1's `main` after its
+pull request #7, the merge of Rep-0's `2e69d87`: the explorer reads of
+docs/LIBRARY-PROPOSALS.md, items 5 to 8 (Rep-0's pull requests #13 to #16).
+The merge changed no manifest, so `Cargo.lock` again changes in the
+library's own line and nowhere else. Two of the additions are fields, and
+wallet-core's sample data fills them: `Outcome::RecentTransactions` gains
+`from`, the offset its page starts at, and `MeshBlock` gains
+`metadata`, which the sample blocks leave absent. Nothing else in Tawara
+names what changed. The screens that use the new reads are later work.
+
 The workspace line takes the plan's form (D1) exactly:
 
 ```toml
 mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-windows",
-                   rev = "8c2f39a2cdc2710ac7363b1d64026b6875a16537",
+                   rev = "e41f8c13e605b9fd098c913784bc9eadc20543bd",
                    default-features = false, features = ["native", "mesh-https"] }
 ```
 

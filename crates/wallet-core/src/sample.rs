@@ -515,6 +515,7 @@ pub fn activity() -> Vec<AccountHistory> {
                 &[],
                 Outcome::RecentTransactions {
                     tag: t,
+                    from: 0,
                     page: Box::new(page.clone()),
                 },
             );
@@ -557,6 +558,7 @@ pub fn blocks() -> BlocksView {
                     metadata: Vec::new(),
                 })
                 .collect(),
+            metadata: None,
         });
     }
     let blocks = rows.iter().map(BlockSummary::of).collect();

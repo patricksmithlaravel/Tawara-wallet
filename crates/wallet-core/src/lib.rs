@@ -116,7 +116,7 @@ pub const MAX_DESTINATIONS: u16 = mochimo_crypto::tx::MAX_DESTINATIONS;
 /// docs/DECISIONS.md D7), for Settings to show. Written here because the
 /// library carries no version of its own to read; the policy tests hold it
 /// to the workspace's `rev`.
-pub const LIBRARY_REV: &str = "8c2f39a2cdc2710ac7363b1d64026b6875a16537";
+pub const LIBRARY_REV: &str = "e41f8c13e605b9fd098c913784bc9eadc20543bd";
 
 /// How a new store's key is derived from its password.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
