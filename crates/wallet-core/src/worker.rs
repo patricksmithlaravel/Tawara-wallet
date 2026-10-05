@@ -100,6 +100,17 @@
 //! - A spend is never stopped between its reservation and its submission:
 //!   the last point it can be stopped is before it starts.
 //!
+//! # Account numbers
+//!
+//! The command line names a derived account by its number (`restore
+//! --account N`); the store keeps it in a record the library does not show
+//! (docs/LIBRARY-PROPOSALS.md, 9a). The worker finds it as the command line
+//! makes it: account N's tag is `derive::derive_account_tag(master, N)`, so
+//! it derives 0, 1, 2 and on from the session's seed until every derived
+//! account is found, or until the discovery sweep's ceiling, and remembers
+//! what it found for as long as it runs. Nothing is asked of the node and
+//! nothing written.
+//!
 //! # Progress
 //!
 //! The library counts how far its long operations have got (opening the
@@ -107,6 +118,8 @@
 //! on as [`Event::Progress`]. A status read reports none: the library's walk
 //! for it takes a cancel and no counter.
 
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -126,7 +139,7 @@ use mochimo_crypto::mesh::{MeshClient, Transport};
 use mochimo_crypto::recon::{self, Cancel, Divergence, ScanScope, Unfinished};
 use mochimo_crypto::tx::wire::Destination;
 use mochimo_crypto::wallet::{StartupRefusal, Unopened, Wallet};
-use mochimo_crypto::{Error, Secret, mnemonic};
+use mochimo_crypto::{Error, Secret, derive, mnemonic};
 use zeroize::Zeroizing;
 
 use crate::command::{Command, PlanId, RequestId};
@@ -140,7 +153,9 @@ use crate::node::{self, Connect};
 use crate::secret::{PhraseForDisplay, SecretText};
 use crate::spend::{self, SpendRequest};
 use crate::text;
-use crate::view::{AccountId, AccountRow, AccountState, Notice, NoticeKind, WalletView};
+use crate::view::{
+    AccountId, AccountKind, AccountRow, AccountState, Notice, NoticeKind, WalletView,
+};
 
 /// How long the wallet stays unlocked with nothing done, unless the
 /// interface sets another period. Five minutes, as the dashboard rendering
@@ -359,6 +374,7 @@ pub fn spawn<C: Connect>(
                 idle_stops: false,
                 stopped: Arc::new(AtomicBool::new(false)),
                 next_plan: 1,
+                numbers: RefCell::new(BTreeMap::new()),
             };
             worker.run(&rx);
         })?;
@@ -456,6 +472,11 @@ struct Worker<C: Connect> {
     /// command.
     stopped: Arc<AtomicBool>,
     next_plan: u64,
+    /// The derived accounts' numbers found so far, by tag: a tag names one
+    /// account of one seed, so what was found holds for as long as the
+    /// worker runs. Not secret: a tag is public, and its number is the
+    /// command line's name for it.
+    numbers: RefCell<BTreeMap<Tag, Option<u32>>>,
 }
 
 /// Whether a command does nothing when a cancel reached it before it
@@ -711,6 +732,7 @@ fn store_rows(store: &Keystore<Disk>) -> Result<Vec<AccountRow>, Refusal> {
             index: h.index.get(),
             state: AccountState::NotReconciled,
             spendable: false,
+            number: None,
         })
         .collect())
 }
@@ -793,9 +815,32 @@ fn wallet_rows<T: Transport>(wallet: &Wallet<Disk, T>) -> Result<Vec<AccountRow>
                 index: h.index.get(),
                 state,
                 spendable,
+                number: None,
             }
         })
         .collect())
+}
+
+/// Which of `derived` the seed derives, and as which account: the tag of
+/// account N is `derive::derive_account_tag(master, N)`, as `restore
+/// --account N` makes it, so N is found by deriving 0, 1, 2 and on until
+/// every one is found or the discovery sweep's ceiling is passed. One
+/// derivation is one key's public half, about what a sweep pays per
+/// account without the node. An account not found is `None`.
+fn derivation_numbers(master: &Secret<SEED_LEN>, derived: &[Tag]) -> Vec<(Tag, Option<u32>)> {
+    let mut left: Vec<Tag> = derived.to_vec();
+    let mut found = Vec::with_capacity(derived.len());
+    for n in 0..=crate::DISCOVER_MAX_TO {
+        if left.is_empty() {
+            break;
+        }
+        let tag = derive::derive_account_tag(master, n);
+        if let Some(at) = left.iter().position(|t| *t == tag) {
+            found.push((left.swap_remove(at), Some(n)));
+        }
+    }
+    found.extend(left.into_iter().map(|t| (t, None)));
+    found
 }
 
 /// Replace one account's row after an operation on it.
@@ -958,20 +1003,46 @@ impl<C: Connect> Worker<C> {
     }
 
     fn view(&self) -> Option<WalletView> {
-        match &self.session {
-            Session::Locked => None,
-            Session::Store(s) => Some(WalletView {
+        let mut view = match &self.session {
+            Session::Locked => return None,
+            Session::Store(s) => WalletView {
                 dir: s.dir.clone(),
                 accounts: s.rows.clone(),
                 opened: false,
                 notice: s.notice.clone(),
-            }),
-            Session::Wallet(w) => Some(WalletView {
+            },
+            Session::Wallet(w) => WalletView {
                 dir: w.dir.clone(),
                 accounts: w.rows.clone(),
                 opened: true,
                 notice: not_whole(w.wallet.diverged()),
-            }),
+            },
+        };
+        self.number(&mut view.accounts);
+        Some(view)
+    }
+
+    /// Put each derived account's number on its row (module doc, "Account
+    /// numbers"), searching once for those not yet known.
+    fn number(&self, rows: &mut [AccountRow]) {
+        let master = match &self.session {
+            Session::Locked => None,
+            Session::Store(s) => s.master.as_ref(),
+            Session::Wallet(w) => w.master.as_ref(),
+        };
+        let mut known = self.numbers.borrow_mut();
+        let missing: Vec<Tag> = rows
+            .iter()
+            .filter(|r| r.kind == AccountKind::Derived && !known.contains_key(&r.id.tag()))
+            .map(|r| r.id.tag())
+            .collect();
+        if let Some(master) = master
+            && !missing.is_empty()
+        {
+            known.extend(derivation_numbers(master, &missing));
+        }
+        for row in rows {
+            row.number = known.get(&row.id.tag()).copied().flatten();
         }
     }
 

@@ -1129,4 +1129,17 @@ cards that D27 item 16 moved here. The choices it makes:
    no version of its own to read. The keystore card says how a new store's
    key is derived (`keystore::Kdf::RECOMMENDED`); the library does not say
    it for an open store, so the card does not claim it.
+8. **A derived account's number is shown** (the owner, on the same draft),
+   beside its kind: "derived · account 3", the command line's own name
+   for it (`restore --account N`). The library keeps the number in a
+   record it does not show (docs/LIBRARY-PROPOSALS.md, 9a), so the worker
+   finds it as the command line makes it: account N's tag is
+   `derive::derive_account_tag(master, N)`, a public call, so it derives
+   0, 1, 2 and on from the session's seed until every derived account is
+   found, or until the discovery sweep's ceiling (1,024), and remembers
+   what it found while it runs. Nothing is asked of the node or written,
+   and nothing is guessed: an account not found within the ceiling shows
+   "derived" alone. Proposal 9a stays, so the number can be read rather
+   than searched for. Accounts are still named by their shortened
+   destination (D27, item 3).
 

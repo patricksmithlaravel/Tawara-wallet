@@ -292,6 +292,12 @@ pub struct AccountRow {
     /// Whether a spend may be planned from it now: the wallet opened, the
     /// account reconciled when it did, and it is in sync.
     pub spendable: bool,
+    /// A derived account's number, as the command line's `restore
+    /// --account N` names it, found by deriving from the store's seed
+    /// (`crate::worker`, "Account numbers"). `None` for an imported
+    /// account, for a store without its seed, and for a derived account
+    /// not found within [`crate::DISCOVER_MAX_TO`].
+    pub number: Option<u32>,
 }
 
 /// The unlocked store, as the interface shows it.
@@ -383,6 +389,7 @@ mod tests {
             index: 0,
             state,
             spendable: false,
+            number: Some(0),
         };
         let view = WalletView {
             dir: PathBuf::new(),

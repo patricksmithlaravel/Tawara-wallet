@@ -2169,3 +2169,27 @@ fn a_review_reports_every_account_and_applies_it() {
     let locked = refusal(Harness::new().call(Command::Review));
     assert_eq!(locked.kind, RefusalKind::NotUnlocked);
 }
+
+#[test]
+fn derived_accounts_carry_the_number_the_command_line_names_them_by() {
+    let scratch = Scratch::new("numbers");
+    let (mut h, _) = funded(&scratch);
+    h.chain.hold(tag(3), address(3, 0), 900);
+    assert!(matches!(
+        h.call(Command::Restore {
+            account_index: 3,
+            scan_to: None,
+        }),
+        Reply::Restored { ok: true, .. }
+    ));
+    let view = opened(h.call(Command::Refresh));
+    let number = |id: AccountId| {
+        view.accounts
+            .iter()
+            .find(|a| a.id == id)
+            .expect("held")
+            .number
+    };
+    assert_eq!(number(account0()), Some(0));
+    assert_eq!(number(AccountId::from_tag(tag(3))), Some(3));
+}

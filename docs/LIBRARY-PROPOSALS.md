@@ -287,6 +287,11 @@ its tag, which a person does not recognise.
 **Proposed.** Reading it, not constructing it: `Held` gains `account:
 Option<u32>`, `Some(n)` for a derived account, filled from the record.
 
+**Meanwhile** (docs/DECISIONS.md D29, item 8): the application finds the
+number by deriving account tags from the seed with the public
+`derive::derive_account_tag` until each derived account matches, up to
+the discovery ceiling. This change would let it read the number instead.
+
 ## 10. Changing the store's password
 
 **What exists.** No call re-encrypts the store under a new password.

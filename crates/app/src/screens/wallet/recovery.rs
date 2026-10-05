@@ -99,7 +99,7 @@ fn account<'a>(
     a: &'a AccountReport,
 ) -> Element<'a, Message> {
     let (word, ink) = status(&a.state);
-    let kind_word = row_of(model, a.account).map_or("", kind);
+    let kind_word = row_of(model, a.account).map_or_else(String::new, kind);
     let mut head = row![
         column![
             t(name(a.account), ty::ROW_TITLE, color::TEXT_PRIMARY),

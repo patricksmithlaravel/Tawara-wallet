@@ -106,6 +106,7 @@ pub fn wallet_view() -> WalletView {
                 balance: FIRST_BALANCE,
             },
             spendable: true,
+            number: Some(0),
         },
         AccountRow {
             id: AccountId::from_tag(tag(2)),
@@ -117,6 +118,7 @@ pub fn wallet_view() -> WalletView {
                 reservation: ReservationState::Live,
             },
             spendable: false,
+            number: Some(1),
         },
         AccountRow {
             id: AccountId::from_tag(tag(3)),
@@ -124,6 +126,7 @@ pub fn wallet_view() -> WalletView {
             index: 31,
             state: AccountState::from_divergence(&diverged),
             spendable: false,
+            number: None,
         },
     ];
     WalletView {

@@ -51,7 +51,7 @@ pub fn view<'a>(
                 )
             ),
             figure("Next key", format!("#{}", account.index)),
-            figure("Kind", kind(account).to_owned()),
+            figure("Kind", kind(account)),
             row![
                 t("State", ty::BODY_SMALL, color::TEXT_SECONDARY).width(Length::Fill),
                 ui::dot(ink, 6.0),

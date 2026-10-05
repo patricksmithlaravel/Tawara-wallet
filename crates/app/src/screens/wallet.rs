@@ -459,11 +459,14 @@ fn short(destination: &str) -> String {
     format!("{head}…{tail}")
 }
 
-/// "derived" or "imported".
-fn kind(row: &AccountRow) -> &'static str {
-    match row.kind {
-        AccountKind::Derived => "derived",
-        AccountKind::Imported => "imported",
+/// "derived · account 3", "derived" while its number is not known, or
+/// "imported". The number is the command line's name for a derived account
+/// (`restore --account N`).
+fn kind(row: &AccountRow) -> String {
+    match (row.kind, row.number) {
+        (AccountKind::Derived, Some(n)) => format!("derived · account {n}"),
+        (AccountKind::Derived, None) => "derived".to_owned(),
+        (AccountKind::Imported, _) => "imported".to_owned(),
     }
 }
 
