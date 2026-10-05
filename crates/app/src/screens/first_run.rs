@@ -587,16 +587,22 @@ fn unlock<'a>(model: &'a Model, form: &'a UnlockForm) -> Element<'a, Message> {
     .into()
 }
 
-/// S8: what the worker is doing while a store is made or opened, and a way
-/// to stop it.
+/// S8: the command a store is being made or opened by, waiting its turn or
+/// under way, what the worker is doing for it, and a way to stop it.
 fn opening(busy: &Busy) -> Element<'_, Message> {
     let (title, what) = match busy.activity {
-        Activity::DerivingKey => (
+        None => (
+            "Waiting",
+            "The wallet does one thing at a time, and it is finishing what came before, \
+             usually a question to the node. This starts when that is done; Cancel stops \
+             both.",
+        ),
+        Some(Activity::DerivingKey) => (
             "Opening the store",
             "Deriving the store's key from the password. It takes a few seconds and 64 MiB \
              of memory on purpose: that is what makes guessing a password expensive.",
         ),
-        Activity::AskingNode => (
+        Some(Activity::AskingNode) => (
             "Reconciling",
             "Asking the node about each account and comparing the key index this store holds \
              with the one the chain shows.",

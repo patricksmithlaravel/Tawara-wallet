@@ -43,8 +43,8 @@ the form on the right, the node footer under it.
 | S4 | **New wallet: the recovery phrase**, shown once | — | a | — | 24 words in a numbered grid. No copy button, no clipboard (section 4.3). Continuing asks the person to confirm they wrote it down. Leaving drops it (`CreateAbandon`). |
 | S5 | **New wallet: confirm three words** | — | a | `CreateConfirm` | The positions are the library's (`CONFIRM_POSITIONS`). A wrong answer keeps the phrase pending; the refusal is shown on the screen. |
 | S6 | **Restore from a recovery phrase** | 01 (second option) | a | `CreateFromPhrase` | The library's `SCHEME_WARNING` is shown before the phrase field, whole. Masked phrase field. |
-| S7 | **Unlock** | — | a | `Unlock` | The store's folder (default first). The library's refusals: wrong password, store in use (section 4.7), no store, unsafe folder. |
-| S8 | **Opening**: deriving the key, asking the node, progress | — | a | `Event::Busy`, `Event::Progress`, `WorkerHandle::cancel` | A cancel leaves the store open on its own (D26). |
+| S7 | **Unlock** | — | a | `Unlock` | The store's folder (default first). The library's refusals: wrong password, store in use (section 4.7), no store, unsafe folder. A store made on S5 or S6 that could not be opened afterwards is the one offered here, with the refusal, and it is remembered. |
+| S8 | **Opening**: waiting its turn, deriving the key, asking the node, progress | — | a | `Event::Busy`, `Event::Progress`, `WorkerHandle::cancel` | Shown from the moment S3, S5, S6 or S7 sends its command, so nothing else can be started while it waits behind an earlier one (a slow node's answer); Cancel stops both. A cancel leaves the store open on its own (D26). |
 
 ## The wallet (sidebar: Wallet, Send, Receive, Activity, Explorer, Settings)
 
@@ -96,8 +96,8 @@ Placeholders on D25's terms, settled with the owner:
 |---|---|
 | the introductions under each first-run title, the radio cards' descriptions, the field labels and "At least 12 characters." | S1 to S7 |
 | the phrase warning: the library's words from `create`, without its sentence about the terminal | S4 |
-| what the worker is doing: deriving the key, reconciling, "Account N of M", "N of at most M key positions searched" | S8 |
+| what the worker is doing: waiting its turn, deriving the key, reconciling, "Account N of M", "N of at most M key positions searched" | S8 |
 | why the store locked: idle ("Locked after N minutes with nothing done..."), the window leaving the screen, a store that could not be read back | S7 |
 | the notes naming the control for a command-line verb under a library page (D27, item 13) | wherever a library page is shown |
-| "The wallet stopped", with or without a fault | the stopped screen |
+| "The wallet stopped", with or without a fault | the stopped screen (whatever the screen before it held, a phrase or a password, is zeroized and dropped) |
 | the account states in a word or two ("Reconciled", "Spend outstanding", "Spending paused"...) | W1 |

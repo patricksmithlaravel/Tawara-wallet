@@ -1,6 +1,6 @@
 //! What the application remembers between runs (docs/DECISIONS.md D27,
-//! item 10): the node the person chose, the store they last opened, the
-//! unit amounts are shown in, and the auto-lock period.
+//! item 10): the node the person chose, the store they last made or
+//! opened, the unit amounts are shown in, and the auto-lock period.
 //!
 //! Nothing secret is kept here, and nothing the library reads: the file is
 //! `preferences` in the application's folder, beside the store's own
@@ -38,10 +38,10 @@ pub struct Preferences {
     /// The node last chosen, as typed. The worker checks it again when it is
     /// set (`Command::SetNode`), so a stored value is never trusted.
     pub node: Option<String>,
-    /// The folder of the store last opened, as an absolute path, so the
-    /// application offers to unlock it at the next start wherever it is. A
-    /// path, nothing more: the library checks the folder again when it is
-    /// opened.
+    /// The folder of the store last made or opened, as an absolute path, so
+    /// the application offers to unlock it at the next start wherever it
+    /// is. A path, nothing more: the library checks the folder again when
+    /// it is opened.
     pub store: Option<String>,
     pub unit: AmountUnit,
     /// One of [`IDLE_LOCK_MINUTES`].

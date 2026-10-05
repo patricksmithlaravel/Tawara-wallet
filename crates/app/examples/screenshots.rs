@@ -96,11 +96,13 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         activity,
         progress,
     };
+    let mut waiting = with(Screen::Unlock(UnlockForm::default()));
+    waiting.busy = Some(busy(None, None));
     let mut opening = with(Screen::Unlock(UnlockForm::default()));
-    opening.busy = Some(busy(Activity::DerivingKey, None));
+    opening.busy = Some(busy(Some(Activity::DerivingKey), None));
     let mut reconciling = with(Screen::Unlock(UnlockForm::default()));
     reconciling.busy = Some(busy(
-        Activity::AskingNode,
+        Some(Activity::AskingNode),
         Some(Progress {
             account: 2,
             accounts: 3,
@@ -194,6 +196,7 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
                 ..UnlockForm::default()
             })),
         ),
+        ("s8-waiting", FIRST_RUN, waiting),
         ("s8-opening", FIRST_RUN, opening),
         ("s8-reconciling", FIRST_RUN, reconciling),
         ("w1-wallet", DASHBOARD, wallet()),

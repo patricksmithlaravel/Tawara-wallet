@@ -933,9 +933,10 @@ to them.
    rows stack. The compact (phone) layout is proposed with the mobile
    shells in phase 4, as `design/INDEX.md` asks.
 10. **Preferences are kept in a small file of their own.** The node's
-    URL, the folder of the store last opened, the amount unit (MCM or
-    nanoMCM, 05) and the auto-lock period are remembered in `preferences`, a plain text file in the application's
-    folder beside `keystore/`, never inside it. Nothing secret goes there.
+    URL, the folder of the store last made or opened, the amount unit (MCM
+    or nanoMCM, 05) and the auto-lock period are remembered in
+    `preferences`, a plain text file in the application's folder beside
+    `keystore/`, never inside it. Nothing secret goes there.
     Without it, the person would choose their node again at every start,
     and a store kept outside the default folder would not be offered for
     unlocking at the next one. A folder typed as a relative path is made

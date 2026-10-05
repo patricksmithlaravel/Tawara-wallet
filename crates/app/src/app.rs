@@ -32,7 +32,8 @@ pub struct Model {
     pub prefs: Preferences,
     /// Where a store goes when the person does not choose (D21).
     pub default_dir: Option<PathBuf>,
-    /// What the worker is doing for a command the screen waits on.
+    /// The command the screen waits on, from when it is sent until its
+    /// answer comes.
     pub busy: Option<Busy>,
     pub node: NodeState,
     /// The open store, when one is.
@@ -42,11 +43,13 @@ pub struct Model {
     pub stopped: Option<bool>,
 }
 
-/// What the worker is doing for the command the screen waits on.
+/// The command the screen waits on, and what the worker is doing for it.
 #[derive(Clone, Debug)]
 pub struct Busy {
     pub id: RequestId,
-    pub activity: Activity,
+    /// `None` until the worker starts on it: it does one command at a time,
+    /// and may be finishing an earlier one, such as a slow node's answer.
+    pub activity: Option<Activity>,
     pub progress: Option<Progress>,
 }
 
@@ -287,6 +290,22 @@ enum Purpose {
     Abandon,
 }
 
+impl Purpose {
+    /// Whether the screen waits on the command: from when it is sent, its
+    /// form gives way to S8 and its Cancel until the answer comes, so the
+    /// person cannot start something else while it is queued.
+    fn awaited(self) -> bool {
+        matches!(
+            self,
+            Purpose::CreateBegin
+                | Purpose::CreateConfirm
+                | Purpose::CreateFromPhrase
+                | Purpose::Unlock
+                | Purpose::Refresh
+        )
+    }
+}
+
 /// The worker's side of the application.
 struct Worker {
     handle: WorkerHandle,
@@ -498,10 +517,17 @@ impl App {
         match worker.handle.send(command) {
             Ok(id) => {
                 worker.waiting.push((id, purpose));
+                if purpose.awaited() {
+                    self.model.busy = Some(Busy {
+                        id,
+                        activity: None,
+                        progress: None,
+                    });
+                }
                 Some(id)
             }
             Err(_) => {
-                self.model.stopped.get_or_insert(false);
+                self.stop(false);
                 None
             }
         }
@@ -745,12 +771,10 @@ impl App {
     fn on_event(&mut self, event: Event) {
         match event {
             Event::Busy { id, activity } => {
-                if self.waits_visibly(id) {
-                    self.model.busy = Some(Busy {
-                        id,
-                        activity,
-                        progress: None,
-                    });
+                if let Some(b) = &mut self.model.busy
+                    && b.id == id
+                {
+                    b.activity = Some(activity);
                 }
             }
             Event::Progress { id, progress } => {
@@ -812,28 +836,22 @@ impl App {
                     }
                 }
             }
-            Event::Stopped { panicked } => {
-                self.model.stopped = Some(panicked);
-                self.model.wallet = None;
-                self.worker = None;
-            }
+            Event::Stopped { panicked } => self.stop(panicked),
         }
     }
 
-    /// Whether the screen shows the worker's activity for request `id`.
-    fn waits_visibly(&self, id: RequestId) -> bool {
-        self.worker.as_ref().is_some_and(|w| {
-            w.waiting.iter().any(|(i, p)| {
-                *i == id
-                    && matches!(
-                        p,
-                        Purpose::CreateConfirm
-                            | Purpose::CreateFromPhrase
-                            | Purpose::Unlock
-                            | Purpose::Refresh
-                    )
-            })
-        })
+    /// The worker has stopped (`panicked` when it faulted). Nothing more
+    /// can be done in this run, and what the screens held goes with it:
+    /// the open store's view, and the secret a form or the phrase screens
+    /// held, zeroized. With no worker left to lock on idle, nothing secret
+    /// would otherwise go before the application closed.
+    fn stop(&mut self, panicked: bool) {
+        let m = &mut self.model;
+        m.stopped = Some(panicked || m.stopped == Some(true));
+        drop(m.leave());
+        m.busy = None;
+        m.wallet = None;
+        self.worker = None;
     }
 
     fn on_reply(&mut self, purpose: Purpose, reply: Reply) {
@@ -906,14 +924,21 @@ impl App {
                     error: None,
                 });
             }
-            (Purpose::CreateConfirm | Purpose::CreateFromPhrase, Reply::Created { opened, .. }) => {
-                match opened {
-                    Ok(view) => self.opened(view),
-                    // The store was written; it could not be opened. Unlocking
-                    // shows why, and nothing was lost.
-                    Err(r) => self.model.unlock_screen(None, Some(r.text), None),
+            (
+                Purpose::CreateConfirm | Purpose::CreateFromPhrase,
+                Reply::Created { dir, opened, .. },
+            ) => match opened {
+                Ok(view) => self.opened(view),
+                // The store was written; it could not be opened (another
+                // process took its lock first, say). Unlocking the store
+                // just made shows why, and nothing was lost; it is
+                // remembered as if it had opened.
+                Err(r) => {
+                    self.remember(&dir);
+                    let dir = Some(dir.display().to_string());
+                    self.model.unlock_screen(dir, Some(r.text), None);
                 }
-            }
+            },
             (Purpose::Unlock, Reply::Unlocked(view)) | (Purpose::Refresh, Reply::Wallet(view)) => {
                 self.opened(view);
             }
@@ -944,26 +969,27 @@ impl App {
     }
 
     fn opened(&mut self, view: WalletView) {
+        self.remember(&view.dir);
         let m = &mut self.model;
         let _ = m.leave();
-        // Remembered, so the next start offers to unlock this store wherever
-        // it is (docs/DECISIONS.md D27, item 10), and from wherever the
-        // application is started: the commands carry absolute folders, and
-        // this makes sure of it.
-        let dir = std::path::absolute(&view.dir)
-            .unwrap_or_else(|_| view.dir.clone())
-            .display()
-            .to_string();
-        let remember = m.prefs.store.as_deref() != Some(dir.as_str());
-        if remember {
-            m.prefs.store = Some(dir);
-        }
         m.wallet = Some(view);
         m.screen = Screen::Wallet(WalletPage::default());
-        if remember {
+        self.ask_tip();
+    }
+
+    /// Remember the store in `dir`, so the next start offers to unlock it
+    /// wherever it is (docs/DECISIONS.md D27, item 10), and from wherever
+    /// the application is started: the commands carry absolute folders, and
+    /// this makes sure of it.
+    fn remember(&mut self, dir: &Path) {
+        let dir = std::path::absolute(dir)
+            .unwrap_or_else(|_| dir.to_path_buf())
+            .display()
+            .to_string();
+        if self.model.prefs.store.as_deref() != Some(dir.as_str()) {
+            self.model.prefs.store = Some(dir);
             self.save_prefs();
         }
-        self.ask_tip();
     }
 
     /// A refusal, shown where the command was sent from.
@@ -1145,9 +1171,21 @@ mod tests {
             Screen::Restore(r) => assert!(r.phrase.is_empty() && r.form.password.is_empty()),
             other => panic!("expected the form, emptied, got {other:?}"),
         }
+        // Waited on from the moment it is sent, before the worker has said
+        // anything: the form gives way to S8 even while an earlier command
+        // keeps the worker.
+        assert!(
+            app.model
+                .busy
+                .as_ref()
+                .is_some_and(|b| b.activity.is_none()),
+            "{:?}",
+            app.model.busy
+        );
         pump(&mut app, &events, |a| {
             matches!(a.model.screen, Screen::Wallet(_))
         });
+        assert!(app.model.busy.is_none(), "{:?}", app.model.busy);
         let remembered = elsewhere.display().to_string();
         assert_eq!(app.model.prefs.store.as_deref(), Some(remembered.as_str()));
 
@@ -1205,11 +1243,7 @@ mod tests {
             "left for the library to refuse"
         );
 
-        let mut app = App {
-            model: Model::new(Preferences::default(), None),
-            worker: None,
-            prefs_path: None,
-        };
+        let mut app = alone();
         let mut view = tawara_wallet_core::sample::wallet_view();
         view.dir = PathBuf::from("wallets").join("savings");
         app.opened(view);
@@ -1351,6 +1385,92 @@ mod tests {
             }
             let back = run(Box::new(focusable::focus_previous()));
             assert_eq!(back, (fields, fields.checked_sub(2)), "{name}: Shift-Tab");
+        }
+    }
+
+    /// An application with no worker, for the replies and events it is
+    /// handed directly.
+    fn alone() -> App {
+        App {
+            model: Model::new(Preferences::default(), None),
+            worker: None,
+            prefs_path: None,
+        }
+    }
+
+    #[test]
+    fn a_store_made_but_not_opened_is_the_one_offered_to_unlock() {
+        let mut app = alone();
+        let made = std::env::temp_dir().join("tawara-made-elsewhere");
+        app.model.default_dir = Some(std::env::temp_dir().join("tawara-default"));
+        app.model.screen = Screen::Restore(RestoreForm {
+            form: PasswordForm::in_dir(made.display().to_string()),
+            phrase: String::new(),
+        });
+        app.on_reply(
+            Purpose::CreateFromPhrase,
+            Reply::Created {
+                dir: made.clone(),
+                first: tawara_wallet_core::view::AccountId::from_tag([0; 20]),
+                opened: Err(Refusal {
+                    kind: tawara_wallet_core::RefusalKind::StoreInUse,
+                    text: "the store is in use".to_owned(),
+                }),
+            },
+        );
+        let made = made.display().to_string();
+        assert!(
+            matches!(
+                &app.model.screen,
+                Screen::Unlock(u) if u.dir == made && u.error.as_deref() == Some("the store is in use")
+            ),
+            "{:?}",
+            app.model.screen
+        );
+        assert_eq!(app.model.prefs.store.as_deref(), Some(made.as_str()));
+    }
+
+    #[test]
+    fn a_stopped_worker_takes_the_secrets_on_the_screen_with_it() {
+        let screens = [
+            Screen::Confirm(PhraseState {
+                phrase: PhraseForDisplay::example(),
+                positions: tawara_wallet_core::CONFIRM_POSITIONS,
+                written: true,
+                words: ["abandon".into(), "abandon".into(), String::new()],
+                error: None,
+            }),
+            Screen::Phrase(PhraseState {
+                phrase: PhraseForDisplay::example(),
+                positions: tawara_wallet_core::CONFIRM_POSITIONS,
+                written: false,
+                words: Default::default(),
+                error: None,
+            }),
+            Screen::Restore(RestoreForm {
+                form: PasswordForm {
+                    password: PASSWORD.to_owned(),
+                    ..PasswordForm::default()
+                },
+                phrase: PHRASE.to_owned(),
+            }),
+            Screen::Unlock(UnlockForm {
+                password: PASSWORD.to_owned(),
+                ..UnlockForm::default()
+            }),
+        ];
+        for screen in screens {
+            let mut app = alone();
+            app.model.screen = screen;
+            app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+            app.on_event(Event::Stopped { panicked: true });
+            assert_eq!(app.model.stopped, Some(true));
+            assert!(app.model.wallet.is_none());
+            assert!(
+                matches!(app.model.screen, Screen::Start { .. }),
+                "{:?}",
+                app.model.screen
+            );
         }
     }
 
