@@ -148,10 +148,14 @@ pub enum Reply {
     Settled { text: String, view: WalletView },
     /// What the submitted artifact did.
     Submitted { accepted: bool, text: String },
-    /// One account, reconciled now.
+    /// One account, reconciled now. `spendable` is whether a spend may be
+    /// planned from it now, as [`crate::view::AccountRow::spendable`] says:
+    /// it reconciled, and the wallet held it when it opened (an account set
+    /// aside then stays aside until the store is opened again).
     Status {
         account: AccountId,
         state: AccountState,
+        spendable: bool,
         text: String,
     },
     /// What an acknowledged advance did. `ok` is whether the library counts

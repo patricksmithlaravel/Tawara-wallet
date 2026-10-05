@@ -48,6 +48,12 @@ pub struct Model {
     pub node: NodeState,
     /// The open store, when one is.
     pub wallet: Option<WalletView>,
+    /// Signed spends' pages a lock closed, kept until their store is
+    /// unlocked again and shown then. A spend's signed bytes are the only
+    /// ones that can move its reserved funds while the reservation is open,
+    /// and the store does not keep them (docs/PLAN.md section 4.9). Nothing
+    /// in them is secret, and what the store showed is dropped from them.
+    pub signed: Vec<WalletPage>,
     /// The worker stopped: `Some(true)` when it panicked. Nothing more can
     /// be done in this run.
     pub stopped: Option<bool>,
@@ -419,6 +425,7 @@ impl Model {
             downloads: None,
             busy: None,
             wallet: None,
+            signed: Vec::new(),
             stopped: None,
             width: crate::WINDOW.0,
         };
@@ -930,7 +937,7 @@ impl App {
                     )));
                     return;
                 }
-                let note = match reason {
+                let mut note = match reason {
                     LockReason::Idle => Some(format!(
                         "Locked after {} with nothing done. The store is closed and its key \
                          is gone from memory; unlock it to go on.",
@@ -953,6 +960,18 @@ impl App {
                         .as_deref()
                         .is_some_and(tawara_wallet_core::store_exists);
                 if !matches!(reason, LockReason::Replaced) {
+                    // A lock asked for while a spend was being signed runs
+                    // after it, so its sent page may only just have been
+                    // shown: it is kept, not closed with the screen.
+                    if self.model.keep_signed() {
+                        let kept = "A signed spend's page was open when the wallet locked. It \
+                                    is kept, with the signed bytes, and shown again when this \
+                                    store is unlocked: save the bytes then.";
+                        note = Some(match note {
+                            Some(n) => format!("{n} {kept}"),
+                            None => kept.to_owned(),
+                        });
+                    }
                     if exists || note.is_some() {
                         self.model.unlock_screen(dir, None, note);
                     } else {
@@ -1073,9 +1092,11 @@ impl App {
                     self.model.unlock_screen(dir, Some(r.text), None);
                 }
             },
-            (Purpose::Unlock, Reply::Unlocked(view)) | (Purpose::Refresh, Reply::Wallet(view)) => {
+            (Purpose::Unlock, Reply::Unlocked(view)) => {
                 self.opened(view);
+                self.model.bring_back_signed();
             }
+            (Purpose::Refresh, Reply::Wallet(view)) => self.opened(view),
             // The tip, once, after the refresh, however it went.
             (Purpose::Refresh, Reply::Refused(r)) => {
                 self.refused(r);
@@ -1850,6 +1871,86 @@ mod tests {
     }
 
     #[test]
+    fn a_lock_while_signing_keeps_the_sent_page_until_its_store_is_unlocked() {
+        let plan = tawara_wallet_core::sample::plan_view();
+        let form = SpendForm {
+            rows: vec![DestinationRow {
+                to: "dest".to_owned(),
+                amount: "1".to_owned(),
+                reference: String::new(),
+            }],
+            ..SpendForm::default()
+        };
+        let mut app = on_wallet(Page::Send(SendPage {
+            from: Some(plan.from),
+            form: form.clone(),
+            stage: SendStage::Review(Box::new(plan)),
+        }));
+        // Lock is pressed while the spend waits on the node. The worker does
+        // not stop a spend it has started: the spend answers, then the lock.
+        let sent = tawara_wallet_core::sample::sent_view();
+        app.on_reply(Purpose::ConfirmSend, Reply::Sent(sent.clone()));
+        wallet(&mut app, WalletMsg::Report(ReportKey::Sent, Level::Full));
+        app.on_event(Event::Locked {
+            reason: LockReason::Asked,
+        });
+        assert_eq!(app.model.wallet, None);
+        match &app.model.screen {
+            Screen::Unlock(u) => {
+                assert_eq!(u.dir, sent.view.dir.display().to_string());
+                assert!(
+                    u.note
+                        .as_deref()
+                        .is_some_and(|n| n.contains("signed spend")),
+                    "{:?}",
+                    u.note
+                );
+            }
+            other => panic!("expected the unlock screen, got {other:?}"),
+        }
+        assert_eq!(app.model.signed.len(), 1);
+        assert!(
+            matches!(&app.model.signed[0].page, Page::Send(SendPage {
+                stage: SendStage::Sent(s), ..
+            }) if s.sent.view.accounts.is_empty() && s.sent.view.notice.is_none()),
+            "what the store showed goes with the lock"
+        );
+
+        // Another store unlocked: the page waits for its own.
+        let mut other = tawara_wallet_core::sample::wallet_view();
+        other.dir = std::env::temp_dir().join("tawara-another-store");
+        app.on_reply(Purpose::Unlock, Reply::Unlocked(other));
+        assert!(matches!(wallet_page(&app).page, Page::Dashboard));
+        assert_eq!(app.model.signed.len(), 1);
+
+        // Its own store unlocked: the page as it was left, with the bytes
+        // and what was typed for them.
+        let view = tawara_wallet_core::sample::wallet_view();
+        app.on_reply(Purpose::Unlock, Reply::Unlocked(view.clone()));
+        let p = wallet_page(&app);
+        assert!(
+            matches!(&p.page, Page::Send(SendPage {
+                form: f,
+                stage: SendStage::Sent(s),
+                ..
+            }) if *f == form && s.sent.artifact_hex == sent.artifact_hex && s.sent.view == view),
+            "{:?}",
+            p.page
+        );
+        assert_eq!(p.open.get(&ReportKey::Sent), Some(&Level::Full));
+        assert!(app.model.signed.is_empty());
+
+        // A lock on any other page keeps nothing.
+        wallet(&mut app, WalletMsg::Open(To::Dashboard));
+        app.on_event(Event::Locked {
+            reason: LockReason::Idle,
+        });
+        assert!(app.model.signed.is_empty());
+        assert!(matches!(&app.model.screen, Screen::Unlock(u)
+            if u.note.as_deref().is_some_and(|n| !n.contains("signed spend"))));
+    }
+
+    #[test]
     fn a_refused_signing_goes_back_to_the_form_with_why() {
         let plan = tawara_wallet_core::sample::plan_view();
         let mut app = on_wallet(Page::Send(SendPage {
@@ -1990,35 +2091,52 @@ mod tests {
 
     #[test]
     fn a_check_updates_the_account_and_keeps_what_it_found() {
+        use tawara_wallet_core::view::{AccountState, DivergenceKind};
         let accounts = tawara_wallet_core::sample::wallet_view().accounts;
-        let id = accounts[1].id;
+        assert!(accounts[0].spendable && !accounts[1].spendable);
+        let checked = |app: &mut App, n: usize, state: AccountState, spendable: bool| {
+            app.on_reply(
+                Purpose::Status,
+                Reply::Status {
+                    account: accounts[n].id,
+                    state,
+                    spendable,
+                    text: "checked".to_owned(),
+                },
+            );
+            app.model.wallet.as_ref().unwrap().accounts[n].clone()
+        };
         let mut app = on_wallet(Page::Account(AccountPage {
-            account: id,
+            account: accounts[1].id,
             report: None,
         }));
-        app.on_reply(
-            Purpose::Status,
-            Reply::Status {
-                account: id,
-                state: tawara_wallet_core::view::AccountState::InSync { balance: 5 },
-                text: "in sync".to_owned(),
-            },
-        );
-        let row = &app.model.wallet.as_ref().unwrap().accounts[1];
-        assert_eq!(
-            row.state,
-            tawara_wallet_core::view::AccountState::InSync { balance: 5 }
-        );
+        let row = checked(&mut app, 1, AccountState::InSync { balance: 5 }, false);
+        assert_eq!(row.state, AccountState::InSync { balance: 5 });
         assert!(
             !row.spendable,
-            "a check does not make an account spendable that was not"
+            "an account set aside when the wallet opened stays aside"
         );
         assert!(matches!(
             &wallet_page(&app).page,
             Page::Account(AccountPage {
                 report: Some((Done::Checked, text)),
                 ..
-            }) if text == "in sync"
+            }) if text == "checked"
+        ));
+
+        // A check the node did not answer, then one it did: the account is
+        // spendable again, as the worker says, and Send offers it.
+        let unreachable = AccountState::Diverged {
+            kind: DivergenceKind::Unreachable,
+            report: "no answer".to_owned(),
+            advance_to: None,
+        };
+        assert!(!checked(&mut app, 0, unreachable, false).spendable);
+        assert!(checked(&mut app, 0, AccountState::InSync { balance: 9 }, true).spendable);
+        wallet(&mut app, WalletMsg::Open(To::Send(Some(accounts[0].id))));
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage { from, .. }) if *from == Some(accounts[0].id)
         ));
     }
 

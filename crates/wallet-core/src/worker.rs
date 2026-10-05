@@ -1871,18 +1871,23 @@ impl<C: Connect> Worker<C> {
         if matches!(outcome, Outcome::NoSuchAccount { .. }) {
             return refused(RefusalKind::Library, text::page(&[], outcome));
         }
-        match &mut self.session {
-            Session::Store(s) => update_row(&mut s.rows, &tag, state.clone(), false, None),
+        let spendable = match &mut self.session {
+            Session::Store(s) => {
+                update_row(&mut s.rows, &tag, state.clone(), false, None);
+                false
+            }
             Session::Wallet(w) => {
                 let spendable = w.wallet.accounts().iter().any(|(t, _)| *t == tag)
                     && matches!(state, AccountState::InSync { .. });
                 update_row(&mut w.rows, &tag, state.clone(), spendable, None);
+                spendable
             }
-            Session::Locked => {}
-        }
+            Session::Locked => false,
+        };
         Reply::Status {
             account,
             state,
+            spendable,
             text: text::page(&[], outcome),
         }
     }

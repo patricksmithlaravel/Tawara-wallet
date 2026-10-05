@@ -5,17 +5,17 @@
 //! signed spend's bytes are what the node is sent or what the store shows;
 //! the store's key never leaves the worker.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use iced::Task;
 use tawara_wallet_core::amount;
 use tawara_wallet_core::spend::{Amount, DestinationInput, SpendRequest};
-use tawara_wallet_core::view::{AccountId, AccountState, WalletView};
+use tawara_wallet_core::view::{AccountId, WalletView};
 use tawara_wallet_core::{
     Command, Discovered, MAX_DESTINATIONS, PlanView, ReceiveView, Reply, SentView,
 };
 
-use super::{App, Message, Purpose, Screen, WalletPage};
+use super::{App, Message, Model, Purpose, Screen, WalletPage};
 
 /// Which wallet page is shown.
 #[derive(Clone, Debug, Default)]
@@ -327,6 +327,64 @@ fn spendable(wallet: Option<&WalletView>) -> impl Iterator<Item = AccountId> + '
         .flat_map(|w| w.accounts.iter())
         .filter(|a| a.spendable)
         .map(|a| a.id)
+}
+
+/// Whether two folders are one store's, however they were written.
+fn same_store(a: &Path, b: &Path) -> bool {
+    a == b
+        || matches!(
+            (std::fs::canonicalize(a), std::fs::canonicalize(b)),
+            (Ok(a), Ok(b)) if a == b
+        )
+}
+
+impl Model {
+    /// Before a lock closes the screen: keep the signed spend's page it
+    /// shows, if it shows one (see [`Model::signed`]). Whether it did.
+    pub(super) fn keep_signed(&mut self) -> bool {
+        let Screen::Wallet(page) = &mut self.screen else {
+            return false;
+        };
+        let Page::Send(SendPage {
+            stage: SendStage::Sent(sent),
+            ..
+        }) = &mut page.page
+        else {
+            return false;
+        };
+        // What the store showed goes with the lock; its folder says which
+        // store the page comes back with.
+        sent.sent.view.accounts = Vec::new();
+        sent.sent.view.notice = None;
+        self.signed.push(core::mem::take(page));
+        true
+    }
+
+    /// Once a store is unlocked: the signed spend's page a lock closed for
+    /// it, shown again as it was left.
+    pub(super) fn bring_back_signed(&mut self) {
+        let Some(view) = &self.wallet else {
+            return;
+        };
+        let Some(at) = self.signed.iter().position(|p| {
+            matches!(
+                &p.page,
+                Page::Send(SendPage { stage: SendStage::Sent(s), .. })
+                    if same_store(&s.sent.view.dir, &view.dir)
+            )
+        }) else {
+            return;
+        };
+        let mut page = self.signed.remove(at);
+        if let Page::Send(SendPage {
+            stage: SendStage::Sent(s),
+            ..
+        }) = &mut page.page
+        {
+            s.sent.view = view.clone();
+        }
+        self.screen = Screen::Wallet(page);
+    }
 }
 
 /// A name for a saved artifact: the spend's id when the node echoed one,
@@ -796,13 +854,18 @@ impl App {
                 Reply::Status {
                     account,
                     state,
+                    spendable,
                     text,
                 },
             ) => {
+                // The worker's word on spending, not one worked out here: a
+                // check that failed and then one that reconciled leave an
+                // account the wallet held spendable again, and one set aside
+                // when it opened stays aside.
                 if let Some(w) = &mut self.model.wallet
                     && let Some(row) = w.accounts.iter_mut().find(|a| a.id == account)
                 {
-                    row.spendable = row.spendable && matches!(state, AccountState::InSync { .. });
+                    row.spendable = spendable;
                     row.state = state;
                 }
                 if let Some(WalletPage {

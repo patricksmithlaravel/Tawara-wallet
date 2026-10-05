@@ -1200,21 +1200,49 @@ fn commands_that_need_a_store_are_refused_while_locked() {
 fn status_reports_an_account_without_refusing() {
     let scratch = Scratch::new("status");
     let (mut h, _) = funded(&scratch);
-    match h.call(Command::Status {
+    let status = |h: &mut Harness| match h.call(Command::Status {
         account: account0(),
         scan_to: None,
     }) {
         Reply::Status {
             account,
             state,
+            spendable,
             text,
         } => {
             assert_eq!(account, account0());
-            assert_eq!(state, AccountState::InSync { balance: FUNDS });
             assert!(!text.is_empty());
+            (state, spendable)
         }
         other => panic!("expected a status, got {other:?}"),
-    }
+    };
+    assert_eq!(
+        status(&mut h),
+        (AccountState::InSync { balance: FUNDS }, true)
+    );
+
+    // A check the node did not answer is a report, and the account does
+    // not spend; once it answers, the account the wallet held spends again.
+    h.chain.set_unreachable(true);
+    let (state, spendable) = status(&mut h);
+    assert!(
+        matches!(
+            state,
+            AccountState::Diverged {
+                kind: DivergenceKind::Unreachable,
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+    assert!(!spendable);
+    h.chain.set_unreachable(false);
+    assert_eq!(
+        status(&mut h),
+        (AccountState::InSync { balance: FUNDS }, true)
+    );
+    let view = opened(h.call(Command::Refresh));
+    assert!(view.accounts[0].spendable, "{view:?}");
 }
 
 #[test]
@@ -1326,8 +1354,11 @@ fn clearing_or_changing_the_node_stops_the_open_wallet_using_the_old_one() {
         account: account0(),
         scan_to: None,
     }) {
+        // The store is open on its own, not as a wallet: nothing spends
+        // until a refresh opens it.
         Reply::Status {
             state: AccountState::InSync { balance },
+            spendable: false,
             ..
         } => assert_eq!(balance, FUNDS),
         other => panic!("expected the new node's answer, got {other:?}"),
