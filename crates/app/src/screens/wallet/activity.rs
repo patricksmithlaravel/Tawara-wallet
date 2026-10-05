@@ -337,18 +337,29 @@ pub(super) fn describe(r: &Row<'_>) -> (String, String) {
             Some(from) => format!("Received from {}", party(from)),
             None => "Received".to_owned(),
         },
-        Kind::Own => match (r.payers().next(), payees.first()) {
+        Kind::Own => match (payees.as_slice(), r.payers().next()) {
             // Seen from the account it left: to the store's other account.
-            (None, Some(to)) => format!("{} → {}", name(r.account), party(to)),
+            ([to], _) => format!("{} → {}", name(r.account), party(to)),
+            // To several of the store's accounts at once: the amount is
+            // theirs together, so no one of them is named for it.
+            ([_, _, ..], _) => {
+                format!("Batch between own accounts · {} destinations", payees.len())
+            }
             // Only the receiving side is in the index's answer.
-            (Some(from), _) => format!("{} → {}", party(from), name(r.account)),
-            (None, None) => "Between own accounts".to_owned(),
+            ([], Some(from)) => format!("{} → {}", party(from), name(r.account)),
+            ([], None) => "Between own accounts".to_owned(),
         },
         Kind::Reward => "Mining reward".to_owned(),
         Kind::Other => "Transaction".to_owned(),
     };
     let references = r.references();
-    let detail = if r.kind == Kind::Own {
+    let detail = if r.kind == Kind::Own && payees.len() > 1 {
+        format!(
+            "From {} to {}",
+            name(r.account),
+            listed(payees.iter().map(|o| party(o)))
+        )
+    } else if r.kind == Kind::Own {
         "Between own accounts".to_owned()
     } else if references.is_empty() {
         format!("tx {}", short(&r.tx.id))
@@ -356,6 +367,25 @@ pub(super) fn describe(r: &Row<'_>) -> (String, String) {
         references.join(" · ")
     };
     (title, detail)
+}
+
+/// `names` as a person reads a list: "B and C", "B, C and D", and past
+/// three, "B, C, D and 2 more".
+fn listed(names: impl Iterator<Item = String>) -> String {
+    const SHOWN: usize = 3;
+    let names: Vec<String> = names.collect();
+    let more = names.len().saturating_sub(SHOWN);
+    let shown = &names[..names.len().min(SHOWN)];
+    match (shown, more) {
+        ([], _) => String::new(),
+        ([one], 0) => one.clone(),
+        (_, 0) => format!(
+            "{} and {}",
+            shown[..shown.len() - 1].join(", "),
+            shown[shown.len() - 1]
+        ),
+        (_, more) => format!("{} and {more} more", shown.join(", ")),
+    }
 }
 
 /// A row's amount, signed, and its colour: received in the accent, sent in
@@ -503,4 +533,85 @@ fn fact<'a>(label: &'static str, value: String, mono: bool) -> Element<'a, Messa
     ]
     .spacing(sp::S12)
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use tawara_wallet_core::explorer::{OperationKind, TransactionView};
+    use tawara_wallet_core::view::AccountId;
+
+    use super::*;
+
+    fn op(kind: OperationKind, account: AccountId, amount: i128) -> OperationView {
+        OperationView {
+            kind,
+            party: Party::Account(account),
+            amount,
+            memo: String::new(),
+        }
+    }
+
+    fn history(account: AccountId, tx: &TransactionView) -> AccountHistory {
+        AccountHistory {
+            account,
+            transactions: vec![tx.clone()],
+            total: 1,
+            next: 1,
+            text: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_transfer_to_several_own_accounts_names_none_of_them_for_the_whole() {
+        use OperationKind::{Destination, Source};
+        let [a, b, c] = [0xa1, 0xb2, 0xc3].map(|n| AccountId::from_tag([n; 20]));
+        // A pays B 10 and C 20, with 5 back as change.
+        let batch = TransactionView {
+            id: "batch".to_owned(),
+            block: Some(900),
+            time_ms: None,
+            operations: vec![
+                op(Source, a, -35),
+                op(Destination, b, 10),
+                op(Destination, c, 20),
+                op(Destination, a, 5),
+            ],
+        };
+        let histories = [history(a, &batch), history(b, &batch), history(c, &batch)];
+        let rows = history::rows(&histories);
+        assert_eq!(rows.len(), 1, "listed once, from the account it left");
+        assert_eq!((rows[0].kind, rows[0].amount), (Kind::Own, 30));
+        let (title, detail) = describe(&rows[0]);
+        assert_eq!(title, "Batch between own accounts · 2 destinations");
+        assert_eq!(
+            detail,
+            format!("From {} to {} and {}", name(a), name(b), name(c))
+        );
+
+        // To one of them, the arrow names it.
+        let single = TransactionView {
+            id: "single".to_owned(),
+            operations: vec![
+                op(Source, a, -15),
+                op(Destination, b, 10),
+                op(Destination, a, 5),
+            ],
+            ..batch
+        };
+        let histories = [history(a, &single), history(b, &single)];
+        let rows = history::rows(&histories);
+        let (title, detail) = describe(&rows[0]);
+        assert_eq!(title, format!("{} → {}", name(a), name(b)));
+        assert_eq!(detail, "Between own accounts");
+    }
+
+    #[test]
+    fn a_list_of_names_reads_as_a_person_writes_it() {
+        let names = |n: usize| (0..n).map(|i| format!("N{i}"));
+        assert_eq!(listed(names(0)), "");
+        assert_eq!(listed(names(1)), "N0");
+        assert_eq!(listed(names(2)), "N0 and N1");
+        assert_eq!(listed(names(3)), "N0, N1 and N2");
+        assert_eq!(listed(names(5)), "N0, N1, N2 and 2 more");
+    }
 }

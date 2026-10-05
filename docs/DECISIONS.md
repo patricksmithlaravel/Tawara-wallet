@@ -1124,7 +1124,11 @@ cards that D27 item 16 moved here. The choices it makes:
    its own source operation, not from whose history held it, so a row is
    the same whichever pages have been read: a send from an account whose
    older pages are not read yet is that account's send, debit and all,
-   when only its payee's page holds it (the owner's second review). The words
+   when only its payee's page holds it (the owner's second review). A
+   transfer to several of the store's accounts at once is one row whose
+   amount is theirs together, so its title calls it a batch rather than
+   naming one of them for the whole, and the line under it names the
+   sender and every recipient (the owner's third review). The words
    (sent, received, between own accounts, mining reward) are Tawara's;
    they say nothing a row does not.
 3. **References come from the index's rows** (the owner, on PR (c)'s
