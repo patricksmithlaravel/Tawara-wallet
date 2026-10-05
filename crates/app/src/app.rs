@@ -120,6 +120,9 @@ pub struct PasswordForm {
     /// The folder is inside one a cloud service syncs (docs/PLAN.md 4.5),
     /// in wallet-core's words.
     pub synced: Option<String>,
+    /// Why the person is back here: a recovery phrase was discarded before
+    /// it was confirmed, and nothing was created.
+    pub note: Option<String>,
 }
 
 impl PasswordForm {
@@ -159,6 +162,8 @@ fn store_dir(typed: &str) -> PathBuf {
 #[derive(Debug)]
 pub struct PhraseState {
     pub phrase: PhraseForDisplay,
+    /// The folder chosen on S3, kept for the way back to it.
+    pub dir: String,
     pub positions: [usize; 3],
     /// The person said they wrote it down.
     pub written: bool,
@@ -420,6 +425,19 @@ impl Model {
         }
     }
 
+    /// Back to S3, in the folder the pending phrase was for (the default
+    /// one when there was none), with `note` saying why.
+    fn back_to_new_wallet(&mut self, note: Option<String>) {
+        let dir = match self.leave() {
+            Screen::Phrase(p) | Screen::Confirm(p) => p.dir,
+            _ => self.default_dir_text(),
+        };
+        self.screen = Screen::NewWallet(PasswordForm {
+            note,
+            ..PasswordForm::in_dir(dir)
+        });
+    }
+
     /// The unlock screen for `dir`, or the default folder.
     fn unlock_screen(&mut self, dir: Option<String>, error: Option<String>, note: Option<String>) {
         let _ = self.leave();
@@ -513,6 +531,11 @@ impl App {
     }
 
     fn send(&mut self, command: Command, purpose: Purpose) -> Option<RequestId> {
+        // One command at a time is waited on: a second would take the
+        // first's place in `busy`, and its Cancel and progress with it.
+        if purpose.awaited() && self.model.busy.is_some() {
+            return None;
+        }
         let worker = self.worker.as_mut()?;
         match worker.handle.send(command) {
             Ok(id) => {
@@ -660,6 +683,7 @@ impl App {
             Message::CreateWallet => {
                 if let Screen::NewWallet(f) = &mut m.screen {
                     f.error = None;
+                    f.note = None;
                     let command = Command::CreateBegin {
                         dir: store_dir(&f.dir),
                         password: SecretText::take(&mut f.password),
@@ -688,9 +712,7 @@ impl App {
             Message::StartOver => {
                 // The pending phrase is dropped in the worker and here.
                 self.send(Command::CreateAbandon, Purpose::Abandon);
-                let dir = self.model.default_dir_text();
-                let _ = self.model.leave();
-                self.model.screen = Screen::NewWallet(PasswordForm::in_dir(dir));
+                self.model.back_to_new_wallet(None);
             }
             Message::ConfirmWords => {
                 if let Screen::Confirm(p) = &mut m.screen {
@@ -747,6 +769,11 @@ impl App {
                 self.send(Command::Lock, Purpose::Lock);
             }
             Message::Refresh => {
+                // One refresh at a time: a second would queue another
+                // reconciliation behind it.
+                if m.busy.is_some() {
+                    return Task::none();
+                }
                 if let Screen::Wallet(p) = &mut m.screen {
                     p.error = None;
                 }
@@ -803,6 +830,28 @@ impl App {
                     .take()
                     .map(|w| w.dir.display().to_string());
                 self.model.busy = None;
+                // With no store open, the lock dropped a recovery phrase
+                // waiting to be confirmed (wallet-core's `Event::Locked`):
+                // nothing was written, so the way on is to create again,
+                // not to unlock a store that is not there.
+                if dir.is_none()
+                    && !matches!(reason, LockReason::Replaced | LockReason::ReopenFailed)
+                {
+                    let why = match reason {
+                        LockReason::Idle => format!(
+                            "after {} with nothing done",
+                            minutes(self.model.prefs.idle_lock)
+                        ),
+                        LockReason::Background => "when the application left the screen".to_owned(),
+                        _ => "when the wallet locked".to_owned(),
+                    };
+                    self.model.back_to_new_wallet(Some(format!(
+                        "The recovery phrase was discarded {why}, before it was confirmed, and \
+                         no store was written. Choose the password again and continue to get a \
+                         new phrase."
+                    )));
+                    return;
+                }
                 let note = match reason {
                     LockReason::Idle => Some(format!(
                         "Locked after {} with nothing done. The store is closed and its key \
@@ -915,9 +964,13 @@ impl App {
                     confirm_positions,
                 },
             ) => {
-                let _ = m.leave();
+                let dir = match m.leave() {
+                    Screen::NewWallet(f) => f.dir,
+                    _ => m.default_dir_text(),
+                };
                 m.screen = Screen::Phrase(PhraseState {
                     phrase,
+                    dir,
                     positions: confirm_positions,
                     written: false,
                     words: Default::default(),
@@ -1189,6 +1242,24 @@ mod tests {
         let remembered = elsewhere.display().to_string();
         assert_eq!(app.model.prefs.store.as_deref(), Some(remembered.as_str()));
 
+        // A second Refresh while the first is waited on sends nothing: the
+        // page shows the first, with its Cancel, until it answers.
+        let _ = app.update(Message::Refresh);
+        let first = app.model.busy.as_ref().map(|b| b.id);
+        assert!(first.is_some());
+        let _ = app.update(Message::Refresh);
+        assert_eq!(app.model.busy.as_ref().map(|b| b.id), first);
+        let refreshes = |a: &App| {
+            a.worker.as_ref().map_or(0, |w| {
+                w.waiting
+                    .iter()
+                    .filter(|(_, p)| matches!(p, Purpose::Refresh))
+                    .count()
+            })
+        };
+        assert_eq!(refreshes(&app), 1);
+        pump(&mut app, &events, |a| a.model.busy.is_none());
+
         let _ = app.update(Message::Lock);
         pump(&mut app, &events, |a| {
             matches!(a.model.screen, Screen::Unlock(_))
@@ -1340,6 +1411,7 @@ mod tests {
                 "S5",
                 Screen::Confirm(PhraseState {
                     phrase: PhraseForDisplay::example(),
+                    dir: String::new(),
                     positions: tawara_wallet_core::CONFIRM_POSITIONS,
                     written: true,
                     words: Default::default(),
@@ -1435,6 +1507,7 @@ mod tests {
         let screens = [
             Screen::Confirm(PhraseState {
                 phrase: PhraseForDisplay::example(),
+                dir: String::new(),
                 positions: tawara_wallet_core::CONFIRM_POSITIONS,
                 written: true,
                 words: ["abandon".into(), "abandon".into(), String::new()],
@@ -1442,6 +1515,7 @@ mod tests {
             }),
             Screen::Phrase(PhraseState {
                 phrase: PhraseForDisplay::example(),
+                dir: String::new(),
                 positions: tawara_wallet_core::CONFIRM_POSITIONS,
                 written: false,
                 words: Default::default(),
@@ -1472,6 +1546,69 @@ mod tests {
                 app.model.screen
             );
         }
+    }
+
+    #[test]
+    fn a_phrase_dropped_by_the_idle_lock_leads_back_to_creating_in_its_folder() {
+        let scratch = Scratch::new("idle-create");
+        let prefs = Preferences {
+            idle_lock: Duration::from_millis(400),
+            ..Preferences::default()
+        };
+        let model = Model::new(prefs, Some(scratch.0.join("keystore")));
+        let (mut app, events) = App::start(model, None);
+        let events = events.expect("the worker starts");
+        let chosen = scratch.0.join("chosen").join("keystore");
+        let _ = app.update(Message::Continue);
+        let _ = app.update(Message::Dir(chosen.display().to_string()));
+        let _ = app.update(Message::Password(typed(PASSWORD)));
+        let _ = app.update(Message::Again(typed(PASSWORD)));
+        let _ = app.update(Message::CreateWallet);
+        pump(&mut app, &events, |a| {
+            matches!(a.model.screen, Screen::Phrase(_))
+        });
+
+        // Nothing is done; the idle lock drops the phrase.
+        pump(&mut app, &events, |a| {
+            !matches!(a.model.screen, Screen::Phrase(_))
+        });
+        let chosen = chosen.display().to_string();
+        match &app.model.screen {
+            Screen::NewWallet(f) => {
+                assert_eq!(f.dir, chosen);
+                assert!(
+                    f.note
+                        .as_deref()
+                        .is_some_and(|n| n.contains("no store was written")),
+                    "{:?}",
+                    f.note
+                );
+            }
+            other => panic!("expected S3 again, got {other:?}"),
+        }
+        assert!(!tawara_wallet_core::store_exists(Path::new(&chosen)));
+    }
+
+    #[test]
+    fn starting_over_keeps_the_folder_chosen() {
+        let mut app = alone();
+        app.model.screen = Screen::Confirm(PhraseState {
+            phrase: PhraseForDisplay::example(),
+            dir: "/a/chosen/folder".to_owned(),
+            positions: tawara_wallet_core::CONFIRM_POSITIONS,
+            written: true,
+            words: Default::default(),
+            error: None,
+        });
+        let _ = app.update(Message::StartOver);
+        assert!(
+            matches!(
+                &app.model.screen,
+                Screen::NewWallet(f) if f.dir == "/a/chosen/folder" && f.note.is_none()
+            ),
+            "{:?}",
+            app.model.screen
+        );
     }
 
     #[test]

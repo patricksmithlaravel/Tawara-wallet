@@ -2,9 +2,9 @@
 //! rendering 01, the brand panel on the left and the form on the right.
 
 use iced::widget::text::LineHeight;
-use iced::widget::{button, checkbox, column, container, progress_bar, row, scrollable, space};
+use iced::widget::{button, checkbox, column, container, row, scrollable, space};
 use iced::{Alignment, Element, Length, Padding};
-use tawara_wallet_core::{Activity, MIN_PASSWORD_LEN, SCHEME_WARNING};
+use tawara_wallet_core::{MIN_PASSWORD_LEN, SCHEME_WARNING};
 
 use crate::app::{
     Back, Busy, Go, Message, Model, NodeForm, PasswordForm, PhraseState, RestoreForm, Screen,
@@ -344,15 +344,23 @@ fn password_fields(form: &PasswordForm, submit: Option<Message>) -> Element<'_, 
 /// S3: the folder and the password for a new store.
 fn new_wallet<'a>(model: &'a Model, form: &'a PasswordForm) -> Element<'a, Message> {
     let ready = !form.password.is_empty() && !form.again.is_empty() && !form.dir.trim().is_empty();
-    let mut body = column![
-        heading(
-            "New wallet",
-            "Choose where the store is kept and the password that seals it. Nothing is \
+    let mut body = column![heading(
+        "New wallet",
+        "Choose where the store is kept and the password that seals it. Nothing is \
              written until you have confirmed the recovery phrase.",
-        ),
-        password_fields(form, ready.then_some(Message::CreateWallet)),
-    ]
+    ),]
     .spacing(sp::S24);
+    if let Some(note) = &form.note {
+        body = body.push(ui::accent_callout(
+            crate::icon::Icon::Lock,
+            "Nothing was created",
+            note.as_str(),
+        ));
+    }
+    body = body.push(password_fields(
+        form,
+        ready.then_some(Message::CreateWallet),
+    ));
     if let Some(e) = &form.error {
         body = body.push(ui::refusal(e));
     }
@@ -590,48 +598,9 @@ fn unlock<'a>(model: &'a Model, form: &'a UnlockForm) -> Element<'a, Message> {
 /// S8: the command a store is being made or opened by, waiting its turn or
 /// under way, what the worker is doing for it, and a way to stop it.
 fn opening(busy: &Busy) -> Element<'_, Message> {
-    let (title, what) = match busy.activity {
-        None => (
-            "Waiting",
-            "The wallet does one thing at a time, and it is finishing what came before, \
-             usually a question to the node. This starts when that is done; Cancel stops \
-             both.",
-        ),
-        Some(Activity::DerivingKey) => (
-            "Opening the store",
-            "Deriving the store's key from the password. It takes a few seconds and 64 MiB \
-             of memory on purpose: that is what makes guessing a password expensive.",
-        ),
-        Some(Activity::AskingNode) => (
-            "Reconciling",
-            "Asking the node about each account and comparing the key index this store holds \
-             with the one the chain shows.",
-        ),
-    };
+    let (title, what) = super::activity(busy);
     let mut body = column![heading(title, what)].spacing(sp::S20);
-    if let Some(p) = busy.progress {
-        let mut detail = column![t(
-            format!("Account {} of {}", p.account + 1, p.accounts),
-            ty::ROW_TITLE,
-            color::TEXT_PRIMARY,
-        )]
-        .spacing(sp::S8);
-        if p.ceiling > 0 {
-            // Positions are counted in `u32`; a bar needs only their ratio.
-            #[allow(clippy::cast_precision_loss)]
-            let (position, ceiling) = (p.position as f32, p.ceiling as f32);
-            detail = detail
-                .push(
-                    progress_bar(0.0..=ceiling, position)
-                        .girth(4)
-                        .style(theme::progress),
-                )
-                .push(ui::helper(format!(
-                    "{} of at most {} key positions searched",
-                    ui::group(&p.position.to_string()),
-                    ui::group(&p.ceiling.to_string())
-                )));
-        }
+    if let Some(detail) = super::progress(busy) {
         body = body.push(detail);
     }
     body.push(ui::button_with(

@@ -3,12 +3,13 @@
 mod first_run;
 mod wallet;
 
-use iced::widget::{column, container};
+use iced::widget::{column, container, progress_bar};
 use iced::{Element, Length};
+use tawara_wallet_core::Activity;
 
-use crate::app::{Message, Model, Screen};
+use crate::app::{Busy, Message, Model, Screen};
 use crate::theme::{self, color, space};
-use crate::ui::{self, ty};
+use crate::ui::{self, t, ty};
 
 /// The whole window for `model`.
 pub fn view(model: &Model) -> Element<'_, Message> {
@@ -25,6 +26,58 @@ pub fn view(model: &Model) -> Element<'_, Message> {
         .height(Length::Fill)
         .style(theme::page)
         .into()
+}
+
+/// What the worker is doing for the command the screen waits on, as a title
+/// and a sentence: S8, and the wallet page while it refreshes.
+fn activity(busy: &Busy) -> (&'static str, &'static str) {
+    match busy.activity {
+        None => (
+            "Waiting",
+            "The wallet does one thing at a time, and it is finishing what came before, \
+             usually a question to the node. This starts when that is done; Cancel stops \
+             both.",
+        ),
+        Some(Activity::DerivingKey) => (
+            "Opening the store",
+            "Deriving the store's key from the password. It takes a few seconds and 64 MiB \
+             of memory on purpose: that is what makes guessing a password expensive.",
+        ),
+        Some(Activity::AskingNode) => (
+            "Reconciling",
+            "Asking the node about each account and comparing the key index this store holds \
+             with the one the chain shows.",
+        ),
+    }
+}
+
+/// How far the command has got, as the library counts it, once it has
+/// said.
+fn progress<'a>(busy: &Busy) -> Option<Element<'a, Message>> {
+    let p = busy.progress?;
+    let mut detail = column![t(
+        format!("Account {} of {}", p.account + 1, p.accounts),
+        ty::ROW_TITLE,
+        color::TEXT_PRIMARY,
+    )]
+    .spacing(space::S8);
+    if p.ceiling > 0 {
+        // Positions are counted in `u32`; a bar needs only their ratio.
+        #[allow(clippy::cast_precision_loss)]
+        let (position, ceiling) = (p.position as f32, p.ceiling as f32);
+        detail = detail
+            .push(
+                progress_bar(0.0..=ceiling, position)
+                    .girth(4)
+                    .style(theme::progress),
+            )
+            .push(ui::helper(format!(
+                "{} of at most {} key positions searched",
+                ui::group(&p.position.to_string()),
+                ui::group(&p.ceiling.to_string())
+            )));
+    }
+    Some(detail.into())
 }
 
 /// The worker has stopped: nothing more can be done in this run.

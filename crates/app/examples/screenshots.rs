@@ -73,6 +73,7 @@ fn form(dir: &str, password: &str) -> PasswordForm {
         again: password.to_owned(),
         error: None,
         synced: None,
+        note: None,
     }
 }
 
@@ -80,6 +81,7 @@ fn form(dir: &str, password: &str) -> PasswordForm {
 fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
     let phrase = || PhraseState {
         phrase: PhraseForDisplay::example(),
+        dir: DIR.to_owned(),
         positions: CONFIRM_POSITIONS,
         written: true,
         words: Default::default(),
@@ -115,6 +117,16 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         m.wallet = Some(tawara_wallet_core::sample::wallet_view());
         m
     };
+    let mut refreshing = wallet();
+    refreshing.busy = Some(busy(
+        Some(Activity::AskingNode),
+        Some(Progress {
+            account: 1,
+            accounts: 3,
+            position: 0,
+            ceiling: 0,
+        }),
+    ));
     vec![
         ("s1-get-started", FIRST_RUN, base()),
         (
@@ -144,6 +156,19 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
             with(Screen::NewWallet(PasswordForm {
                 synced: Some(synced),
                 ..form("/home/you/Dropbox/tawara", "")
+            })),
+        ),
+        (
+            "s3-new-wallet-discarded",
+            FIRST_RUN,
+            with(Screen::NewWallet(PasswordForm {
+                note: Some(
+                    "The recovery phrase was discarded after 5 minutes with nothing done, \
+                     before it was confirmed, and no store was written. Choose the password \
+                     again and continue to get a new phrase."
+                        .to_owned(),
+                ),
+                ..form(DIR, "")
             })),
         ),
         ("s4-phrase", FIRST_RUN, with(Screen::Phrase(phrase()))),
@@ -200,6 +225,7 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         ("s8-opening", FIRST_RUN, opening),
         ("s8-reconciling", FIRST_RUN, reconciling),
         ("w1-wallet", DASHBOARD, wallet()),
+        ("w1-wallet-refreshing", DASHBOARD, refreshing),
         ("narrow-s1-get-started", SMALLEST, base()),
         ("narrow-w1-wallet", DASHBOARD_NARROW, wallet()),
     ]

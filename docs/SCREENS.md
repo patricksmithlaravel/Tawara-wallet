@@ -39,7 +39,7 @@ the form on the right, the node footer under it.
 |---|---|---|---|---|---|
 | S1 | **Get started**: create, or restore from a recovery phrase | 01 | a | — | "Import a legacy .mcm file" is not built: the library has no import (D27, item 4). When a store is there to open (the one last opened, wherever it is, or else the default folder's), S7 is shown instead, with a link here; S1 links to S7 too ("Open a wallet already on this computer"). |
 | S2 | **Choose a node**: the URL, a test, save | 01 footer, 05 node card | a | `SetNode`, `NetworkStatus`, `ClearNode` | No default node (section 4.8). The plaintext refusal is the library's, with D22's three changes. Remembered in preferences (D27, item 10). |
-| S3 | **New wallet: folder and password** | — | a | `CreateBegin` | The default folder (D21) with the sync warning when the chosen one is synced (section 4.5). The password floor is the library's (`MIN_PASSWORD_LEN`). Masked fields (section 4.2). |
+| S3 | **New wallet: folder and password** | — | a | `CreateBegin` | The default folder (D21) with the sync warning when the chosen one is synced (section 4.5). The password floor is the library's (`MIN_PASSWORD_LEN`). Masked fields (section 4.2). When a phrase waiting on S4 or S5 is discarded by the auto-lock or by the window leaving the screen, S3 comes back in the folder chosen, saying nothing was created and why. |
 | S4 | **New wallet: the recovery phrase**, shown once | — | a | — | 24 words in a numbered grid. No copy button, no clipboard (section 4.3). Continuing asks the person to confirm they wrote it down. Leaving drops it (`CreateAbandon`). |
 | S5 | **New wallet: confirm three words** | — | a | `CreateConfirm` | The positions are the library's (`CONFIRM_POSITIONS`). A wrong answer keeps the phrase pending; the refusal is shown on the screen. |
 | S6 | **Restore from a recovery phrase** | 01 (second option) | a | `CreateFromPhrase` | The library's `SCHEME_WARNING` is shown before the phrase field, whole. Masked phrase field. |
@@ -54,7 +54,7 @@ The sidebar of 02-08: the "Tawara" wordmark, the six items, and on 02 and
 
 | id | screen | rendering | PR | commands | notes |
 |---|---|---|---|---|---|
-| W1 | **Wallet**: total balance, one-time keys, accounts, recent activity, network | 02 | b | `Refresh`, `NetworkStatus`, the explorer reads | Accounts are named by their shortened destination, with "derived" or "imported" (D27, item 3). "Reconcile" on a diverged row and "Review →" open W7, never an advance. The settling chip counts outstanding spends, with no amount. The store's notice (`WalletView::notice`) is shown whole above the cards, never folded away. |
+| W1 | **Wallet**: total balance, one-time keys, accounts, recent activity, network | 02 | b | `Refresh`, `NetworkStatus`, the explorer reads | Accounts are named by their shortened destination, with "derived" or "imported" (D27, item 3). "Reconcile" on a diverged row and "Review →" open W7, never an advance. The settling chip counts outstanding spends, with no amount. The store's notice (`WalletView::notice`) is shown whole above the cards, never folded away. While a refresh runs, a card says what it is doing in S8's words, with its progress and Cancel, and Refresh and Node wait until it answers. |
 | W2 | **Receive**: an account's destination | — (nav item of 02) | b | `Receive` | The destination in Base58 with its checksum, a copy button, and the library's explanation of the ledger address beside it, whole. |
 | W3 | **Add an account**: the next derived account's destination, and adding it once funded | 02 "New account", "Discover tags" | b | `Discover`, `Restore` | The library adds a derived account only where the chain already shows it (`restore`), so the screen shows where the next account receives, then adds it. Discovery results are the library's page. |
 | W4 | **Send: compose** | 03 | b | `PlanSend` | Up to 256 destinations, references by the node's rule, "everything" for one destination. "Import CSV" and "Scan QR" are not built (D27, item 5). No password field (D27, item 3). |
@@ -96,7 +96,8 @@ Placeholders on D25's terms, settled with the owner:
 |---|---|
 | the introductions under each first-run title, the radio cards' descriptions, the field labels and "At least 12 characters." | S1 to S7 |
 | the phrase warning: the library's words from `create`, without its sentence about the terminal | S4 |
-| what the worker is doing: waiting its turn, deriving the key, reconciling, "Account N of M", "N of at most M key positions searched" | S8 |
+| what the worker is doing: waiting its turn, deriving the key, reconciling, "Account N of M", "N of at most M key positions searched" | S8, and W1 while it refreshes |
+| "Nothing was created": a recovery phrase discarded before it was confirmed, and why (the auto-lock, or the window leaving the screen) | S3 |
 | why the store locked: idle ("Locked after N minutes with nothing done..."), the window leaving the screen, a store that could not be read back | S7 |
 | the notes naming the control for a command-line verb under a library page (D27, item 13) | wherever a library page is shown |
 | "The wallet stopped", with or without a fault | the stopped screen (whatever the screen before it held, a phrase or a password, is zeroized and dropped) |

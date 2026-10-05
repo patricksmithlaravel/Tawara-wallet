@@ -13,7 +13,7 @@ use iced::{Alignment, Element, Length, Padding};
 use tawara_wallet_core::preferences::AmountUnit;
 use tawara_wallet_core::view::{AccountKind, AccountRow, AccountState, ReservationState};
 
-use crate::app::{Back, Go, Message, Model, WalletPage, minutes};
+use crate::app::{Back, Busy, Go, Message, Model, WalletPage, minutes};
 use crate::icon::{self, Icon};
 use crate::theme::{self, color, space as sp};
 use crate::ui::{self, Size, t, ty};
@@ -163,8 +163,10 @@ fn network_panel(model: &Model) -> Element<'_, Message> {
     .into()
 }
 
-/// The page itself: the header, the store's notice, and the accounts.
+/// The page itself: the header, what a refresh is doing while the page
+/// waits on it, the store's notice, and the accounts.
 fn content<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> {
+    let idle = model.busy.is_none();
     let unit = model.prefs.unit;
     let subtitle = format!(
         "Keystore unlocked · auto-locks after {} with nothing done",
@@ -178,19 +180,22 @@ fn content<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> {
             theme::Button::Secondary,
             Size::Medium,
             Some(Icon::Server),
-            Some(Message::Go(Go::Node(Back::Wallet))),
+            idle.then_some(Message::Go(Go::Node(Back::Wallet))),
         ),
         ui::button_with(
             "Refresh",
             theme::Button::Secondary,
             Size::Medium,
             Some(Icon::Refresh),
-            Some(Message::Refresh),
+            idle.then_some(Message::Refresh),
         ),
     ]
     .spacing(sp::S10)
     .align_y(Alignment::Center);
     let mut stack = column![header].spacing(sp::S24);
+    if let Some(busy) = &model.busy {
+        stack = stack.push(working(busy));
+    }
     let Some(wallet) = &model.wallet else {
         return stack.into();
     };
@@ -202,6 +207,35 @@ fn content<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> {
     }
     stack = stack.push(balance(model, wallet.total(), wallet.accounts.len()));
     stack.push(accounts(&wallet.accounts, unit)).into()
+}
+
+/// What a refresh is doing (S8's words), how far it has got, and its
+/// Cancel. Until it answers, Refresh and Node wait.
+fn working(busy: &Busy) -> Element<'_, Message> {
+    let (title, what) = super::activity(busy);
+    let mut text = column![
+        t(title, ty::CARD_TITLE, color::TEXT_PRIMARY),
+        t(what, ty::BODY_SMALL, color::TEXT_SECONDARY),
+    ]
+    .spacing(sp::S6);
+    if let Some(detail) = super::progress(busy) {
+        text = text.push(detail);
+    }
+    ui::card(
+        row![
+            text.width(Length::Fill),
+            ui::button_with(
+                "Cancel",
+                theme::Button::Secondary,
+                Size::Medium,
+                None,
+                Some(Message::Cancel),
+            ),
+        ]
+        .spacing(sp::S24)
+        .align_y(Alignment::Center),
+    )
+    .into()
 }
 
 /// The total, as the 02 hero card sets it (5.22), with the number of
