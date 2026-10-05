@@ -243,6 +243,8 @@ docs/PLAN.md section 5, "Keep the screenshots as CI artifacts", which phase
 3 needs. Before phase 3 the owner decides between an artifact-upload action
 pinned by commit hash, as the one exception to this rule, and keeping the
 screenshots some other way (for example committed to a branch).
+**Recommended in D27, item 1 (2026-10-05):** the screenshots are committed
+and CI checks that they are current; no action is added.
 
 ### D14. The renderings are committed as images, not as the supplied bundle
 
@@ -253,7 +255,8 @@ repository, and that rule overrides the instruction to commit the
 renderings unmodified. So `design/renderings/` holds each of the eight
 frames as a PNG drawn from the bundle at its own size, unretouched, and
 `design/INDEX.md` records the bundle's SHA-256 so the source can be
-identified. The owner keeps the source file.
+identified. The owner keeps the source file. **D27, item 14 recommends
+confirming this.**
 
 ### D15. Policy checks that run with the tests
 
@@ -743,6 +746,14 @@ changed in one place:
   NotFound`);
 - the short refusals for a command in the wrong session (locked, wallet
   not open, no node, no such plan);
+- the phrase screen's warning (S4): the library's own words as `create`
+  shows them, without their last sentence, about the terminal's scrollback,
+  which a window does not have;
+- the note under a library page that names a command-line verb, naming the
+  control that does the same (D27, item 13);
+- the application's own texts on the first-run screens, the opening
+  screen, the lock notes and the stopped screen (docs/SCREENS.md lists
+  them);
 - the refusal of a scan or an advance past `MAX_KEY_INDEX` (D19), whose
   range is the command line's and whose reason is the one its parser's
   documentation gives (`cli::args`, `index_flag`), and of a discovery bound
@@ -819,3 +830,166 @@ The worker's tests cover each of these:
 - the progress reports of opening, restore, advance and sweep;
 - a refused reopen keeping its store;
 - the planned page with and without the emptying warning.
+
+## Phase 3
+
+### D27. Phase 3: recommendations for the open items
+
+**proposed; recommended on 2026-10-05, when the owner asked for a
+recommendation on every open item and for phase 3 to proceed on them.**
+Each item says what was open, what is recommended, and why. Phase 3 is
+built on these recommendations; each stays open to the owner's review in
+the pull request that introduces it. docs/SCREENS.md maps every screen
+to them.
+
+1. **Screenshots are committed and checked, not uploaded (answers D13).**
+   `cargo run -p tawara-app --example screenshots` draws every screen
+   headlessly with iced's software renderer (tiny-skia) at the renderings'
+   sizes and scale 1, from fixed sample data, into `design/screenshots/`.
+   CI's Linux job draws them again and fails if any differs from the
+   committed file. This keeps D13's rule (no third-party action), puts
+   each screen next to its rendering in every pull request's diff, and
+   keeps the images for as long as the history does. An artifact-upload
+   action would be the one exception to D13, and its artifacts expire.
+   The cost is the repository's growth with each changed image.
+2. **Branding: the application shows its own name.** The renderings carry
+   the MOCHIMO wordmark and coin mark; docs/PLAN.md section 6 says the
+   application is not branded as an official product of the
+   cryptocurrency. So the sidebar and the first-run panel show "Tawara" as
+   a wordmark in Montserrat, and the coin mark appears nowhere: not as the
+   lockup, the first-run pattern, or the card watermarks. The first-run
+   panel keeps its green field, headline and feature pills, and says once,
+   plainly, what the application is for ("A wallet for Mochimo"). A mark of
+   Tawara's own is the owner's to supply.
+3. **The renderings' conflicts with docs/PLAN.md section 4, and the safe
+   version of each** (section 5: section 4 wins). Each is recorded with its
+   screen in docs/SCREENS.md:
+   - **"Advance to #33" (05) and "Reconcile" (02)** move a key index from a
+     button on a divergence (section 4.9, and the owner's terms in D19).
+     Both become a link to the account-recovery screen, reached on
+     purpose, which shows every account's report first, makes the person
+     type the index and confirm that no other wallet uses the seed. The
+     05 callout's own words ("This phrase probably signed on another
+     device") are replaced by the library's report.
+   - **"Recovery phrase: Show" (05)** shows the phrase again; section 4.3
+     shows it once, at creation, and the store keeps the seed, not the
+     phrase. Not built.
+   - **"Encrypted keystore file: Export" (05)** makes a copy of the store,
+     the rollback that section 4.5 calls a key-reuse hazard. Not built.
+   - **"Receipt verified: Merkle proof matches block root" (04)** claims a
+     check nothing in the wallet makes. Not built.
+   - **"Keystore password" before "Sign & submit" (03).** The store is
+     already open, and the library cannot check a password against an open
+     store. The confirmation is the library's own "NOT SIGNED" page (D26)
+     and an explicit "Sign & submit" after it, on its own step; no
+     password field.
+   - **Account names ("Primary", "Savings") and the "Default" badge
+     (02-05).** The store holds no names, and the library does not say
+     which derived account a tag is (its derivation number is private,
+     so that nothing outside can fabricate one). Each account is named by
+     its destination's first and last six characters, as the renderings
+     shorten tags elsewhere ("9xQmT4…3cYdAf"), with "derived" or
+     "imported" beside it; the "Default" badge is not shown. Item 11
+     proposes the library change that would let a derived account be
+     "Account N", as the command line's `restore --account N` names it.
+   - **"1 send settling · -1,250.000001" (02).** The store keeps no amount
+     for an open reservation (the library's specification says so), so the
+     chip counts outstanding spends without an amount.
+4. **Controls the library cannot back yet are left out, not faked.**
+   "Import a legacy .mcm file" (01, D23 item 6), "Password: Change" (05),
+   the mempool, a block's haiku, difficulty, nonce, root and type, the
+   average solve time and the next neogenesis (06, 07), the network's name
+   and "Transaction search: Indexer available" (05). Item 11 proposes the
+   library changes that would back them.
+5. **Controls that need a file or camera dialog are left out of phase 3.**
+   "Import CSV" and "Scan QR" (03), "Export CSV" (04). A native file
+   dialog is a dependency of its own (and on Linux a portal or toolkit);
+   it is proposed when one is needed. The retry artifact still has to be
+   saved (section 4.9): "Save artifact" writes it to the Downloads folder
+   under a new name (never overwriting), shows the full path, and offers
+   to copy the hex to the clipboard. The artifact is not secret: it is
+   the bytes the node is sent.
+6. **Fonts.** Static TTF instances of the renderings' three families,
+   bundled in `crates/app/fonts/` with each family's SIL Open Font
+   License 1.1 beside them: Poppins Regular, Medium and SemiBold and IBM
+   Plex Mono Regular and Medium from `google/fonts`, and Montserrat
+   Medium, SemiBold, Bold, Medium Italic and Bold Italic from the family's
+   own repository (Google Fonts ships Montserrat only as a variable
+   font, which iced would draw at its default Thin instance). They are not
+   subset: IBM Plex's licence reserves its name for unmodified files.
+   Poppins has no "→" (U+2192), which the renderings draw from a system
+   font; it is set in Montserrat, which has it. No text falls back to a
+   system font, so the screenshots are the same on every machine, and
+   item 1's check fails if any does.
+7. **Icons are drawn, not loaded.** The 25 line icons are drawn from the
+   path data in `design/TOKENS.md` section 6 with iced's `canvas`
+   feature, which adds six crates (`lyon` and its parts). iced's `svg`
+   feature would add 35, among them GIF and WebP decoders the icons do not
+   need. Both pass `cargo deny`.
+8. **Dark only.** The renderings are all dark (docs/PLAN.md section 5), so
+   there is one theme and the 05 "Theme" control is not built.
+9. **Width classes.** Phase 3 builds the expanded layout the renderings
+   show (1440 px wide) and a medium one down to 1024 px, where two-column
+   rows stack. The compact (phone) layout is proposed with the mobile
+   shells in phase 4, as `design/INDEX.md` asks.
+10. **Preferences are kept in a small file of their own.** The node's
+    URL, the amount unit (MCM or nanoMCM, 05) and the auto-lock period are
+    remembered in `preferences`, a plain text file in the application's
+    folder beside `keystore/`, never inside it. Nothing secret goes there.
+    Without it, the person would choose their node again at every start.
+    The auto-lock choices are 1, 2, 5, 10 and 15 minutes, 5 by default
+    (D24); there is no "never".
+11. **Library changes proposed for later phases** (none blocks phase 3;
+    written up in docs/LIBRARY-PROPOSALS.md):
+    - the block's own metadata (haiku, difficulty, nonce, root, size) and
+      its type (normal, pseudo, neogenesis), which the node sends and the
+      parser drops (06, 07);
+    - a read of the mempool (06);
+    - an offset for a tag's history, which stops at 100 rows today (04,
+      08);
+    - the network's identifier and the node's sync state (05);
+    - progress for a status read (D26), for a far scan on the recovery
+      screen;
+    - a derived account's number, read from the store's record, so an
+      account can be named as `restore --account N` names it (02-05);
+    - changing the store's password (05), if the owner wants it;
+    - importing the older wallets' `.mcm` files (01), before release if
+      moving people from them is a goal (D23 item 6).
+12. **D26's three open choices.** (1) Unlocking and creating are stopped
+    only by a cancel: the person is waiting on them, and the wallet
+    opening inside them walks no further than the library's diagnostic
+    scope. Keep. (2) A cancelled restore or advance answers with its own
+    reply and the store open on its own: the screen shows the text and the
+    store as it is. Keep. (3) The worker's texts: kept as written, since
+    each says what happened and nothing more; docs/SCREENS.md lists every
+    one with the screen that shows it, for the owner to change any.
+13. **The library's pages are shown whole.** A library page (a refusal, a
+    divergence report, the send and planned pages) is shown word for word
+    in IBM Plex Mono, its line breaks kept, never truncated. Where it names
+    a command-line verb, a note under it names the control that does the
+    same (D25): `settle` is "Settle", `resign` is "Re-sign", `submit` is
+    "Submit saved artifact", `reconcile ... --advance-to N` is the
+    account-recovery screen.
+14. **D14: the renderings as images.** Recommended to confirm: the eight
+    PNGs are drawn from the bundle unretouched, the bundle's hash
+    identifies the source, and the owner keeps the bundle.
+15. **Where the screens differ from the tokens, and why** (`design/TOKENS.md`;
+    every other value is the renderings'):
+    - **No letter spacing.** iced sets text solid, so the section labels'
+      0.12 em and the password field's 0.08 em are not drawn.
+    - **No tabular figures.** iced does not switch on a font's `tnum`
+      feature, so amounts are proportional; they are right-aligned in their
+      columns, as the renderings align them.
+    - **A focus ring.** The frames define no focus style. A focused field
+      draws its border in the accent, so a keyboard user can see where they
+      are.
+    - **Amounts with all nine places.** The renderings show some amounts to
+      six places ("9,215.402118"); every amount here keeps its nine places
+      (`12,480.537214906`), so no figure is rounded.
+16. **Order of work.** Four pull requests: (a) this entry, the screen
+    inventory, fonts, theme, icons, the application shell, preferences,
+    the screenshot check and the first-run screens; (b) the wallet:
+    dashboard, receive, adding an account, the send flow, the account
+    states of section 4.9, settling, re-signing and submitting a saved
+    artifact; (c) activity, settings and account recovery; (d) the
+    explorer.
