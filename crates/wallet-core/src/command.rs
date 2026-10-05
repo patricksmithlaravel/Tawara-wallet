@@ -34,6 +34,15 @@ impl RequestId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PlanId(pub(crate) u64);
 
+impl PlanId {
+    /// An id for sample data, as [`RequestId::example`]. The worker numbers
+    /// plans from 1, so confirming this one is always refused.
+    #[must_use]
+    pub const fn example() -> PlanId {
+        PlanId(0)
+    }
+}
+
 /// What the interface asks for.
 #[derive(Debug)]
 pub enum Command {

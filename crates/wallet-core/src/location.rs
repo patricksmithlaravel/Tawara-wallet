@@ -216,6 +216,56 @@ pub fn default_store_dir(
     Ok(base.join(app_dir_name(platform)).join(STORE_DIR_NAME))
 }
 
+/// The person's Downloads folder, where "Save artifact" writes a signed
+/// spend's bytes (docs/DECISIONS.md D27, item 5):
+///
+/// - Windows: `%USERPROFILE%\Downloads`, the folder's own place. A folder
+///   the person has moved is recorded by the shell's known-folder list,
+///   which only the Windows API reads, and is not followed;
+/// - macOS: `~/Downloads`;
+/// - Linux: the `XDG_DOWNLOAD_DIR` that `user-dirs.dirs` names (in
+///   `$XDG_CONFIG_HOME`, or `~/.config`), when it names one under `$HOME`
+///   or an absolute folder, and `~/Downloads` otherwise;
+/// - Android and iOS: `None`, the shell's to decide.
+///
+/// `None` too when the variable a desktop starts from is unset, empty or
+/// relative. Nothing is created here.
+#[must_use]
+pub fn downloads_dir(platform: Platform, env: &Environment) -> Option<PathBuf> {
+    match platform {
+        Platform::Windows => Some(env.absolute("USERPROFILE", platform)?.join("Downloads")),
+        Platform::MacOs => Some(env.absolute("HOME", platform)?.join("Downloads")),
+        Platform::Linux => {
+            let home = env.absolute("HOME", platform)?;
+            let config = env
+                .absolute("XDG_CONFIG_HOME", platform)
+                .unwrap_or_else(|| home.join(".config"));
+            let named = std::fs::read_to_string(config.join("user-dirs.dirs"))
+                .ok()
+                .and_then(|text| user_dirs_download(&text, &home));
+            Some(named.unwrap_or_else(|| home.join("Downloads")))
+        }
+        Platform::Android | Platform::Ios => None,
+    }
+}
+
+/// The download folder `user-dirs.dirs` names, as `xdg-user-dirs` writes
+/// the file: `XDG_DOWNLOAD_DIR="$HOME/Downloads"` or an absolute path in
+/// quotes. `"$HOME/"` alone is the specification's way of saying the folder
+/// is turned off, and anything else is not understood; both are `None`.
+fn user_dirs_download(text: &str, home: &Path) -> Option<PathBuf> {
+    let value = text.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("XDG_DOWNLOAD_DIR=")
+            .map(|v| v.trim().trim_matches('"'))
+    })?;
+    if let Some(rest) = value.strip_prefix("$HOME/") {
+        let rest = rest.trim_end_matches('/');
+        return (!rest.is_empty()).then(|| home.join(rest));
+    }
+    value.starts_with('/').then(|| PathBuf::from(value))
+}
+
 /// The store directory under a mobile app's private directory: on Android
 /// the `no_backup` directory, which the system leaves out of Auto Backup
 /// (docs/DECISIONS.md D21), on iOS Application Support in the app's
@@ -577,6 +627,71 @@ mod tests {
             default_store_dir(Platform::Linux, &Environment::default()),
             Err(NoDefaultLocation::Unset { variable: "HOME" })
         );
+    }
+
+    #[test]
+    fn downloads_follow_each_desktop_convention() {
+        let windows = Environment::of(&[("USERPROFILE", r"C:\Users\ann")]);
+        assert_eq!(
+            downloads_dir(Platform::Windows, &windows),
+            Some(p(r"C:\Users\ann").join("Downloads"))
+        );
+        let mac = Environment::of(&[("HOME", "/Users/ann")]);
+        assert_eq!(
+            downloads_dir(Platform::MacOs, &mac),
+            Some(p("/Users/ann/Downloads"))
+        );
+        assert_eq!(
+            downloads_dir(Platform::MacOs, &Environment::default()),
+            None
+        );
+        assert_eq!(downloads_dir(Platform::Android, &mac), None);
+        assert_eq!(downloads_dir(Platform::Ios, &mac), None);
+    }
+
+    /// Linux reads `user-dirs.dirs` from the disk, so this one needs a home
+    /// folder that is absolute by Linux's rules: a Unix host's.
+    #[cfg(unix)]
+    #[test]
+    fn linux_downloads_are_what_user_dirs_names_or_the_default() {
+        let home = std::env::temp_dir().join(format!("tawara-user-dirs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join(".config")).unwrap();
+        let home_text = home.display().to_string();
+        let env = Environment::of(&[("HOME", home_text.as_str())]);
+        assert_eq!(
+            downloads_dir(Platform::Linux, &env),
+            Some(home.join("Downloads"))
+        );
+        std::fs::write(
+            home.join(".config").join("user-dirs.dirs"),
+            "# written by xdg-user-dirs-update\nXDG_DESKTOP_DIR=\"$HOME/Desktop\"\n\
+             XDG_DOWNLOAD_DIR=\"$HOME/Téléchargements\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            downloads_dir(Platform::Linux, &env),
+            Some(home.join("Téléchargements"))
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn user_dirs_names_a_download_folder_or_nothing() {
+        let home = Path::new("/home/ann");
+        let read = |text: &str| user_dirs_download(text, home);
+        assert_eq!(
+            read("XDG_DOWNLOAD_DIR=\"$HOME/Downloads\""),
+            Some(p("/home/ann/Downloads"))
+        );
+        assert_eq!(
+            read("  XDG_DOWNLOAD_DIR=\"/data/ann/dl\"  "),
+            Some(p("/data/ann/dl"))
+        );
+        // Turned off, relative, missing: none of them names a folder.
+        assert_eq!(read("XDG_DOWNLOAD_DIR=\"$HOME/\""), None);
+        assert_eq!(read("XDG_DOWNLOAD_DIR=\"dl\""), None);
+        assert_eq!(read("XDG_MUSIC_DIR=\"$HOME/Music\""), None);
     }
 
     #[test]

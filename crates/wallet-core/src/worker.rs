@@ -590,7 +590,7 @@ fn destinations(spend: &Spend, everything: u64) -> Vec<Destination> {
         .collect()
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -2126,6 +2126,38 @@ pub fn save_artifact(path: &Path, artifact_hex: &str) -> std::io::Result<()> {
     file.sync_all()
 }
 
+/// [`save_artifact`] into `dir` under a name of its own, `stem.hex`, or
+/// `stem-2.hex`, `stem-3.hex` and so on when that is taken, so no file is
+/// ever overwritten, and answer with the path written (docs/DECISIONS.md
+/// D27, item 5). `dir` is made when it is missing.
+pub fn save_artifact_in(
+    dir: &Path,
+    stem: &str,
+    artifact_hex: &str,
+) -> std::io::Result<std::path::PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    for n in 1..=999u32 {
+        let name = if n == 1 {
+            format!("{stem}.hex")
+        } else {
+            format!("{stem}-{n}.hex")
+        };
+        let path = dir.join(name);
+        match save_artifact(&path, artifact_hex) {
+            Ok(()) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!(
+            "{stem}.hex and 998 more names after it are already taken in {}",
+            dir.display()
+        ),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2201,5 +2233,18 @@ mod tests {
             std::io::ErrorKind::AlreadyExists
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_artifact_saved_in_a_folder_takes_a_name_of_its_own() {
+        let dir = std::env::temp_dir().join(format!("tawara-artifacts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let first = save_artifact_in(&dir, "spend", "abcd").unwrap();
+        assert_eq!(first, dir.join("spend.hex"));
+        let second = save_artifact_in(&dir, "spend", "ef").unwrap();
+        assert_eq!(second, dir.join("spend-2.hex"));
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "abcd\n");
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "ef\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
