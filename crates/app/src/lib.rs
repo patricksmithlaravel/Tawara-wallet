@@ -18,6 +18,7 @@
 
 pub mod app;
 pub mod fonts;
+pub mod history;
 pub mod icon;
 pub mod screens;
 pub mod theme;

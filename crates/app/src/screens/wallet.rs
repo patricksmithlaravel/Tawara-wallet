@@ -5,11 +5,14 @@
 //! 16); their sidebar items are shown and not yet enabled.
 
 mod account;
+mod activity;
 mod add_account;
 mod dashboard;
 mod receive;
+mod recovery;
 mod report;
 mod send;
+mod settings;
 
 use iced::widget::{column, container, row, rule, scrollable, space};
 use iced::{Alignment, Element, Length, Padding};
@@ -25,14 +28,14 @@ use crate::theme::{self, color, space as sp};
 use crate::ui::{self, Size, t, ty};
 
 /// The sidebar's items (5.3), in the renderings' order, and where each
-/// leads; the last three are not built yet.
+/// leads; the explorer comes with the next pull request.
 const NAV: [(Icon, &str, Option<To>); 6] = [
     (Icon::Wallet, "Wallet", Some(To::Dashboard)),
     (Icon::Send, "Send", Some(To::Send(None))),
     (Icon::Receive, "Receive", Some(To::Receive(None))),
-    (Icon::Activity, "Activity", None),
+    (Icon::Activity, "Activity", Some(To::Activity)),
     (Icon::Cube, "Explorer", None),
-    (Icon::Sliders, "Settings", None),
+    (Icon::Sliders, "Settings", Some(To::Settings)),
 ];
 
 /// The wallet's page with the sidebar.
@@ -45,6 +48,9 @@ pub fn view<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> 
         Page::Resign(r) => send::resign(model, page, r),
         Page::Submit(s) => send::submit(model, page, s),
         Page::Account(a) => account::view(model, page, a),
+        Page::Activity(a) => activity::view(model, page, a),
+        Page::Settings(s) => settings::view(model, page, s),
+        Page::Recovery(r) => recovery::view(model, page, r),
     };
     row![
         sidebar(model, page),

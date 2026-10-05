@@ -94,6 +94,34 @@ pub fn t<'a>(content: impl text::IntoFragment<'a>, ty: Type, color: Color) -> Te
         .color(color)
 }
 
+/// `content` as [`t`] sets it, wrapping at words or glyphs, with each "→"
+/// drawn from [`fonts::ARROW`] when `ty` is Poppins: Poppins has no arrow,
+/// and one drawn from whatever system font the machine has would make the
+/// screenshots differ from machine to machine (`design/TOKENS.md` section
+/// 9).
+pub fn arrowed<'a, M: 'a>(content: String, ty: Type, color: Color) -> Element<'a, M> {
+    let poppins = ty.font.family == iced::font::Family::Name("Poppins");
+    if !poppins || !content.contains('→') {
+        return t(content, ty, color).wrapping(Wrapping::WordOrGlyph).into();
+    }
+    let mut spans: Vec<iced::widget::text::Span<'a, (), Font>> = Vec::new();
+    for (n, part) in content.split('→').enumerate() {
+        if n > 0 {
+            spans.push(iced::widget::span("→").font(fonts::ARROW));
+        }
+        if !part.is_empty() {
+            spans.push(iced::widget::span(part.to_owned()));
+        }
+    }
+    iced::widget::rich_text(spans)
+        .font(ty.font)
+        .size(ty.size)
+        .line_height(LineHeight::Relative(ty.line_height()))
+        .color(color)
+        .wrapping(Wrapping::WordOrGlyph)
+        .into()
+}
+
 /// `content` in role `ty`, in the colour of whatever it sits in (a
 /// button's label takes the button's text colour).
 pub fn label<'a>(content: impl text::IntoFragment<'a>, ty: Type) -> Text<'a> {
@@ -492,6 +520,80 @@ pub fn unit_name(unit: tawara_wallet_core::preferences::AmountUnit) -> &'static 
     }
 }
 
+/// A time the node gave (milliseconds since the epoch) on the UTC calendar:
+/// year, month (1 to 12), day, hour, minute, second. The library carries no
+/// calendar and prints the raw count; the screens show dates, always in UTC
+/// and saying so, since no time zone is read from the system.
+#[must_use]
+pub fn utc(ms: i64) -> (i64, u32, u32, u32, u32, u32) {
+    let secs = ms.div_euclid(1_000);
+    let days = secs.div_euclid(86_400);
+    let of_day = secs.rem_euclid(86_400);
+    // Howard Hinnant's days-to-civil, for the proleptic Gregorian calendar.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    let part = |n: i64| u32::try_from(n).unwrap_or(0);
+    (
+        year,
+        part(month),
+        part(day),
+        part(of_day / 3_600),
+        part(of_day % 3_600 / 60),
+        part(of_day % 60),
+    )
+}
+
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// "Oct 3", in UTC.
+#[must_use]
+pub fn short_date(ms: i64) -> String {
+    let (_, month, day, ..) = utc(ms);
+    let name = MONTHS
+        .get(usize::try_from(month).unwrap_or(1).saturating_sub(1))
+        .copied()
+        .unwrap_or("");
+    format!("{name} {day}")
+}
+
+/// "Oct 3 · 14:03", in UTC.
+#[must_use]
+pub fn date_time(ms: i64) -> String {
+    let (.., hour, minute, _) = utc(ms);
+    format!("{} · {hour:02}:{minute:02}", short_date(ms))
+}
+
+/// "2026-10-03 14:03:20 UTC".
+#[must_use]
+pub fn full_time(ms: i64) -> String {
+    let (year, month, day, hour, minute, second) = utc(ms);
+    format!("{year}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} UTC")
+}
+
+/// How long before `now` the time `then` was, both in milliseconds since
+/// the epoch: "48 s ago", "6 min ago", "3 h ago", "2 days ago". A time
+/// after `now` (a clock behind the node's) is "just now".
+#[must_use]
+pub fn age(now: i64, then: i64) -> String {
+    let secs = now.saturating_sub(then) / 1_000;
+    match secs {
+        ..=0 => "just now".to_owned(),
+        1..=99 => format!("{secs} s ago"),
+        100..=5_999 => format!("{} min ago", secs / 60),
+        6_000..=172_799 => format!("{} h ago", secs / 3_600),
+        _ => format!("{} days ago", secs / 86_400),
+    }
+}
+
 /// Fixed pixels, for the sizes the renderings state.
 #[must_use]
 pub fn px(n: f32) -> Length {
@@ -541,5 +643,19 @@ mod tests {
         );
         assert_eq!(group("100"), "100");
         assert_eq!(group("1000"), "1,000");
+    }
+
+    #[test]
+    fn times_are_read_on_the_utc_calendar() {
+        assert_eq!(utc(0), (1970, 1, 1, 0, 0, 0));
+        assert_eq!(full_time(1_791_036_200_000), "2026-10-03 14:03:20 UTC");
+        assert_eq!(date_time(1_791_036_200_000), "Oct 3 · 14:03");
+        assert_eq!(full_time(951_782_400_000), "2000-02-29 00:00:00 UTC");
+        assert_eq!(full_time(-1_000), "1969-12-31 23:59:59 UTC");
+        assert_eq!(age(10_000, 10_000), "just now");
+        assert_eq!(age(58_000, 10_000), "48 s ago");
+        assert_eq!(age(10_000 + 360_000, 10_000), "6 min ago");
+        assert_eq!(age(3 * 86_400_000, 0), "3 days ago");
+        assert_eq!(age(0, 5_000), "just now", "a clock behind the node's");
     }
 }

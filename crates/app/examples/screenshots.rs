@@ -25,12 +25,14 @@ use iced::theme::Base;
 use iced::{Event, Size, window};
 use iced_runtime::user_interface::{Cache, UserInterface};
 use tawara_app::app::{
-    AccountPage, AddAccountPage, Back, Busy, DestinationRow, Level, Model, NodeForm, NodeState,
-    Page, PasswordForm, PhraseState, ReceivePage, ReportKey, ResignPage, RestoreForm, Screen,
-    SendPage, SendStage, SentPage, Signed, SpendForm, StartChoice, SubmitPage, UnlockForm,
-    WalletPage,
+    AccountPage, ActivityPage, AddAccountPage, Back, Busy, DestinationRow, Explored, Level, Model,
+    NodeForm, NodeState, Page, PasswordForm, PhraseState, ReceivePage, RecoveryPage, ReportKey,
+    ResignPage, RestoreForm, Screen, SendPage, SendStage, SentPage, SettingsPage, Signed,
+    SpendForm, StartChoice, SubmitPage, UnlockForm, WalletPage,
 };
+use tawara_app::history::Filter;
 use tawara_app::{fonts, screens, theme};
+use tawara_wallet_core::explorer::ExplorerRefusal;
 use tawara_wallet_core::location::SyncWarning;
 use tawara_wallet_core::preferences::Preferences;
 use tawara_wallet_core::sample;
@@ -58,6 +60,9 @@ fn base() -> Model {
         tip: Some((871_173, Duration::from_millis(42))),
         error: None,
     };
+    // The clock stands 48 seconds after the sample chain's newest block,
+    // so the drawn age is the same on every run.
+    model.clock_ms = sample::TIP_MS + 48_000;
     model.screen = Screen::Start {
         choice: StartChoice::Create,
     };
@@ -84,7 +89,16 @@ fn on(page: Page) -> Model {
         ..WalletPage::default()
     }));
     m.wallet = Some(sample::wallet_view());
+    m.activity = read(sample::activity());
+    m.blocks = read(sample::blocks());
     m
+}
+
+fn read<T>(value: T) -> Explored<T> {
+    Explored {
+        last: Some(Ok(value)),
+        reading: false,
+    }
 }
 
 fn with(screen: Screen) -> Model {
@@ -201,6 +215,35 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
     let set_aside = |page| {
         let mut m = on(page);
         m.wallet = Some(aside.clone());
+        m
+    };
+    let mut no_index = on(Page::Activity(ActivityPage::default()));
+    no_index.activity = Explored {
+        last: Some(Err(ExplorerRefusal {
+            no_index: true,
+            text: "the node answered error 1: Internal error\n  The Mesh's search endpoint \
+                   answers an internal error when its indexer database is not initialised."
+                .to_owned(),
+        })),
+        reading: false,
+    };
+    // Every account's report whole (D19), the paused one chosen, its index
+    // typed and the second wallet ruled out.
+    let recovery = |others: Level, paused: Level| {
+        let reports = sample::review();
+        let mut m = on(Page::Recovery(RecoveryPage {
+            target: Some(reports[2].account),
+            index: "33".to_owned(),
+            confirmed: true,
+            reports: Some(reports),
+            result: None,
+        }));
+        if let Screen::Wallet(p) = &mut m.screen {
+            for n in 0..2 {
+                p.open.insert(ReportKey::Review(n), others);
+            }
+            p.open.insert(ReportKey::Review(2), paused);
+        }
         m
     };
     let mut stopped = base();
@@ -440,6 +483,38 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
             })),
         ),
         ("w1-wallet-unreconciled", DASHBOARD, unreconciled),
+        (
+            "w10-activity",
+            DASHBOARD,
+            on(Page::Activity(ActivityPage::default())),
+        ),
+        (
+            "w10-activity-pending",
+            DASHBOARD,
+            on(Page::Activity(ActivityPage {
+                filter: Filter::Pending,
+                ..ActivityPage::default()
+            })),
+        ),
+        ("w10-activity-no-index", DASHBOARD, no_index),
+        (
+            "w11-settings",
+            DASHBOARD,
+            on(Page::Settings(SettingsPage {
+                node: NODE.to_owned(),
+            })),
+        ),
+        (
+            "w12-recovery",
+            DASHBOARD,
+            recovery(Level::Full, Level::Full),
+        ),
+        // The reports that need nothing closed, so the advance shows.
+        (
+            "w12-recovery-advance",
+            DASHBOARD,
+            recovery(Level::Closed, Level::Summary),
+        ),
         ("stopped-spends", FIRST_RUN, stopped),
         ("narrow-s1-get-started", SMALLEST, base()),
         ("narrow-w1-wallet", DASHBOARD_NARROW, wallet()),

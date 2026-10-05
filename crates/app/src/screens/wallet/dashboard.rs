@@ -1,6 +1,6 @@
 //! W1, the wallet (rendering 02): the balance, the one-time keys, the
-//! accounts, and the store's notice whole above them. Recent activity and
-//! the network card need the explorer's reads, and come with Activity
+//! accounts, the store's notice above them, and below them the newest
+//! transactions from the node's index and the network card
 //! (docs/SCREENS.md W1, W10).
 
 use iced::widget::text::Wrapping;
@@ -9,8 +9,9 @@ use iced::{Alignment, Element, Length, Padding};
 use tawara_wallet_core::preferences::AmountUnit;
 use tawara_wallet_core::view::{AccountRow, AccountState, Total, WalletView};
 
-use super::{action, copy, destination, frame, kind, name, pair, report, status};
+use super::{action, activity, copy, destination, frame, kind, name, pair, report, status};
 use crate::app::{Message, Model, ReportKey, To, WalletMsg, WalletPage, minutes};
+use crate::history::{self, Kind};
 use crate::icon::Icon;
 use crate::theme::{self, color, space as sp};
 use crate::ui::{self, Size, t, ty};
@@ -59,6 +60,7 @@ pub fn view<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> 
             4,
         ));
         body.push(accounts(model, page, &wallet.accounts));
+        body.push(pair(model, recent(model, page), network(model), 7, 4));
     }
     frame(model, page, "Wallet", subtitle, actions, body)
 }
@@ -408,4 +410,199 @@ fn accounts<'a>(
     .width(Length::Fill)
     .style(theme::card)
     .into()
+}
+
+/// How many of the newest transactions the dashboard lists.
+const RECENT: usize = 4;
+
+/// Recent activity (02): the newest transactions of every account from the
+/// node's index, and the spends the store has reserved and not settled,
+/// with no amount, since it keeps none.
+fn recent<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> {
+    let unit = model.prefs.unit;
+    let mut list = column![].spacing(sp::S4);
+    let mut shown = 0;
+    if let Some(w) = &model.wallet {
+        for account in history::pending(&w.accounts) {
+            shown += 1;
+            list = list.push(line(
+                Icon::Clock,
+                color::WARNING,
+                "Spend settling".to_owned(),
+                format!("{} · the store's own record", name(account.id)),
+                t("settling", ty::TABLE_BODY, color::WARNING).into(),
+                t("not kept", ty::TABLE_BODY, color::TEXT_MUTED).into(),
+            ));
+        }
+    }
+    match &model.activity.last {
+        Some(Ok(histories)) => {
+            for r in history::rows(histories)
+                .iter()
+                .take(RECENT.saturating_sub(shown))
+            {
+                shown += 1;
+                let (title, detail) = activity::describe(r);
+                let (amount, ink) = activity::amount(r, unit);
+                let (glyph, tint) = match r.kind {
+                    Kind::Sent => (Icon::Send, color::TEXT_SECONDARY),
+                    Kind::Received | Kind::Reward => (Icon::Receive, color::ACCENT),
+                    Kind::Own | Kind::Other => (Icon::Swap, color::TEXT_SECONDARY),
+                };
+                let when = r.tx.time_ms.map_or_else(|| "—".to_owned(), ui::short_date);
+                list = list.push(line(
+                    glyph,
+                    tint,
+                    title,
+                    format!("{detail} · {when}"),
+                    t(
+                        r.tx.block.map_or_else(String::new, |b| {
+                            format!("block {}", ui::group(&b.to_string()))
+                        }),
+                        ty::NOTE,
+                        color::TEXT_MUTED,
+                    )
+                    .into(),
+                    t(amount, ty::TABLE_AMOUNT, ink).into(),
+                ));
+            }
+            if shown == 0 {
+                list = list.push(ui::helper(
+                    "The node's index holds no transaction for this store's accounts yet.",
+                ));
+            }
+        }
+        Some(Err(refusal)) => {
+            list = list.push(report::show(
+                page,
+                ReportKey::Explorer,
+                report::explorer(refusal, "its transaction index"),
+            ));
+        }
+        None => {
+            list = list.push(ui::helper(if model.activity.reading {
+                "Reading the node's index…"
+            } else {
+                "Not read: no node is chosen, or it has not answered yet."
+            }));
+        }
+    }
+    ui::card(
+        column![
+            row![
+                ui::section_label("Recent activity"),
+                space().width(Length::Fill),
+                ui::link(
+                    "View all",
+                    ty::LINK_SMALL,
+                    Message::from(WalletMsg::Open(To::Activity))
+                ),
+            ]
+            .align_y(Alignment::Center),
+            list,
+        ]
+        .spacing(sp::S12),
+    )
+    .into()
+}
+
+/// One line of recent activity: a glyph, what it was and when, its state,
+/// and its amount.
+fn line<'a>(
+    glyph: Icon,
+    tint: iced::Color,
+    title: String,
+    detail: String,
+    state: Element<'a, Message>,
+    amount: Element<'a, Message>,
+) -> Element<'a, Message> {
+    row![
+        container(crate::icon::icon(glyph, 16.0, 2.0, tint))
+            .center(Length::Fixed(36.0))
+            .style(theme::icon_tile(color::BG_RAISED, tint)),
+        column![
+            ui::arrowed(title, ty::ROW_TITLE, color::TEXT_PRIMARY),
+            t(detail, ty::NOTE, color::TEXT_MUTED).wrapping(Wrapping::WordOrGlyph),
+        ]
+        .spacing(sp::S2)
+        .width(Length::FillPortion(5)),
+        container(state).width(Length::FillPortion(2)),
+        container(amount)
+            .width(Length::FillPortion(3))
+            .align_x(Alignment::End),
+    ]
+    .spacing(sp::S12)
+    .align_y(Alignment::Center)
+    .padding(Padding::from([sp::S8, 0.0]))
+    .into()
+}
+
+/// The network card (02): the chain's height, how long ago its last block
+/// was made, and the newest blocks. A block's type, the difficulty and the
+/// mempool are not read: the library does not serve them yet
+/// (docs/DECISIONS.md D27, item 4).
+fn network(model: &Model) -> Element<'_, Message> {
+    let stat = |label: &'static str, value: String| {
+        column![
+            t(label, ty::NOTE, color::TEXT_MUTED),
+            t(value, ty::STAT_VALUE, color::TEXT_PRIMARY),
+        ]
+        .spacing(sp::S4)
+        .width(Length::Fill)
+    };
+    let mut card = column![ui::section_label("Network")].spacing(sp::S16);
+    match &model.blocks.last {
+        Some(Ok(view)) => {
+            let last = view
+                .blocks
+                .first()
+                .map_or_else(|| "—".to_owned(), |b| ui::age(model.clock_ms, b.time_ms));
+            card = card.push(row![
+                stat("Block height", ui::group(&view.tip.to_string())),
+                stat("Last block", last),
+            ]);
+            let mut chips = row![].spacing(sp::S8);
+            for (n, b) in view.blocks.iter().rev().enumerate() {
+                let newest = n + 1 == view.blocks.len();
+                let digits = b.index.to_string();
+                let tail = digits[digits.len().saturating_sub(3)..].to_owned();
+                chips = chips.push(
+                    container(t(
+                        tail,
+                        ty::MONO_SMALL,
+                        if newest {
+                            color::ACCENT
+                        } else {
+                            color::TEXT_SECONDARY
+                        },
+                    ))
+                    .center_x(Length::Fill)
+                    .padding(Padding::from([sp::S10, 0.0]))
+                    .style(theme::radio_card(newest)),
+                );
+            }
+            card = card
+                .push(t(
+                    format!("Last {} blocks", view.blocks.len()),
+                    ty::NOTE,
+                    color::TEXT_MUTED,
+                ))
+                .push(chips);
+        }
+        Some(Err(_)) => {
+            card = card.push(t(
+                "The node did not serve its newest blocks.",
+                ty::BODY_SMALL,
+                color::TEXT_SECONDARY,
+            ));
+        }
+        None => {
+            card = card.push(ui::helper(if model.blocks.reading {
+                "Reading the newest blocks…"
+            } else {
+                "Not read: no node is chosen, or it has not answered yet."
+            }));
+        }
+    }
+    ui::card(card).into()
 }

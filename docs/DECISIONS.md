@@ -1006,7 +1006,7 @@ to them.
     explorer's reads, which the worker does not make yet, and turning a
     tag's history into rows is Activity's own question (W10); both come
     with (c). The sidebar's network panel shows the node, the tip and the
-    latency meanwhile.
+    latency meanwhile. *Built in (c): D29.*
 
 ### D28. The library's pages: a banner, a summary, then the page
 
@@ -1064,3 +1064,60 @@ How it is kept honest:
   Every other banner starts closed.
 - A refusal that reads as a line stays a line; a longer one is a banner
   whose summary is its first paragraph.
+
+### D29. Phase 3 (c): activity, settings and account recovery
+
+**proposed; for the owner's review in the pull request that introduces
+it.** PR (c) builds docs/SCREENS.md W10 to W12 and the dashboard's two
+cards that D27 item 16 moved here. The choices it makes:
+
+1. **The explorer reads go on in the background.** The index's rows
+   (`Command::Activity`, one request per account) and the newest blocks
+   (`Command::Blocks`) are read when a store opens, on Refresh, and when
+   Activity opens, without the busy card: the screen shows the last answer
+   while the next comes, and a refusal that is not the node's answer (a
+   cancel, no node) leaves it. They are commands like any other, so they
+   do not keep the store open (D24), and a lock drops what the index held
+   for the store.
+2. **A row is what the transaction did to the account,** net of its
+   change, by the command line's own sums: the index debits a spend's
+   source gross and lists the change as a destination of its own
+   (`cli::render`, `recent_transactions`; the rule is private there and
+   repeated in `wallet-core::explorer`, naming it, as D19 does for the
+   others). A transfer between two of the store's accounts is in both
+   accounts' rows and is listed once, from the account it left. The words
+   (sent, received, between own accounts, mining reward) are Tawara's;
+   they say nothing a row does not.
+3. **References appear only where the node sends them.** The library
+   notes that the index carries none on these rows, so Activity shows the
+   transaction's id under a row instead, and no reference is inferred.
+   Text the node sends is made safe to show by the command line's rule
+   for external text (`cli::terminal_text`, repeated likewise).
+4. **Dates are shown in UTC, and say so.** The library carries no calendar
+   and prints the raw count; Tawara reads no time zone from the system.
+   The age of the newest block is measured by a clock that moves each
+   second, on a thread of its own, as the worker's events are (iced's
+   thread-pool executor keeps no timer; no dependency is added).
+5. **Account recovery shows every report whole first.** D19 asks for the
+   library's whole report for every account before anything else; D28
+   puts each library page behind a banner. On W12 each account's banner
+   opens to the library's whole page from the start, so both hold. The
+   page reads every account afresh when it opens (`Command::Review`, which
+   applies what it finds only once all have answered) and again after an
+   advance.
+6. **What account recovery offers.** The advance, only for an account
+   whose live report names the index, typed by the person and sent only
+   once they confirm no other wallet uses the recovery phrase; the library
+   advances only to exactly that index or refuses. For an account whose
+   chain address was not among the keys searched, a wider search to a key
+   index the person types (`Command::Status` with `scan_to`), which writes
+   nothing. Restore stays in W3, as D19 has it.
+7. **Settings takes effect at once.** The auto-lock period reaches the
+   running worker (`WorkerHandle::set_idle_lock`) and counts from the
+   person's last input, so a shorter period can lock straight away. About
+   names the wallet library's commit (`wallet-core::LIBRARY_REV`), which
+   the policy tests hold to the workspace's pin, since the library carries
+   no version of its own to read. The keystore card says how a new store's
+   key is derived (`keystore::Kdf::RECOMMENDED`); the library does not say
+   it for an open store, so the card does not claim it.
+
