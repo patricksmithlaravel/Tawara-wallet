@@ -10,7 +10,7 @@ use core::fmt;
 use std::path::PathBuf;
 
 use crate::command::{PlanId, RequestId};
-use crate::explorer::{AccountHistory, BlocksView, ExplorerRefusal};
+use crate::explorer::{AccountHistory, BlocksView, ExplorerRefusal, References};
 use crate::secret::PhraseForDisplay;
 use crate::spend::SpendInputError;
 use crate::view::{AccountId, AccountState, WalletView};
@@ -200,6 +200,12 @@ pub enum Reply {
     /// did not serve them: a refusal for one account is the answer for all,
     /// since every read goes to the same index.
     Activity(Result<Vec<AccountHistory>, ExplorerRefusal>),
+    /// One transaction's references from its block, or why the node did
+    /// not serve the block. `transaction` is the id asked about.
+    References {
+        transaction: String,
+        read: Result<References, ExplorerRefusal>,
+    },
     /// Every account reconciled now, in the store's order.
     Reviewed(Vec<AccountReport>),
     /// The command was refused; nothing it would have changed was changed

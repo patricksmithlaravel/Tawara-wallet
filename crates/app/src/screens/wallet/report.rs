@@ -11,7 +11,7 @@
 
 use iced::widget::{button, column, container, row};
 use iced::{Alignment, Element, Length};
-use tawara_wallet_core::explorer::{AccountHistory, ExplorerRefusal};
+use tawara_wallet_core::explorer::{AccountHistory, ExplorerRefusal, References};
 use tawara_wallet_core::view::{AccountRow, AccountState, DivergenceKind, NoticeKind, WalletView};
 use tawara_wallet_core::{AccountReport, Discovered, PlanView, SentView};
 
@@ -586,6 +586,41 @@ pub fn history(h: &AccountHistory) -> Report<'_> {
         ));
     }
     r.full(&h.text)
+}
+
+/// The block a transaction's references were read from (W10): what the
+/// block says of it, and the library's page for the block.
+pub fn block(r: &References) -> Report<'_> {
+    let number = ui::group(&r.block.to_string());
+    let report = match &r.destinations {
+        Some(_) => Report::new(Tone::Note, format!("References read from block {number}"))
+            .says(
+                "The node's index carries no references on its rows, so they were read from \
+                 the block the transaction landed in, which carries each destination's.",
+            )
+            .says(
+                "The block lists a transaction as it was sent: the source debited net of its \
+                 change, and the change not listed. The index lists the same transaction gross, \
+                 with the change as a destination of its own.",
+            ),
+        None => {
+            let mut report = Report::new(
+                Tone::Warning,
+                format!("Block {number} does not carry this transaction"),
+            )
+            .says(
+                "The index names this block for it, and the block, read now, does not list it. \
+                 Its references are not known, and none is guessed.",
+            )
+            .causes(&[
+                "The chain changed after the index answered, and the transaction now sits in \
+                 another block: Read again, above, reads the index afresh.",
+            ]);
+            report.causes_title = "What helps";
+            report
+        }
+    };
+    report.full(&r.text)
 }
 
 const NO_INDEX: &str = "Activity reads the node's transaction index, which a node runs only \

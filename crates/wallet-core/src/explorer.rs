@@ -1,9 +1,11 @@
 //! What the node's explorer endpoints say, as the interface shows it:
 //! a tag's transactions from the node's index (Activity, docs/SCREENS.md
-//! W10) and the newest blocks (the wallet's network card, W1).
+//! W10), one transaction's references from its block (W10 again), and the
+//! newest blocks (the wallet's network card, W1).
 //!
 //! The rows are the library's (`mesh::codec`), read with the command
-//! line's own calls (`cli::cmd_recent_transactions`, `cli::cmd_blocks`),
+//! line's own calls (`cli::cmd_recent_transactions`, `cli::cmd_block`,
+//! `cli::cmd_blocks`),
 //! and every read carries the library's page for it, word for word. What
 //! the interface works out from a row (which way it moved, by how much, for
 //! one account) follows the command line's page for the same rows
@@ -249,6 +251,46 @@ pub struct BlocksView {
     pub blocks: Vec<BlockSummary>,
     /// The library's page for them, word for word.
     pub text: String,
+}
+
+/// One transaction's references, as the block it landed in carries them.
+///
+/// The index's rows carry no references: the library reads `metadata` on
+/// no `/search` operation, because the endpoint sends none. The block
+/// carries each destination's (`/block`, `Operation::memo`). The block
+/// lists a transaction as it was sent: the source debited net and no change
+/// destination, unlike the index (the command line's `block` page says so).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct References {
+    /// The block read.
+    pub block: u64,
+    /// The transaction's destinations, each with its reference (empty for
+    /// none), in the block's order; `None` when the block does not carry
+    /// the transaction, as when the chain has moved on since the index
+    /// answered.
+    pub destinations: Option<Vec<OperationView>>,
+    /// The library's page for the block, word for word.
+    pub text: String,
+}
+
+impl References {
+    pub(crate) fn of(transaction: &str, block: &MeshBlock, text: String) -> References {
+        let found = block
+            .transactions
+            .iter()
+            .find(|t| hex(&t.hash).eq_ignore_ascii_case(transaction));
+        References {
+            block: block.block.index,
+            destinations: found.map(|t| {
+                TransactionView::of(t)
+                    .operations
+                    .into_iter()
+                    .filter(|o| o.kind == OperationKind::Destination)
+                    .collect()
+            }),
+            text,
+        }
+    }
 }
 
 /// Why an explorer read answered nothing.

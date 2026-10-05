@@ -10,6 +10,7 @@
 
 mod wallet;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -17,7 +18,9 @@ use std::time::{Duration, Instant};
 use iced::futures::channel::mpsc;
 use iced::widget::operation;
 use iced::{Element, Event as IcedEvent, Subscription, Task, event, keyboard, mouse, touch};
-use tawara_wallet_core::explorer::{AccountHistory, BlocksView, ExplorerRefusal};
+use tawara_wallet_core::explorer::{
+    AccountHistory, BlocksView, ExplorerRefusal, OperationKind, References,
+};
 use tawara_wallet_core::location::{self, Environment, Platform};
 use tawara_wallet_core::preferences::{self, Preferences};
 use tawara_wallet_core::view::WalletView;
@@ -76,6 +79,10 @@ pub struct Model {
     pub activity: Explored<Vec<AccountHistory>>,
     /// The node's newest blocks (W1's network card).
     pub blocks: Explored<BlocksView>,
+    /// Transactions' references, by id, each read from its block when it is
+    /// chosen on Activity (W10; docs/DECISIONS.md D29, item 3). The index's
+    /// rows carry none.
+    pub references: BTreeMap<String, Explored<References>>,
 }
 
 /// What an explorer read last answered, and whether another is on its way.
@@ -383,6 +390,8 @@ enum Purpose {
     Blocks,
     /// The index's rows, in the background.
     Activity,
+    /// A transaction's references, from its block, in the background.
+    References,
     /// Account recovery's report of every account.
     Review,
     /// The acknowledged advance.
@@ -488,6 +497,7 @@ impl Model {
             zone: crate::ui::Zone::System,
             activity: Explored::default(),
             blocks: Explored::default(),
+            references: BTreeMap::new(),
         };
         if let Some(dir) = model.store_to_open() {
             model.screen = Screen::Unlock(UnlockForm {
@@ -970,6 +980,53 @@ impl App {
         }
     }
 
+    /// Read a transaction's references from the block the index says it
+    /// landed in, in the background, unless they have been read or a read
+    /// is on its way. A read the node refused is tried again. A mining
+    /// reward pays no destination, so carries none and is not read for.
+    fn read_references(&mut self, id: &str) {
+        let block = match &self.model.activity.last {
+            Some(Ok(histories)) => histories
+                .iter()
+                .flat_map(|h| &h.transactions)
+                .find(|t| t.id == id)
+                .filter(|t| {
+                    t.operations
+                        .iter()
+                        .any(|o| o.kind == OperationKind::Destination)
+                })
+                .and_then(|t| t.block),
+            _ => None,
+        };
+        let Some(block) = block else {
+            return;
+        };
+        let known = self
+            .model
+            .references
+            .get(id)
+            .is_some_and(|r| r.reading || matches!(r.last, Some(Ok(_))));
+        if self.model.wallet.is_some()
+            && self.model.node.url.is_some()
+            && !known
+            && self
+                .send(
+                    Command::References {
+                        block,
+                        transaction: id.to_owned(),
+                    },
+                    Purpose::References,
+                )
+                .is_some()
+        {
+            self.model
+                .references
+                .entry(id.to_owned())
+                .or_default()
+                .reading = true;
+        }
+    }
+
     /// Read every account's transactions from the node's index, in the
     /// background, unless a read is already on its way.
     fn read_activity(&mut self) {
@@ -1025,6 +1082,7 @@ impl App {
                 self.model.busy = None;
                 // What the index holds for the store goes with it.
                 self.model.activity = Explored::default();
+                self.model.references.clear();
                 // With no store open, the lock dropped a recovery phrase
                 // waiting to be confirmed (wallet-core's `Event::Locked`):
                 // nothing was written, so the way on is to create again,
@@ -1130,6 +1188,7 @@ impl App {
                 if m.node.url.as_deref() != Some(url.as_str()) {
                     m.activity = Explored::default();
                     m.blocks = Explored::default();
+                    m.references.clear();
                 }
                 m.node = NodeState {
                     url: Some(url.clone()),
@@ -1168,6 +1227,19 @@ impl App {
                     m.activity.last = Some(read);
                 }
             }
+            (Purpose::References, Reply::References { transaction, read }) => {
+                let entry = m.references.entry(transaction).or_default();
+                entry.reading = false;
+                entry.last = Some(read);
+            }
+            // Refused before the node was asked (no node, a cancel): the
+            // reads on their way are tried again when chosen again.
+            (Purpose::References, _) => {
+                m.references.retain(|_, r| {
+                    r.reading = false;
+                    r.last.is_some()
+                });
+            }
             (Purpose::SetNode { form: false }, Reply::Refused(r)) => {
                 // A remembered node this version will not use: forget it, and
                 // say why where the node is shown.
@@ -1183,6 +1255,7 @@ impl App {
                 m.node = NodeState::default();
                 m.activity = Explored::default();
                 m.blocks = Explored::default();
+                m.references.clear();
                 m.prefs.node = None;
                 if let Some(v) = view {
                     m.wallet = Some(v);
@@ -2453,6 +2526,93 @@ mod tests {
     }
 
     #[test]
+    fn a_transactions_references_are_read_from_its_block_once_when_it_is_chosen() {
+        use tawara_wallet_core::explorer::ExplorerRefusal;
+        let scratch = Scratch::new("references");
+        let (mut app, events) = app(&scratch);
+        app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        app.model.screen = Screen::Wallet(WalletPage {
+            page: Page::Activity(ActivityPage::default()),
+            ..WalletPage::default()
+        });
+        let activity = tawara_wallet_core::sample::activity();
+        let reward = activity[2].transactions[0].id.clone();
+        let other = activity[0].transactions[2].id.clone();
+        let (sent, found) = tawara_wallet_core::sample::references();
+        app.model.activity.last = Some(Ok(activity));
+        let reading = |app: &App, id: &str| app.model.references.get(id).map(|e| e.reading);
+        let asked = |app: &App| app.worker.as_ref().map_or(0, |w| w.waiting.len());
+
+        // No node chosen: nothing is asked.
+        wallet(&mut app, WalletMsg::Select(sent.clone()));
+        assert_eq!(reading(&app, &sent), None);
+        app.model.node.url = Some("https://node.example".to_owned());
+
+        // A mining reward pays no destination: nothing to read.
+        wallet(&mut app, WalletMsg::Select(reward.clone()));
+        assert_eq!(reading(&app, &reward), None);
+
+        // Chosen: its block is read, and one read on its way is enough.
+        wallet(&mut app, WalletMsg::Select(sent.clone()));
+        assert_eq!(reading(&app, &sent), Some(true));
+        let once = asked(&app);
+        wallet(&mut app, WalletMsg::Select(sent.clone()));
+        wallet(&mut app, WalletMsg::ReadReferences(sent.clone()));
+        assert_eq!(asked(&app), once);
+        // The worker has no node, so it refuses before asking: nothing is
+        // kept, and choosing it again reads again.
+        pump(&mut app, &events, |a| {
+            !a.model.references.contains_key(&sent)
+        });
+
+        // Read: kept, and not read again.
+        app.on_reply(
+            Purpose::References,
+            Reply::References {
+                transaction: sent.clone(),
+                read: Ok(found.clone()),
+            },
+        );
+        assert!(matches!(&app.model.references[&sent].last, Some(Ok(r)) if *r == found));
+        assert_eq!(reading(&app, &sent), Some(false));
+        let before = asked(&app);
+        wallet(&mut app, WalletMsg::Select(sent.clone()));
+        wallet(&mut app, WalletMsg::ReadReferences(sent.clone()));
+        assert_eq!(asked(&app), before, "read once");
+
+        // The node did not serve the block: kept and shown, and read
+        // again when asked.
+        app.on_reply(
+            Purpose::References,
+            Reply::References {
+                transaction: other.clone(),
+                read: Err(ExplorerRefusal {
+                    no_index: false,
+                    text: "not served".to_owned(),
+                }),
+            },
+        );
+        wallet(&mut app, WalletMsg::ReadReferences(other.clone()));
+        assert_eq!(reading(&app, &other), Some(true));
+        pump(&mut app, &events, |a| reading(a, &other) == Some(false));
+        assert!(
+            matches!(&app.model.references[&other].last, Some(Err(r)) if r.text == "not served"),
+            "a refusal before the node was asked leaves what was shown"
+        );
+        assert!(matches!(&app.model.references[&sent].last, Some(Ok(_))));
+
+        // Another node: what the last one's blocks said goes.
+        app.on_reply(
+            Purpose::SetNode { form: false },
+            Reply::NodeSet {
+                url: "https://other.example".to_owned(),
+                view: None,
+            },
+        );
+        assert!(app.model.references.is_empty());
+    }
+
+    #[test]
     fn the_index_and_the_blocks_are_kept_until_the_store_or_the_node_changes() {
         use tawara_wallet_core::explorer::ExplorerRefusal;
         let mut app = on_wallet(Page::Activity(ActivityPage::default()));
@@ -2503,15 +2663,26 @@ mod tests {
         );
         assert!(app.model.activity.last.is_none() && app.model.blocks.last.is_none());
 
-        // The store locked: what the index held for it goes with it.
+        // The store locked: what the index held for it goes with it, and
+        // the references read for its transactions.
         app.on_reply(
             Purpose::Activity,
             Reply::Activity(Ok(tawara_wallet_core::sample::activity())),
         );
+        let (sent, found) = tawara_wallet_core::sample::references();
+        app.on_reply(
+            Purpose::References,
+            Reply::References {
+                transaction: sent,
+                read: Ok(found),
+            },
+        );
+        assert_eq!(app.model.references.len(), 1);
         app.on_event(Event::Locked {
             reason: LockReason::Asked,
         });
         assert!(app.model.activity.last.is_none());
+        assert!(app.model.references.is_empty());
     }
 
     #[test]

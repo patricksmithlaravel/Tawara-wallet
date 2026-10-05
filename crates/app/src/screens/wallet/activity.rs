@@ -4,14 +4,16 @@
 //!
 //! The rows are the index's, newest 100 for each account (D27, item 11);
 //! spends the store has reserved and not settled are its own record, listed
-//! with no amount since the store keeps none. "Export CSV" needs a file
+//! with no amount since the store keeps none. The index's rows carry no
+//! references: a transaction's are read from its block when it is chosen
+//! (D29, item 3), and shown from then on. "Export CSV" needs a file
 //! dialog and "Receipt verified" claims a check nothing makes (D27, items 3
 //! and 5): neither is built.
 
 use iced::widget::text::Wrapping;
 use iced::widget::{button, column, container, row, space, text_input};
 use iced::{Alignment, Element, Length, Padding};
-use tawara_wallet_core::explorer::{AccountHistory, OperationView, Party};
+use tawara_wallet_core::explorer::{AccountHistory, OperationView, Party, References};
 use tawara_wallet_core::preferences::AmountUnit;
 use tawara_wallet_core::view::AccountState;
 
@@ -240,7 +242,17 @@ fn pending_row<'a>(
 
 /// One of the index's rows.
 fn index_row<'a>(model: &'a Model, r: &Row<'a>, selected: bool) -> Element<'a, Message> {
-    let (title, detail) = describe(r);
+    let (title, mut detail) = describe(r);
+    if let Some(found) = read_references(model, r) {
+        let known: Vec<&str> = mine(r, found)
+            .into_iter()
+            .map(|d| d.memo.as_str())
+            .filter(|m| !m.is_empty())
+            .collect();
+        if !known.is_empty() && r.kind != Kind::Own {
+            detail = known.join(" · ");
+        }
+    }
     let (amount, ink) = amount(r, model.prefs.unit);
     let when =
         r.tx.time_ms
@@ -323,6 +335,28 @@ pub(super) fn describe(r: &Row<'_>) -> (String, String) {
     (title, detail)
 }
 
+/// The transaction's destinations as its block lists them, once its
+/// references have been read and the block carries it.
+fn read_references<'a>(model: &'a Model, r: &Row<'_>) -> Option<&'a [OperationView]> {
+    match model.references.get(&r.tx.id)?.last.as_ref()? {
+        Ok(References {
+            destinations: Some(d),
+            ..
+        }) => Some(d),
+        _ => None,
+    }
+}
+
+/// The block's destinations that are this row's to show: what it paid,
+/// for a spend; what reached the account, for a payment received.
+fn mine<'a>(r: &Row<'_>, found: &'a [OperationView]) -> Vec<&'a OperationView> {
+    let to_me = |d: &&OperationView| d.party == Party::Account(r.account);
+    match r.kind {
+        Kind::Received => found.iter().filter(to_me).collect(),
+        _ => found.iter().filter(|d| !to_me(d)).collect(),
+    }
+}
+
 /// A row's amount, signed, and its colour: received in the accent, sent in
 /// the primary ink, a transfer between the store's own accounts unsigned.
 pub(super) fn amount(r: &Row<'_>, unit: AmountUnit) -> (String, iced::Color) {
@@ -378,6 +412,14 @@ fn detail<'a>(model: &'a Model, page: &'a WalletPage, r: &Row<'a>) -> Element<'a
         Kind::Received => r.payers().collect(),
         _ => r.payees().collect(),
     };
+    let found = read_references(model, r);
+    // Each payee's reference is the block's destination to the same party
+    // for the same amount; a payment received carries its reference on
+    // the destination that reached this account, shown below.
+    let mut unmatched: Vec<&OperationView> = match (found, r.kind) {
+        (Some(f), Kind::Sent | Kind::Own | Kind::Other) => mine(r, f),
+        _ => Vec::new(),
+    };
     if !parties.is_empty() {
         let mut list = column![].spacing(sp::S10);
         for op in parties {
@@ -391,6 +433,11 @@ fn detail<'a>(model: &'a Model, page: &'a WalletPage, r: &Row<'a>) -> Element<'a
             .spacing(sp::S2);
             if !op.memo.is_empty() {
                 who = who.push(t(op.memo.clone(), ty::MONO_TINY, color::TEXT_MUTED));
+            } else if let Some(at) = unmatched
+                .iter()
+                .position(|d| d.party == op.party && d.amount == op.amount)
+            {
+                who = who.push(reference(&unmatched.remove(at).memo));
             }
             list = list.push(
                 row![
@@ -421,6 +468,24 @@ fn detail<'a>(model: &'a Model, page: &'a WalletPage, r: &Row<'a>) -> Element<'a
         (Some(b), _) => ui::group(&b.to_string()),
         (None, _) => "—".to_owned(),
     };
+    if let Some(f) = found
+        && r.kind == Kind::Received
+    {
+        let to_me: Vec<&str> = mine(r, f).iter().map(|d| d.memo.as_str()).collect();
+        let shown = if to_me.iter().all(|m| m.is_empty()) {
+            "none".to_owned()
+        } else {
+            to_me
+                .into_iter()
+                .filter(|m| !m.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · ")
+        };
+        card = card.push(fact("Reference", shown, true));
+    }
+    if let Some(line) = reading(model, r) {
+        card = card.push(line);
+    }
     card = card
         .push(fact("Transaction id", r.tx.id.clone(), true))
         .push(fact("Block", confirmations, false))
@@ -433,12 +498,98 @@ fn detail<'a>(model: &'a Model, page: &'a WalletPage, r: &Row<'a>) -> Element<'a
             false,
         ));
     }
-    column![
-        ui::card(card),
-        report::show(page, ReportKey::History, report::history(r.history)),
-    ]
-    .spacing(sp::S16)
-    .into()
+    let mut parts = column![ui::card(card)].spacing(sp::S16);
+    match model.references.get(&r.tx.id).and_then(|e| e.last.as_ref()) {
+        Some(Ok(read)) => {
+            parts = parts.push(report::show(page, ReportKey::Block, report::block(read)));
+        }
+        Some(Err(refusal)) => {
+            let what = r.tx.block.map_or_else(
+                || "the block".to_owned(),
+                |b| format!("block {}", ui::group(&b.to_string())),
+            );
+            parts = parts.push(report::show(
+                page,
+                ReportKey::Block,
+                report::explorer(refusal, &what),
+            ));
+        }
+        None => {}
+    }
+    parts
+        .push(report::show(
+            page,
+            ReportKey::History,
+            report::history(r.history),
+        ))
+        .into()
+}
+
+/// A destination's reference, read from the block.
+fn reference<'a>(memo: &str) -> Element<'a, Message> {
+    if memo.is_empty() {
+        t("No reference", ty::NOTE, color::TEXT_MUTED).into()
+    } else {
+        t(
+            format!("Reference {memo}"),
+            ty::MONO_TINY,
+            color::TEXT_SECONDARY,
+        )
+        .wrapping(Wrapping::WordOrGlyph)
+        .into()
+    }
+}
+
+/// Where the read of the transaction's references stands, while there is
+/// something to say or do: none has been made (the row shown by default
+/// was not clicked), one is on its way, or the node refused the last.
+fn reading<'a>(model: &'a Model, r: &Row<'a>) -> Option<Element<'a, Message>> {
+    // A mining reward pays no destination, so carries no reference.
+    if r.kind == Kind::Reward {
+        return None;
+    }
+    let read = model.references.get(&r.tx.id);
+    if read.is_some_and(|e| matches!(e.last, Some(Ok(_))) && !e.reading) {
+        return None;
+    }
+    let Some(block) = r.tx.block else {
+        return Some(
+            ui::helper("The index gives no block for it, so its references cannot be read.").into(),
+        );
+    };
+    let number = ui::group(&block.to_string());
+    if read.is_some_and(|e| e.reading) {
+        return Some(ui::helper(format!("Reading block {number} for its references…")).into());
+    }
+    let (label, note) = if read.is_some() {
+        (
+            "Read again",
+            format!("Block {number} was not served; its references are not known."),
+        )
+    } else {
+        (
+            "Read references",
+            format!("The index carries none; block {number} does."),
+        )
+    };
+    Some(
+        row![
+            ui::button_with(
+                label,
+                theme::Button::Secondary,
+                Size::Small,
+                None,
+                (model.node.url.is_some())
+                    .then(|| WalletMsg::ReadReferences(r.tx.id.clone()).into()),
+            ),
+            t(note, ty::NOTE, color::TEXT_SECONDARY)
+                .wrapping(Wrapping::WordOrGlyph)
+                .width(Length::Fill),
+        ]
+        .spacing(sp::S12)
+        .align_y(Alignment::Center)
+        .into(),
+    )
 }
 
 fn fact<'a>(label: &'static str, value: String, mono: bool) -> Element<'a, Message> {

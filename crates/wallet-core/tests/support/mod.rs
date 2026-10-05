@@ -118,6 +118,8 @@ struct State {
     no_index: bool,
     /// How many transactions the index has recorded, for their ids.
     indexed: u64,
+    /// The transactions each block carries, as `/block` spells them.
+    blocks: BTreeMap<u64, Vec<serde_json::Value>>,
 }
 
 /// Holds every request at the chain until it is opened, so a test can act
@@ -209,10 +211,23 @@ impl Chain {
 
     /// The index records a transfer of `amount` from `from` to `to` in
     /// `block`, as the index spells one: the source debited gross, the
-    /// change back to it as a destination of its own, and the fee.
-    pub fn index_transfer(&self, from: Tag, to: Tag, amount: u64, change: u64, block: u64) {
+    /// change back to it as a destination of its own, and the fee. The
+    /// block carries it too, as `/block` spells one: the source debited
+    /// net, no change, and the destination's reference. Returns its id, in
+    /// hex.
+    pub fn index_transfer(
+        &self,
+        from: Tag,
+        to: Tag,
+        amount: u64,
+        change: u64,
+        block: u64,
+        reference: &str,
+    ) -> String {
         let mut s = self.0.lock().expect("chain");
         s.indexed += 1;
+        // With letters in it, so a test can ask in either case.
+        let id = format!("{:064x}", 0xabcd_0000 + s.indexed);
         let fee = 500;
         let op = |i: u64, kind: &str, tag: &Tag, value: i128| {
             serde_json::json!({
@@ -222,26 +237,36 @@ impl Chain {
                 "amount": { "value": value.to_string() },
             })
         };
+        let fee_op = serde_json::json!({
+            "operation_identifier": { "index": 3 },
+            "type": "FEE",
+            "account": { "address": "" },
+            "amount": { "value": fee.to_string() },
+        });
         let gross = i128::from(amount + change + fee);
+        // The index's row carries no `metadata` on any operation.
         let row = serde_json::json!({
-            "transaction_identifier": { "hash": format!("0x{:064x}", s.indexed) },
+            "transaction_identifier": { "hash": format!("0x{id}") },
             "block_identifier": { "index": block, "hash": format!("0x{:064x}", block) },
             "timestamp": block * 60_000,
             "operations": [
                 op(0, "SOURCE_TRANSFER", &from, -gross),
                 op(1, "DESTINATION_TRANSFER", &to, i128::from(amount)),
                 op(2, "DESTINATION_TRANSFER", &from, i128::from(change)),
-                {
-                    "operation_identifier": { "index": 3 },
-                    "type": "FEE",
-                    "account": { "address": "" },
-                    "amount": { "value": fee.to_string() },
-                },
+                fee_op.clone(),
             ],
         });
         for tag in [from, to] {
             s.history.entry(tag).or_default().insert(0, row.clone());
         }
+        let mut paid = op(1, "DESTINATION_TRANSFER", &to, i128::from(amount));
+        paid["metadata"] = serde_json::json!({ "memo": reference });
+        let net = i128::from(amount + fee);
+        s.blocks.entry(block).or_default().push(serde_json::json!({
+            "transaction_identifier": { "hash": format!("0x{id}") },
+            "operations": [op(0, "SOURCE_TRANSFER", &from, -net), paid, fee_op],
+        }));
+        id
     }
 
     pub fn set_no_index(&self, no_index: bool) {
@@ -335,7 +360,7 @@ impl Transport for Chain {
                     "block_identifier": { "index": index, "hash": format!("0x{index:064x}") },
                     "parent_block_identifier": { "index": index - 1, "hash": format!("0x{:064x}", index - 1) },
                     "timestamp": index * 60_000,
-                    "transactions": [],
+                    "transactions": s.blocks.get(&index).cloned().unwrap_or_default(),
                 }})
                 .to_string()
                 .into_bytes())
