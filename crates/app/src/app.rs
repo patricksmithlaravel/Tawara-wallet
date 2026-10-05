@@ -2551,10 +2551,15 @@ mod tests {
         for n in 0..3 {
             assert_eq!(
                 p.open.get(&ReportKey::Review(n)),
-                Some(&Level::Full),
-                "every account's whole report first"
+                Some(&Level::Summary),
+                "every account's report opens to its summary"
             );
         }
+        let unread = |app: &App| match &wallet_page(app).page {
+            Page::Recovery(r) => r.unread(),
+            _ => None,
+        };
+        assert_eq!(unread(&app), Some(3));
         let row = |app: &App, id| {
             app.model
                 .wallet
@@ -2574,6 +2579,41 @@ mod tests {
         );
 
         let error = |app: &App| wallet_page(app).error.clone().unwrap_or_default();
+        // Typed and confirmed, and not every full report opened: refused,
+        // whichever are open (D29).
+        wallet(&mut app, WalletMsg::RecoveryIndex("33".to_owned()));
+        wallet(&mut app, WalletMsg::Confirm(true));
+        wallet(&mut app, WalletMsg::Advance);
+        assert!(error(&app).starts_with("Open every"), "{}", error(&app));
+        wallet(
+            &mut app,
+            WalletMsg::Report(ReportKey::Review(2), Level::Full),
+        );
+        wallet(
+            &mut app,
+            WalletMsg::Report(ReportKey::Review(0), Level::Full),
+        );
+        // A summary opened is not the full output.
+        wallet(
+            &mut app,
+            WalletMsg::Report(ReportKey::Review(1), Level::Summary),
+        );
+        assert_eq!(unread(&app), Some(1));
+        wallet(&mut app, WalletMsg::Advance);
+        assert!(error(&app).starts_with("Open every"), "{}", error(&app));
+        wallet(
+            &mut app,
+            WalletMsg::Report(ReportKey::Review(1), Level::Full),
+        );
+        assert_eq!(unread(&app), Some(0));
+        // Closing a report read leaves it read.
+        wallet(
+            &mut app,
+            WalletMsg::Report(ReportKey::Review(1), Level::Closed),
+        );
+        assert_eq!(unread(&app), Some(0));
+        wallet(&mut app, WalletMsg::Confirm(false));
+        wallet(&mut app, WalletMsg::RecoveryIndex(String::new()));
         // Nothing typed.
         wallet(&mut app, WalletMsg::Advance);
         assert!(error(&app).starts_with("Confirm"), "{}", error(&app));
@@ -2625,7 +2665,10 @@ mod tests {
             Page::Recovery(r) if r.result == Some((true, "advanced".to_owned()))
                 && r.index.is_empty() && !r.confirmed));
 
-        // A further search answers with that account's report, replacing it.
+        // A further search answers with that account's report, replacing it;
+        // a report that changed folds to its summary and is to be read
+        // again.
+        assert_eq!(unread(&app), Some(0));
         app.on_reply(
             Purpose::Status,
             Reply::Status {
@@ -2639,6 +2682,20 @@ mod tests {
             Page::Recovery(r) if r.reports.as_ref().is_some_and(|all| all
                 .iter()
                 .any(|a| a.account == paused && a.text == "found"))));
+        assert_eq!(unread(&app), Some(1));
+        assert_eq!(
+            wallet_page(&app).open.get(&ReportKey::Review(2)),
+            Some(&Level::Summary)
+        );
+        assert_eq!(
+            wallet_page(&app).open.get(&ReportKey::Review(0)),
+            Some(&Level::Full),
+            "the other reports stay as they were"
+        );
+
+        // Read again: every report is to be opened again.
+        app.on_reply(Purpose::Review, Reply::Reviewed(reports.clone()));
+        assert_eq!(unread(&app), Some(3));
     }
 
     #[test]

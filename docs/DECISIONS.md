@@ -1071,7 +1071,8 @@ How it is kept honest:
 it.** PR (c) builds docs/SCREENS.md W10 to W12 and the dashboard's two
 cards that D27 item 16 moved here. The choices it makes:
 
-1. **The explorer reads go on in the background.** The index's rows
+1. **The explorer reads go on in the background** (the owner kept this,
+   on PR (c)'s first draft). The index's rows
    (`Command::Activity`, one request per account) and the newest blocks
    (`Command::Blocks`) are read when a store opens, on Refresh, and when
    Activity opens, without the busy card: the screen shows the last answer
@@ -1107,16 +1108,27 @@ cards that D27 item 16 moved here. The choices it makes:
    so they are the same on every machine. The age of the newest block is
    measured by a clock that moves each second, on a thread of its own, as
    the worker's events are (iced's thread-pool executor keeps no timer).
-5. **Account recovery shows every report whole first.** D19 asks for the
-   library's whole report for every account before anything else; D28
-   puts each library page behind a banner. On W12 each account's banner
-   opens to the library's whole page from the start, so both hold. The
-   page reads every account afresh when it opens (`Command::Review`, which
-   applies what it finds only once all have answered) and again after an
-   advance.
+5. **Account recovery shows every report's summary first, and the
+   advance waits until every full report has been opened** (the owner, on
+   the same draft, which opened every account's whole library page from
+   the start). D19 asks for the library's whole report for every account
+   before anything else; D28 puts each library page behind a banner, then
+   a summary with the common causes, then the library's own words. On
+   W12 each account opens to its summary, so the page reads as D28's
+   other pages do, and the advance is not offered until the person has
+   opened every account's full output at least once since the reports were
+   read: the evidence that one account's advance is wrong is most often in
+   another's report, so it is seen before anything moves. Each account
+   says whether its full report has been opened, and the advance says how
+   many of them have. A report that changes (a further search answers) is
+   folded back to its summary and is to be opened again; reading every
+   account again starts the count over. The page reads every account
+   afresh when it opens (`Command::Review`, which applies what it finds
+   only once all have answered) and again after an advance.
 6. **What account recovery offers.** The advance, only for an account
-   whose live report names the index, typed by the person and sent only
-   once they confirm no other wallet uses the recovery phrase; the library
+   whose live report names the index, once every full report has been
+   opened (item 5), typed by the person and sent only once they confirm
+   no other wallet uses the recovery phrase; the library
    advances only to exactly that index or refuses. For an account whose
    chain address was not among the keys searched, a wider search to a key
    index the person types (`Command::Status` with `scan_to`), which writes

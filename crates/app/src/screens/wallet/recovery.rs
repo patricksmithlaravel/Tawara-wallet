@@ -2,14 +2,16 @@
 //! (docs/DECISIONS.md D19; docs/SCREENS.md W12).
 //!
 //! Reached on purpose, from a paused account's page or from Settings, and
-//! never offered as a button on a refusal. It shows the library's whole
-//! report for every account in the store before anything else, because the
-//! evidence that one account's advance is wrong is most often in another's
-//! report. The person types the index the report names (nothing fills it
-//! in) and confirms that no other wallet uses this recovery phrase; then
-//! the library advances, only to the index its live report names, or
-//! refuses. An account the chain was not found for among the keys searched
-//! can be searched for further instead.
+//! never offered as a button on a refusal. It shows the report for every
+//! account in the store before anything else, each opened to its summary,
+//! and offers the advance only once every account's full report has been
+//! opened, because the evidence that one account's advance is wrong is
+//! most often in another's report (D29, item 5). The person types the
+//! index the report names (nothing fills it in) and confirms that no other
+//! wallet uses this recovery phrase; then the library advances, only to
+//! the index its live report names, or refuses. An account the chain was
+//! not found for among the keys searched can be searched for further
+//! instead.
 
 use iced::widget::text::Wrapping;
 use iced::widget::{checkbox, column, container, row, text_input};
@@ -113,6 +115,16 @@ fn account<'a>(
     ]
     .spacing(sp::S12)
     .align_y(Alignment::Center);
+    head = head.push(if r.read.contains(&a.account) {
+        row![
+            crate::icon::icon(crate::icon::Icon::Check, 14.0, 2.0, color::ACCENT),
+            t("Full report read", ty::NOTE, color::ACCENT),
+        ]
+        .spacing(sp::S4)
+        .align_y(Alignment::Center)
+    } else {
+        row![t("Full report not opened yet", ty::NOTE, color::TEXT_MUTED)]
+    });
     if let Some(m) = remedy(&a.state) {
         head = head.push(if r.target == Some(a.account) {
             Element::from(t("Chosen: see below", ty::LINK_SMALL, color::WARNING))
@@ -187,14 +199,7 @@ fn act<'a>(
                 .spacing(sp::S12)
                 .align_y(Alignment::Center),
                 confirm,
-                action(
-                    model,
-                    "Advance",
-                    theme::Button::WarningPrimary,
-                    Size::Medium,
-                    None,
-                    WalletMsg::Advance,
-                ),
+                gate(model, r),
             ]
         }
         Remedy::SearchFurther => column![
@@ -232,4 +237,38 @@ fn act<'a>(
         .width(Length::Fill)
         .style(theme::callout_warning)
         .into()
+}
+
+/// The Advance button, offered once every account's full report has been
+/// opened since the reports were read (docs/DECISIONS.md D19, D29), with
+/// how many are still to open until then.
+fn gate<'a>(model: &'a Model, r: &'a RecoveryPage) -> Element<'a, Message> {
+    let unread = r.unread().unwrap_or(usize::MAX);
+    let total = r.reports.as_ref().map_or(0, Vec::len);
+    let button = ui::button_with(
+        "Advance",
+        theme::Button::WarningPrimary,
+        Size::Medium,
+        None,
+        (model.busy.is_none() && unread == 0).then(|| WalletMsg::Advance.into()),
+    );
+    if unread == 0 {
+        return button.into();
+    }
+    row![
+        button,
+        t(
+            format!(
+                "Open every account's full report above first: {} of {total} opened. The \
+                 evidence that an advance is wrong is most often in another account's report.",
+                total.saturating_sub(unread)
+            ),
+            ty::NOTE,
+            color::TEXT_SECONDARY,
+        )
+        .width(Length::Fill),
+    ]
+    .spacing(sp::S16)
+    .align_y(Alignment::Center)
+    .into()
 }

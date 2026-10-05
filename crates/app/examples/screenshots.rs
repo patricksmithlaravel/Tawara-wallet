@@ -229,14 +229,17 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         })),
         reading: false,
     };
-    // Every account's report whole (D19), the paused one chosen, its index
-    // typed and the second wallet ruled out.
-    let recovery = |others: Level, paused: Level| {
+    // Every account's report (D19), each opened to its summary (D29); the
+    // paused one chosen, its index typed and the second wallet ruled out.
+    // `read` is how many accounts' full reports have been opened, the
+    // paused one's first.
+    let recovery = |others: Level, paused: Level, read: usize| {
         let reports = sample::review();
         let mut m = on(Page::Recovery(RecoveryPage {
             target: Some(reports[2].account),
             index: "33".to_owned(),
             confirmed: true,
+            read: reports.iter().rev().take(read).map(|a| a.account).collect(),
             reports: Some(reports),
             result: None,
         }));
@@ -506,16 +509,26 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
                 node: NODE.to_owned(),
             })),
         ),
+        // As the reports come: every one at its summary, none read, so
+        // the advance waits.
         (
             "w12-recovery",
             DASHBOARD,
-            recovery(Level::Full, Level::Full),
+            recovery(Level::Summary, Level::Summary, 0),
         ),
-        // The reports that need nothing closed, so the advance shows.
+        // The paused account's full output opened and folded again, the
+        // others closed unread: one of three read, so the advance waits.
+        (
+            "w12-recovery-waiting",
+            DASHBOARD,
+            recovery(Level::Closed, Level::Summary, 1),
+        ),
+        // Every full report opened, and the reports that need nothing
+        // closed again, so the advance is offered.
         (
             "w12-recovery-advance",
             DASHBOARD,
-            recovery(Level::Closed, Level::Summary),
+            recovery(Level::Closed, Level::Summary, 3),
         ),
         ("stopped-spends", FIRST_RUN, stopped),
         ("narrow-s1-get-started", SMALLEST, base()),

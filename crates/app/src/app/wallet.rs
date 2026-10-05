@@ -5,7 +5,7 @@
 //! signed spend's bytes are what the node is sent or what the store shows;
 //! the store's key never leaves the worker.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use iced::Task;
@@ -66,11 +66,15 @@ pub struct SettingsPage {
 }
 
 /// W12, account recovery: every account's report first, then the
-/// acknowledged advance on the owner's terms (docs/DECISIONS.md D19).
+/// acknowledged advance on the owner's terms (docs/DECISIONS.md D19, D29).
 #[derive(Clone, Debug, Default)]
 pub struct RecoveryPage {
-    /// Every account's report, once the review answers.
+    /// Every account's report, once the review answers. Each opens to its
+    /// summary; the advance waits until every one's full output has been
+    /// opened (`read`).
     pub reports: Option<Vec<AccountReport>>,
+    /// The accounts whose full report has been opened since it was read.
+    pub read: BTreeSet<AccountId>,
     /// The account to act on: advance it, or search further for it.
     pub target: Option<AccountId>,
     /// The key index typed for it. Nothing fills it in: the person types the
@@ -80,6 +84,21 @@ pub struct RecoveryPage {
     pub confirmed: bool,
     /// Whether the last advance is done, and the library's page for it.
     pub result: Option<(bool, String)>,
+}
+
+impl RecoveryPage {
+    /// How many accounts' full reports are still to be opened before the
+    /// advance is offered; `None` before the reports have come.
+    #[must_use]
+    pub fn unread(&self) -> Option<usize> {
+        let reports = self.reports.as_ref()?;
+        Some(
+            reports
+                .iter()
+                .filter(|a| !self.read.contains(&a.account))
+                .count(),
+        )
+    }
 }
 
 /// What can be done for an account on the recovery page.
@@ -1010,6 +1029,14 @@ impl App {
             WalletMsg::Report(key, level) => {
                 if let Some(p) = self.wallet_page() {
                     p.open.insert(key, level);
+                    // On the recovery page, opening an account's full report
+                    // counts towards the advance (D29).
+                    if let (Page::Recovery(r), ReportKey::Review(n), Level::Full) =
+                        (&mut p.page, key, level)
+                        && let Some(a) = r.reports.as_ref().and_then(|all| all.get(usize::from(n)))
+                    {
+                        r.read.insert(a.account);
+                    }
                 }
             }
             WalletMsg::ArtifactHex(hex) => {
@@ -1139,6 +1166,7 @@ impl App {
                 let Some(r) = self.recovery() else {
                     return Task::none();
                 };
+                let unread = r.unread();
                 let (target, typed, confirmed) = (r.target, r.index.trim().to_owned(), r.confirmed);
                 let Some(account) = target else {
                     return Task::none();
@@ -1151,6 +1179,11 @@ impl App {
                     .is_some_and(|m| matches!(m, Remedy::Advance(_)));
                 let checked = if !named {
                     Err("The report names no index to advance this account to.")
+                } else if unread != Some(0) {
+                    Err(
+                        "Open every account's full report first: the evidence that an advance \
+                         is wrong is most often in another account's report.",
+                    )
                 } else if !confirmed {
                     Err("Confirm first that no other wallet uses this recovery phrase.")
                 } else {
@@ -1321,18 +1354,24 @@ impl App {
                     row.spendable = spendable;
                     row.state = state.clone();
                 }
-                match self.wallet_page().map(|p| &mut p.page) {
-                    Some(Page::Account(a)) if a.account == account => {
+                let Some(p) = self.wallet_page() else {
+                    return;
+                };
+                match &mut p.page {
+                    Page::Account(a) if a.account == account => {
                         a.report = Some((Done::Checked, text));
                     }
                     // A further search on the recovery page: the account's
-                    // report, as it stands now.
-                    Some(Page::Recovery(r)) => {
-                        if let Some(entry) = r
+                    // report, as it stands now. A report that changed is to
+                    // be read again, so it folds back to its summary.
+                    Page::Recovery(r) => {
+                        r.read.remove(&account);
+                        if let Some((n, entry)) = r
                             .reports
                             .iter_mut()
                             .flatten()
-                            .find(|a| a.account == account)
+                            .enumerate()
+                            .find(|(_, a)| a.account == account)
                         {
                             *entry = AccountReport {
                                 account,
@@ -1340,6 +1379,10 @@ impl App {
                                 spendable,
                                 text,
                             };
+                            p.open.insert(
+                                ReportKey::Review(u16::try_from(n).unwrap_or(u16::MAX)),
+                                Level::Summary,
+                            );
                         }
                     }
                     _ => {}
@@ -1358,13 +1401,15 @@ impl App {
                 if let Some(p) = self.wallet_page()
                     && let Page::Recovery(r) = &mut p.page
                 {
-                    // Every account's whole report first (D19).
+                    // Each opens to its summary; the advance waits until
+                    // every full report has been opened again (D19, D29).
                     for n in 0..reports.len() {
                         p.open.insert(
                             ReportKey::Review(u16::try_from(n).unwrap_or(u16::MAX)),
-                            Level::Full,
+                            Level::Summary,
                         );
                     }
+                    r.read.clear();
                     r.reports = Some(reports);
                 }
             }
