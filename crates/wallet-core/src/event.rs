@@ -19,6 +19,10 @@ use crate::view::{AccountId, AccountState, WalletView};
 pub enum Event {
     /// A command has started something that takes time.
     Busy { id: RequestId, activity: Activity },
+    /// How far a long command has got: opening the wallet, a restore, an
+    /// acknowledged advance or a discovery sweep. Sent between `Busy` and
+    /// `Done`, before each account and every few hundred key positions.
+    Progress { id: RequestId, progress: Progress },
     /// A command finished. Every command gets exactly one.
     Done { id: RequestId, reply: Reply },
     /// The store was closed: its secret is dropped and its lock released.
@@ -43,6 +47,36 @@ pub enum Activity {
     AskingNode,
 }
 
+/// How far a long command has got, as the library counts it: never an
+/// estimate.
+///
+/// `account` of `accounts` is the account it is on, counted from zero (for
+/// a sweep, the account index it is about to ask the node about, of the
+/// `to + 1` it asks about). `position` of `ceiling` is how many key
+/// positions that account's walk has reached of the most it can reach. A
+/// walk that finds what it looks for stops short of `ceiling`, so `ceiling`
+/// is no promise of how long is left; an account in sync walks nothing, and
+/// a sweep walks nothing (its `position` and `ceiling` are zero).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Progress {
+    pub account: u32,
+    pub accounts: u32,
+    pub position: u32,
+    pub ceiling: u32,
+}
+
+impl Progress {
+    /// The library's count, as plain data that names no library type.
+    pub(crate) fn of(p: mochimo_crypto::recon::Progress) -> Progress {
+        Progress {
+            account: p.account,
+            accounts: p.accounts,
+            position: p.position,
+            ceiling: p.ceiling,
+        }
+    }
+}
+
 /// Why the store closed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LockReason {
@@ -54,15 +88,11 @@ pub enum LockReason {
     Background,
     /// Another store was unlocked in its place.
     Replaced,
-    /// The wallet was reopened (a refresh against a new node, an advance,
-    /// a restore) and the library refused it. The worker opens the wallet
-    /// only once an account has reconciled, so this means the chain moved in
-    /// between. The library drops the store when it refuses, so it cannot
-    /// stay open; the command's refusal says why, and unlocking again shows
-    /// the state.
-    WalletRefused,
-    /// The store was reopened after an operation and could not be read
-    /// back; the command's refusal says why.
+    /// The store was reopened after an operation (a refresh against a new
+    /// node, an advance, a restore) and could not be read back; the
+    /// command's refusal says why. A wallet the library refuses to open
+    /// does not close the store: it stays open on its own, with the
+    /// library's page as its notice.
     ReopenFailed,
     /// The worker is shutting down.
     Shutdown,
@@ -98,7 +128,8 @@ pub enum Reply {
     },
     /// A pending phrase was dropped.
     CreateAbandoned,
-    /// The store opened.
+    /// The store opened. When a cancel stopped the reconciliation that
+    /// follows, the store is open on its own and its notice says so.
     Unlocked(WalletView),
     /// The store is closed (the [`Event::Locked`] says why).
     Locked,
@@ -125,10 +156,17 @@ pub enum Reply {
     },
     /// What an acknowledged advance did. `ok` is whether the library counts
     /// it as done (the command line's exit status 0); `advanced_to` is the
-    /// new index when it moved. `opened` is the store reopened afterwards,
-    /// or why it could not be: then it is closed ([`Event::Locked`]), and
-    /// the refusal carries the library's own report, the startup refusal
-    /// when the library refused the wallet. The advance stands either way.
+    /// new index when it moved. `opened` is the store reopened afterwards
+    /// (the wallet when the library opens it, the store alone with the
+    /// library's page as its notice when it refuses), or why the store could
+    /// not be read back: then it is closed ([`Event::Locked`]). The advance
+    /// stands either way.
+    ///
+    /// A cancel that stops it answers here too, with `ok` false, no
+    /// `advanced_to`, and `text` saying nothing was written: the store was
+    /// taken out of its session to be written, so `opened` is how it is
+    /// now, open on its own and not reconciled until
+    /// [`crate::Command::Refresh`].
     Reconciled {
         ok: bool,
         advanced_to: Option<u32>,
@@ -136,7 +174,7 @@ pub enum Reply {
         opened: Result<WalletView, Refusal>,
     },
     /// What a restore did, with `ok` and `opened` as for
-    /// [`Reply::Reconciled`].
+    /// [`Reply::Reconciled`], and a cancel answered the same way.
     Restored {
         ok: bool,
         text: String,
@@ -197,7 +235,14 @@ pub struct PlanView {
     pub blk_to_live: u64,
     /// The change is zero: once this lands the node reports the account as
     /// not found, and every operation on it refuses until it is paid again.
+    /// The words to show for it are the library's, in `text`.
     pub empties_account: bool,
+    /// The library's page for the spend before it is signed, word for word:
+    /// its destinations in the order that goes on the wire, the fee, the
+    /// change and the block-to-live, the request to check each destination
+    /// against its payee, and, when the change is zero, its warning that
+    /// this empties the account.
+    pub text: String,
 }
 
 /// A spend signed and submitted.
@@ -286,15 +331,15 @@ pub enum RefusalKind {
     NoSuchPlan,
     /// The account diverged; no operation on it is permitted.
     Diverged,
-    /// The wallet reopened to reconcile again and the library refused it.
-    WalletRefused,
     /// The operating system's generator failed.
     Entropy,
-    /// The person cancelled it.
+    /// A cancel stopped it ([`crate::WorkerHandle::cancel`], a move to the
+    /// background, a shutdown), or the idle period passed while it ran.
+    /// Nothing it would have changed was changed.
     Cancelled,
-    /// A number is outside what the worker takes: a scan or an advance
-    /// further than [`crate::MAX_SCAN_TO`], or a discovery bound outside
-    /// `1..=`[`crate::DISCOVER_MAX_TO`].
+    /// A number is outside what the worker takes: a key index past
+    /// [`crate::MAX_KEY_INDEX`] for a scan or an advance, or a discovery
+    /// bound outside `1..=`[`crate::DISCOVER_MAX_TO`].
     OutOfRange,
     /// Any other refusal from the library; `text` is its own.
     Library,

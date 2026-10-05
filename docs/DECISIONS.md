@@ -77,7 +77,7 @@ Features the renderings may need later (`svg`, and `qr_code` only with the
 owner's approval) are added by the change that needs them, with
 `cargo deny check` run against the result. No git revision of iced is used.
 
-### D7. The library pin: Rep-1 at `121daf3`
+### D7. The library pin: Rep-1 at `8c2f39a`
 
 **owner, 2026-10-03.** The owner's instructions for phase 0 named Rep-1's
 `02239c1`, or a later commit the owner named; by the time the work began, Rep-1's `main` was at
@@ -86,11 +86,24 @@ binary `tawara`, and the updated `FORK.md` (Rep-2 as a dependent, iced in
 place of egui). The library's API did not change between the two. The owner
 chose `121daf3`.
 
+**Moved, 2026-10-04, when the owner reported Rep-1's merge.** The pin is
+now `8c2f39a2cdc2710ac7363b1d64026b6875a16537`, Rep-1's `main` after its
+merge of Rep-0's `cef8ed2`: the four library changes of D23, items 1 to 4
+(Rep-0's pull requests #7, #9, #10 and #11). Every library source file
+those changes touched is byte for byte the same in Rep-1 as in Rep-0; the
+files that differ between the two are Rep-1's own (its Windows store
+permissions, the binary's name), and none of them changed between
+`121daf3` and `8c2f39a`. The library's API grew and nothing was taken
+away, and its `Cargo.toml` did not change, so `Cargo.lock` changes in the
+library's own line and nowhere else. What wallet-core does with the new
+API is D26. The phase 1 spikes keep `121daf3`: they are the record of that
+phase, and nothing in them uses what changed.
+
 The workspace line takes the plan's form (D1) exactly:
 
 ```toml
 mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-windows",
-                   rev = "121daf3773fbc7869ee56c2c795e21115044dfe7",
+                   rev = "8c2f39a2cdc2710ac7363b1d64026b6875a16537",
                    default-features = false, features = ["native", "mesh-https"] }
 ```
 
@@ -417,27 +430,23 @@ describes it, with these choices inside that design:
   `Debug`.
 - **Three sessions.** *Locked*; *Store*, where the `Keystore` is open and
   the wallet is not (no node chosen, the node silent, no account on the
-  ledger yet, or every account diverged); and *Wallet*, after
-  `Wallet::open` reconciled. Spending needs *Wallet*. The store's
+  ledger yet, every account diverged, or a cancel stopped the wallet
+  opening); and *Wallet*, after `Wallet::open` reconciled. Spending needs *Wallet*. The store's
   accounts and destinations can be shown in *Store*, and the library's
   pre-gate operations (status, the acknowledged advance, restore,
   discovery) run there, as they do at the command line.
-- **Checks before `Wallet::open`.** `Wallet::open` takes the store by
-  value and drops it when it refuses, and the worker keeps the password
-  only for the length of the command that brought it. So the worker first
-  asks the node about each account's tag (the request `Wallet::open` makes
-  first anyway), then makes the comparison `Wallet::open` makes for each
-  account. A silent node, "account not found" for every tag, or every
-  account diverged leaves the store open in *Store*; in the last case the
-  notice is the library's own "WALLET WILL NOT START" page, rendered from
-  the same `StartupRefusal` `Wallet::open` would have returned. The wallet
-  is opened only when an account reconciled, so `Wallet::open` refuses only
-  if the chain moved in between; then the store is reopened with the
-  password when it is at hand, and otherwise reported closed
-  (`LockReason::WalletRefused`), with the library's refusal page in the
-  command's answer (an advance's or a restore's `opened`), so the reason
-  reaches the interface. D23 proposes the library change that would make
-  the checks unnecessary.
+- **A refused wallet keeps its store.** The worker keeps the password
+  only for the length of the command that brought it, so it opens the
+  wallet with `Wallet::open_or_return_with_progress` (D23, item 2; D26):
+  the reconciliation `Wallet::open` makes, but a refusal or a cancel hands
+  the store and the client back, still open and still locked, and the
+  store stays open in *Store*. The notice is the library's own "WALLET
+  WILL NOT START" page, except for a node that did not answer (the
+  worker's notice) and a store none of whose accounts the node holds (the
+  library's "THIS STORE IS NOT WHOLE"), told apart from the refusal itself
+  with no second request. Until phase 2's follow-up (D26) the worker asked
+  the node and compared each account itself before opening, because
+  `Wallet::open` dropped the store when it refused.
 - **The library's words.** The worker makes each decision through the
   library's `Wallet` and `Keystore` methods, builds the `cli::outcome::
   Outcome` the command line would, and has `cli::render::render` write the
@@ -445,11 +454,16 @@ describes it, with these choices inside that design:
   three facts (§4.9), settlement, re-signing, reconciliation, restore and
   discovery therefore read exactly as they do at the command line. The
   standing "THIS STORE IS NOT WHOLE" notice is taken from the renderer
-  without the rule the command line draws under it. Where the command
-  line's choice lives in a private function (`key_access`,
-  `spend_all_amount`, the classification in `cmd_status`, `cmd_resign`'s
-  outcomes, `create`'s "Nothing was created" rule), the worker repeats it
-  and names the function it follows; D23 proposes making them public.
+  without the rule the command line draws under it. The command line's own
+  decisions are called, not repeated (D23, item 3; D26): `key_access`,
+  `spend_all_amount`, `plan_spend`, `reconcile::scope_to`,
+  `status_outcome`, `resign_outcome`, `create`'s `nothing_was_created` and
+  the plaintext test `plaintext_off_loopback`. Two small ones are still
+  private there and repeated here, each naming the function it follows:
+  a spend's destinations with "everything" resolved
+  (`spend_destinations`), and re-signing's resolution of "everything"
+  (`resign_destinations`), along with the parser's checks of a spend's
+  arguments (`spend.rs`).
 - **A copy of the master seed** is held beside the `Wallet` for the
   session, as the command line holds one (`cli::decide`), because
   `KeyAccess` borrows the seed while `reserve_and_sign` borrows the wallet
@@ -460,10 +474,11 @@ describes it, with these choices inside that design:
   starts does nothing, unless it only drops something (Lock, discarding a
   plan or a phrase, forgetting the node); so a spend queued behind a slow
   command does not sign after a cancel or a move to the background. A
-  running command reads it through `recon::Cancel` where the library takes
-  one (a refresh, between accounts and inside each account's walk, and a
-  status read), and nothing it read is applied. A spend is never stopped
-  between its reservation and its submission.
+  running command reads it through `recon::Cancel`: opening the wallet, a
+  refresh, a status read, a restore, an acknowledged advance and a
+  discovery sweep (D23, item 1; D26). Nothing it read is applied, and a
+  restore or an advance it stops has written nothing. A spend is never
+  stopped between its reservation and its submission.
 - **Accounts set aside at open.** `Wallet::open` sets aside an account
   it cannot explain, and the library refuses to spend from it by that
   observation. Settling is not refused on it: the library's
@@ -471,16 +486,17 @@ describes it, with these choices inside that design:
   aside because the node could not see its outstanding spend settles once
   the node shows it landed. A refresh that finds a set-aside account
   reconciling opens the wallet again, so the account can spend.
-- **Walks are bounded.** The worker runs one command at a time, so a lock
-  (idle, background, explicit) waits for the running command. The library
-  walks every key position up to an index the person names, about 1.6 ms
-  each in a release build, and its restore and acknowledged advance cannot
-  be cancelled. So `scan_to` (status, restore) and `advance_to` (reconcile)
-  are refused above `MAX_SCAN_TO`, 100,000, a wait of under three minutes;
-  the command line takes any index below `u32::MAX`. A discovery sweep
-  takes 1 to 1,024, as the command line's does. The owner approved the
-  bound of 100,000 on 2026-10-04; with D23's first item it can be lifted
-  for the walks that can then be cancelled.
+- **Walks can be stopped, so they are not bounded below the command
+  line's.** The worker runs one command at a time, and the library walks
+  every key position up to an index the person names, about 1.6 ms each in
+  a release build. Every such walk now takes a cancel (D26), and the idle
+  period stops it as a cancel does (D24), so a lock never waits on one:
+  `scan_to` (status, restore) and `advance_to` (reconcile) take any index
+  the command line takes, up to `MAX_KEY_INDEX` (`u32::MAX - 1`). A
+  discovery sweep takes 1 to 1,024, as the command line's does. Until
+  phase 2's follow-up the restore and the advance could not be stopped,
+  and the owner approved a bound of 100,000 (2026-10-04) to be lifted once
+  they could.
 
 **Owner, 2026-10-04: the interface offers the acknowledged advance and
 restore, on these terms.** The worker offers the library's acknowledged
@@ -626,9 +642,10 @@ platform-specific verification and trust any root installed on the
 machine, including a corporate inspection root; they are worth revisiting
 only if people need private nodes with their own certificates.
 
-### D23. Library changes this phase would use (proposals; nothing changed)
+### D23. Library changes this phase would use
 
-**proposed; decided by the owner on 2026-10-04 (below).** Rep-2 does not
+**proposed; decided by the owner on 2026-10-04 (below); items 1 to 4
+landed in the library and are in use (D7, D26).** Rep-2 does not
 modify the library. These are the changes wallet-core would use, to be
 made in Rep-0, merged down into Rep-1, and picked up here by moving `rev`.
 None blocks phase 2.
@@ -681,7 +698,15 @@ command carrying something they typed (unlock, create, the confirmation
 words). Any other command is not input, so an interface that polls the
 chain tip or refreshes on a timer cannot keep the store open, and the
 period is checked before each queued command is taken, so polls queued
-behind a slow node cannot either. Locking drops the `Keystore` (its key, master seed
+behind a slow node cannot either. A command still running when the period
+passes is stopped as a cancel stops it, and the store locks as soon as it
+has (D26): a walk to a far key index never holds the lock back. The stop
+holds for the rest of that command even if the person returns meanwhile,
+since the walk it ended reports a search cut short. Unlocking
+and creating are the exception: they carry the person's input and count
+as activity when they finish, so only a cancel stops them, and the wallet
+opening inside them walks no further than the library's diagnostic
+scope. Locking drops the `Keystore` (its key, master seed
 and lock), the worker's copy of the seed, any pending recovery phrase and
 any pending plan. It also happens on `Command::Lock`, when the app moves
 to the background (`WorkerHandle::background`, which first cancels every
@@ -703,9 +728,12 @@ changed in one place:
 - the plaintext-node refusal, in the three places where the command
   line's text names its flags (D22);
 - the standing notice without the command line's rule under it (D19);
-- the *Store* session's notices: no node chosen, the node changed, and
-  the node not answering (`worker.rs`, `NO_NODE`, `NODE_CHANGED` and
-  `open_session`);
+- the *Store* session's notices: no node chosen, the node changed, the
+  node not answering, and the wallet opening cancelled (`worker.rs`,
+  `NO_NODE`, `NODE_CHANGED`, `NODE_SILENT` and `OPEN_CANCELLED`);
+- what a cancelled restore or advance answers in place of the library's
+  page, which has none for a cancel (`RESTORE_CANCELLED`,
+  `ADVANCE_CANCELLED`);
 - the create refusals before a phrase is shown (a store already in the
   folder, the passwords differing) and at confirmation (the wrong words,
   nothing to confirm), each ending with the library's "Nothing was
@@ -715,10 +743,12 @@ changed in one place:
   NotFound`);
 - the short refusals for a command in the wrong session (locked, wallet
   not open, no node, no such plan);
-- the refusal of a scan or an advance past `MAX_SCAN_TO` (D19), and of a
-  discovery bound outside 1 to 1,024, whose two reasons are the command
-  line's, reworded because its text names its flags and verbs (`--to`,
-  `address`, `balance`).
+- the refusal of a scan or an advance past `MAX_KEY_INDEX` (D19), whose
+  range is the command line's and whose reason is the one its parser's
+  documentation gives (`cli::args`, `index_flag`), and of a discovery bound
+  outside 1 to 1,024, whose two reasons are the command line's; reworded
+  because its text names its flags and verbs (`--scan-to`, `--advance-to`,
+  `--to`, `address`, `balance`).
 
 The rendered pages also name command-line verbs (`settle`,
 `reconcile ... --advance-to N`, `submit`).
@@ -730,3 +760,62 @@ library's rendered pages are shown word for word, not paraphrased; where
 a page names a command-line verb, the screen adds a short note naming the
 control that does the same (for example, that `settle` is the Settle
 button).
+
+### D26. Phase 2 follow-up: wallet-core on the library's new calls
+
+**proposed.** With the pin at `8c2f39a` (D7), wallet-core uses D23's four
+changes and drops the workaround each replaced
+(docs/LIBRARY-PROPOSALS.md says what each was):
+
+- **Opening the wallet** (item 2) is
+  `Wallet::open_or_return_with_progress`. The checks before opening, the
+  reopen with the password after a refusal, and `LockReason::WalletRefused`
+  and `RefusalKind::WalletRefused` are gone: a refusal leaves the store
+  open with its notice (D19). The node is asked about each account once
+  per open, where the checks asked about it two or three times.
+- **Cancellation and progress** (item 1). Opening, restore
+  (`restore_account_with_progress`), the acknowledged advance
+  (`advance_acknowledged_with_progress`) and discovery
+  (`sweep_with_progress`) take the worker's cancel. That cancel also says
+  stop once the idle period has passed (D24), except while unlocking or
+  creating. Once a request has been told to stop, it stays stopped for
+  the rest of it, including the wallet opening after a restore or an
+  advance. Without that, a touch arriving between the stop and the next
+  question would let a walk cut short be applied as a divergence. The
+  library's counts reach the interface as `Event::Progress`,
+  in wallet-core's own `Progress`, which names no library type. A status
+  read reports no progress: the library's walk for it takes a cancel and
+  no counter. Adding one is a small library change, if the screens want it.
+- **What a stopped command answers.**
+  - A refresh with the wallet open, a status read and a sweep answer
+    `Refused` with kind `Cancelled`, and nothing they read is applied. A
+    sweep stopped short reports nothing found, as the library's
+    `Unfinished::Cancelled` requires.
+  - Unlock, create and a refresh of the store alone answer with the store
+    open on its own, not reconciled, and a notice saying so.
+  - A restore or an advance answers with its own reply (`Restored`,
+    `Reconciled`): `ok` false, no index, a text saying nothing was
+    written, and the store back open on its own. It took the store out of
+    its session to write it. The cancel that stopped it also stops the
+    wallet opening again, before that opening asks the node anything.
+- **The bound on key indices** is the command line's: `MAX_KEY_INDEX`,
+  which is `u32::MAX - 1`, in place of `MAX_SCAN_TO` (D19).
+- **The planned page** (item 4). `PlanView::text` is the library's page
+  for a spend laid out and not signed (`Outcome::planned`), including
+  "THIS EMPTIES THE ACCOUNT" when the change is zero. `empties_account`
+  stays, as a flag a screen can style by. The warning needs no paraphrase
+  (D25).
+- **The command line's decisions** (item 3) are called, not repeated
+  (D19). A checked spend is now the library's own `cli::args::Spend`,
+  which `plan_spend` takes.
+- **The worker's new texts** (`NODE_SILENT` is the old silent-node notice,
+  moved into a constant; `OPEN_CANCELLED`, `RESTORE_CANCELLED` and
+  `ADVANCE_CANCELLED` are new) are listed in D25. They are placeholders on
+  D25's terms, for the owner to confirm with the screens in phase 3.
+
+The worker's tests cover each of these:
+- a cancel stopping an unlock, a restore, an advance and a sweep;
+- the idle period stopping a walk to `MAX_KEY_INDEX` and locking;
+- the progress reports of opening, restore, advance and sweep;
+- a refused reopen keeping its store;
+- the planned page with and without the emptying warning.

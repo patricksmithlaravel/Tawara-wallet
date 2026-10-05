@@ -24,8 +24,11 @@ repository = "https://github.com/patricksmithlaravel/Tawara-wallet"
 [workspace.dependencies]
 # THE WALLET LIBRARY, PINNED BY FULL COMMIT HASH (docs/PLAN.md D1).
 #
-# Rep-1 (`patricksmithlaravel/mcm-rust-cli-windows`) at `main`, 121daf3, the
-# commit the owner named, in the form docs/PLAN.md D1 gives. Upgrading the
+# Rep-1 (`patricksmithlaravel/mcm-rust-cli-windows`) at `main`, 8c2f39a: the
+# merge that brought down Rep-0's cancellation and progress for the long
+# operations, `Wallet::open_or_return`, the planned-spend page and the
+# command line's decisions made public (docs/DECISIONS.md D7, D23), in the
+# form docs/PLAN.md D1 gives. Upgrading the
 # library is a change to `rev` and to nothing else: no `[patch]`, no vendored
 # copy, no fork. A change the application needs from the library is made in
 # Rep-0, merged down into Rep-1, and picked up here by moving `rev`.
@@ -38,7 +41,7 @@ repository = "https://github.com/patricksmithlaravel/Tawara-wallet"
 # workspace never turns on `raw-backend`: it is the library's test-only
 # feature, and with it off the only path to a signature is
 # `Keystore::sign_spend` behind an `AdvanceReceipt` (the library's I1).
-mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-windows", rev = "121daf3773fbc7869ee56c2c795e21115044dfe7", default-features = false, features = ["native", "mesh-https"] }
+mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-windows", rev = "8c2f39a2cdc2710ac7363b1d64026b6875a16537", default-features = false, features = ["native", "mesh-https"] }
 
 # THE TOOLKIT (docs/PLAN.md D2): iced, at its latest release when the work
 # began. Recorded in docs/DECISIONS.md (D6). `=0.14.0` fixes the `iced` crate

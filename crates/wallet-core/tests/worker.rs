@@ -16,8 +16,8 @@ use tawara_wallet_core::location::{Environment, Platform, default_store_dir};
 use tawara_wallet_core::spend::{Amount, DestinationInput, SpendInputError, SpendRequest};
 use tawara_wallet_core::view::{AccountId, AccountState, ReservationState, WalletView};
 use tawara_wallet_core::{
-    Activity, CONFIRM_POSITIONS, Command, Config, DISCOVER_MAX_TO, Event, LockReason, MAX_SCAN_TO,
-    PlanView, Refusal, RefusalKind, Reply, SentView,
+    Activity, CONFIRM_POSITIONS, Command, Config, DISCOVER_MAX_TO, Event, LockReason,
+    MAX_KEY_INDEX, PlanView, Progress, Refusal, RefusalKind, Reply, RequestId, SentView,
 };
 
 const FUNDS: u64 = 5_000_000;
@@ -393,6 +393,19 @@ fn a_spend_is_planned_signed_submitted_and_settled() {
     assert_eq!(plan.balance, FUNDS);
     assert_eq!(plan.change_total, FUNDS - 100_500);
     assert!(!plan.empties_account);
+    // The library's page for a spend not yet signed, word for word.
+    assert!(plan.text.starts_with("NOT SIGNED"), "{}", plan.text);
+    assert!(plan.text.contains(&destination(1)), "{}", plan.text);
+    assert!(
+        plan.text.contains("No key has been reserved or used"),
+        "{}",
+        plan.text
+    );
+    assert!(
+        !plan.text.contains("THIS EMPTIES THE ACCOUNT"),
+        "{}",
+        plan.text
+    );
     assert_eq!(plan.destinations.len(), 1);
     assert_eq!(plan.destinations[0].destination, destination(1));
     assert_eq!(plan.destinations[0].amount, 100_000);
@@ -540,6 +553,13 @@ fn everything_empties_the_account_from_one_ledger_read() {
     assert_eq!(plan.send_total, FUNDS - 500);
     assert_eq!(plan.change_total, 0);
     assert!(plan.empties_account);
+    // The library's own warning, before anything is signed.
+    assert!(plan.text.starts_with("NOT SIGNED"), "{}", plan.text);
+    assert!(
+        plan.text.contains("THIS EMPTIES THE ACCOUNT"),
+        "{}",
+        plan.text
+    );
     assert_eq!(plan.destinations[0].amount, FUNDS - 500);
 }
 
@@ -649,10 +669,14 @@ fn a_diverged_store_is_reopened_and_advanced_on_acknowledgement() {
         h.seen
     );
 
-    match h.call(Command::Reconcile {
-        account: account0(),
-        advance_to,
-    }) {
+    let id = h
+        .handle
+        .send(Command::Reconcile {
+            account: account0(),
+            advance_to,
+        })
+        .expect("worker running");
+    match h.wait_for(id) {
         Reply::Reconciled {
             ok,
             advanced_to,
@@ -670,6 +694,18 @@ fn a_diverged_store_is_reopened_and_advanced_on_acknowledgement() {
         }
         other => panic!("expected the advance, got {other:?}"),
     }
+    // The advance reported its account before reviewing it and again
+    // before the re-check that comes before its write, and the wallet
+    // opening after it reported it once more. None walked far enough to
+    // report a position.
+    let advancing = progress_of(&h, id);
+    assert_eq!(advancing.len(), 3, "{advancing:?}");
+    assert!(
+        advancing
+            .iter()
+            .all(|p| p.account == 0 && p.accounts == 1 && p.position == 0),
+        "{advancing:?}"
+    );
 }
 
 #[test]
@@ -1015,11 +1051,11 @@ fn scans_advances_and_sweeps_are_bounded() {
     for command in [
         Command::Status {
             account: account0(),
-            scan_to: Some(MAX_SCAN_TO + 1),
+            scan_to: Some(MAX_KEY_INDEX + 1),
         },
         Command::Restore {
             account_index: 1,
-            scan_to: Some(MAX_SCAN_TO + 1),
+            scan_to: Some(MAX_KEY_INDEX + 1),
         },
         Command::Reconcile {
             account: account0(),
@@ -1475,7 +1511,7 @@ fn dropping_the_last_handle_stops_a_queued_spend_before_it_signs() {
                 assert!(!panicked);
                 break;
             }
-            Event::Busy { .. } => {}
+            Event::Busy { .. } | Event::Progress { .. } => {}
         }
     }
     assert!(chain.submits().is_empty(), "nothing was signed or sent");
@@ -1504,7 +1540,7 @@ fn diverged_store(scratch: &Scratch) -> (Harness, u32) {
 }
 
 #[test]
-fn a_refused_reopen_after_an_advance_says_why() {
+fn a_refused_reopen_after_an_advance_keeps_the_store_open() {
     // How many times the advance and the reopen after it resolve the tag.
     let dry = Scratch::new("reopen-dry");
     let (mut h, advance_to) = diverged_store(&dry);
@@ -1520,9 +1556,10 @@ fn a_refused_reopen_after_an_advance_says_why() {
     drop(h);
 
     // The same again, with the node answering "account not found" from the
-    // last of those on: after the worker saw the account reconcile, and
-    // when `Wallet::open` asks. The library refuses the wallet and drops
-    // the store; its page has to reach the interface.
+    // last of those on: when the wallet is opened again after the advance.
+    // The library refuses it, and hands the store back: it stays open on
+    // its own, with the library's report, and nothing asks for the
+    // password again.
     let scratch = Scratch::new("reopen");
     let (mut h, advance_to) = diverged_store(&scratch);
     let from = h.chain.resolves(tag(0)) + per_command;
@@ -1535,26 +1572,348 @@ fn a_refused_reopen_after_an_advance_says_why() {
             ok,
             advanced_to: Some(index),
             text,
-            opened: Err(refusal),
+            opened: Ok(view),
         } => {
             assert!(ok, "{text}");
             assert_eq!(index, advance_to, "the advance stands");
-            assert_eq!(refusal.kind, RefusalKind::WalletRefused);
+            assert!(!view.opened, "{view:?}");
+            assert_eq!(view.accounts[0].index, advance_to);
+            let notice = view.notice.expect("the library's report");
+            assert!(notice.starts_with("THIS STORE IS NOT WHOLE"), "{notice}");
             assert!(
-                refusal.text.starts_with("WALLET WILL NOT START"),
-                "the library's report: {}",
-                refusal.text
-            );
-            assert!(
-                refusal.text.contains("account not found"),
-                "with the account's own report: {}",
-                refusal.text
+                notice.contains("account not found"),
+                "with the account's own report: {notice}"
             );
         }
         other => panic!("expected the advance and the refused reopen, got {other:?}"),
     }
-    assert_eq!(
-        h.wait_locked(Duration::from_secs(5)),
-        LockReason::WalletRefused
+    assert!(
+        !h.seen.iter().any(|e| matches!(e, Event::Locked { .. })),
+        "the store was never closed: {:?}",
+        h.seen
     );
+
+    // The node answers again: the same store opens, as it is.
+    h.chain.vanish_from(tag(0), usize::MAX);
+    let view = opened(h.call(Command::Refresh));
+    assert!(view.opened, "{view:?}");
+    assert_eq!(view.accounts[0].index, advance_to);
+}
+
+// ------------------------------------------- the long operations: cancel
+
+/// A funded store with a second account, restored, both in sync.
+fn two_accounts(scratch: &Scratch) -> Harness {
+    let (mut h, _) = funded(scratch);
+    h.chain.hold(tag(1), address(1, 0), 1_000);
+    match h.call(Command::Restore {
+        account_index: 1,
+        scan_to: None,
+    }) {
+        Reply::Restored {
+            ok: true,
+            opened: Ok(view),
+            text,
+        } => assert_eq!(view.accounts.len(), 2, "{text}"),
+        other => panic!("expected a restore, got {other:?}"),
+    }
+    h
+}
+
+#[test]
+fn a_cancelled_unlock_leaves_the_store_open_and_unreconciled() {
+    let scratch = Scratch::new("cancel-unlock");
+    let dir = scratch.store();
+    let mut h = two_accounts(&scratch);
+    assert!(matches!(h.call(Command::Lock), Reply::Locked));
+    assert_eq!(h.wait_locked(Duration::from_secs(5)), LockReason::Asked);
+
+    // The node holds the first account's lookup while the person cancels:
+    // the wallet stops opening before it asks about the second.
+    let gate = h.chain.close_gate();
+    let calls = h.chain.calls();
+    let id = h
+        .handle
+        .send(Command::Unlock {
+            dir: dir.clone(),
+            password: secret(PASSWORD),
+        })
+        .expect("worker running");
+    assert_eq!(h.wait_busy(id), Activity::DerivingKey);
+    assert_eq!(h.wait_busy(id), Activity::AskingNode);
+    h.handle.cancel();
+    gate.open();
+    let view = match h.wait_for(id) {
+        Reply::Unlocked(view) => view,
+        other => panic!("expected the store open on its own, got {other:?}"),
+    };
+    assert!(!view.opened, "{view:?}");
+    assert!(
+        view.notice
+            .as_deref()
+            .is_some_and(|n| n.contains("cancelled")),
+        "{:?}",
+        view.notice
+    );
+    assert_eq!(view.accounts.len(), 2);
+    assert!(
+        view.accounts
+            .iter()
+            .all(|r| r.state == AccountState::NotReconciled && !r.spendable),
+        "{view:?}"
+    );
+    assert!(
+        h.chain.calls() - calls <= 1,
+        "nothing was asked after the cancel"
+    );
+    assert!(
+        !h.seen.iter().any(|e| matches!(e, Event::Locked { .. })),
+        "the store stayed open"
+    );
+
+    // Nothing needs the password again: a refresh opens the wallet.
+    let view = opened(h.call(Command::Refresh));
+    assert!(view.opened, "{view:?}");
+    assert_eq!(view.total(), u128::from(FUNDS) + 1_000);
+}
+
+#[test]
+fn a_cancelled_restore_writes_nothing() {
+    let scratch = Scratch::new("cancel-restore");
+    let (mut h, _) = funded(&scratch);
+    h.chain.hold(tag(1), address(1, 0), 1_000);
+
+    let gate = h.chain.close_gate();
+    let calls = h.chain.calls();
+    let id = h
+        .handle
+        .send(Command::Restore {
+            account_index: 1,
+            scan_to: None,
+        })
+        .expect("worker running");
+    assert_eq!(h.wait_busy(id), Activity::AskingNode);
+    h.handle.cancel();
+    gate.open();
+    match h.wait_for(id) {
+        Reply::Restored {
+            ok,
+            text,
+            opened: Ok(view),
+        } => {
+            assert!(!ok, "{text}");
+            assert!(text.contains("cancelled"), "{text}");
+            assert_eq!(view.accounts.len(), 1, "nothing was added: {view:?}");
+            assert!(!view.opened, "{view:?}");
+            assert!(
+                view.notice
+                    .as_deref()
+                    .is_some_and(|n| n.contains("cancelled")),
+                "{:?}",
+                view.notice
+            );
+        }
+        other => panic!("expected the cancelled restore, got {other:?}"),
+    }
+    // At most the restore's own lookup: the wallet opening after it heard
+    // the same cancel before it asked anything.
+    assert!(h.chain.calls() - calls <= 1);
+    assert!(
+        !h.seen.iter().any(|e| matches!(e, Event::Locked { .. })),
+        "the store stayed open"
+    );
+
+    let view = opened(h.call(Command::Refresh));
+    assert!(view.opened, "{view:?}");
+    assert_eq!(view.accounts.len(), 1, "{view:?}");
+}
+
+#[test]
+fn a_cancelled_advance_moves_no_key_index() {
+    let scratch = Scratch::new("cancel-advance");
+    let (mut h, advance_to) = diverged_store(&scratch);
+
+    let gate = h.chain.close_gate();
+    let id = h
+        .handle
+        .send(Command::Reconcile {
+            account: account0(),
+            advance_to,
+        })
+        .expect("worker running");
+    assert_eq!(h.wait_busy(id), Activity::AskingNode);
+    h.handle.cancel();
+    gate.open();
+    match h.wait_for(id) {
+        Reply::Reconciled {
+            ok,
+            advanced_to,
+            text,
+            opened: Ok(view),
+        } => {
+            assert!(!ok, "{text}");
+            assert_eq!(advanced_to, None, "{text}");
+            assert!(text.contains("cancelled"), "{text}");
+            assert!(!view.opened, "{view:?}");
+            assert_eq!(view.accounts[0].index, advance_to - 3, "{view:?}");
+        }
+        other => panic!("expected the cancelled advance, got {other:?}"),
+    }
+
+    // Still diverged where it was: the library names the same advance.
+    let view = opened(h.call(Command::Refresh));
+    assert!(!view.opened, "{view:?}");
+    assert!(
+        matches!(
+            &view.accounts[0].state,
+            AccountState::Diverged { advance_to: Some(to), .. } if *to == advance_to
+        ),
+        "{:?}",
+        view.accounts[0].state
+    );
+}
+
+#[test]
+fn a_cancelled_sweep_reports_nothing_found() {
+    let scratch = Scratch::new("cancel-sweep");
+    let (mut h, _) = funded(&scratch);
+
+    let gate = h.chain.close_gate();
+    let calls = h.chain.calls();
+    let id = h
+        .handle
+        .send(Command::Discover { to: 50 })
+        .expect("worker running");
+    assert_eq!(h.wait_busy(id), Activity::AskingNode);
+    h.handle.cancel();
+    gate.open();
+    assert_eq!(refusal(h.wait_for(id)).kind, RefusalKind::Cancelled);
+    assert!(
+        h.chain.calls() - calls <= 1,
+        "it stopped before the next request"
+    );
+    assert!(opened(h.call(Command::Refresh)).opened);
+}
+
+#[test]
+fn the_idle_period_stops_a_walk_to_a_far_index_and_locks() {
+    let scratch = Scratch::new("idle-walk");
+    let mut h = Harness::with(Config {
+        idle_lock: Duration::from_millis(1_500),
+    });
+    assert!(matches!(
+        h.call(Command::SetNode { url: NODE.into() }),
+        Reply::NodeSet { .. }
+    ));
+    let view = opened(h.create_from_phrase(&scratch.store()));
+    assert!(!view.opened, "nothing is on the ledger yet: {view:?}");
+
+    // The node holds the account under its own tag at a key none of its
+    // positions derives (another account's), so the search runs to the
+    // index named, the last there is: far longer than the idle period,
+    // which stops it and locks.
+    let mut elsewhere = address(0, 0);
+    elsewhere[20..].copy_from_slice(&address(5, 0)[20..]);
+    h.chain.hold(tag(0), elsewhere, FUNDS);
+    let id = h
+        .handle
+        .send(Command::Status {
+            account: account0(),
+            scan_to: Some(MAX_KEY_INDEX),
+        })
+        .expect("worker running");
+    assert_eq!(refusal(h.wait_for(id)).kind, RefusalKind::Cancelled);
+    assert_eq!(h.wait_locked(Duration::from_secs(10)), LockReason::Idle);
+}
+
+// ----------------------------------------- the long operations: progress
+
+/// The progress reports seen for request `id`, in the order they came.
+fn progress_of(h: &Harness, id: RequestId) -> Vec<Progress> {
+    h.seen
+        .iter()
+        .filter_map(|e| match e {
+            Event::Progress { id: got, progress } if *got == id => Some(*progress),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn long_operations_report_how_far_they_have_got() {
+    let scratch = Scratch::new("progress");
+    let dir = scratch.store();
+    let (mut h, _) = funded(&scratch);
+
+    // A sweep reports each account it is about to ask about, and walks
+    // nothing.
+    let id = h
+        .handle
+        .send(Command::Discover { to: 3 })
+        .expect("worker running");
+    assert!(matches!(h.wait_for(id), Reply::Discovered { .. }));
+    let swept = progress_of(&h, id);
+    assert_eq!(
+        swept.iter().map(|p| p.account).collect::<Vec<_>>(),
+        [0, 1, 2, 3]
+    );
+    assert!(
+        swept
+            .iter()
+            .all(|p| p.accounts == 4 && p.position == 0 && p.ceiling == 0),
+        "{swept:?}"
+    );
+
+    // A restore that walks three hundred key positions reports along the
+    // way, and the wallet opening after it reports each account.
+    h.chain.hold(tag(2), address(2, 300), 7_000);
+    let id = h
+        .handle
+        .send(Command::Restore {
+            account_index: 2,
+            scan_to: None,
+        })
+        .expect("worker running");
+    match h.wait_for(id) {
+        Reply::Restored {
+            ok: true,
+            opened: Ok(view),
+            text,
+        } => assert!(view.opened, "{text}"),
+        other => panic!("expected a restore, got {other:?}"),
+    }
+    let restored = progress_of(&h, id);
+    assert!(
+        restored
+            .iter()
+            .any(|p| p.accounts == 1 && p.position == 256 && p.ceiling >= 300),
+        "{restored:?}"
+    );
+    assert_eq!(
+        restored
+            .iter()
+            .filter(|p| p.accounts == 2)
+            .map(|p| p.account)
+            .collect::<Vec<_>>(),
+        [0, 1],
+        "{restored:?}"
+    );
+
+    // Unlocking reports each account as the wallet opens.
+    assert!(matches!(h.call(Command::Lock), Reply::Locked));
+    let id = h
+        .handle
+        .send(Command::Unlock {
+            dir,
+            password: secret(PASSWORD),
+        })
+        .expect("worker running");
+    assert!(opened(h.wait_for(id)).opened);
+    let opening = progress_of(&h, id);
+    assert_eq!(
+        opening.iter().map(|p| p.account).collect::<Vec<_>>(),
+        [0, 1],
+        "{opening:?}"
+    );
+    assert!(opening.iter().all(|p| p.accounts == 2), "{opening:?}");
 }

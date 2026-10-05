@@ -67,6 +67,9 @@ pub enum Command {
 
     /// Open the store in `dir` with its password, and reconcile it against
     /// the node when one is chosen. Any store already open is locked first.
+    /// When the library will not open the wallet, the store stays open on
+    /// its own with the library's page as its notice; nothing needs the
+    /// password twice.
     Unlock { dir: PathBuf, password: SecretText },
     /// Lock: drop the store, its secret and its lock, and any pending phrase
     /// or plan. Like every command it runs after the ones sent before it;
@@ -103,7 +106,8 @@ pub enum Command {
     /// Reconcile one account now and report, whatever its state. `scan_to`
     /// sets how far the search for where the chain holds it goes (key
     /// indices `0..=scan_to`, beside the window around the store's index),
-    /// at most [`crate::MAX_SCAN_TO`].
+    /// at most [`crate::MAX_KEY_INDEX`]. Every index walked costs one key
+    /// derivation, so a far one is a long wait; it can be cancelled.
     Status {
         account: AccountId,
         scan_to: Option<u32>,
@@ -111,19 +115,22 @@ pub enum Command {
     /// The acknowledged advance for a diverged account: move it to
     /// `advance_to` only if the library's live report names exactly that
     /// index. The whole store is reconciled and reported first.
-    /// `advance_to` is at most [`crate::MAX_SCAN_TO`].
+    /// `advance_to` is at most [`crate::MAX_KEY_INDEX`]. It can be cancelled
+    /// until it writes, and a cancel writes nothing.
     Reconcile { account: AccountId, advance_to: u32 },
     /// Find where derived account `account_index` sits on the chain and put
     /// it in the store at that index. `scan_to`, at most
-    /// [`crate::MAX_SCAN_TO`], widens the search as for
-    /// [`Command::Status`].
+    /// [`crate::MAX_KEY_INDEX`], widens the search as for
+    /// [`Command::Status`]. It can be cancelled until it writes, and a
+    /// cancel writes nothing.
     Restore {
         account_index: u32,
         scan_to: Option<u32>,
     },
     /// Ask the node about derived accounts `0..=to`, `to` from 1 to
     /// [`crate::DISCOVER_MAX_TO`] as at the command line; nothing is
-    /// written.
+    /// written. A cancel stops it between two requests, and it then reports
+    /// nothing found: a sweep that stopped short is not a sweep.
     Discover { to: u32 },
 
     /// The node's chain tip.
