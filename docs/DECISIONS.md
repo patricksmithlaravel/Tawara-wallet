@@ -700,7 +700,9 @@ chain tip or refreshes on a timer cannot keep the store open, and the
 period is checked before each queued command is taken, so polls queued
 behind a slow node cannot either. A command still running when the period
 passes is stopped as a cancel stops it, and the store locks as soon as it
-has (D26): a walk to a far key index never holds the lock back. Unlocking
+has (D26): a walk to a far key index never holds the lock back. The stop
+holds for the rest of that command even if the person returns meanwhile,
+since the walk it ended reports a search cut short. Unlocking
 and creating are the exception: they carry the person's input and count
 as activity when they finish, so only a cancel stops them, and the wallet
 opening inside them walks no further than the library's diagnostic
@@ -776,7 +778,11 @@ changes and drops the workaround each replaced
   (`advance_acknowledged_with_progress`) and discovery
   (`sweep_with_progress`) take the worker's cancel. That cancel also says
   stop once the idle period has passed (D24), except while unlocking or
-  creating. The library's counts reach the interface as `Event::Progress`,
+  creating. Once a request has been told to stop, it stays stopped for
+  the rest of it, including the wallet opening after a restore or an
+  advance. Without that, a touch arriving between the stop and the next
+  question would let a walk cut short be applied as a divergence. The
+  library's counts reach the interface as `Event::Progress`,
   in wallet-core's own `Progress`, which names no library type. A status
   read reports no progress: the library's walk for it takes a cancel and
   no counter. Adding one is a small library change, if the screens want it.
