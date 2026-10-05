@@ -157,4 +157,18 @@ pub enum Command {
 
     /// The node's chain tip.
     NetworkStatus,
+    /// The newest [`crate::explorer::CARD_BLOCKS`] blocks, read down from
+    /// the tip: the command line's `blocks`. No store is needed.
+    Blocks,
+    /// Every account's transactions from the node's index, newest first, at
+    /// most [`crate::explorer::HISTORY_ROWS`] each: the command line's
+    /// `recent-transactions` for each account. One request per account; a
+    /// cancel stops it between two, and it then reports nothing.
+    Activity,
+    /// Reconcile every account in the store now and report each, whatever
+    /// its state: what account recovery shows before anything else
+    /// (docs/DECISIONS.md D19). As [`Command::Status`] for each account, in
+    /// the store's order; a cancel stops it between accounts or inside a
+    /// walk, and it then reports nothing.
+    Review,
 }

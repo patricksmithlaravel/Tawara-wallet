@@ -132,9 +132,10 @@ use zeroize::Zeroizing;
 use crate::command::{Command, PlanId, RequestId};
 use crate::entropy::{self, EntropyUnavailable};
 use crate::event::{
-    Activity, Discovered, Event, LockReason, PlanView, PlannedDestination, Progress, ReceiveView,
-    Refusal, RefusalKind, Reply, SentView,
+    AccountReport, Activity, Discovered, Event, LockReason, PlanView, PlannedDestination, Progress,
+    ReceiveView, Refusal, RefusalKind, Reply, SentView,
 };
+use crate::explorer::{self, AccountHistory, BlockSummary, BlocksView, ExplorerRefusal};
 use crate::node::{self, Connect};
 use crate::secret::{PhraseForDisplay, SecretText};
 use crate::spend::{self, SpendRequest};
@@ -1029,6 +1030,9 @@ impl<C: Connect> Worker<C> {
             } => self.restore(id, account_index, scan_to),
             Command::Discover { to } => self.discover(id, to),
             Command::NetworkStatus => self.network_status(id),
+            Command::Blocks => self.blocks(id),
+            Command::Activity => self.activity(id),
+            Command::Review => self.review(id),
         }
     }
 
@@ -2172,6 +2176,196 @@ impl<C: Connect> Worker<C> {
             },
             Err(e) => Reply::Refused(library(e)),
         }
+    }
+
+    /// The command line's `blocks`, for the wallet's network card.
+    fn blocks(&self, id: RequestId) -> Reply {
+        let fresh;
+        let client = match &self.session {
+            Session::Wallet(w) if self.node.as_deref() == Some(w.node.as_str()) => {
+                w.wallet.client()
+            }
+            _ => match self.client() {
+                Ok((_, c)) => {
+                    fresh = c;
+                    &fresh
+                }
+                Err(r) => return Reply::Refused(r),
+            },
+        };
+        self.busy(id, Activity::ReadingIndex);
+        let outcome = cli::cmd_blocks(client, explorer::CARD_BLOCKS);
+        let read = match &outcome {
+            Outcome::Blocks { tip, rows, .. } => {
+                Ok((tip.index, rows.iter().map(BlockSummary::of).collect()))
+            }
+            Outcome::BlocksStopped { cause, .. } | Outcome::ExplorerFailed { cause } => {
+                Err(explorer::no_index(cause))
+            }
+            _ => Err(false),
+        };
+        let text = text::page(&[], outcome);
+        Reply::Blocks(match read {
+            Ok((tip, blocks)) => Ok(BlocksView { tip, blocks, text }),
+            Err(no_index) => Err(ExplorerRefusal { no_index, text }),
+        })
+    }
+
+    /// The command line's `recent-transactions`, for every account in the
+    /// store's order.
+    fn activity(&self, id: RequestId) -> Reply {
+        let fresh;
+        let (accounts, client) = match &self.session {
+            Session::Locked => return Self::not_unlocked(),
+            Session::Store(s) => {
+                let client = match &s.client {
+                    Some((_, c)) => c,
+                    None => match self.client() {
+                        Ok((_, c)) => {
+                            fresh = c;
+                            &fresh
+                        }
+                        Err(r) => return Reply::Refused(r),
+                    },
+                };
+                (&s.rows, client)
+            }
+            Session::Wallet(w) => (&w.rows, w.wallet.client()),
+        };
+        let asked = self.stop_asked(id);
+        self.busy(id, Activity::ReadingIndex);
+        let count = u32::try_from(accounts.len()).unwrap_or(u32::MAX);
+        let mut out = Vec::with_capacity(accounts.len());
+        for (n, row) in accounts.iter().enumerate() {
+            // Between two requests: a history cut short is not shown as
+            // a whole one.
+            if asked() {
+                return Reply::Refused(library(Error::Cancelled));
+            }
+            self.emit(Event::Progress {
+                id,
+                progress: Progress {
+                    account: u32::try_from(n).unwrap_or(u32::MAX),
+                    accounts: count,
+                    position: 0,
+                    ceiling: 0,
+                },
+            });
+            let outcome =
+                cli::cmd_recent_transactions(client, &row.id.tag(), explorer::HISTORY_ROWS);
+            let read = match &outcome {
+                Outcome::RecentTransactions { page, .. } => {
+                    Ok(AccountHistory::of(row.id, page, String::new()))
+                }
+                Outcome::ExplorerFailed { cause } => Err(explorer::no_index(cause)),
+                _ => Err(false),
+            };
+            let text = text::page(&[], outcome);
+            match read {
+                Ok(history) => out.push(AccountHistory { text, ..history }),
+                // Every account is read from the same index: one refusal
+                // is the answer for all of them.
+                Err(no_index) => return Reply::Activity(Err(ExplorerRefusal { no_index, text })),
+            }
+        }
+        if asked() {
+            return Reply::Refused(library(Error::Cancelled));
+        }
+        Reply::Activity(Ok(out))
+    }
+
+    /// [`Command::Status`] for every account, applied only once all have
+    /// answered.
+    fn review(&mut self, id: RequestId) -> Reply {
+        let asked = self.stop_asked(id);
+        let scope = reconcile::scope_to(None);
+        let fresh;
+        let (store, client, master, tags) = match &self.session {
+            Session::Locked => return Self::not_unlocked(),
+            Session::Store(s) => {
+                let client = match &s.client {
+                    Some((_, c)) => c,
+                    None => match self.client() {
+                        Ok((_, c)) => {
+                            fresh = c;
+                            &fresh
+                        }
+                        Err(r) => return Reply::Refused(r),
+                    },
+                };
+                (
+                    &s.store,
+                    client,
+                    s.master.as_ref(),
+                    s.rows.iter().map(|r| r.id.tag()).collect::<Vec<_>>(),
+                )
+            }
+            Session::Wallet(w) => (
+                w.wallet.store(),
+                w.wallet.client(),
+                w.master.as_ref(),
+                w.rows.iter().map(|r| r.id.tag()).collect(),
+            ),
+        };
+        self.busy(id, Activity::AskingNode);
+        let count = u32::try_from(tags.len()).unwrap_or(u32::MAX);
+        let mut found = Vec::with_capacity(tags.len());
+        for (n, tag) in tags.iter().enumerate() {
+            self.emit(Event::Progress {
+                id,
+                progress: Progress {
+                    account: u32::try_from(n).unwrap_or(u32::MAX),
+                    accounts: count,
+                    position: 0,
+                    ceiling: 0,
+                },
+            });
+            let result = match recon::access_for(store, tag, master) {
+                Ok(access) => recon::reconcile_account_with(
+                    store,
+                    client,
+                    tag,
+                    &access,
+                    &scope,
+                    &Cancel::when(&asked),
+                ),
+                Err(d) => Err(d),
+            };
+            // A walk told to stop is no finding about the account, and a
+            // review cut short is not shown as a whole one.
+            if asked() {
+                return Reply::Refused(library(Error::Cancelled));
+            }
+            let state = match &result {
+                Ok(status) => AccountState::from_status(status),
+                Err(d) => AccountState::from_divergence(d),
+            };
+            let text = text::page(&[], cli::status_outcome(tag, result));
+            found.push((*tag, state, text));
+        }
+        let mut reports = Vec::with_capacity(found.len());
+        for (tag, state, text) in found {
+            let spendable = match &mut self.session {
+                Session::Store(s) => {
+                    update_row(&mut s.rows, &tag, state.clone(), false, None);
+                    false
+                }
+                Session::Wallet(w) => {
+                    let spendable = w.wallet.accounts().iter().any(|(t, _)| *t == tag)
+                        && matches!(state, AccountState::InSync { .. });
+                    update_row(&mut w.rows, &tag, state.clone(), spendable, None);
+                    spendable
+                }
+                Session::Locked => false,
+            };
+            reports.push(AccountReport {
+                account: AccountId::from_tag(tag),
+                state,
+                spendable,
+                text,
+            });
+        }
+        Reply::Reviewed(reports)
     }
 }
 

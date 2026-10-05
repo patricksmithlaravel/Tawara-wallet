@@ -48,6 +48,11 @@ fn activity(busy: &Busy) -> (&'static str, &'static str) {
             "Asking the node about each account and comparing the key index this store holds \
              with the one the chain shows.",
         ),
+        Some(Activity::ReadingIndex) => (
+            "Reading the node's index",
+            "Asking the node's transaction index about each account, one request each. Nothing \
+             is written.",
+        ),
     }
 }
 

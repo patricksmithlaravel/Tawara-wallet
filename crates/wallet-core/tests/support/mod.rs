@@ -111,6 +111,13 @@ struct State {
     resolved: BTreeMap<Tag, usize>,
     /// From this resolve of this tag on, answer "account not found".
     vanish: Option<(Tag, usize)>,
+    /// The index's rows for each tag, newest first, as the endpoint spells
+    /// them.
+    history: BTreeMap<Tag, Vec<serde_json::Value>>,
+    /// The deployment runs no index: a search answers its internal error.
+    no_index: bool,
+    /// How many transactions the index has recorded, for their ids.
+    indexed: u64,
 }
 
 /// Holds every request at the chain until it is opened, so a test can act
@@ -200,6 +207,47 @@ impl Chain {
         self.0.lock().expect("chain").delay = delay;
     }
 
+    /// The index records a transfer of `amount` from `from` to `to` in
+    /// `block`, as the index spells one: the source debited gross, the
+    /// change back to it as a destination of its own, and the fee.
+    pub fn index_transfer(&self, from: Tag, to: Tag, amount: u64, change: u64, block: u64) {
+        let mut s = self.0.lock().expect("chain");
+        s.indexed += 1;
+        let fee = 500;
+        let op = |i: u64, kind: &str, tag: &Tag, value: i128| {
+            serde_json::json!({
+                "operation_identifier": { "index": i },
+                "type": kind,
+                "account": { "address": format!("0x{}", hex_of(tag)) },
+                "amount": { "value": value.to_string() },
+            })
+        };
+        let gross = i128::from(amount + change + fee);
+        let row = serde_json::json!({
+            "transaction_identifier": { "hash": format!("0x{:064x}", s.indexed) },
+            "block_identifier": { "index": block, "hash": format!("0x{:064x}", block) },
+            "timestamp": block * 60_000,
+            "operations": [
+                op(0, "SOURCE_TRANSFER", &from, -gross),
+                op(1, "DESTINATION_TRANSFER", &to, i128::from(amount)),
+                op(2, "DESTINATION_TRANSFER", &from, i128::from(change)),
+                {
+                    "operation_identifier": { "index": 3 },
+                    "type": "FEE",
+                    "account": { "address": "" },
+                    "amount": { "value": fee.to_string() },
+                },
+            ],
+        });
+        for tag in [from, to] {
+            s.history.entry(tag).or_default().insert(0, row.clone());
+        }
+    }
+
+    pub fn set_no_index(&self, no_index: bool) {
+        self.0.lock().expect("chain").no_index = no_index;
+    }
+
     /// Hold every request from now on until the returned gate is opened.
     pub fn close_gate(&self) -> Gate {
         let gate = Gate::default();
@@ -262,6 +310,35 @@ impl Transport for Chain {
                     .into_bytes()),
                     None => Ok(br#"{"code":4,"message":"Account not found","retriable":false}"#.to_vec()),
                 }
+            }
+            "/search/transactions" => {
+                if s.no_index {
+                    return Ok(br#"{"code":1,"message":"Internal error","retriable":false}"#.to_vec());
+                }
+                let asked = req["account_identifier"]["address"].as_str().ok_or(mesh("test: account_identifier"))?;
+                let limit = req["limit"].as_u64().filter(|l| (1..=100).contains(l)).unwrap_or(10);
+                let raw = asked.strip_prefix("0x").and_then(unhex).ok_or(mesh("test: tag hex"))?;
+                let tag: Tag = raw.try_into().map_err(|_| mesh("test: tag length"))?;
+                let rows = s.history.get(&tag).cloned().unwrap_or_default();
+                let total = rows.len();
+                let page: Vec<_> = rows.into_iter().take(usize::try_from(limit).unwrap_or(10)).collect();
+                Ok(serde_json::json!({ "transactions": page, "total_count": total }).to_string().into_bytes())
+            }
+            "/block" => {
+                let index = req["block_identifier"]["index"].as_u64().ok_or(mesh("test: block index"))?;
+                // Index 0 is the tip to this endpoint, as the library notes.
+                let index = if index == 0 { s.tip } else { index };
+                if index > s.tip {
+                    return Ok(br#"{"code":2,"message":"Block not found","retriable":false}"#.to_vec());
+                }
+                Ok(serde_json::json!({ "block": {
+                    "block_identifier": { "index": index, "hash": format!("0x{index:064x}") },
+                    "parent_block_identifier": { "index": index - 1, "hash": format!("0x{:064x}", index - 1) },
+                    "timestamp": index * 60_000,
+                    "transactions": [],
+                }})
+                .to_string()
+                .into_bytes())
             }
             "/construction/submit" => {
                 let text = req["signed_transaction"].as_str().ok_or(mesh("test: signed_transaction"))?;

@@ -12,12 +12,18 @@ use std::path::PathBuf;
 use mochimo_crypto::account::{AccountKind as LibraryKind, StreamId, WotsIndex};
 use mochimo_crypto::cli::discover::{Sighting, Sweep};
 use mochimo_crypto::cli::outcome::{Outcome, Shipped};
-use mochimo_crypto::mesh::{LedgerEntry, TxId};
-use mochimo_crypto::recon::{ChainPosition, Divergence};
+use mochimo_crypto::mesh::codec::{
+    MeshBlock, MeshTransaction, OP_DESTINATION, OP_FEE, OP_REWARD, OP_SOURCE, Operation, SearchPage,
+};
+use mochimo_crypto::mesh::{ChainTip, LedgerEntry, TxId};
+use mochimo_crypto::recon::{AccountStatus, ChainPosition, Divergence, Reservation};
 use mochimo_crypto::tx::wire::Destination;
 
 use crate::command::PlanId;
-use crate::event::{Discovered, PlanView, PlannedDestination, ReceiveView, SentView};
+use crate::event::{
+    AccountReport, Discovered, PlanView, PlannedDestination, ReceiveView, SentView,
+};
+use crate::explorer::{AccountHistory, BlockSummary, BlocksView};
 use crate::text;
 use crate::view::{
     AccountId, AccountKind, AccountRow, AccountState, Notice, NoticeKind, ReservationState,
@@ -348,9 +354,287 @@ pub fn submitted_text() -> String {
     )
 }
 
+/// One transaction as the node's index spells it: `ops` are (kind, tag or
+/// none, amount in nanoMCM).
+fn indexed(
+    id: u8,
+    block: u64,
+    at_ms: i64,
+    ops: &[(&str, Option<[u8; 20]>, i128)],
+) -> MeshTransaction {
+    MeshTransaction {
+        hash: [id; 32],
+        block: Some(ChainTip {
+            index: block,
+            hash: [u8::try_from(block % 251).unwrap_or(0); 32],
+        }),
+        timestamp_ms: Some(at_ms),
+        operations: ops
+            .iter()
+            .enumerate()
+            .map(|(i, (kind, t, amount))| Operation {
+                index: i as u64,
+                kind: (*kind).to_owned(),
+                address: t.map(|t| format!("0x{}", hex(&t))).unwrap_or_default(),
+                amount: *amount,
+                memo: String::new(),
+            })
+            .collect(),
+        metadata: Vec::new(),
+    }
+}
+
+/// A spend from `from` as the index lists it: the source debited gross, the
+/// payees, the change back to `from`, and the fee at the node's floor.
+fn spend(
+    id: u8,
+    block: u64,
+    at_ms: i64,
+    from: [u8; 20],
+    to: &[([u8; 20], i128)],
+    change: i128,
+) -> MeshTransaction {
+    let fee = i128::from(mochimo_crypto::consts::MFEE) * to.len() as i128;
+    let sent: i128 = to.iter().map(|(_, a)| a).sum();
+    let mut ops = vec![(OP_SOURCE, Some(from), -(sent + fee + change))];
+    ops.extend(to.iter().map(|(t, a)| (OP_DESTINATION, Some(*t), *a)));
+    ops.push((OP_DESTINATION, Some(from), change));
+    ops.push((OP_FEE, None, fee));
+    indexed(id, block, at_ms, &ops)
+}
+
+const MCM: i128 = 1_000_000_000;
+
+/// What the node's index holds for each account of the sample store, newest
+/// first, and the library's page for each. The index carries no references
+/// on these rows, as the library notes of `/search`.
+#[must_use]
+pub fn activity() -> Vec<AccountHistory> {
+    let own = spend(
+        0x4b,
+        869_130,
+        1_790_439_640_000,
+        tag(2),
+        &[(tag(1), 500 * MCM)],
+        2_680 * MCM,
+    );
+    let rows = [
+        (
+            tag(1),
+            vec![
+                spend(
+                    0x91,
+                    870_668,
+                    1_791_036_200_000,
+                    tag(1),
+                    &[(tag(7), 420 * MCM), (tag(8), 380 * MCM)],
+                    9_215 * MCM,
+                ),
+                spend(
+                    0x37,
+                    870_645,
+                    1_791_029_405_000,
+                    tag(9),
+                    &[(tag(1), 420 * MCM)],
+                    1_200 * MCM,
+                ),
+                spend(
+                    0x62,
+                    870_190,
+                    1_790_850_600_000,
+                    tag(1),
+                    &[(tag(10), 300 * MCM)],
+                    10_015 * MCM,
+                ),
+                own.clone(),
+            ],
+        ),
+        (
+            tag(2),
+            vec![
+                own,
+                spend(
+                    0x2c,
+                    867_780,
+                    1_789_989_330_000,
+                    tag(11),
+                    &[(tag(2), 1_200 * MCM)],
+                    40 * MCM,
+                ),
+                spend(
+                    0x15,
+                    865_850,
+                    1_789_411_622_000,
+                    tag(2),
+                    &[(tag(12), 410 * MCM)],
+                    2_000 * MCM,
+                ),
+            ],
+        ),
+        (
+            tag(3),
+            vec![indexed(
+                0x7e,
+                868_870,
+                1_790_323_331_000,
+                &[(OP_REWARD, Some(tag(3)), 85_135_096_906)],
+            )],
+        ),
+    ];
+    rows.into_iter()
+        .map(|(t, transactions)| {
+            let page = SearchPage {
+                total_count: transactions.len() as u64,
+                transactions,
+                next_offset: None,
+            };
+            let text = text::page(
+                &[],
+                Outcome::RecentTransactions {
+                    tag: t,
+                    page: Box::new(page.clone()),
+                },
+            );
+            AccountHistory::of(AccountId::from_tag(t), &page, text)
+        })
+        .collect()
+}
+
+/// The time of the sample chain's tip, in milliseconds since the epoch.
+pub const TIP_MS: i64 = 1_791_186_252_000;
+
+/// The six newest blocks of the sample chain, read down from its tip, and
+/// the library's page for them.
+#[must_use]
+pub fn blocks() -> BlocksView {
+    let tip = 871_173;
+    let gaps = [0, 312, 289, 405, 251, 338];
+    let counts = [3, 1, 5, 2, 1, 4];
+    let mut at = TIP_MS;
+    let mut rows = Vec::new();
+    for (n, (gap, count)) in gaps.iter().zip(counts).enumerate() {
+        at -= gap * 1_000;
+        let index = tip - n as u64;
+        rows.push(MeshBlock {
+            block: ChainTip {
+                index,
+                hash: [u8::try_from(index % 251).unwrap_or(0); 32],
+            },
+            parent: ChainTip {
+                index: index - 1,
+                hash: [u8::try_from((index - 1) % 251).unwrap_or(0); 32],
+            },
+            timestamp_ms: at,
+            transactions: (0..count)
+                .map(|i| MeshTransaction {
+                    hash: [u8::try_from(i).unwrap_or(0); 32],
+                    block: None,
+                    timestamp_ms: None,
+                    operations: Vec::new(),
+                    metadata: Vec::new(),
+                })
+                .collect(),
+        });
+    }
+    let blocks = rows.iter().map(BlockSummary::of).collect();
+    let tip = ChainTip {
+        index: tip,
+        hash: [u8::try_from(tip % 251).unwrap_or(0); 32],
+    };
+    BlocksView {
+        tip: tip.index,
+        blocks,
+        text: text::page(
+            &[],
+            Outcome::Blocks {
+                count: crate::explorer::CARD_BLOCKS,
+                tip,
+                rows,
+            },
+        ),
+    }
+}
+
+/// Every account of the sample store reconciled now, as account recovery
+/// shows them first: the library's report for each.
+#[must_use]
+pub fn review() -> Vec<AccountReport> {
+    let found: Vec<([u8; 20], Result<AccountStatus, Divergence>)> = vec![
+        (
+            tag(1),
+            Ok(AccountStatus::InSync {
+                index: index(49),
+                address: address(tag(1), 0x3c),
+                balance: FIRST_BALANCE,
+            }),
+        ),
+        (
+            tag(2),
+            Ok(AccountStatus::SpendOutstanding {
+                spent_index: index(6),
+                balance: 3_180_000_000_000,
+                reservation: Reservation::Unrecorded,
+            }),
+        ),
+        (tag(3), Err(diverged())),
+    ];
+    found
+        .into_iter()
+        .map(|(t, result)| {
+            let state = match &result {
+                Ok(status) => AccountState::from_status(status),
+                Err(d) => AccountState::from_divergence(d),
+            };
+            AccountReport {
+                account: AccountId::from_tag(t),
+                spendable: matches!(state, AccountState::InSync { .. }),
+                state,
+                text: text::page(&[], mochimo_crypto::cli::status_outcome(&t, result)),
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_explorer_samples_carry_the_librarys_pages() {
+        use crate::explorer::Direction;
+        let histories = activity();
+        assert_eq!(histories.len(), 3);
+        let first = AccountId::from_tag(tag(1));
+        let batch = &histories[0].transactions[0];
+        assert_eq!(batch.direction(first), Direction::Both);
+        assert_eq!(
+            batch.net(first),
+            -(800 * MCM + 2 * i128::from(mochimo_crypto::consts::MFEE))
+        );
+        assert_eq!(batch.paid_out(first).count(), 2);
+        assert!(histories[2].transactions[0].rewards(AccountId::from_tag(tag(3))));
+        assert!(
+            histories
+                .iter()
+                .all(|h| h.text.contains("recent transactions"))
+        );
+
+        let b = blocks();
+        assert_eq!(b.blocks.len(), 6);
+        assert_eq!(b.blocks[0].index, b.tip);
+        assert_eq!(b.blocks[0].time_ms, TIP_MS);
+
+        let r = review();
+        assert_eq!(r.len(), 3);
+        assert!(matches!(
+            r[2].state,
+            AccountState::Diverged {
+                advance_to: Some(33),
+                ..
+            }
+        ));
+        assert!(r.iter().all(|a| !a.text.is_empty()));
+    }
 
     #[test]
     fn the_wallet_samples_carry_the_librarys_pages() {

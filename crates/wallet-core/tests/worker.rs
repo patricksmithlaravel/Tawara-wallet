@@ -2039,3 +2039,133 @@ fn long_operations_report_how_far_they_have_got() {
     );
     assert!(opening.iter().all(|p| p.accounts == 2), "{opening:?}");
 }
+
+// ---------------------------------------------------------------- explorer
+
+#[test]
+fn activity_reads_every_account_from_the_index_and_says_when_there_is_none() {
+    use tawara_wallet_core::explorer::Direction;
+    let scratch = Scratch::new("activity");
+    let (mut h, _) = funded(&scratch);
+    let payee = AccountId::from_tag(tag(5));
+    h.chain.index_transfer(tag(0), tag(5), 400_000, 1_000, 990);
+
+    let id = h.handle.send(Command::Activity).expect("worker running");
+    assert_eq!(h.wait_busy(id), Activity::ReadingIndex);
+    let histories = match h.wait_for(id) {
+        Reply::Activity(Ok(histories)) => histories,
+        other => panic!("expected the activity, got {other:?}"),
+    };
+    assert_eq!(histories.len(), 1, "one per account in the store");
+    let mine = &histories[0];
+    assert_eq!(mine.account, account0());
+    assert_eq!(mine.total, 1);
+    assert!(!mine.more());
+    assert!(mine.text.contains("recent transactions"), "{}", mine.text);
+    let tx = &mine.transactions[0];
+    assert_eq!(tx.block, Some(990));
+    assert_eq!(tx.time_ms, Some(990 * 60_000));
+    assert_eq!(tx.direction(account0()), Direction::Both);
+    assert_eq!(tx.net(account0()), -400_500, "what left, net of the change");
+    assert_eq!(tx.paid_out(account0()).count(), 1);
+    assert_eq!(tx.fee(), 500);
+    assert_eq!(tx.net(payee), 400_000);
+
+    // A node that runs no index: the library's reading, for every account.
+    h.chain.set_no_index(true);
+    match h.call(Command::Activity) {
+        Reply::Activity(Err(refused)) => {
+            assert!(refused.no_index);
+            assert!(refused.text.contains("indexer"), "{}", refused.text);
+        }
+        other => panic!("expected the index refused, got {other:?}"),
+    }
+
+    // A cancel stops it before it starts, and nothing is reported.
+    h.chain.set_no_index(false);
+    let gate = h.chain.close_gate();
+    let id = h.handle.send(Command::Activity).expect("worker running");
+    assert_eq!(h.wait_busy(id), Activity::ReadingIndex);
+    h.handle.cancel();
+    gate.open();
+    assert_eq!(refusal(h.wait_for(id)).kind, RefusalKind::Cancelled);
+}
+
+#[test]
+fn the_newest_blocks_are_read_down_from_the_tip_without_a_store() {
+    let mut h = Harness::with_node();
+    match h.call(Command::Blocks) {
+        Reply::Blocks(Ok(view)) => {
+            assert_eq!(view.tip, 1_000);
+            let indexes: Vec<u64> = view.blocks.iter().map(|b| b.index).collect();
+            assert_eq!(indexes, vec![1_000, 999, 998, 997, 996, 995]);
+            assert_eq!(view.blocks[0].time_ms, 1_000 * 60_000);
+            assert!(!view.text.is_empty());
+        }
+        other => panic!("expected the blocks, got {other:?}"),
+    }
+    assert_eq!(
+        refusal(Harness::new().call(Command::Blocks)).kind,
+        RefusalKind::NoNode
+    );
+}
+
+#[test]
+fn a_review_reports_every_account_and_applies_it() {
+    let scratch = Scratch::new("review");
+    let (mut h, start) = funded(&scratch);
+    h.chain.hold(tag(1), address(1, 0), 900);
+    assert!(matches!(
+        h.call(Command::Restore {
+            account_index: 1,
+            scan_to: None,
+        }),
+        Reply::Restored { ok: true, .. }
+    ));
+    let order: Vec<AccountId> = opened(h.call(Command::Refresh))
+        .accounts
+        .iter()
+        .map(|a| a.id)
+        .collect();
+    assert_eq!(order.len(), 2);
+
+    // The chain moves account 0 three keys ahead: another wallet spent.
+    h.chain.hold(tag(0), address(0, start + 3), FUNDS);
+    let id = h.handle.send(Command::Review).expect("worker running");
+    assert_eq!(h.wait_busy(id), Activity::AskingNode);
+    let reports = match h.wait_for(id) {
+        Reply::Reviewed(reports) => reports,
+        other => panic!("expected the review, got {other:?}"),
+    };
+    let reported: Vec<AccountId> = reports.iter().map(|r| r.account).collect();
+    assert_eq!(reported, order, "every account, in the store's order");
+    let report = |id: AccountId| reports.iter().find(|r| r.account == id).expect("reported");
+    let first = report(account0());
+    assert!(
+        matches!(
+            first.state,
+            AccountState::Diverged {
+                kind: DivergenceKind::Ahead { gap: 3 },
+                ..
+            }
+        ),
+        "{:?}",
+        first.state
+    );
+    assert!(!first.spendable);
+    assert!(!first.text.is_empty());
+    assert_eq!(
+        report(AccountId::from_tag(tag(1))).state,
+        AccountState::InSync { balance: 900 }
+    );
+    let view = opened(h.call(Command::Refresh));
+    let row = view
+        .accounts
+        .iter()
+        .find(|a| a.id == account0())
+        .expect("held");
+    assert!(matches!(row.state, AccountState::Diverged { .. }));
+
+    let locked = refusal(Harness::new().call(Command::Review));
+    assert_eq!(locked.kind, RefusalKind::NotUnlocked);
+}

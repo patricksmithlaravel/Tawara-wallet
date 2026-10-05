@@ -41,6 +41,7 @@ pub mod amount;
 mod command;
 pub mod entropy;
 mod event;
+pub mod explorer;
 pub mod location;
 pub mod node;
 pub mod preferences;
@@ -53,8 +54,8 @@ pub mod worker;
 
 pub use command::{Command, PlanId, RequestId};
 pub use event::{
-    Activity, Discovered, Event, LockReason, PlanView, PlannedDestination, Progress, ReceiveView,
-    Refusal, RefusalKind, Reply, SentView,
+    AccountReport, Activity, Discovered, Event, LockReason, PlanView, PlannedDestination, Progress,
+    ReceiveView, Refusal, RefusalKind, Reply, SentView,
 };
 pub use node::{Connect, HttpsNode, NodeRefused};
 pub use secret::{PhraseForDisplay, SecretText};
@@ -110,6 +111,32 @@ pub const DISCOVER_MAX_TO: u32 = mochimo_crypto::cli::args::DISCOVER_MAX_TO;
 /// The most destinations one spend carries: the protocol's
 /// (`tx::MAX_DESTINATIONS`), for the interface to stop adding rows at.
 pub const MAX_DESTINATIONS: u16 = mochimo_crypto::tx::MAX_DESTINATIONS;
+
+/// The wallet library's commit this build is pinned to (docs/PLAN.md D1,
+/// docs/DECISIONS.md D7), for Settings to show. Written here because the
+/// library carries no version of its own to read; the policy tests hold it
+/// to the workspace's `rev`.
+pub const LIBRARY_REV: &str = "8c2f39a2cdc2710ac7363b1d64026b6875a16537";
+
+/// How a new store's key is derived from its password.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StoreKdf {
+    /// Argon2id's memory, in KiB.
+    pub memory_kib: u32,
+    /// Its passes over that memory.
+    pub passes: u32,
+    /// Its lanes.
+    pub lanes: u32,
+}
+
+/// The cost a new store's key is derived at: the library's
+/// (`keystore::Kdf::RECOMMENDED`). A store made elsewhere opens at the cost
+/// its own header names, which the library does not say for an open store.
+pub const NEW_STORE_KDF: StoreKdf = StoreKdf {
+    memory_kib: mochimo_crypto::keystore::Kdf::RECOMMENDED.m_cost_kib,
+    passes: mochimo_crypto::keystore::Kdf::RECOMMENDED.t_cost,
+    lanes: mochimo_crypto::keystore::Kdf::RECOMMENDED.p_cost,
+};
 
 /// The node's rule for a destination's reference, in the library's words
 /// (`cli::args::REFERENCE_RULE`), for the interface to say beside the field.

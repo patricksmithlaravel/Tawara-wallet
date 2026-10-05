@@ -10,6 +10,7 @@ use core::fmt;
 use std::path::PathBuf;
 
 use crate::command::{PlanId, RequestId};
+use crate::explorer::{AccountHistory, BlocksView, ExplorerRefusal};
 use crate::secret::PhraseForDisplay;
 use crate::spend::SpendInputError;
 use crate::view::{AccountId, AccountState, WalletView};
@@ -45,6 +46,8 @@ pub enum Activity {
     DerivingKey,
     /// Waiting on the node.
     AskingNode,
+    /// Reading the node's transaction index, one request per account.
+    ReadingIndex,
 }
 
 /// How far a long command has got, as the library counts it: never an
@@ -191,9 +194,28 @@ pub enum Reply {
     },
     /// The node's chain tip.
     Network { tip_index: u64, tip_hash: String },
+    /// The newest blocks, or why the node did not serve them.
+    Blocks(Result<BlocksView, ExplorerRefusal>),
+    /// Every account's transactions, in the store's order, or why the node
+    /// did not serve them: a refusal for one account is the answer for all,
+    /// since every read goes to the same index.
+    Activity(Result<Vec<AccountHistory>, ExplorerRefusal>),
+    /// Every account reconciled now, in the store's order.
+    Reviewed(Vec<AccountReport>),
     /// The command was refused; nothing it would have changed was changed
     /// unless `text` says otherwise.
     Refused(Refusal),
+}
+
+/// One account, reconciled now: what [`Reply::Status`] says of it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccountReport {
+    pub account: AccountId,
+    pub state: AccountState,
+    /// As [`Reply::Status`]'s.
+    pub spendable: bool,
+    /// The library's page for it, word for word.
+    pub text: String,
 }
 
 /// An account's destination, for receiving.

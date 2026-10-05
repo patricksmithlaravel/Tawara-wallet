@@ -1738,6 +1738,11 @@ fn library_is_pinned_by_full_commit_hash_and_never_patched() {
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
         "mochimo-crypto must be pinned by a full 40-character lowercase commit hash, not {rev:?}"
     );
+    assert_eq!(
+        tawara_wallet_core::LIBRARY_REV,
+        rev,
+        "wallet-core's LIBRARY_REV, which Settings shows, must name the pinned commit"
+    );
     let allowed_keys = BTreeSet::from(["git", "rev", "default-features", "features"]);
     for key in dep.keys() {
         assert!(
