@@ -17,7 +17,9 @@ use tawara_wallet_core::view::{
     AccountId, AccountKind, AccountRow, AccountState, ReservationState,
 };
 
-use crate::app::{Back, Busy, Go, Message, Model, Page, ReportKey, To, WalletMsg, WalletPage};
+use crate::app::{
+    Back, Busy, Go, Message, Model, Page, ReportKey, Signed, To, WalletMsg, WalletPage,
+};
 use crate::icon::{self, Icon};
 use crate::theme::{self, color, space as sp};
 use crate::ui::{self, Size, t, ty};
@@ -214,6 +216,9 @@ fn frame<'a>(
     if let Some(busy) = &model.busy {
         stack = stack.push(working(busy));
     }
+    for kept in model.unsaved_signed() {
+        stack = stack.push(unsaved(model, kept));
+    }
     if let Some(e) = &page.error {
         stack = stack.push(match report::refused(e) {
             Some(r) => report::show(page, ReportKey::Refused, r),
@@ -224,6 +229,120 @@ fn frame<'a>(
         stack = stack.push(part);
     }
     stack.into()
+}
+
+/// A spend signed this run whose page was left before its bytes were saved
+/// (see [`Model::signed`]): a slim banner, with the way back to its page.
+fn unsaved<'a>(model: &Model, kept: &'a Signed) -> Element<'a, Message> {
+    container(
+        row![
+            icon::icon(Icon::Warning, 18.0, 2.0, color::WARNING),
+            column![
+                t(
+                    format!(
+                        "A spend signed from {} is not saved",
+                        name(kept.sent.sent.from)
+                    ),
+                    ty::ROW_TITLE,
+                    color::TEXT_PRIMARY
+                ),
+                t(
+                    "Until it settles, its signed bytes are the only ones that can move the \
+                     reserved funds, and Tawara keeps them only until it closes. Open its page \
+                     to save them.",
+                    ty::BODY_SMALL,
+                    color::TEXT_ON_WARNING_SOFT
+                ),
+            ]
+            .spacing(sp::S4)
+            .width(Length::Fill),
+            action(
+                model,
+                "Open it",
+                theme::Button::Secondary,
+                Size::Small,
+                None,
+                WalletMsg::ShowSigned(kept.sent.sent.artifact_hex.clone()),
+            ),
+        ]
+        .spacing(sp::S12)
+        .align_y(Alignment::Center),
+    )
+    .padding([sp::S14, sp::S16])
+    .width(Length::Fill)
+    .style(theme::callout_warning)
+    .into()
+}
+
+/// The stopped screen's spends signed this run (see [`Model::signed`]):
+/// with the worker gone nothing can be unlocked, so each is offered to
+/// save or copy here. `None` when there are none.
+pub fn kept_after_stop(model: &Model) -> Option<Element<'_, Message>> {
+    if model.signed.is_empty() {
+        return None;
+    }
+    let mut list = column![
+        ui::section_label("Spends signed in this run"),
+        t(
+            "Until each settles, its signed bytes are the only ones that can move its reserved \
+             funds, and they go when Tawara closes: save them first.",
+            ty::BODY_SMALL,
+            color::TEXT_SECONDARY,
+        ),
+    ]
+    .spacing(sp::S12);
+    for kept in &model.signed {
+        let sent = &kept.sent.sent;
+        let what = match (&sent.tx_id, sent.submitted) {
+            (Some(id), _) => format!("Transaction id {}", short(id)),
+            (None, true) => "Written to the node's socket".to_owned(),
+            (None, false) => "Not written to the node's socket".to_owned(),
+        };
+        let copied = kept.copied;
+        let mut item = column![
+            row![
+                column![
+                    t(name(sent.from), ty::ROW_TITLE, color::TEXT_PRIMARY),
+                    t(what, ty::MONO_SMALL, color::TEXT_MUTED),
+                ]
+                .spacing(sp::S2)
+                .width(Length::Fill),
+                ui::button_with(
+                    "Save artifact",
+                    theme::Button::Primary,
+                    Size::Small,
+                    Some(Icon::Download),
+                    Some(WalletMsg::SaveSigned(sent.artifact_hex.clone()).into()),
+                ),
+                ui::button_with(
+                    if copied { "Copied" } else { "Copy hex" },
+                    theme::Button::Secondary,
+                    Size::Small,
+                    Some(if copied { Icon::Check } else { Icon::Copy }),
+                    Some(WalletMsg::Copy(sent.artifact_hex.clone()).into()),
+                ),
+            ]
+            .spacing(sp::S10)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(sp::S8);
+        match &kept.sent.saved {
+            Some(Ok(path)) => {
+                item = item.push(
+                    t(
+                        format!("Saved to {}", path.display()),
+                        ty::MONO_SMALL,
+                        color::ACCENT,
+                    )
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                );
+            }
+            Some(Err(e)) => item = item.push(ui::refusal(e)),
+            None => {}
+        }
+        list = list.push(ui::divider()).push(item);
+    }
+    Some(ui::card(list).into())
 }
 
 /// What the worker is doing for the page (S8's words), how far it has got,

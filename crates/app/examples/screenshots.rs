@@ -27,7 +27,8 @@ use iced_runtime::user_interface::{Cache, UserInterface};
 use tawara_app::app::{
     AccountPage, AddAccountPage, Back, Busy, DestinationRow, Level, Model, NodeForm, NodeState,
     Page, PasswordForm, PhraseState, ReceivePage, ReportKey, ResignPage, RestoreForm, Screen,
-    SendPage, SendStage, SentPage, SpendForm, StartChoice, SubmitPage, UnlockForm, WalletPage,
+    SendPage, SendStage, SentPage, Signed, SpendForm, StartChoice, SubmitPage, UnlockForm,
+    WalletPage,
 };
 use tawara_app::{fonts, screens, theme};
 use tawara_wallet_core::location::SyncWarning;
@@ -175,6 +176,24 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         })),
     })));
     sent.wallet = Some(sample::sent_view().view);
+    // The same spend, its page left before its bytes were saved.
+    let kept = || Signed {
+        sent: SentPage {
+            sent: sample::sent_view(),
+            resigned: false,
+            saved: None,
+        },
+        form: typed.clone(),
+        open: Default::default(),
+        resume: false,
+        copied: false,
+    };
+    let mut unsaved = wallet();
+    unsaved.wallet = Some(sample::sent_view().view);
+    unsaved.signed = vec![kept()];
+    let mut stopped = base();
+    stopped.stopped = Some(true);
+    stopped.signed = vec![kept()];
     let mut unreconciled = with(Screen::Wallet(WalletPage::default()));
     unreconciled.wallet = Some(tawara_wallet_core::sample::unreconciled_view());
     unreconciled.node.tip = None;
@@ -283,6 +302,20 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
                 ..UnlockForm::default()
             })),
         ),
+        (
+            "s7-unlock-spend-kept",
+            FIRST_RUN,
+            with(Screen::Unlock(UnlockForm {
+                dir: DIR.to_owned(),
+                note: Some(
+                    "A signed spend's page was open when the wallet locked. It is kept, with \
+                     the signed bytes, and shown again when this store is unlocked: save the \
+                     bytes then."
+                        .to_owned(),
+                ),
+                ..UnlockForm::default()
+            })),
+        ),
         ("s8-waiting", FIRST_RUN, waiting),
         ("s8-opening", FIRST_RUN, opening),
         ("s8-reconciling", FIRST_RUN, reconciling),
@@ -293,6 +326,7 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
             opened(wallet(), ReportKey::Notice, Level::Summary),
         ),
         ("w1-wallet-refreshing", DASHBOARD, refreshing),
+        ("w1-wallet-unsaved-spend", DASHBOARD, unsaved),
         (
             "w2-receive",
             DASHBOARD,
@@ -377,6 +411,7 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
             })),
         ),
         ("w1-wallet-unreconciled", DASHBOARD, unreconciled),
+        ("stopped-spends", FIRST_RUN, stopped),
         ("narrow-s1-get-started", SMALLEST, base()),
         ("narrow-w1-wallet", DASHBOARD_NARROW, wallet()),
         ("narrow-w4-send", DASHBOARD_NARROW, compose()),

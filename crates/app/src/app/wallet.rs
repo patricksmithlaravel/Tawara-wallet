@@ -5,12 +5,13 @@
 //! signed spend's bytes are what the node is sent or what the store shows;
 //! the store's key never leaves the worker.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use iced::Task;
 use tawara_wallet_core::amount;
 use tawara_wallet_core::spend::{Amount, DestinationInput, SpendRequest};
-use tawara_wallet_core::view::{AccountId, WalletView};
+use tawara_wallet_core::view::{AccountId, AccountState, WalletView};
 use tawara_wallet_core::{
     Command, Discovered, MAX_DESTINATIONS, PlanView, ReceiveView, Reply, SentView,
 };
@@ -244,6 +245,12 @@ pub enum WalletMsg {
     /// W5: reserve the key, sign and submit.
     Sign,
     SaveArtifact,
+    /// Show again the kept spend whose bytes are these (see
+    /// [`Model::signed`]).
+    ShowSigned(String),
+    /// Save the bytes of the kept spend whose bytes are these: the stopped
+    /// screen's, with no page to show them on.
+    SaveSigned(String),
     Settle(AccountId),
     /// W7: reconcile the account now and report.
     Check(AccountId),
@@ -338,25 +345,86 @@ fn same_store(a: &Path, b: &Path) -> bool {
         )
 }
 
+/// A signed spend whose page is not shown, kept for the rest of the run
+/// while its reservation may be open (see [`Model::signed`]).
+#[derive(Clone, Debug)]
+pub struct Signed {
+    pub sent: SentPage,
+    /// What was typed for it, which re-signing it starts from (W8).
+    pub form: SpendForm,
+    /// Which of its page's reports were open.
+    pub open: BTreeMap<ReportKey, Level>,
+    /// A lock closed its page while it was shown: the page comes back as
+    /// it was left once its store is unlocked.
+    pub resume: bool,
+    /// Its hex is what the stopped screen last copied.
+    pub copied: bool,
+}
+
+impl Signed {
+    /// The store it was signed from.
+    #[must_use]
+    pub fn dir(&self) -> &Path {
+        &self.sent.sent.view.dir
+    }
+
+    /// Whether its bytes are in memory only: not saved to a file.
+    #[must_use]
+    pub fn unsaved(&self) -> bool {
+        !matches!(self.sent.saved, Some(Ok(_)))
+    }
+
+    fn into_page(self) -> WalletPage {
+        WalletPage {
+            page: Page::Send(SendPage {
+                from: Some(self.sent.sent.from),
+                form: self.form,
+                stage: SendStage::Sent(Box::new(self.sent)),
+            }),
+            open: self.open,
+            ..WalletPage::default()
+        }
+    }
+}
+
 impl Model {
-    /// Before a lock closes the screen: keep the signed spend's page it
-    /// shows, if it shows one (see [`Model::signed`]). Whether it did.
-    pub(super) fn keep_signed(&mut self) -> bool {
-        let Screen::Wallet(page) = &mut self.screen else {
+    /// Before the screen changes: keep the signed spend's page it shows, if
+    /// it shows one (see [`Model::signed`]), with `resume` when a lock
+    /// closes it. Whether it did.
+    pub(super) fn keep_signed(&mut self, resume: bool) -> bool {
+        let Screen::Wallet(shown) = &mut self.screen else {
             return false;
         };
-        let Page::Send(SendPage {
-            stage: SendStage::Sent(sent),
-            ..
-        }) = &mut page.page
-        else {
-            return false;
+        let (form, mut sent, open) = match core::mem::take(shown) {
+            WalletPage {
+                page:
+                    Page::Send(SendPage {
+                        form,
+                        stage: SendStage::Sent(sent),
+                        ..
+                    }),
+                open,
+                ..
+            } => (form, *sent, open),
+            other => {
+                *shown = other;
+                return false;
+            }
         };
-        // What the store showed goes with the lock; its folder says which
-        // store the page comes back with.
+        // What the store showed goes; its folder says which store the spend
+        // is from.
         sent.sent.view.accounts = Vec::new();
         sent.sent.view.notice = None;
-        self.signed.push(core::mem::take(page));
+        // A re-signed spend is the same bytes again: one spend, kept once.
+        self.signed
+            .retain(|s| s.sent.sent.artifact_hex != sent.sent.artifact_hex);
+        self.signed.push(Signed {
+            sent,
+            form,
+            open,
+            resume,
+            copied: false,
+        });
         true
     }
 
@@ -366,24 +434,65 @@ impl Model {
         let Some(view) = &self.wallet else {
             return;
         };
-        let Some(at) = self.signed.iter().position(|p| {
-            matches!(
-                &p.page,
-                Page::Send(SendPage { stage: SendStage::Sent(s), .. })
-                    if same_store(&s.sent.view.dir, &view.dir)
-            )
-        }) else {
+        let Some(at) = self
+            .signed
+            .iter()
+            .position(|s| s.resume && same_store(s.dir(), &view.dir))
+        else {
             return;
         };
-        let mut page = self.signed.remove(at);
-        if let Page::Send(SendPage {
-            stage: SendStage::Sent(s),
-            ..
-        }) = &mut page.page
-        {
-            s.sent.view = view.clone();
+        let mut kept = self.signed.remove(at);
+        kept.sent.sent.view = view.clone();
+        self.screen = Screen::Wallet(kept.into_page());
+    }
+
+    /// Forget the kept spends whose account the open store now shows in
+    /// sync: the reservation is settled, and the bytes can move nothing.
+    pub(super) fn forget_settled(&mut self) {
+        let Some(view) = &self.wallet else {
+            return;
+        };
+        self.signed.retain(|s| {
+            !same_store(s.dir(), &view.dir)
+                || !view.accounts.iter().any(|a| {
+                    a.id == s.sent.sent.from && matches!(a.state, AccountState::InSync { .. })
+                })
+        });
+    }
+
+    /// The kept spends from the open store whose bytes are not saved.
+    pub fn unsaved_signed(&self) -> impl Iterator<Item = &Signed> {
+        let dir = self.wallet.as_ref().map(|w| w.dir.as_path());
+        self.signed
+            .iter()
+            .filter(move |s| s.unsaved() && dir.is_some_and(|d| same_store(s.dir(), d)))
+    }
+
+    /// What was typed for the newest kept spend from `account` in the open
+    /// store.
+    fn kept_form(&self, account: AccountId) -> Option<SpendForm> {
+        let dir = &self.wallet.as_ref()?.dir;
+        self.signed
+            .iter()
+            .rev()
+            .find(|s| s.sent.sent.from == account && same_store(s.dir(), dir))
+            .map(|s| s.form.clone())
+    }
+}
+
+/// Write a signed spend's bytes to the Downloads folder under a name of
+/// their own, or say why they were not.
+fn save(downloads: Option<&Path>, sent: &SentView) -> Result<PathBuf, String> {
+    match downloads {
+        Some(dir) => {
+            tawara_wallet_core::save_artifact_in(dir, &artifact_stem(sent), &sent.artifact_hex)
+                .map_err(|e| format!("The bytes could not be saved in {}: {e}.", dir.display()))
         }
-        self.screen = Screen::Wallet(page);
+        None => Err(
+            "This system names no Downloads folder, so the bytes were not saved. \
+                     Copy the hex instead and keep it somewhere safe."
+                .to_owned(),
+        ),
     }
 }
 
@@ -406,7 +515,8 @@ impl App {
     }
 
     /// Leave the page shown: a plan the worker holds for the review page is
-    /// forgotten, so nothing waits to be signed that no screen shows.
+    /// forgotten, so nothing waits to be signed that no screen shows; a
+    /// signed spend's page is kept (see [`Model::signed`]).
     fn leave_page(&mut self) {
         let reviewing = matches!(
             self.wallet_page().map(|p| &p.page),
@@ -417,6 +527,27 @@ impl App {
         );
         if reviewing {
             self.send(Command::DiscardPlan, Purpose::DiscardPlan);
+        }
+        self.model.keep_signed(false);
+    }
+
+    /// Show again the kept spend whose bytes are `hex`, as it was left.
+    fn show_signed(&mut self, hex: &str) {
+        let Some(view) = self.model.wallet.clone() else {
+            return;
+        };
+        self.leave_page();
+        if let Some(at) = self
+            .model
+            .signed
+            .iter()
+            .position(|s| s.sent.sent.artifact_hex == hex && same_store(s.dir(), &view.dir))
+        {
+            let mut kept = self.model.signed.remove(at);
+            kept.sent.sent.view = view;
+            self.model.screen = Screen::Wallet(kept.into_page());
+        } else {
+            self.model.screen = Screen::Wallet(WalletPage::default());
         }
     }
 
@@ -446,9 +577,11 @@ impl App {
                 account,
                 report: None,
             }),
+            // The same spend exactly: what was typed for it, when this run
+            // signed it.
             To::Resign(account) => Page::Resign(ResignPage {
                 account,
-                form: SpendForm::default(),
+                form: self.model.kept_form(account).unwrap_or_default(),
             }),
             To::Submit => Page::Submit(SubmitPage::default()),
         };
@@ -503,8 +636,14 @@ impl App {
                 }
             }
             WalletMsg::Copy(text) => {
-                if let Some(p) = self.wallet_page() {
-                    p.copied = Some(text.clone());
+                match self.wallet_page() {
+                    Some(p) => p.copied = Some(text.clone()),
+                    // The stopped screen: the kept spend with these bytes.
+                    None => {
+                        for s in &mut self.model.signed {
+                            s.copied = s.sent.sent.artifact_hex == text;
+                        }
+                    }
                 }
                 return iced::clipboard::write(text);
             }
@@ -651,7 +790,7 @@ impl App {
             }
             WalletMsg::SaveArtifact => {
                 let downloads = self.model.downloads.clone();
-                let Some(WalletPage {
+                if let Some(WalletPage {
                     page:
                         Page::Send(SendPage {
                             stage: SendStage::Sent(sent),
@@ -659,25 +798,25 @@ impl App {
                         }),
                     ..
                 }) = self.wallet_page()
-                else {
-                    return Task::none();
-                };
-                let saved = match downloads {
-                    Some(dir) => tawara_wallet_core::save_artifact_in(
-                        &dir,
-                        &artifact_stem(&sent.sent),
-                        &sent.sent.artifact_hex,
-                    )
-                    .map_err(|e| {
-                        format!("The bytes could not be saved in {}: {e}.", dir.display())
-                    }),
-                    None => Err(
-                        "This system names no Downloads folder, so the bytes were not \
-                                 saved. Copy the hex instead and keep it somewhere safe."
-                            .to_owned(),
-                    ),
-                };
-                sent.saved = Some(saved);
+                {
+                    sent.saved = Some(save(downloads.as_deref(), &sent.sent));
+                }
+            }
+            WalletMsg::ShowSigned(hex) => {
+                if !busy {
+                    self.show_signed(&hex);
+                }
+            }
+            WalletMsg::SaveSigned(hex) => {
+                let downloads = self.model.downloads.clone();
+                if let Some(s) = self
+                    .model
+                    .signed
+                    .iter_mut()
+                    .find(|s| s.sent.sent.artifact_hex == hex)
+                {
+                    s.sent.saved = Some(save(downloads.as_deref(), &s.sent.sent));
+                }
             }
             WalletMsg::Settle(account) => {
                 self.page_error(None);

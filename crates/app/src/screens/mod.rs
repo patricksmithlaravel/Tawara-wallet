@@ -3,7 +3,7 @@
 mod first_run;
 mod wallet;
 
-use iced::widget::{column, container, progress_bar};
+use iced::widget::{column, container, progress_bar, scrollable};
 use iced::{Element, Length};
 use tawara_wallet_core::Activity;
 
@@ -14,7 +14,7 @@ use crate::ui::{self, t, ty};
 /// The whole window for `model`.
 pub fn view(model: &Model) -> Element<'_, Message> {
     let page = if let Some(panicked) = model.stopped {
-        stopped(panicked)
+        stopped(model, panicked)
     } else {
         match &model.screen {
             Screen::Wallet(page) => wallet::view(model, page),
@@ -80,8 +80,9 @@ fn progress<'a>(busy: &Busy) -> Option<Element<'a, Message>> {
     Some(detail.into())
 }
 
-/// The worker has stopped: nothing more can be done in this run.
-fn stopped<'a>(panicked: bool) -> Element<'a, Message> {
+/// The worker has stopped: nothing more can be done in this run, apart from
+/// saving the bytes of the spends signed in it.
+fn stopped(model: &Model, panicked: bool) -> Element<'_, Message> {
     let body = if panicked {
         "The wallet's worker stopped because of a fault. Every secret it held was erased on \
          the way out: the store's key, its seed and any phrase being shown. Nothing was \
@@ -90,20 +91,24 @@ fn stopped<'a>(panicked: bool) -> Element<'a, Message> {
         "The wallet's worker could not start, or has stopped. Close Tawara and start it \
          again."
     };
-    container(
-        ui::card(
-            column![
-                ui::t(
-                    "THE WALLET STOPPED",
-                    ty::ONBOARDING_TITLE,
-                    color::TEXT_PRIMARY
-                ),
-                ui::t(body, ty::INTRO, color::TEXT_SECONDARY),
-            ]
-            .spacing(space::S12),
-        )
-        .max_width(520.0),
-    )
+    let mut parts = column![ui::card(
+        column![
+            ui::t(
+                "THE WALLET STOPPED",
+                ty::ONBOARDING_TITLE,
+                color::TEXT_PRIMARY
+            ),
+            ui::t(body, ty::INTRO, color::TEXT_SECONDARY),
+        ]
+        .spacing(space::S12),
+    )]
+    .spacing(space::S16);
+    if let Some(kept) = wallet::kept_after_stop(model) {
+        parts = parts.push(kept);
+    }
+    container(scrollable(
+        container(parts.max_width(640.0)).center_x(Length::Fill),
+    ))
     .center(Length::Fill)
     .into()
 }
