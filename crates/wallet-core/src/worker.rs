@@ -2440,7 +2440,7 @@ impl<C: Connect> Worker<C> {
                 Outcome::RecentTransactions { page, from, .. } => {
                     Ok(AccountHistory::of(account, page, *from, String::new()))
                 }
-                Outcome::ExplorerFailed { cause } => Err(explorer::index_state(cause)),
+                Outcome::SearchFailed { cause } => Err(explorer::index_state(cause)),
                 _ => Err(None),
             };
             let text = text::page(&[], outcome);

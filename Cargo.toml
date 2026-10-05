@@ -24,11 +24,13 @@ repository = "https://github.com/patricksmithlaravel/Tawara-wallet"
 [workspace.dependencies]
 # THE WALLET LIBRARY, PINNED BY FULL COMMIT HASH (docs/PLAN.md D1).
 #
-# Rep-1 (`patricksmithlaravel/mcm-rust-cli-windows`) at `main`, e41f8c1: the
-# merge that brought down Rep-0's explorer reads -- a tag's history past its
-# newest hundred rows, a block's own figures and kind, the node's network
-# and sync state, and the mempool (docs/LIBRARY-PROPOSALS.md items 5 to 8)
-# -- on top of 8c2f39a's cancellation and progress for the long operations,
+# Rep-1 (`patricksmithlaravel/mcm-rust-cli-windows`) at `main`, 7cdc2e9: the
+# merge that brought down Rep-0's reading of a refused search
+# (`Outcome::SearchFailed`), on top of e41f8c1's explorer reads -- a tag's
+# history past its newest hundred rows, a block's own figures and kind, the
+# node's network and sync state, and the mempool
+# (docs/LIBRARY-PROPOSALS.md items 5 to 8) -- and 8c2f39a's cancellation
+# and progress for the long operations,
 # `Wallet::open_or_return`, the planned-spend page and the command line's
 # decisions made public (docs/DECISIONS.md D7, D23), in the form
 # docs/PLAN.md D1 gives. Upgrading the
@@ -44,7 +46,7 @@ repository = "https://github.com/patricksmithlaravel/Tawara-wallet"
 # workspace never turns on `raw-backend`: it is the library's test-only
 # feature, and with it off the only path to a signature is
 # `Keystore::sign_spend` behind an `AdvanceReceipt` (the library's I1).
-mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-windows", rev = "e41f8c13e605b9fd098c913784bc9eadc20543bd", default-features = false, features = ["native", "mesh-https"] }
+mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-windows", rev = "7cdc2e986319d508e4c197a4ba44220dd49a5b1d", default-features = false, features = ["native", "mesh-https"] }
 
 # THE TOOLKIT (docs/PLAN.md D2): iced, at its latest release when the work
 # began. Recorded in docs/DECISIONS.md (D6). `=0.14.0` fixes the `iced` crate

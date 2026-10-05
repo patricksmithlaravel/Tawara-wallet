@@ -612,7 +612,7 @@ pub fn index_refusal(state: IndexState) -> ExplorerRefusal {
     };
     ExplorerRefusal {
         index: Some(state),
-        text: text::page(&[], Outcome::ExplorerFailed { cause }),
+        text: text::page(&[], Outcome::SearchFailed { cause }),
     }
 }
 

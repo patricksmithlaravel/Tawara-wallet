@@ -2118,6 +2118,11 @@ fn activity_reads_every_account_from_the_index_and_says_when_there_is_none() {
         Reply::Activity(Err(refused)) => {
             assert_eq!(refused.index, Some(IndexState::Absent));
             assert!(refused.text.contains("HTTP 404"), "{}", refused.text);
+            assert!(
+                refused.text.contains("this node does not index"),
+                "the library's page says which: {}",
+                refused.text
+            );
         }
         other => panic!("expected the index refused, got {other:?}"),
     }
@@ -2128,6 +2133,11 @@ fn activity_reads_every_account_from_the_index_and_says_when_there_is_none() {
         Reply::Activity(Err(refused)) => {
             assert_eq!(refused.index, Some(IndexState::Unavailable));
             assert!(refused.text.contains("code 2"), "{}", refused.text);
+            assert!(
+                refused.text.contains("it did not answer"),
+                "the library's page says which: {}",
+                refused.text
+            );
         }
         other => panic!("expected the index refused, got {other:?}"),
     }

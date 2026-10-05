@@ -77,7 +77,7 @@ Features the renderings may need later (`svg`, and `qr_code` only with the
 owner's approval) are added by the change that needs them, with
 `cargo deny check` run against the result. No git revision of iced is used.
 
-### D7. The library pin: Rep-1 at `e41f8c1`
+### D7. The library pin: Rep-1 at `7cdc2e9`
 
 **owner, 2026-10-03.** The owner's instructions for phase 0 named Rep-1's
 `02239c1`, or a later commit the owner named; by the time the work began, Rep-1's `main` was at
@@ -110,11 +110,22 @@ wallet-core's sample data fills them: `Outcome::RecentTransactions` gains
 `metadata`, which the sample blocks leave absent. Nothing else in Tawara
 names what changed. The screens that use the new reads are later work.
 
+**Moved again, 2026-10-05, when the owner reported Rep-1's merge.** The pin
+is now `7cdc2e986319d508e4c197a4ba44220dd49a5b1d`, Rep-1's `main` after its
+pull request #8, the merge of Rep-0's `4738baf`: the library's own reading
+of a refused search (Rep-0's pull request #17, D30 item 4). Its tree is
+that of `3ec5929`, the commit that pull request tested Tawara against. The
+merge changed no manifest, so `Cargo.lock` changes in the library's own
+line and nowhere else. A refused search now arrives as
+`Outcome::SearchFailed`, and the worker's history read matches it where it
+matched `ExplorerFailed`; the sample's refusals are written from it, so
+their pages say which refusal each was.
+
 The workspace line takes the plan's form (D1) exactly:
 
 ```toml
 mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-windows",
-                   rev = "e41f8c13e605b9fd098c913784bc9eadc20543bd",
+                   rev = "7cdc2e986319d508e4c197a4ba44220dd49a5b1d",
                    default-features = false, features = ["native", "mesh-https"] }
 ```
 
@@ -1265,7 +1276,6 @@ pages (E1, E2) stay PR (d)'s. The choices:
    refusals say nothing about an index, though the middleware answers code
    2 for a queue it could not read as well. The library's fix is Rep-0's
    pull request #17: the three search reads get an outcome of their own
-   (`Outcome::SearchFailed`), whose page says which of the two it was.
-   Until the pin reaches it, the library's page under these summaries is
-   its own wording, with no note for either; when it does, the worker
-   matches `SearchFailed` where it now matches `ExplorerFailed`.
+   (`Outcome::SearchFailed`), whose page says which of the two it was. The
+   pin reached it at `7cdc2e9` (D7): the worker matches `SearchFailed`, and
+   the library's page under each summary says which refusal it was.

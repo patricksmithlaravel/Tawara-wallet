@@ -356,8 +356,11 @@ pub enum IndexState {
 /// code 2, while the indexer's database is not connected and when a search
 /// fails (`search_handler.go`). Code 1 is a request it could not decode.
 ///
-/// The library at the pin reads code 1 as no indexer; its fix reads the
-/// middleware as this does (docs/DECISIONS.md D30, item 4).
+/// The library reads a refused search the same way, for the page it
+/// writes (`Outcome::SearchFailed`, `cli::search_refusal`), which says
+/// which of the two it was in its own words; the interface's reading is
+/// repeated here, as D19 has the worker repeat the command line's other
+/// private decisions (docs/DECISIONS.md D30, item 4).
 pub(crate) fn index_state(cause: &Error) -> Option<IndexState> {
     match cause {
         Error::HttpStatus { status: 404 } => Some(IndexState::Absent),
