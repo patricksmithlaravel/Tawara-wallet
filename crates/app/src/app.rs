@@ -2543,7 +2543,7 @@ mod tests {
 
     #[test]
     fn the_index_and_the_blocks_are_kept_until_the_store_or_the_node_changes() {
-        use tawara_wallet_core::explorer::ExplorerRefusal;
+        use tawara_wallet_core::explorer::IndexState;
         let mut app = on_wallet(Page::Activity(ActivityPage::default()));
         app.model.node.url = Some("https://node.example".to_owned());
         app.model.activity.reading = true;
@@ -2575,12 +2575,13 @@ mod tests {
         // A node with no index says so, for every account.
         app.on_reply(
             Purpose::Activity,
-            Reply::Activity(Err(ExplorerRefusal {
-                no_index: true,
-                text: "no index".to_owned(),
-            })),
+            Reply::Activity(Err(tawara_wallet_core::sample::index_refusal(
+                IndexState::Absent,
+            ))),
         );
-        assert!(matches!(&app.model.activity.last, Some(Err(r)) if r.no_index));
+        assert!(
+            matches!(&app.model.activity.last, Some(Err(r)) if r.index == Some(IndexState::Absent))
+        );
 
         // Another node: another index and another chain.
         app.on_reply(

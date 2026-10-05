@@ -329,18 +329,41 @@ pub struct MempoolView {
 /// Why an explorer read answered nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExplorerRefusal {
-    /// The node runs no transaction index, by the library's reading of its
-    /// answer: a deployment indexes only when configured to, and another
-    /// node may.
-    pub no_index: bool,
+    /// What a refused search of the node's index says about that index;
+    /// `None` for any other read, and for a refusal that says nothing about
+    /// it.
+    pub index: Option<IndexState>,
     /// The library's page, word for word.
     pub text: String,
 }
 
-/// Whether `cause` says the node runs no transaction index: the command
-/// line's reading of it (`cli::explorer_refusal`).
-pub(crate) fn no_index(cause: &Error) -> bool {
-    matches!(cause, Error::Mesh { code: 1, .. })
+/// What a refused search of the node's transaction index says about it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndexState {
+    /// The node runs none: a deployment indexes only when configured to,
+    /// and another node may.
+    Absent,
+    /// The node runs one, and it did not answer: its database is not
+    /// connected, or the search failed. Asked again it may answer.
+    Unavailable,
+}
+
+/// What `cause`, a refused search of the node's index, says about that
+/// index, by the Mesh middleware's own answers (`mochimo-mesh` at
+/// `ddc1ee5`). It registers `/search/transactions` only when its indexer is
+/// enabled as it starts (`main.go`), so a node that runs none answers that
+/// route with a 404; one that runs an indexer answers its internal error,
+/// code 2, while the indexer's database is not connected and when a search
+/// fails (`search_handler.go`). Code 1 is a request it could not decode.
+///
+/// The library at the pin reads code 1 as no indexer; its fix reads the
+/// middleware as this does (docs/DECISIONS.md D30, item 4).
+pub(crate) fn index_state(cause: &Error) -> Option<IndexState> {
+    match cause {
+        Error::HttpStatus { status: 404 } => Some(IndexState::Absent),
+        Error::Mesh { code: 2, .. } => Some(IndexState::Unavailable),
+        _ => None,
+    }
 }
 
 /// An operation's address, as the command line's page reads one
@@ -475,5 +498,26 @@ mod tests {
         assert_eq!(shown("A\u{202e}B"), "A\\u{202e}B");
         assert_eq!(shown("A\u{200b}B"), "A\\u{200b}B");
         assert_eq!(shown("A\nB\\"), "A\\nB\\\\");
+    }
+
+    #[test]
+    fn a_refused_search_says_whether_the_node_runs_an_index() {
+        let not_served = Error::HttpStatus { status: 404 };
+        let down = Error::Mesh {
+            code: 2,
+            retriable: true,
+        };
+        let invalid = Error::Mesh {
+            code: 1,
+            retriable: false,
+        };
+        assert_eq!(index_state(&not_served), Some(IndexState::Absent));
+        assert_eq!(index_state(&down), Some(IndexState::Unavailable));
+        assert_eq!(
+            index_state(&invalid),
+            None,
+            "an invalid request is not about the index"
+        );
+        assert_eq!(index_state(&Error::HttpStatus { status: 502 }), None);
     }
 }

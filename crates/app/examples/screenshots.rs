@@ -32,7 +32,7 @@ use tawara_app::app::{
 };
 use tawara_app::history::Filter;
 use tawara_app::{fonts, screens, theme};
-use tawara_wallet_core::explorer::ExplorerRefusal;
+use tawara_wallet_core::explorer::IndexState;
 use tawara_wallet_core::location::SyncWarning;
 use tawara_wallet_core::preferences::Preferences;
 use tawara_wallet_core::sample;
@@ -231,16 +231,21 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         m.wallet = Some(aside.clone());
         m
     };
-    let mut no_index = on(Page::Activity(ActivityPage::default()));
-    no_index.activity = Explored {
-        last: Some(Err(ExplorerRefusal {
-            no_index: true,
-            text: "the node answered error 1: Internal error\n  The Mesh's search endpoint \
-                   answers an internal error when its indexer database is not initialised."
-                .to_owned(),
-        })),
-        reading: false,
+    let refused = |state| {
+        let mut m = on(Page::Activity(ActivityPage::default()));
+        m.activity = Explored {
+            last: Some(Err(sample::index_refusal(state))),
+            reading: false,
+        };
+        m
     };
+    let no_index = refused(IndexState::Absent);
+    // Opened to its summary, so its words are drawn.
+    let index_down = opened(
+        refused(IndexState::Unavailable),
+        ReportKey::Explorer,
+        Level::Summary,
+    );
     // Every account's report (D19), each opened to its summary (D29); the
     // paused one chosen, its index typed and the second wallet ruled out.
     // `read` is how many accounts' full reports have been opened, the
@@ -524,6 +529,7 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
             })),
         ),
         ("w10-activity-no-index", DASHBOARD, no_index),
+        ("w10-activity-index-down", DASHBOARD, index_down),
         (
             "w11-settings",
             DASHBOARD,

@@ -1232,3 +1232,24 @@ pages (E1, E2) stay PR (d)'s. The choices:
    joining them to a fresh first page would need the index's ordering not
    to have moved by more than a page between the two reads, and a gap
    between them would be a history cut short shown as a whole one.
+4. **A refused search says whether the node runs an index** (the owner
+   asked for the reading to be fixed in the library and here). The
+   library, and wallet-core after it, read the middleware's code 1 as "no
+   indexer". At the pinned middleware (`mochimo-mesh` at `ddc1ee5`) code 1
+   is *Invalid request*, a body it could not decode. A deployment that runs
+   no indexer never registers `/search/transactions` (`main.go`), so it
+   answers that route with HTTP 404; one that runs an indexer answers code
+   2, its internal error, while the indexer's database is not connected and
+   when a search fails (`search_handler.go`). So Activity now has three
+   refusals: a 404 is "This node keeps no transaction index", as before; a
+   code 2 is "This node's transaction index did not answer", with reading
+   again later and another node as what helps, since the node itself
+   answered; anything else is the node not serving the read, as before.
+   The blocks and the queue are the node's own, not its index, so their
+   refusals say nothing about an index, though the middleware answers code
+   2 for a queue it could not read as well. The library's fix is Rep-0's
+   pull request #17: the three search reads get an outcome of their own
+   (`Outcome::SearchFailed`), whose page says which of the two it was.
+   Until the pin reaches it, the library's page under these summaries is
+   its own wording, with no note for either; when it does, the worker
+   matches `SearchFailed` where it now matches `ExplorerFailed`.

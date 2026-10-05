@@ -2295,17 +2295,16 @@ impl<C: Connect> Worker<C> {
         };
         let read = match &outcome {
             Outcome::Blocks { tip, rows, .. } => {
-                Ok((tip.index, rows.iter().map(BlockSummary::of).collect()))
+                Some((tip.index, rows.iter().map(BlockSummary::of).collect()))
             }
-            Outcome::BlocksStopped { cause, .. } | Outcome::ExplorerFailed { cause } => {
-                Err(explorer::no_index(cause))
-            }
-            _ => Err(false),
+            _ => None,
         };
         let text = text::page(&[], outcome);
+        // Blocks are the node's own, not its index: no refusal here says
+        // anything about the index.
         Reply::Blocks(match read {
-            Ok((tip, blocks)) => Ok(BlocksView { tip, blocks, text }),
-            Err(no_index) => Err(ExplorerRefusal { no_index, text }),
+            Some((tip, blocks)) => Ok(BlocksView { tip, blocks, text }),
+            None => Err(ExplorerRefusal { index: None, text }),
         })
     }
 
@@ -2320,15 +2319,16 @@ impl<C: Connect> Worker<C> {
             Err(r) => return Reply::Refused(r),
         };
         let read = match &outcome {
-            Outcome::Mempool { total, .. } => Ok(*total),
-            // The queue is the node's own, not its index: no refusal here
-            // says the index is missing.
-            _ => Err(false),
+            Outcome::Mempool { total, .. } => Some(*total),
+            _ => None,
         };
         let text = text::page(&[], outcome);
+        // The queue is the node's own, not its index: no refusal here says
+        // anything about the index, though the middleware answers its code 2
+        // for a queue it could not read as well.
         Reply::Mempool(match read {
-            Ok(waiting) => Ok(MempoolView { waiting, text }),
-            Err(no_index) => Err(ExplorerRefusal { no_index, text }),
+            Some(waiting) => Ok(MempoolView { waiting, text }),
+            None => Err(ExplorerRefusal { index: None, text }),
         })
     }
 
@@ -2393,15 +2393,15 @@ impl<C: Connect> Worker<C> {
                 Outcome::RecentTransactions { page, from, .. } => {
                     Ok(AccountHistory::of(account, page, *from, String::new()))
                 }
-                Outcome::ExplorerFailed { cause } => Err(explorer::no_index(cause)),
-                _ => Err(false),
+                Outcome::ExplorerFailed { cause } => Err(explorer::index_state(cause)),
+                _ => Err(None),
             };
             let text = text::page(&[], outcome);
             match read {
                 Ok(history) => out.push(AccountHistory { text, ..history }),
                 // Every account is read from the same index: one refusal
                 // is the answer for all of them.
-                Err(no_index) => return Reply::Activity(Err(ExplorerRefusal { no_index, text })),
+                Err(index) => return Reply::Activity(Err(ExplorerRefusal { index, text })),
             }
         }
         if asked() {

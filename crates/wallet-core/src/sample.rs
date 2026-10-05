@@ -24,7 +24,9 @@ use crate::command::PlanId;
 use crate::event::{
     AccountReport, Discovered, PlanView, PlannedDestination, ReceiveView, SentView,
 };
-use crate::explorer::{AccountHistory, BlockSummary, BlocksView, MempoolView};
+use crate::explorer::{
+    AccountHistory, BlockSummary, BlocksView, ExplorerRefusal, IndexState, MempoolView,
+};
 use crate::text;
 use crate::view::{
     AccountId, AccountKind, AccountRow, AccountState, Notice, NoticeKind, ReservationState,
@@ -593,6 +595,24 @@ pub fn blocks() -> BlocksView {
                 rows,
             },
         ),
+    }
+}
+
+/// A search of the sample node's index refused, with the library's page
+/// for it: the route's 404 for a node that runs no index, the middleware's
+/// code 2 for one whose index did not answer.
+#[must_use]
+pub fn index_refusal(state: IndexState) -> ExplorerRefusal {
+    let cause = match state {
+        IndexState::Absent => mochimo_crypto::Error::HttpStatus { status: 404 },
+        IndexState::Unavailable => mochimo_crypto::Error::Mesh {
+            code: 2,
+            retriable: true,
+        },
+    };
+    ExplorerRefusal {
+        index: Some(state),
+        text: text::page(&[], Outcome::ExplorerFailed { cause }),
     }
 }
 

@@ -117,8 +117,12 @@ struct State {
     /// The index's rows for each tag, newest first, as the endpoint spells
     /// them.
     history: BTreeMap<Tag, Vec<serde_json::Value>>,
-    /// The deployment runs no index: a search answers its internal error.
+    /// The deployment runs no index: the search is not served, and answers
+    /// the router's 404.
     no_index: bool,
+    /// The deployment runs an index that does not answer: a search answers
+    /// the middleware's internal error, code 2.
+    index_down: bool,
     /// How many transactions the index has recorded, for their ids.
     indexed: u64,
     /// The blocks whose figures count no transactions: pseudo-blocks.
@@ -296,6 +300,10 @@ impl Chain {
         self.0.lock().expect("chain").no_index = no_index;
     }
 
+    pub fn set_index_down(&self, down: bool) {
+        self.0.lock().expect("chain").index_down = down;
+    }
+
     /// Hold every request from now on until the returned gate is opened.
     pub fn close_gate(&self) -> Gate {
         let gate = Gate::default();
@@ -374,8 +382,14 @@ impl Transport for Chain {
                 }
             }
             "/search/transactions" => {
+                // `mochimo-mesh` registers the route only with its indexer
+                // enabled; the library's transport reports the router's 404 as
+                // a status other than 200.
                 if s.no_index {
-                    return Ok(br#"{"code":1,"message":"Internal error","retriable":false}"#.to_vec());
+                    return Err(Error::HttpStatus { status: 404 });
+                }
+                if s.index_down {
+                    return Ok(br#"{"code":2,"message":"Internal general error","retriable":true}"#.to_vec());
                 }
                 let asked = req["account_identifier"]["address"].as_str().ok_or(mesh("test: account_identifier"))?;
                 let limit = req["limit"].as_u64().filter(|l| (1..=100).contains(l)).unwrap_or(10);

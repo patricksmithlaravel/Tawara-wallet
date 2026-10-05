@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use mochimo_crypto::keystore::{self, Keystore, Unlock};
 use support::*;
+use tawara_wallet_core::explorer::IndexState;
 use tawara_wallet_core::location::{Environment, Platform, default_store_dir};
 use tawara_wallet_core::spend::{Amount, DestinationInput, SpendInputError, SpendRequest};
 use tawara_wallet_core::view::{
@@ -2111,18 +2112,28 @@ fn activity_reads_every_account_from_the_index_and_says_when_there_is_none() {
         "the index's row carries the reference, its padding left off"
     );
 
-    // A node that runs no index: the library's reading, for every account.
+    // A node that runs no index does not serve the search, for any account.
     h.chain.set_no_index(true);
     match h.call(Command::Activity) {
         Reply::Activity(Err(refused)) => {
-            assert!(refused.no_index);
-            assert!(refused.text.contains("indexer"), "{}", refused.text);
+            assert_eq!(refused.index, Some(IndexState::Absent));
+            assert!(refused.text.contains("HTTP 404"), "{}", refused.text);
+        }
+        other => panic!("expected the index refused, got {other:?}"),
+    }
+    // One that runs an index that does not answer answers code 2.
+    h.chain.set_no_index(false);
+    h.chain.set_index_down(true);
+    match h.call(Command::OlderActivity(vec![(account0(), 0)])) {
+        Reply::Activity(Err(refused)) => {
+            assert_eq!(refused.index, Some(IndexState::Unavailable));
+            assert!(refused.text.contains("code 2"), "{}", refused.text);
         }
         other => panic!("expected the index refused, got {other:?}"),
     }
 
     // A cancel stops it before it starts, and nothing is reported.
-    h.chain.set_no_index(false);
+    h.chain.set_index_down(false);
     let gate = h.chain.close_gate();
     let id = h.handle.send(Command::Activity).expect("worker running");
     assert_eq!(h.wait_busy(id), Activity::ReadingIndex);
@@ -2259,7 +2270,9 @@ fn the_queue_is_counted_without_a_store() {
     );
     h.chain.set_unreachable(true);
     match h.call(Command::Mempool) {
-        Reply::Mempool(Err(refused)) => assert!(!refused.no_index, "the queue is not the index"),
+        Reply::Mempool(Err(refused)) => {
+            assert_eq!(refused.index, None, "the queue is not the index")
+        }
         other => panic!("expected the queue refused, got {other:?}"),
     }
     assert_eq!(
