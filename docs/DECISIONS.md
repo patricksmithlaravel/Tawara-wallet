@@ -938,7 +938,9 @@ to them.
     folder beside `keystore/`, never inside it. Nothing secret goes there.
     Without it, the person would choose their node again at every start,
     and a store kept outside the default folder would not be offered for
-    unlocking at the next one.
+    unlocking at the next one. A folder typed as a relative path is made
+    absolute before it is used, so the store is remembered by where it is,
+    not by where the application happened to be started from.
     The auto-lock choices are 1, 2, 5, 10 and 15 minutes, 5 by default
     (D24); there is no "never".
 11. **Library changes proposed for later phases** (none blocks phase 3;
@@ -984,7 +986,9 @@ to them.
       columns, as the renderings align them.
     - **A focus ring.** The frames define no focus style. A focused field
       draws its border in the accent, so a keyboard user can see where they
-      are.
+      are. Tab and Shift-Tab move between a form's fields: iced's fields
+      leave the key to the application, which asks for the next or the
+      previous one.
     - **Amounts with all nine places.** The renderings show some amounts to
       six places ("9,215.402118"); every amount here keeps its nine places
       (`12,480.537214906`), so no figure is rounded.

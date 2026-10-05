@@ -38,9 +38,10 @@ pub struct Preferences {
     /// The node last chosen, as typed. The worker checks it again when it is
     /// set (`Command::SetNode`), so a stored value is never trusted.
     pub node: Option<String>,
-    /// The folder of the store last opened, so the application offers to
-    /// unlock it at the next start wherever it is. A path, nothing more:
-    /// the library checks the folder again when it is opened.
+    /// The folder of the store last opened, as an absolute path, so the
+    /// application offers to unlock it at the next start wherever it is. A
+    /// path, nothing more: the library checks the folder again when it is
+    /// opened.
     pub store: Option<String>,
     pub unit: AmountUnit,
     /// One of [`IDLE_LOCK_MINUTES`].

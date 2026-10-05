@@ -8,11 +8,12 @@
 //! (`crate::screens`), so the screenshot example can draw any screen from
 //! sample data without a worker (docs/DECISIONS.md D27, item 1).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use iced::futures::channel::mpsc;
+use iced::widget::operation;
 use iced::{Element, Event as IcedEvent, Subscription, Task, event, keyboard, mouse, touch};
 use tawara_wallet_core::location::{self, Environment, Platform};
 use tawara_wallet_core::preferences::{self, Preferences};
@@ -132,16 +133,23 @@ impl PasswordForm {
 /// wallet-core's warning when `dir` is inside a folder a cloud service
 /// syncs.
 fn sync_note(dir: &str) -> Option<String> {
-    let dir = dir.trim();
-    if dir.is_empty() {
+    if dir.trim().is_empty() {
         return None;
     }
     location::sync_warning(
-        std::path::Path::new(dir),
+        &store_dir(dir),
         Platform::current(),
         &Environment::from_process(),
     )
     .map(|w| w.to_string())
+}
+
+/// The folder typed in a field, as an absolute path: the store is opened,
+/// shown and remembered by where it is, not by where the application was
+/// started from. An empty field stays empty, for the library to refuse.
+fn store_dir(typed: &str) -> PathBuf {
+    let typed = Path::new(typed.trim());
+    std::path::absolute(typed).unwrap_or_else(|_| typed.to_path_buf())
 }
 
 /// S4 and S5: the phrase, and the words typed to confirm it.
@@ -219,6 +227,10 @@ pub enum Message {
     /// The person pressed a key, clicked, scrolled or touched: the idle
     /// period starts again (docs/DECISIONS.md D24).
     Input,
+    /// Tab: the next field. Input too, as [`Message::Input`] is.
+    FocusNext,
+    /// Shift-Tab: the previous field. Input too.
+    FocusPrevious,
     /// Go to a screen.
     Go(Go),
     Choose(StartChoice),
@@ -341,11 +353,12 @@ impl Model {
     /// The store to offer to unlock: the one last opened when it is still
     /// there, or else the one in the default folder when there is one.
     fn store_to_open(&self) -> Option<String> {
-        let remembered = self
-            .prefs
-            .store
-            .clone()
-            .filter(|s| tawara_wallet_core::store_exists(std::path::Path::new(s)));
+        // A relative folder means nothing from another working directory;
+        // only an absolute one is remembered.
+        let remembered = self.prefs.store.clone().filter(|s| {
+            let s = Path::new(s);
+            s.is_absolute() && tawara_wallet_core::store_exists(s)
+        });
         remembered.or_else(|| {
             self.default_dir
                 .as_deref()
@@ -494,6 +507,13 @@ impl App {
         }
     }
 
+    /// The person did something: the idle period starts again.
+    fn touch(&self) {
+        if let Some(w) = &self.worker {
+            w.handle.touch();
+        }
+    }
+
     fn save_prefs(&self) {
         if let Some(path) = &self.prefs_path {
             // A preference that cannot be written is lost at the next start,
@@ -510,10 +530,15 @@ impl App {
                     self.on_event(event);
                 }
             }
-            Message::Input => {
-                if let Some(w) = &self.worker {
-                    w.handle.touch();
-                }
+            Message::Input => self.touch(),
+            // iced's fields leave Tab to the application.
+            Message::FocusNext => {
+                self.touch();
+                return operation::focus_next();
+            }
+            Message::FocusPrevious => {
+                self.touch();
+                return operation::focus_previous();
             }
             Message::Go(Go::Start) => {
                 let _ = m.leave();
@@ -610,7 +635,7 @@ impl App {
                 if let Screen::NewWallet(f) = &mut m.screen {
                     f.error = None;
                     let command = Command::CreateBegin {
-                        dir: PathBuf::from(f.dir.trim()),
+                        dir: store_dir(&f.dir),
                         password: SecretText::take(&mut f.password),
                         password_again: SecretText::take(&mut f.again),
                     };
@@ -661,7 +686,7 @@ impl App {
                 if let Screen::Restore(r) = &mut m.screen {
                     r.form.error = None;
                     let command = Command::CreateFromPhrase {
-                        dir: PathBuf::from(r.form.dir.trim()),
+                        dir: store_dir(&r.form.dir),
                         password: SecretText::take(&mut r.form.password),
                         password_again: SecretText::take(&mut r.form.again),
                         phrase: SecretText::take(&mut r.phrase),
@@ -674,7 +699,7 @@ impl App {
                     u.error = None;
                     u.note = None;
                     let command = Command::Unlock {
-                        dir: PathBuf::from(u.dir.trim()),
+                        dir: store_dir(&u.dir),
                         password: SecretText::take(&mut u.password),
                     };
                     self.send(command, Purpose::Unlock);
@@ -922,8 +947,13 @@ impl App {
         let m = &mut self.model;
         let _ = m.leave();
         // Remembered, so the next start offers to unlock this store wherever
-        // it is (docs/DECISIONS.md D27, item 10).
-        let dir = view.dir.display().to_string();
+        // it is (docs/DECISIONS.md D27, item 10), and from wherever the
+        // application is started: the commands carry absolute folders, and
+        // this makes sure of it.
+        let dir = std::path::absolute(&view.dir)
+            .unwrap_or_else(|_| view.dir.clone())
+            .display()
+            .to_string();
         let remember = m.prefs.store.as_deref() != Some(dir.as_str());
         if remember {
             m.prefs.store = Some(dir);
@@ -961,9 +991,19 @@ pub fn minutes(period: Duration) -> String {
 }
 
 /// The person did something: a key, a click, a scroll, a touch. Pointer
-/// movement alone is not counted.
-fn person_input(event: IcedEvent, _: event::Status, _: iced::window::Id) -> Option<Message> {
+/// movement alone is not counted. Tab and Shift-Tab move between the fields
+/// as well, unless a widget took the key for itself.
+fn person_input(event: IcedEvent, status: event::Status, _: iced::window::Id) -> Option<Message> {
     match event {
+        IcedEvent::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Tab),
+            modifiers,
+            ..
+        }) if status == event::Status::Ignored => Some(if modifiers.shift() {
+            Message::FocusPrevious
+        } else {
+            Message::FocusNext
+        }),
         IcedEvent::Keyboard(keyboard::Event::KeyPressed { .. })
         | IcedEvent::Mouse(mouse::Event::ButtonPressed(_) | mouse::Event::WheelScrolled { .. })
         | IcedEvent::Touch(touch::Event::FingerPressed { .. }) => Some(Message::Input),
@@ -1153,6 +1193,165 @@ mod tests {
             matches!(a.model.screen, Screen::Wallet(_))
         });
         assert_eq!(app.model.wallet.as_ref().map(|w| w.accounts.len()), Some(1));
+    }
+
+    #[test]
+    fn a_store_opened_by_a_relative_folder_is_remembered_by_where_it_is() {
+        let here = std::env::current_dir().unwrap();
+        assert_eq!(store_dir(" wallets/savings "), here.join("wallets/savings"));
+        assert_eq!(
+            store_dir(""),
+            PathBuf::new(),
+            "left for the library to refuse"
+        );
+
+        let mut app = App {
+            model: Model::new(Preferences::default(), None),
+            worker: None,
+            prefs_path: None,
+        };
+        let mut view = tawara_wallet_core::sample::wallet_view();
+        view.dir = PathBuf::from("wallets").join("savings");
+        app.opened(view);
+        let remembered = here.join("wallets").join("savings").display().to_string();
+        assert_eq!(app.model.prefs.store.as_deref(), Some(remembered.as_str()));
+    }
+
+    fn key(named: keyboard::key::Named, modifiers: keyboard::Modifiers) -> IcedEvent {
+        IcedEvent::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(named),
+            modified_key: keyboard::Key::Named(named),
+            physical_key: keyboard::key::Physical::Unidentified(
+                keyboard::key::NativeCode::Unidentified,
+            ),
+            location: keyboard::Location::Standard,
+            modifiers,
+            text: None,
+            repeat: false,
+        })
+    }
+
+    #[test]
+    fn tab_and_shift_tab_move_between_fields_and_count_as_input() {
+        use keyboard::Modifiers;
+        use keyboard::key::Named;
+        let window = iced::window::Id::unique();
+        let input = |event, status| person_input(event, status, window);
+        let ignored = event::Status::Ignored;
+        assert!(matches!(
+            input(key(Named::Tab, Modifiers::empty()), ignored),
+            Some(Message::FocusNext)
+        ));
+        assert!(matches!(
+            input(key(Named::Tab, Modifiers::SHIFT), ignored),
+            Some(Message::FocusPrevious)
+        ));
+        // A widget that keeps Tab for itself keeps it; the key still counts.
+        assert!(matches!(
+            input(key(Named::Tab, Modifiers::empty()), event::Status::Captured),
+            Some(Message::Input)
+        ));
+        assert!(matches!(
+            input(key(Named::Enter, Modifiers::empty()), ignored),
+            Some(Message::Input)
+        ));
+    }
+
+    /// Which of a screen's focusable widgets is focused, and how many there
+    /// are, in the order Tab goes through them.
+    #[derive(Default)]
+    struct Focused {
+        total: usize,
+        focused: Option<usize>,
+    }
+
+    impl iced::advanced::widget::Operation for Focused {
+        fn traverse(
+            &mut self,
+            operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation),
+        ) {
+            operate(self);
+        }
+
+        fn focusable(
+            &mut self,
+            _: Option<&iced::advanced::widget::Id>,
+            _: iced::Rectangle,
+            state: &mut dyn iced::advanced::widget::operation::Focusable,
+        ) {
+            if state.is_focused() {
+                self.focused = Some(self.total);
+            }
+            self.total += 1;
+        }
+    }
+
+    #[test]
+    fn tab_goes_through_each_forms_fields_in_order() {
+        use iced::advanced::renderer::Headless;
+        use iced::advanced::widget::operation::{Outcome, focusable};
+        use iced_runtime::user_interface::{Cache, UserInterface};
+
+        let mut renderer = iced::futures::executor::block_on(<iced::Renderer as Headless>::new(
+            iced::Font::DEFAULT,
+            iced::Pixels(16.0),
+            Some("tiny-skia"),
+        ))
+        .expect("the software renderer starts");
+        let form = || PasswordForm::in_dir("/a/folder".to_owned());
+        let forms = [
+            ("S2", Screen::Node(NodeForm::default()), 1),
+            ("S3", Screen::NewWallet(form()), 3),
+            (
+                "S5",
+                Screen::Confirm(PhraseState {
+                    phrase: PhraseForDisplay::example(),
+                    positions: tawara_wallet_core::CONFIRM_POSITIONS,
+                    written: true,
+                    words: Default::default(),
+                    error: None,
+                }),
+                3,
+            ),
+            (
+                "S6",
+                Screen::Restore(RestoreForm {
+                    form: form(),
+                    phrase: String::new(),
+                }),
+                4,
+            ),
+            ("S7", Screen::Unlock(UnlockForm::default()), 2),
+        ];
+        for (name, screen, fields) in forms {
+            let mut model = Model::new(Preferences::default(), None);
+            model.screen = screen;
+            let mut ui = UserInterface::build(
+                crate::screens::view(&model),
+                iced::Size::new(1440.0, 900.0),
+                Cache::default(),
+                &mut renderer,
+            );
+            // As the runtime runs a widget operation: to its end.
+            let mut run = |operation: Box<dyn iced::advanced::widget::Operation>| {
+                let mut next = Some(operation);
+                while let Some(mut operation) = next.take() {
+                    ui.operate(&renderer, operation.as_mut());
+                    if let Outcome::Chain(chained) = operation.finish() {
+                        next = Some(chained);
+                    }
+                }
+                let mut focused = Focused::default();
+                ui.operate(&renderer, &mut focused);
+                (focused.total, focused.focused)
+            };
+            for field in 0..fields {
+                let tab = run(Box::new(focusable::focus_next()));
+                assert_eq!(tab, (fields, Some(field)), "{name}: Tab to field {field}");
+            }
+            let back = run(Box::new(focusable::focus_previous()));
+            assert_eq!(back, (fields, fields.checked_sub(2)), "{name}: Shift-Tab");
+        }
     }
 
     #[test]
