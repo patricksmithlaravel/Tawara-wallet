@@ -778,7 +778,7 @@ const NO_NODE: &str = "No node is chosen, so nothing was reconciled and nothing 
                        The store is open: its accounts and their destinations can be shown. \
                        Choose a node to reconcile them.";
 
-const NODE_SILENT: &str = "The node did not answer, so nothing was reconciled and nothing can be \
+pub(crate) const NODE_SILENT: &str = "The node did not answer, so nothing was reconciled and nothing can be \
                            sent. The store is open: its accounts and their destinations can be \
                            shown.";
 

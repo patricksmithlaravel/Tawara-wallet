@@ -455,8 +455,9 @@ pub fn card<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> container::Contain
 /// thousands grouped and all nine places (`12,480.537214906`), or nanoMCM
 /// grouped (`12,480,537,214,906`).
 #[must_use]
-pub fn amount(nano: u64, unit: tawara_wallet_core::preferences::AmountUnit) -> String {
+pub fn amount(nano: impl Into<u128>, unit: tawara_wallet_core::preferences::AmountUnit) -> String {
     use tawara_wallet_core::preferences::AmountUnit;
+    let nano: u128 = nano.into();
     match unit {
         AmountUnit::Mcm => {
             let mcm = tawara_wallet_core::amount::format_mcm(nano);
@@ -522,15 +523,20 @@ mod tests {
     #[test]
     fn amounts_are_grouped_and_exact() {
         assert_eq!(
-            amount(12_480_537_214_906, AmountUnit::Mcm),
+            amount(12_480_537_214_906_u64, AmountUnit::Mcm),
             "12,480.537214906"
         );
-        assert_eq!(amount(500, AmountUnit::Mcm), "0.000000500");
+        assert_eq!(amount(500_u64, AmountUnit::Mcm), "0.000000500");
         assert_eq!(
-            amount(12_480_537_214_906, AmountUnit::NanoMcm),
+            amount(12_480_537_214_906_u64, AmountUnit::NanoMcm),
             "12,480,537,214,906"
         );
-        assert_eq!(amount(0, AmountUnit::NanoMcm), "0");
+        assert_eq!(amount(0_u64, AmountUnit::NanoMcm), "0");
+        // A total past u64 is written exactly, not clamped.
+        assert_eq!(
+            amount(u128::from(u64::MAX) + 5, AmountUnit::Mcm),
+            "18,446,744,073.709551620"
+        );
         assert_eq!(group("100"), "100");
         assert_eq!(group("1000"), "1,000");
     }

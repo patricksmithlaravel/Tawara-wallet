@@ -100,6 +100,20 @@ pub fn wallet_view() -> WalletView {
     }
 }
 
+/// The same store opened while its node did not answer: no account was
+/// reconciled, so no balance is known, and the worker's notice says why.
+#[must_use]
+pub fn unreconciled_view() -> WalletView {
+    let mut view = wallet_view();
+    for row in &mut view.accounts {
+        row.state = AccountState::NotReconciled;
+        row.spendable = false;
+    }
+    view.opened = false;
+    view.notice = Some(crate::worker::NODE_SILENT.to_owned());
+    view
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

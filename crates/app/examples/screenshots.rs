@@ -117,6 +117,10 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         m.wallet = Some(tawara_wallet_core::sample::wallet_view());
         m
     };
+    let mut unreconciled = with(Screen::Wallet(WalletPage::default()));
+    unreconciled.wallet = Some(tawara_wallet_core::sample::unreconciled_view());
+    unreconciled.node.tip = None;
+    unreconciled.node.error = Some("the node did not answer".to_owned());
     let mut refreshing = wallet();
     refreshing.busy = Some(busy(
         Some(Activity::AskingNode),
@@ -226,6 +230,7 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         ("s8-reconciling", FIRST_RUN, reconciling),
         ("w1-wallet", DASHBOARD, wallet()),
         ("w1-wallet-refreshing", DASHBOARD, refreshing),
+        ("w1-wallet-unreconciled", DASHBOARD, unreconciled),
         ("narrow-s1-get-started", SMALLEST, base()),
         ("narrow-w1-wallet", DASHBOARD_NARROW, wallet()),
     ]

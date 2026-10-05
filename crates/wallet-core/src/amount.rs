@@ -100,8 +100,10 @@ pub fn parse_nano(text: &str) -> Result<u64, AmountError> {
 /// nanoMCM as MCM with all nine decimal places: `12480.537214906`,
 /// `0.000000500`. No grouping; laying a figure out is the interface's.
 #[must_use]
-pub fn format_mcm(nano: u64) -> String {
-    format!("{}.{:09}", nano / NANO_PER_MCM, nano % NANO_PER_MCM)
+pub fn format_mcm(nano: impl Into<u128>) -> String {
+    let nano = nano.into();
+    let per = u128::from(NANO_PER_MCM);
+    format!("{}.{:09}", nano / per, nano % per)
 }
 
 #[cfg(test)]
@@ -153,11 +155,16 @@ mod tests {
 
     #[test]
     fn formats_with_nine_places_and_round_trips() {
-        assert_eq!(format_mcm(12_480_537_214_906), "12480.537214906");
-        assert_eq!(format_mcm(500), "0.000000500");
-        assert_eq!(format_mcm(0), "0.000000000");
+        assert_eq!(format_mcm(12_480_537_214_906_u64), "12480.537214906");
+        assert_eq!(format_mcm(500_u64), "0.000000500");
+        assert_eq!(format_mcm(0_u64), "0.000000000");
         for n in [0, 1, 500, NANO_PER_MCM, 12_480_537_214_906, u64::MAX] {
             assert_eq!(parse_mcm(&format_mcm(n)), Ok(n));
         }
+        // A sum of balances can pass u64; it is written exactly.
+        assert_eq!(
+            format_mcm(u128::from(u64::MAX) + 5),
+            "18446744073.709551620"
+        );
     }
 }

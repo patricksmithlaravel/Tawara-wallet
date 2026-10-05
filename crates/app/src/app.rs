@@ -777,13 +777,17 @@ impl App {
                 if let Screen::Wallet(p) = &mut m.screen {
                     p.error = None;
                 }
+                // The tip is asked for once the refresh has answered
+                // (`on_reply`), not queued behind it now.
                 self.send(Command::Refresh, Purpose::Refresh);
-                self.ask_tip();
             }
         }
         Task::none()
     }
 
+    /// Ask the node for its tip. How long it took to answer is measured
+    /// from when the worker starts asking (its `Busy`), not from when the
+    /// request was queued behind others.
     fn ask_tip(&mut self) {
         if self.model.node.url.is_some() {
             self.send(
@@ -798,6 +802,12 @@ impl App {
     fn on_event(&mut self, event: Event) {
         match event {
             Event::Busy { id, activity } => {
+                if let Some(w) = &mut self.worker
+                    && let Some((_, Purpose::Network { sent })) =
+                        w.waiting.iter_mut().find(|(i, _)| *i == id)
+                {
+                    *sent = Instant::now();
+                }
                 if let Some(b) = &mut self.model.busy
                     && b.id == id
                 {
@@ -994,6 +1004,11 @@ impl App {
             },
             (Purpose::Unlock, Reply::Unlocked(view)) | (Purpose::Refresh, Reply::Wallet(view)) => {
                 self.opened(view);
+            }
+            // The tip, once, after the refresh, however it went.
+            (Purpose::Refresh, Reply::Refused(r)) => {
+                self.refused(r);
+                self.ask_tip();
             }
             // The worker holds no phrase to confirm, so the one on the
             // screen can no longer make a store: drop it, and back to S3 for
@@ -1255,22 +1270,30 @@ mod tests {
         assert_eq!(app.model.prefs.store.as_deref(), Some(remembered.as_str()));
 
         // A second Refresh while the first is waited on sends nothing: the
-        // page shows the first, with its Cancel, until it answers.
+        // page shows the first, with its Cancel, until it answers. The tip
+        // is asked for once, when the refresh has answered, and nothing is
+        // queued behind it. (The application is told a node is chosen so
+        // that it asks; the worker has none and refuses, which does not
+        // change the count.)
+        app.model.node.url = Some("https://node.example".to_owned());
         let _ = app.update(Message::Refresh);
         let first = app.model.busy.as_ref().map(|b| b.id);
         assert!(first.is_some());
         let _ = app.update(Message::Refresh);
         assert_eq!(app.model.busy.as_ref().map(|b| b.id), first);
-        let refreshes = |a: &App| {
-            a.worker.as_ref().map_or(0, |w| {
-                w.waiting
-                    .iter()
-                    .filter(|(_, p)| matches!(p, Purpose::Refresh))
-                    .count()
-            })
+        let waiting = |a: &App, which: fn(&Purpose) -> bool| {
+            a.worker
+                .as_ref()
+                .map_or(0, |w| w.waiting.iter().filter(|(_, p)| which(p)).count())
         };
-        assert_eq!(refreshes(&app), 1);
+        let refreshes = |p: &Purpose| matches!(p, Purpose::Refresh);
+        let tips = |p: &Purpose| matches!(p, Purpose::Network { .. });
+        assert_eq!(waiting(&app, refreshes), 1);
+        assert_eq!(waiting(&app, tips), 0, "nothing queued behind the refresh");
         pump(&mut app, &events, |a| a.model.busy.is_none());
+        assert_eq!(waiting(&app, tips), 1, "one tip, once the refresh answered");
+        pump(&mut app, &events, |a| waiting(a, tips) == 0);
+        app.model.node = NodeState::default();
 
         let _ = app.update(Message::Lock);
         pump(&mut app, &events, |a| {

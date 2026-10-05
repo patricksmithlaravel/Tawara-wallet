@@ -14,7 +14,7 @@ use mochimo_crypto::keystore::{self, Keystore, Unlock};
 use support::*;
 use tawara_wallet_core::location::{Environment, Platform, default_store_dir};
 use tawara_wallet_core::spend::{Amount, DestinationInput, SpendInputError, SpendRequest};
-use tawara_wallet_core::view::{AccountId, AccountState, ReservationState, WalletView};
+use tawara_wallet_core::view::{AccountId, AccountState, ReservationState, Total, WalletView};
 use tawara_wallet_core::{
     Activity, CONFIRM_POSITIONS, Command, Config, DISCOVER_MAX_TO, Event, LockReason,
     MAX_KEY_INDEX, PlanView, Progress, Refusal, RefusalKind, Reply, RequestId, SentView,
@@ -403,7 +403,7 @@ fn a_store_nobody_has_paid_stays_a_store_until_it_is() {
         .hold(tag(0), address(0, view.accounts[0].index), FUNDS);
     let view = opened(h.call(Command::Refresh));
     assert!(view.opened, "{view:?}");
-    assert_eq!(view.total(), u128::from(FUNDS));
+    assert_eq!(view.total(), Total::Whole(u128::from(FUNDS)));
 }
 
 // ----------------------------------------------------------------- receive
@@ -806,7 +806,7 @@ fn restoring_and_discovering_derived_accounts() {
                 .expect("the restored account");
             assert_eq!(row.index, 4, "{text}");
             assert_eq!(row.state, AccountState::InSync { balance: 7_000 });
-            assert_eq!(view.total(), u128::from(FUNDS) + 7_000);
+            assert_eq!(view.total(), Total::Whole(u128::from(FUNDS) + 7_000));
         }
         other => panic!("expected a restore, got {other:?}"),
     }
@@ -1003,7 +1003,7 @@ fn a_cancel_stops_what_was_sent_before_it_and_nothing_after() {
 
     let view = opened(h.call(Command::Refresh));
     assert!(view.opened);
-    assert_eq!(view.total(), u128::from(FUNDS) + 1_000);
+    assert_eq!(view.total(), Total::Whole(u128::from(FUNDS) + 1_000));
 
     // A Lock sent before a cancel still locks.
     let gate = h.chain.close_gate();
@@ -1734,7 +1734,7 @@ fn a_cancelled_unlock_leaves_the_store_open_and_unreconciled() {
     // Nothing needs the password again: a refresh opens the wallet.
     let view = opened(h.call(Command::Refresh));
     assert!(view.opened, "{view:?}");
-    assert_eq!(view.total(), u128::from(FUNDS) + 1_000);
+    assert_eq!(view.total(), Total::Whole(u128::from(FUNDS) + 1_000));
 }
 
 #[test]

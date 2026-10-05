@@ -11,7 +11,9 @@ use iced::widget::text::Wrapping;
 use iced::widget::{column, container, row, rule, scrollable, space};
 use iced::{Alignment, Element, Length, Padding};
 use tawara_wallet_core::preferences::AmountUnit;
-use tawara_wallet_core::view::{AccountKind, AccountRow, AccountState, ReservationState};
+use tawara_wallet_core::view::{
+    AccountKind, AccountRow, AccountState, ReservationState, Total, WalletView,
+};
 
 use crate::app::{Back, Busy, Go, Message, Model, WalletPage, minutes};
 use crate::icon::{self, Icon};
@@ -205,7 +207,7 @@ fn content<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> {
     if let Some(e) = &page.error {
         stack = stack.push(ui::refusal(e));
     }
-    stack = stack.push(balance(model, wallet.total(), wallet.accounts.len()));
+    stack = stack.push(balance(model, wallet));
     stack.push(accounts(&wallet.accounts, unit)).into()
 }
 
@@ -239,52 +241,86 @@ fn working(busy: &Busy) -> Element<'_, Message> {
 }
 
 /// The total, as the 02 hero card sets it (5.22), with the number of
-/// accounts.
-fn balance(model: &Model, total: u128, count: usize) -> Element<'_, Message> {
+/// accounts. An account with no known balance (diverged, or not
+/// reconciled) is never counted as zero: while some are unknown the card
+/// shows the known balance and says what it leaves out, and while all are,
+/// it shows no figure.
+fn balance<'a>(model: &'a Model, wallet: &'a WalletView) -> Element<'a, Message> {
     let unit = model.prefs.unit;
-    let nano = u64::try_from(total).unwrap_or(u64::MAX);
-    let shown = ui::amount(nano, unit);
-    let (whole, frac) = match unit {
-        AmountUnit::Mcm => shown
-            .split_once('.')
-            .map_or((shown.clone(), String::new()), |(w, f)| {
-                (w.to_owned(), format!(".{f}"))
-            }),
-        AmountUnit::NanoMcm => (shown.clone(), String::new()),
+    let count = wallet.accounts.len();
+    let (label, figure, note) = match wallet.total() {
+        Total::Whole(sum) => ("Total balance", Some(sum), None),
+        Total::Partial { known, unknown } => (
+            "Known balance",
+            Some(known),
+            Some(format!(
+                "The sum of {} of the {count} accounts. {} no known balance (— below), so the \
+                 store's total is not known.",
+                count - unknown,
+                if unknown == 1 {
+                    "One has".to_owned()
+                } else {
+                    format!("{unknown} have")
+                }
+            )),
+        ),
+        Total::Unknown => (
+            "Total balance",
+            None,
+            Some(
+                "Not known: no account has been reconciled against the node, so no balance is \
+                 known."
+                    .to_owned(),
+            ),
+        ),
     };
-    container(
-        column![
-            ui::section_label("Total balance"),
-            row![
-                t(whole, ty::BALANCE, color::TEXT_PRIMARY),
-                t(frac, ty::BALANCE_DECIMALS, color::TEXT_SECONDARY),
-                container(t(ui::unit_name(unit), ty::BALANCE_UNIT, color::ACCENT)).padding(
-                    Padding {
-                        left: sp::S12,
-                        ..Padding::ZERO
-                    }
-                ),
-            ]
-            .align_y(Alignment::End),
-            t(
+    let mut card = column![ui::section_label(label)].spacing(sp::S12);
+    if let Some(nano) = figure {
+        let shown = ui::amount(nano, unit);
+        let (whole, frac) = match unit {
+            AmountUnit::Mcm => shown
+                .split_once('.')
+                .map_or((shown.clone(), String::new()), |(w, f)| {
+                    (w.to_owned(), format!(".{f}"))
+                }),
+            AmountUnit::NanoMcm => (shown.clone(), String::new()),
+        };
+        card = card
+            .push(
+                row![
+                    t(whole, ty::BALANCE, color::TEXT_PRIMARY),
+                    t(frac, ty::BALANCE_DECIMALS, color::TEXT_SECONDARY),
+                    container(t(ui::unit_name(unit), ty::BALANCE_UNIT, color::ACCENT)).padding(
+                        Padding {
+                            left: sp::S12,
+                            ..Padding::ZERO
+                        }
+                    ),
+                ]
+                .align_y(Alignment::End),
+            )
+            .push(t(
                 format!("{} nanoMCM", ui::group(&nano.to_string())),
                 ty::MONO_SMALL,
                 color::TEXT_MUTED,
-            ),
-            ui::pill(
-                if count == 1 {
-                    "1 account".to_owned()
-                } else {
-                    format!("{count} accounts")
-                },
-                ty::CHIP,
-                color::BG_RAISED,
-                color::TEXT_SECONDARY,
-                30.0,
-            ),
-        ]
-        .spacing(sp::S12),
-    )
+            ));
+    } else {
+        card = card.push(t("—", ty::BALANCE, color::TEXT_MUTED));
+    }
+    if let Some(note) = note {
+        card = card.push(t(note, ty::BODY_SMALL, color::TEXT_SECONDARY));
+    }
+    container(card.push(ui::pill(
+        if count == 1 {
+            "1 account".to_owned()
+        } else {
+            format!("{count} accounts")
+        },
+        ty::CHIP,
+        color::BG_RAISED,
+        color::TEXT_SECONDARY,
+        30.0,
+    )))
     .padding(Padding::from([sp::S28, sp::S32]))
     .width(Length::Fill)
     .style(theme::hero_card)
