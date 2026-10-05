@@ -136,20 +136,39 @@ struct State {
 /// Holds every request at the chain until it is opened, so a test can act
 /// while the worker is waiting on the node.
 #[derive(Clone, Default)]
-pub struct Gate(Arc<(Mutex<bool>, Condvar)>);
+pub struct Gate(Arc<(Mutex<GateState>, Condvar)>);
+
+#[derive(Default)]
+struct GateState {
+    open: bool,
+    /// How many requests have reached the gate, held or let through.
+    reached: usize,
+}
 
 impl Gate {
     pub fn open(&self) {
-        let (open, changed) = &*self.0;
-        *open.lock().expect("gate") = true;
+        let (state, changed) = &*self.0;
+        state.lock().expect("gate").open = true;
         changed.notify_all();
     }
 
+    /// Wait until `n` requests have reached the gate: the worker is then
+    /// waiting on the node, not about to ask it.
+    pub fn wait_reached(&self, n: usize) {
+        let (state, changed) = &*self.0;
+        let mut s = state.lock().expect("gate");
+        while s.reached < n {
+            s = changed.wait(s).expect("gate");
+        }
+    }
+
     fn pass(&self) {
-        let (open, changed) = &*self.0;
-        let mut is_open = open.lock().expect("gate");
-        while !*is_open {
-            is_open = changed.wait(is_open).expect("gate");
+        let (state, changed) = &*self.0;
+        let mut s = state.lock().expect("gate");
+        s.reached += 1;
+        changed.notify_all();
+        while !s.open {
+            s = changed.wait(s).expect("gate");
         }
     }
 }

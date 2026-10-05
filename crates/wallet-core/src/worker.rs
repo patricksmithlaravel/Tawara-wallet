@@ -539,6 +539,46 @@ fn stop_predicate(
     }
 }
 
+/// `cli::cmd_blocks`'s walk, repeated as the worker repeats the command
+/// line's other private decisions (docs/DECISIONS.md D19), with `asked`
+/// consulted before each request: the tip, then the `count` newest blocks
+/// down from it, stopping above index 0, which the endpoint reads as the tip
+/// and never as genesis. A block not served discards the blocks read before
+/// it, as the library's walk does. `None` when `asked` said stop.
+fn walk_blocks<T: Transport>(
+    client: &MeshClient<T>,
+    count: u64,
+    asked: &dyn Fn() -> bool,
+) -> Option<Outcome> {
+    if asked() {
+        return None;
+    }
+    let tip = match client.network_status() {
+        Ok(t) => t,
+        Err(cause) => return Some(Outcome::ExplorerFailed { cause }),
+    };
+    let mut rows = Vec::new();
+    for i in 0..count {
+        let Some(index) = tip.index.checked_sub(i) else {
+            break;
+        };
+        if index == 0 {
+            break;
+        }
+        if asked() {
+            return None;
+        }
+        match client.block_by_index(index) {
+            Ok(b) => rows.push(b),
+            Err(cause) => return Some(Outcome::BlocksStopped { index, cause }),
+        }
+    }
+    if asked() {
+        return None;
+    }
+    Some(Outcome::Blocks { count, tip, rows })
+}
+
 fn refused(kind: RefusalKind, text: impl Into<String>) -> Reply {
     Reply::Refused(Refusal {
         kind,
@@ -2284,13 +2324,20 @@ impl<C: Connect> Worker<C> {
         }
     }
 
-    /// The command line's `blocks`, for the wallet's network card.
+    /// The command line's `blocks`, for the wallet's network card: its walk
+    /// (`cli::cmd_blocks`) made here, so that a cancel, a lock or the idle
+    /// period stops it between two requests, as [`Worker::activity`] stops.
+    /// The library's walk asks for the tip and every block without looking
+    /// for a stop, and this worker holds the open store meanwhile.
     fn blocks(&self, id: RequestId) -> Reply {
+        let asked = self.stop_asked(id);
         let outcome = match self.ask_node(|client| {
             self.busy(id, Activity::ReadingIndex);
-            cli::cmd_blocks(client, explorer::CARD_BLOCKS)
+            walk_blocks(client, explorer::CARD_BLOCKS, &asked)
         }) {
-            Ok(outcome) => outcome,
+            Ok(Some(outcome)) => outcome,
+            // A walk cut short is not shown as a whole one.
+            Ok(None) => return Reply::Refused(library(Error::Cancelled)),
             Err(r) => return Reply::Refused(r),
         };
         let read = match &outcome {

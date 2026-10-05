@@ -2247,6 +2247,53 @@ fn the_newest_blocks_are_read_down_from_the_tip_without_a_store() {
     );
 }
 
+/// The network card's read holds the worker, which holds the open store,
+/// for as long as it asks the node: a lock, a cancel or the idle period
+/// stops it between two requests, and the store is then locked at once.
+#[test]
+fn a_lock_or_the_idle_period_stops_the_newest_blocks_between_requests() {
+    // Lock pressed while the node is slow to answer the first request: the
+    // application cancels what is running, then sends the lock.
+    let scratch = Scratch::new("blocks-lock");
+    let (mut h, _) = funded(&scratch);
+    let gate = h.chain.close_gate();
+    let calls = h.chain.calls();
+    let id = h.handle.send(Command::Blocks).expect("worker running");
+    assert_eq!(h.wait_busy(id), Activity::ReadingIndex);
+    gate.wait_reached(1);
+    h.handle.cancel();
+    let lock = h.handle.send(Command::Lock).expect("worker running");
+    gate.open();
+    assert_eq!(refusal(h.wait_for(id)).kind, RefusalKind::Cancelled);
+    assert!(matches!(h.wait_for(lock), Reply::Locked));
+    assert_eq!(
+        h.chain.calls() - calls,
+        1,
+        "the tip was asked for, and no block after the cancel"
+    );
+
+    // The idle period runs out while a slow node answers one request at a
+    // time: the walk of seven requests stops partway, and the store locks.
+    let scratch = Scratch::new("blocks-idle");
+    let mut h = Harness::with(Config {
+        idle_lock: Duration::from_millis(1_500),
+    });
+    assert!(matches!(
+        h.call(Command::SetNode { url: NODE.into() }),
+        Reply::NodeSet { .. }
+    ));
+    h.chain.hold(tag(0), address(0, 0), FUNDS);
+    assert!(opened(h.create_from_phrase(&scratch.store())).opened);
+    h.chain.slow(Duration::from_millis(600));
+    let calls = h.chain.calls();
+    h.handle.touch();
+    let id = h.handle.send(Command::Blocks).expect("worker running");
+    assert_eq!(refusal(h.wait_for(id)).kind, RefusalKind::Cancelled);
+    assert_eq!(h.wait_locked(Duration::from_secs(10)), LockReason::Idle);
+    let made = h.chain.calls() - calls;
+    assert!(made < 7, "the whole walk ran: {made} requests");
+}
+
 #[test]
 fn the_queue_is_counted_without_a_store() {
     let mut h = Harness::with_node();

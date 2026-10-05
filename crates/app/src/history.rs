@@ -30,6 +30,15 @@ pub enum Kind {
     Other,
 }
 
+/// Which row Activity shows beside the list: a transaction and the
+/// account it is seen from, since a payment from elsewhere to several of
+/// the store's accounts is a row for each.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RowId {
+    pub tx: String,
+    pub account: AccountId,
+}
+
 /// One transaction as Activity lists it, seen from `account`, the store's
 /// account it left (or reached, when it only arrived).
 #[derive(Clone, Debug)]
@@ -46,6 +55,20 @@ pub struct Row<'a> {
 }
 
 impl Row<'_> {
+    #[must_use]
+    pub fn id(&self) -> RowId {
+        RowId {
+            tx: self.tx.id.clone(),
+            account: self.account,
+        }
+    }
+
+    /// Whether it is the row `id` names.
+    #[must_use]
+    pub fn is(&self, id: &RowId) -> bool {
+        self.tx.id == id.tx && self.account == id.account
+    }
+
     /// Where a spend went, change left out.
     pub fn payees(&self) -> impl Iterator<Item = &OperationView> {
         self.tx.paid_out(self.account)
@@ -144,9 +167,13 @@ fn classify<'a>(
     }
 }
 
-/// Every transaction in `histories`, newest first. One that two of the
-/// store's accounts' histories both hold (a transfer between them) is
-/// listed once, from the account it left.
+/// Every transaction in `histories`, newest first. One that left one of
+/// the store's accounts is listed once, from the account it left, though
+/// the histories of the store's accounts it paid hold it too: a transfer
+/// between them, or a spend that paid one of them among others. One that
+/// left none of them (a payment from elsewhere to several of them) is
+/// listed once for each account it reached, with what it did to that
+/// account and that account's references.
 #[must_use]
 pub fn rows(histories: &[AccountHistory]) -> Vec<Row<'_>> {
     let own: Vec<AccountId> = histories.iter().map(|h| h.account).collect();
@@ -154,7 +181,14 @@ pub fn rows(histories: &[AccountHistory]) -> Vec<Row<'_>> {
     for history in histories {
         for tx in &history.transactions {
             let row = classify(tx, history.account, &own, history);
-            match out.iter().position(|r| r.tx.id == tx.id) {
+            let from_store = tx
+                .operations
+                .iter()
+                .any(|o| o.kind == OperationKind::Source && names_own(o, &own));
+            let listed = out
+                .iter()
+                .position(|r| r.tx.id == tx.id && (from_store || r.account == history.account));
+            match listed {
                 Some(at) => {
                     let left = matches!(
                         tx.direction(history.account),
@@ -272,6 +306,103 @@ mod tests {
         for pair in rows.windows(2) {
             assert!(pair[0].tx.block >= pair[1].tx.block);
         }
+    }
+
+    /// A transaction with `ops`, as `(kind, account, amount, reference)`.
+    fn tx(id: &str, block: u64, ops: &[(OperationKind, AccountId, i128, &str)]) -> TransactionView {
+        TransactionView {
+            id: id.to_owned(),
+            block: Some(block),
+            time_ms: Some(1_790_000_000_000),
+            operations: ops
+                .iter()
+                .map(|(kind, account, amount, memo)| OperationView {
+                    kind: kind.clone(),
+                    party: Party::Account(*account),
+                    amount: *amount,
+                    memo: (*memo).to_owned(),
+                })
+                .collect(),
+        }
+    }
+
+    fn history(account: AccountId, transactions: Vec<TransactionView>) -> AccountHistory {
+        AccountHistory {
+            account,
+            total: transactions.len() as u64,
+            next: transactions.len() as u64,
+            transactions,
+            text: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_payment_from_elsewhere_to_two_accounts_is_a_row_for_each() {
+        use OperationKind::{Destination, Source};
+        let (a, b, c) = (
+            AccountId::from_tag([0xa1; 20]),
+            AccountId::from_tag([0xb2; 20]),
+            AccountId::from_tag([0xc3; 20]),
+        );
+        let outside = AccountId::from_tag([0xee; 20]);
+        // Someone else pays A 10 and B 20 in one transaction.
+        let batch = tx(
+            "batch",
+            900,
+            &[
+                (Source, outside, -40, ""),
+                (Destination, a, 10, "FOR-A"),
+                (Destination, b, 20, "FOR-B"),
+                (Destination, outside, 10, ""),
+            ],
+        );
+        // A pays B 5, with its change: a transfer between two of them.
+        let transfer = tx(
+            "transfer",
+            800,
+            &[
+                (Source, a, -20, ""),
+                (Destination, b, 5, ""),
+                (Destination, a, 15, ""),
+            ],
+        );
+        // B pays C and someone else: a spend that paid one of them.
+        let spend = tx(
+            "spend",
+            700,
+            &[
+                (Source, b, -30, ""),
+                (Destination, c, 7, ""),
+                (Destination, outside, 8, ""),
+                (Destination, b, 15, ""),
+            ],
+        );
+        let histories = [
+            history(a, vec![batch.clone(), transfer.clone()]),
+            history(b, vec![batch, transfer, spend.clone()]),
+            history(c, vec![spend]),
+        ];
+        let rows = rows(&histories);
+        let seen: Vec<(&str, AccountId, Kind, i128)> = rows
+            .iter()
+            .map(|r| (r.tx.id.as_str(), r.account, r.kind, r.amount))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("batch", a, Kind::Received, 10),
+                ("batch", b, Kind::Received, 20),
+                ("transfer", a, Kind::Own, 5),
+                ("spend", b, Kind::Sent, -15),
+            ]
+        );
+        assert_eq!(rows[0].references(), ["FOR-A"]);
+        assert_eq!(
+            rows[1].references(),
+            ["FOR-B"],
+            "each account's own reference"
+        );
+        assert!(rows[1].is(&rows[1].id()) && !rows[0].is(&rows[1].id()));
     }
 
     #[test]

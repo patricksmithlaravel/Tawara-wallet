@@ -239,6 +239,13 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         };
         m
     };
+    // The payment received, as Activity lists it.
+    let histories = sample::activity();
+    let received = tawara_app::history::rows(&histories)
+        .into_iter()
+        .find(|r| r.tx.id == histories[0].transactions[1].id)
+        .map(|r| r.id())
+        .expect("the sample's payment received is a row");
     let no_index = refused(IndexState::Absent);
     // Opened to its summary, so its words are drawn.
     let index_down = opened(
@@ -524,7 +531,7 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
             "w10-activity-received",
             DASHBOARD,
             on(Page::Activity(ActivityPage {
-                selected: Some(sample::activity()[0].transactions[1].id.clone()),
+                selected: Some(received.clone()),
                 ..ActivityPage::default()
             })),
         ),

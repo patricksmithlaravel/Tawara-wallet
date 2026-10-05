@@ -69,23 +69,33 @@ pub fn view<'a>(
     let read = &model.activity;
     match &read.last {
         Some(Ok(histories)) => body.push(listing(model, page, a, histories)),
-        Some(Err(refusal)) => {
-            body.push(report::show(
-                page,
-                ReportKey::Explorer,
-                report::explorer(refusal, "its transaction index"),
-            ));
+        other => {
+            body.push(match other {
+                Some(Err(refusal)) => report::show(
+                    page,
+                    ReportKey::Explorer,
+                    report::explorer(refusal, "its transaction index"),
+                ),
+                _ => ui::card(ui::helper(if read.reading {
+                    "Reading the node's index…"
+                } else if model.node.url.is_none() {
+                    "No node is chosen: Activity reads the transactions from the node's index."
+                } else {
+                    "Not read yet."
+                }))
+                .into(),
+            });
+            // The store's own record needs no index: its spends still
+            // settling are listed whatever the index answered.
+            let pending = pending_rows(model, a);
+            if !pending.is_empty() {
+                let mut list = column![header(model), ui::divider()].spacing(sp::S4);
+                for row in pending {
+                    list = list.push(row);
+                }
+                body.push(ui::card(list).padding(sp::S12).into());
+            }
         }
-        None => body.push(
-            ui::card(ui::helper(if read.reading {
-                "Reading the node's index…"
-            } else if model.node.url.is_none() {
-                "No node is chosen: Activity reads the transactions from the node's index."
-            } else {
-                "Not read yet."
-            }))
-            .into(),
-        ),
     }
     frame(
         model,
@@ -122,42 +132,20 @@ fn listing<'a>(
         .into_iter()
         .filter(|r| a.filter.admits(r.kind) && r.matches(&query))
         .collect();
-    let mut list = column![
-        row![
-            head("Date", 3),
-            head("Description", 7),
-            head("Account", 4),
-            container(t(
-                format!("Amount ({})", ui::unit_name(model.prefs.unit)),
-                ty::TABLE_HEADER,
-                color::TEXT_MUTED
-            ))
-            .width(Length::FillPortion(4))
-            .align_x(Alignment::End),
-        ]
-        .spacing(sp::S12)
-        .padding(Padding::from([sp::S10, sp::S12])),
-        ui::divider(),
-    ]
-    .spacing(sp::S4);
+    let mut list = column![header(model), ui::divider()].spacing(sp::S4);
     let mut any = false;
-    if a.filter.shows_pending()
-        && query.is_empty()
-        && let Some(w) = &model.wallet
-    {
-        for account in history::pending(&w.accounts) {
-            any = true;
-            list = list.push(pending_row(model, account));
-        }
+    for row in pending_rows(model, a) {
+        any = true;
+        list = list.push(row);
     }
     let chosen = a
         .selected
-        .as_deref()
-        .and_then(|id| rows.iter().find(|r| r.tx.id == id))
+        .as_ref()
+        .and_then(|id| rows.iter().find(|r| r.is(id)))
         .or(rows.first());
     for r in &rows {
         any = true;
-        let selected = chosen.is_some_and(|c| c.tx.id == r.tx.id);
+        let selected = chosen.is_some_and(|c| c.is(&r.id()));
         list = list.push(index_row(model, r, selected));
     }
     if !any {
@@ -200,6 +188,39 @@ fn listing<'a>(
         None => ui::card(ui::helper("Choose a transaction to see it whole.")).into(),
     };
     pair(model, ui::card(list).padding(sp::S12).into(), detail, 7, 5)
+}
+
+/// The list's column heads.
+fn header(model: &Model) -> Element<'_, Message> {
+    row![
+        head("Date", 3),
+        head("Description", 7),
+        head("Account", 4),
+        container(t(
+            format!("Amount ({})", ui::unit_name(model.prefs.unit)),
+            ty::TABLE_HEADER,
+            color::TEXT_MUTED
+        ))
+        .width(Length::FillPortion(4))
+        .align_x(Alignment::End),
+    ]
+    .spacing(sp::S12)
+    .padding(Padding::from([sp::S10, sp::S12]))
+    .into()
+}
+
+/// The store's spends reserved and not settled, as the filter and the
+/// search admit them: its own record, which needs no index.
+fn pending_rows<'a>(model: &'a Model, a: &ActivityPage) -> Vec<Element<'a, Message>> {
+    let Some(w) = &model.wallet else {
+        return Vec::new();
+    };
+    if !a.filter.shows_pending() || !a.search.trim().is_empty() {
+        return Vec::new();
+    }
+    history::pending(&w.accounts)
+        .map(|account| pending_row(model, account))
+        .collect()
 }
 
 fn head<'a>(label: &'static str, portion: u16) -> Element<'a, Message> {
@@ -289,7 +310,7 @@ fn index_row<'a>(model: &'a Model, r: &Row<'a>, selected: bool) -> Element<'a, M
     .padding(0)
     .width(Length::Fill)
     .style(theme::button(theme::Button::Bare))
-    .on_press(WalletMsg::Select(r.tx.id.clone()).into())
+    .on_press(WalletMsg::Select(r.id()).into())
     .into()
 }
 

@@ -1090,14 +1090,26 @@ cards that D27 item 16 moved here. The choices it makes:
    while the next comes, and a refusal that is not the node's answer (a
    cancel, no node) leaves it. They are commands like any other, so they
    do not keep the store open (D24), and a lock drops what the index held
-   for the store.
+   for the store. Each stops between two of its requests when a cancel, a
+   lock or the idle period reaches it, since the worker that makes them
+   holds the open store meanwhile: the history between accounts, and the
+   newest blocks between the tip and each block. The library's walk of the
+   newest blocks (`cli::cmd_blocks`) looks for no stop, so the worker makes
+   that walk itself, repeated as D19 says, and has the library write the
+   page from the same outcome (the owner's review of PR (c)).
 2. **A row is what the transaction did to the account,** net of its
    change, by the command line's own sums: the index debits a spend's
    source gross and lists the change as a destination of its own
    (`cli::render`, `recent_transactions`; the rule is private there and
    repeated in `wallet-core::explorer`, naming it, as D19 does for the
-   others). A transfer between two of the store's accounts is in both
-   accounts' rows and is listed once, from the account it left. The words
+   others). A transaction that left one of the store's accounts is in the
+   rows of every one of them it paid as well, and is listed once, from the
+   account it left: a transfer between two of them, or a spend that paid
+   one of them among others. One that left none of them, a payment from
+   elsewhere to several of them, is listed once for each account it
+   reached, with what it did to that account and that account's
+   references (the owner's review of PR (c)); a row is chosen by its
+   transaction and its account together. The words
    (sent, received, between own accounts, mining reward) are Tawara's;
    they say nothing a row does not.
 3. **References come from the index's rows** (the owner, on PR (c)'s
