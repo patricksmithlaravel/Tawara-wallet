@@ -14,7 +14,9 @@ use mochimo_crypto::keystore::{self, Keystore, Unlock};
 use support::*;
 use tawara_wallet_core::location::{Environment, Platform, default_store_dir};
 use tawara_wallet_core::spend::{Amount, DestinationInput, SpendInputError, SpendRequest};
-use tawara_wallet_core::view::{AccountId, AccountState, ReservationState, Total, WalletView};
+use tawara_wallet_core::view::{
+    AccountId, AccountState, DivergenceKind, NoticeKind, ReservationState, Total, WalletView,
+};
 use tawara_wallet_core::{
     Activity, CONFIRM_POSITIONS, Command, Config, DISCOVER_MAX_TO, Event, LockReason,
     MAX_KEY_INDEX, PlanView, Progress, Refusal, RefusalKind, Reply, RequestId, SentView,
@@ -151,6 +153,10 @@ fn a_new_store_is_written_only_once_its_phrase_is_confirmed() {
     // No node: the store is open and nothing was reconciled.
     assert!(!view.opened);
     assert_eq!(view.accounts[0].state, AccountState::NotReconciled);
+    assert_eq!(
+        view.notice.as_ref().map(|n| n.kind),
+        Some(NoticeKind::NoNode)
+    );
     assert!(
         view.notice
             .as_deref()
@@ -390,12 +396,16 @@ fn a_store_nobody_has_paid_stays_a_store_until_it_is() {
     // The library's reading of "account not found", word for word: it
     // cannot tell a new account from an emptied one or a failed lookup.
     assert!(
-        matches!(&view.accounts[0].state, AccountState::Diverged { report, advance_to: None }
-            if report.contains("account not found")),
+        matches!(&view.accounts[0].state, AccountState::Diverged {
+            kind: DivergenceKind::NotFound,
+            report,
+            advance_to: None,
+        } if report.contains("account not found")),
         "{:?}",
         view.accounts[0].state
     );
     let notice = view.notice.expect("a store that is not whole says so");
+    assert_eq!(notice.kind, NoticeKind::NotWhole);
     assert!(notice.starts_with("THIS STORE IS NOT WHOLE"), "{notice}");
     assert!(!notice.ends_with("---"), "{notice:?}");
 
@@ -685,6 +695,7 @@ fn a_diverged_store_is_reopened_and_advanced_on_acknowledgement() {
     let view = opened(h.unlock(&dir, PASSWORD));
     assert!(!view.opened, "{view:?}");
     let notice = view.notice.clone().expect("the refusal page");
+    assert_eq!(notice.kind, NoticeKind::WillNotStart);
     assert!(notice.starts_with("WALLET WILL NOT START"), "{notice}");
     // Asking again keeps it open: nothing needs the password twice.
     let again = opened(h.call(Command::Refresh));
@@ -693,8 +704,13 @@ fn a_diverged_store_is_reopened_and_advanced_on_acknowledgement() {
     let advance_to = match &view.accounts[0].state {
         AccountState::Diverged {
             advance_to: Some(to),
+            kind,
             ..
-        } => *to,
+        } => {
+            // The chain is ahead of the store, by the keys spent elsewhere.
+            assert_eq!(*kind, DivergenceKind::Ahead { gap: 3 });
+            *to
+        }
         other => panic!("expected a divergence with an advance, got {other:?}"),
     };
     assert_eq!(advance_to, start + 3);

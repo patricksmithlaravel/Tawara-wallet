@@ -367,7 +367,9 @@ const VERBS: [(&str, &str); 9] = [
     ("`restore", "`restore --account N` is Add account."),
     ("`discover", "`discover` is Discover accounts."),
     ("`status", "`status` is Check now, on the account's page."),
-    ("`address", "`address` is Receive."),
+    // With its argument: the receive page itself quotes `address` for the
+    // ledger line it shows, and that is not the verb.
+    ("`address ", "`address` is Receive."),
     ("`create", "`create` is making a new wallet."),
 ];
 

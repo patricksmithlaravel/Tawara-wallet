@@ -1,42 +1,54 @@
-//! The wallet, inside the sidebar of renderings 02 to 08.
-//!
-//! This pull request builds the shell (the sidebar, its network panel and
-//! the lock) and the first of the wallet's pages: the accounts, as the
-//! worker reports them, with the store's notice whole above them. The rest
-//! of the dashboard (02), and the other pages the sidebar names, follow in
-//! the next pull requests (docs/DECISIONS.md D27, item 16); their items are
-//! shown and not yet enabled.
+//! The wallet, inside the sidebar of renderings 02 to 08: the shell (the
+//! sidebar, its network panel and the lock), and the pages of
+//! docs/SCREENS.md W1 to W9, one module each. Activity, the explorer and
+//! settings follow in the next pull requests (docs/DECISIONS.md D27, item
+//! 16); their sidebar items are shown and not yet enabled.
 
-use iced::widget::text::Wrapping;
+mod account;
+mod add_account;
+mod dashboard;
+mod receive;
+mod report;
+mod send;
+
 use iced::widget::{column, container, row, rule, scrollable, space};
 use iced::{Alignment, Element, Length, Padding};
-use tawara_wallet_core::preferences::AmountUnit;
 use tawara_wallet_core::view::{
-    AccountKind, AccountRow, AccountState, ReservationState, Total, WalletView,
+    AccountId, AccountKind, AccountRow, AccountState, ReservationState,
 };
 
-use crate::app::{Back, Busy, Go, Message, Model, WalletPage, minutes};
+use crate::app::{Back, Busy, Go, Message, Model, Page, ReportKey, To, WalletMsg, WalletPage};
 use crate::icon::{self, Icon};
 use crate::theme::{self, color, space as sp};
 use crate::ui::{self, Size, t, ty};
 
-/// The sidebar's items (5.3), in the renderings' order.
-const NAV: [(Icon, &str); 6] = [
-    (Icon::Wallet, "Wallet"),
-    (Icon::Send, "Send"),
-    (Icon::Receive, "Receive"),
-    (Icon::Activity, "Activity"),
-    (Icon::Cube, "Explorer"),
-    (Icon::Sliders, "Settings"),
+/// The sidebar's items (5.3), in the renderings' order, and where each
+/// leads; the last three are not built yet.
+const NAV: [(Icon, &str, Option<To>); 6] = [
+    (Icon::Wallet, "Wallet", Some(To::Dashboard)),
+    (Icon::Send, "Send", Some(To::Send(None))),
+    (Icon::Receive, "Receive", Some(To::Receive(None))),
+    (Icon::Activity, "Activity", None),
+    (Icon::Cube, "Explorer", None),
+    (Icon::Sliders, "Settings", None),
 ];
 
 /// The wallet's page with the sidebar.
 pub fn view<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> {
+    let content: Element<'a, Message> = match &page.page {
+        Page::Dashboard => dashboard::view(model, page),
+        Page::Receive(r) => receive::view(model, page, r),
+        Page::AddAccount(a) => add_account::view(model, page, a),
+        Page::Send(s) => send::view(model, page, s),
+        Page::Resign(r) => send::resign(model, page, r),
+        Page::Submit(s) => send::submit(model, page, s),
+        Page::Account(a) => account::view(model, page, a),
+    };
     row![
-        sidebar(model),
+        sidebar(model, page),
         rule::vertical(1).style(theme::divider),
         scrollable(
-            container(content(model, page))
+            container(content)
                 .max_width(1240.0)
                 .padding(Padding {
                     top: sp::S32,
@@ -55,14 +67,17 @@ pub fn view<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> 
 }
 
 /// The sidebar (`design/TOKENS.md` 3.2): the wordmark, the items, and the
-/// network panel with the lock at its foot.
-fn sidebar(model: &Model) -> Element<'_, Message> {
+/// network panel with the lock at its foot. While the page waits on the
+/// worker, no item leads anywhere.
+fn sidebar<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> {
+    let idle = model.busy.is_none();
+    let here = page.page.nav();
     let mut nav = column![].spacing(sp::S4);
-    for (i, (glyph, name)) in NAV.into_iter().enumerate() {
-        let active = i == 0;
+    for (i, (glyph, name, to)) in NAV.into_iter().enumerate() {
+        let active = i == here;
         let ink = if active {
             color::ACCENT
-        } else if i == 0 {
+        } else if to.is_some() {
             color::TEXT_SECONDARY
         } else {
             color::TEXT_MUTED
@@ -83,7 +98,7 @@ fn sidebar(model: &Model) -> Element<'_, Message> {
             .width(Length::Fill)
             .padding(Padding::from([0.0, sp::S12]))
             .style(theme::button(theme::Button::Nav { active }))
-            .on_press_maybe(active.then_some(Message::Go(Go::Wallet))),
+            .on_press_maybe(to.filter(|_| idle).map(|to| WalletMsg::Open(to).into())),
         );
     }
     container(
@@ -105,7 +120,7 @@ fn sidebar(model: &Model) -> Element<'_, Message> {
 }
 
 /// The network panel (5.20): which node, its tip, how long it took to
-/// answer, and the lock.
+/// answer, a way to change it, and the lock.
 fn network_panel(model: &Model) -> Element<'_, Message> {
     let host = model
         .node
@@ -134,16 +149,27 @@ fn network_panel(model: &Model) -> Element<'_, Message> {
         ]
         .align_y(Alignment::Center)
     };
+    let change: Element<'_, Message> = if model.busy.is_none() {
+        ui::link(
+            "Change node",
+            ty::LINK_SMALL,
+            Message::Go(Go::Node(Back::Wallet)),
+        )
+        .into()
+    } else {
+        t("Change node", ty::LINK_SMALL, color::TEXT_MUTED).into()
+    };
     container(
         column![
             row![
                 ui::dot(dot, 8.0),
-                t(host, ty::TABLE_NAME, color::TEXT_PRIMARY),
+                t(host, ty::TABLE_NAME, color::TEXT_PRIMARY).width(Length::Fill),
             ]
             .spacing(sp::S8)
             .align_y(Alignment::Center),
             line("Block", block),
             line("Latency", latency),
+            change,
             container(ui::button_with(
                 "Lock wallet",
                 theme::Button::Secondary,
@@ -165,54 +191,43 @@ fn network_panel(model: &Model) -> Element<'_, Message> {
     .into()
 }
 
-/// The page itself: the header, what a refresh is doing while the page
-/// waits on it, the store's notice, and the accounts.
-fn content<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> {
-    let idle = model.busy.is_none();
-    let unit = model.prefs.unit;
-    let subtitle = format!(
-        "Keystore unlocked · auto-locks after {} with nothing done",
-        minutes(model.prefs.idle_lock)
-    );
-    let header = row![
-        ui::page_header("Wallet", subtitle),
-        space().width(Length::Fill),
-        ui::button_with(
-            "Node",
-            theme::Button::Secondary,
-            Size::Medium,
-            Some(Icon::Server),
-            idle.then_some(Message::Go(Go::Node(Back::Wallet))),
-        ),
-        ui::button_with(
-            "Refresh",
-            theme::Button::Secondary,
-            Size::Medium,
-            Some(Icon::Refresh),
-            idle.then_some(Message::Refresh),
-        ),
-    ]
-    .spacing(sp::S10)
-    .align_y(Alignment::Center);
+/// A page: its title and subtitle with the page's own controls beside
+/// them, what the worker is doing for it while it waits, the refusal its
+/// last command met, then the page.
+fn frame<'a>(
+    model: &'a Model,
+    page: &'a WalletPage,
+    title: &str,
+    subtitle: impl iced::widget::text::IntoFragment<'a>,
+    actions: Vec<Element<'a, Message>>,
+    body: Vec<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    // The title takes what the controls leave, its subtitle wrapping, so
+    // the controls keep their size at the smallest window.
+    let mut header = row![container(ui::page_header(title, subtitle)).width(Length::Fill)]
+        .spacing(sp::S10)
+        .align_y(Alignment::Center);
+    for action in actions {
+        header = header.push(action);
+    }
     let mut stack = column![header].spacing(sp::S24);
     if let Some(busy) = &model.busy {
         stack = stack.push(working(busy));
     }
-    let Some(wallet) = &model.wallet else {
-        return stack.into();
-    };
-    if let Some(notice) = &wallet.notice {
-        stack = stack.push(ui::library_page(notice));
-    }
     if let Some(e) = &page.error {
-        stack = stack.push(ui::refusal(e));
+        stack = stack.push(match report::refused(e) {
+            Some(r) => report::show(page, ReportKey::Refused, r),
+            None => ui::refusal(e),
+        });
     }
-    stack = stack.push(balance(model, wallet));
-    stack.push(accounts(&wallet.accounts, unit)).into()
+    for part in body {
+        stack = stack.push(part);
+    }
+    stack.into()
 }
 
-/// What a refresh is doing (S8's words), how far it has got, and its
-/// Cancel. Until it answers, Refresh and Node wait.
+/// What the worker is doing for the page (S8's words), how far it has got,
+/// and its Cancel. Until it answers, the page's controls wait.
 fn working(busy: &Busy) -> Element<'_, Message> {
     let (title, what) = super::activity(busy);
     let mut text = column![
@@ -240,195 +255,71 @@ fn working(busy: &Busy) -> Element<'_, Message> {
     .into()
 }
 
-/// The total, as the 02 hero card sets it (5.22), with the number of
-/// accounts. An account with no known balance (diverged, or not
-/// reconciled) is never counted as zero: while some are unknown the card
-/// shows the known balance and says what it leaves out, and while all are,
-/// it shows no figure.
-fn balance<'a>(model: &'a Model, wallet: &'a WalletView) -> Element<'a, Message> {
-    let unit = model.prefs.unit;
-    let count = wallet.accounts.len();
-    let (label, figure, note) = match wallet.total() {
-        Total::Whole(sum) => ("Total balance", Some(sum), None),
-        Total::Partial { known, unknown } => (
-            "Known balance",
-            Some(known),
-            Some(format!(
-                "The sum of {} of the {count} accounts. {} no known balance (— below), so the \
-                 store's total is not known.",
-                count - unknown,
-                if unknown == 1 {
-                    "One has".to_owned()
-                } else {
-                    format!("{unknown} have")
-                }
-            )),
-        ),
-        Total::Unknown => (
-            "Total balance",
-            None,
-            Some(
-                "Not known: no account has been reconciled against the node, so no balance is \
-                 known."
-                    .to_owned(),
-            ),
-        ),
-    };
-    let mut card = column![ui::section_label(label)].spacing(sp::S12);
-    if let Some(nano) = figure {
-        let shown = ui::amount(nano, unit);
-        let (whole, frac) = match unit {
-            AmountUnit::Mcm => shown
-                .split_once('.')
-                .map_or((shown.clone(), String::new()), |(w, f)| {
-                    (w.to_owned(), format!(".{f}"))
-                }),
-            AmountUnit::NanoMcm => (shown.clone(), String::new()),
-        };
-        card = card
-            .push(
-                row![
-                    t(whole, ty::BALANCE, color::TEXT_PRIMARY),
-                    t(frac, ty::BALANCE_DECIMALS, color::TEXT_SECONDARY),
-                    container(t(ui::unit_name(unit), ty::BALANCE_UNIT, color::ACCENT)).padding(
-                        Padding {
-                            left: sp::S12,
-                            ..Padding::ZERO
-                        }
-                    ),
-                ]
-                .align_y(Alignment::End),
-            )
-            .push(t(
-                format!("{} nanoMCM", ui::group(&nano.to_string())),
-                ty::MONO_SMALL,
-                color::TEXT_MUTED,
-            ));
+/// Two cards side by side in a wide window, `left` parts of the width to
+/// `right`; stacked below [`crate::app::WIDE`] (docs/DECISIONS.md D27, item
+/// 9).
+fn pair<'a>(
+    model: &Model,
+    first: Element<'a, Message>,
+    second: Element<'a, Message>,
+    left: u16,
+    right: u16,
+) -> Element<'a, Message> {
+    if model.width >= crate::app::WIDE {
+        row![
+            container(first).width(Length::FillPortion(left)),
+            container(second).width(Length::FillPortion(right)),
+        ]
+        .spacing(sp::S24)
+        .into()
     } else {
-        card = card.push(t("—", ty::BALANCE, color::TEXT_MUTED));
+        column![first, second].spacing(sp::S24).into()
     }
-    if let Some(note) = note {
-        card = card.push(t(note, ty::BODY_SMALL, color::TEXT_SECONDARY));
-    }
-    container(card.push(ui::pill(
-        if count == 1 {
-            "1 account".to_owned()
-        } else {
-            format!("{count} accounts")
-        },
-        ty::CHIP,
-        color::BG_RAISED,
-        color::TEXT_SECONDARY,
-        30.0,
-    )))
-    .padding(Padding::from([sp::S28, sp::S32]))
-    .width(Length::Fill)
-    .style(theme::hero_card)
+}
+
+/// A button the page enables only while it waits on nothing.
+fn action<'a>(
+    model: &Model,
+    content: &'a str,
+    variant: theme::Button,
+    size: Size,
+    lead: Option<Icon>,
+    on_press: impl Into<Message>,
+) -> Element<'a, Message> {
+    ui::button_with(
+        content,
+        variant,
+        size,
+        lead,
+        model.busy.is_none().then(|| on_press.into()),
+    )
     .into()
 }
 
-/// The accounts table (02, `design/TOKENS.md` 5.12).
-///
-/// Its columns share the card's width in proportion, so it fits from the
-/// rendering's 1440 px down to the smallest window, 1024 px, where the card
-/// has about 660 px (docs/DECISIONS.md D27, item 9); a destination or a
-/// balance too long for its column breaks between characters rather than
-/// being cut off.
-fn accounts(rows: &[AccountRow], unit: AmountUnit) -> Element<'_, Message> {
-    const ACCOUNT: u16 = 4;
-    const DESTINATION: u16 = 7;
-    const BALANCE: u16 = 4;
-    const KEY: u16 = 2;
-    const STATUS: u16 = 4;
-    let head = |label: &'static str, portion: u16, right: bool| {
-        container(t(label, ty::TABLE_HEADER, color::TEXT_MUTED))
-            .width(Length::FillPortion(portion))
-            .align_x(if right {
-                Alignment::End
-            } else {
-                Alignment::Start
-            })
-    };
-    let mut table = column![
-        row![
-            head("Account", ACCOUNT, false),
-            head("Destination", DESTINATION, false),
-            head(
-                if matches!(unit, AmountUnit::Mcm) {
-                    "Balance (MCM)"
-                } else {
-                    "Balance (nanoMCM)"
-                },
-                BALANCE,
-                true,
-            ),
-            head("Next key", KEY, false),
-            head("Status", STATUS, false),
-        ]
-        .spacing(sp::S12)
-        .padding(Padding::from([sp::S10, 0.0])),
-        ui::divider(),
-    ];
-    for (n, account) in rows.iter().enumerate() {
-        let destination = account.id.destination().unwrap_or_else(|| account.id.hex());
-        let (status, ink) = status(&account.state);
-        let balance = account
-            .state
-            .balance()
-            .map_or_else(|| "—".to_owned(), |b| ui::amount(b, unit));
-        table = table.push(
-            row![
-                column![
-                    t(short(&destination), ty::TABLE_NAME, color::TEXT_PRIMARY),
-                    t(
-                        match account.kind {
-                            AccountKind::Derived => "derived",
-                            AccountKind::Imported => "imported",
-                        },
-                        ty::TINY,
-                        color::TEXT_MUTED,
-                    ),
-                ]
-                .spacing(sp::S2)
-                .width(Length::FillPortion(ACCOUNT)),
-                t(destination, ty::MONO, color::TEXT_SECONDARY)
-                    .wrapping(Wrapping::WordOrGlyph)
-                    .width(Length::FillPortion(DESTINATION)),
-                container(
-                    t(balance, ty::TABLE_AMOUNT, color::TEXT_PRIMARY)
-                        .wrapping(Wrapping::WordOrGlyph)
-                        .align_x(Alignment::End),
-                )
-                .width(Length::FillPortion(BALANCE))
-                .align_x(Alignment::End),
-                t(format!("#{}", account.index), ty::MONO, color::TEXT_PRIMARY)
-                    .width(Length::FillPortion(KEY)),
-                row![
-                    ui::dot(ink, 6.0),
-                    t(status, ty::TABLE_BODY, ink).width(Length::Fill),
-                ]
-                .spacing(sp::S6)
-                .align_y(Alignment::Center)
-                .width(Length::FillPortion(STATUS)),
-            ]
-            .spacing(sp::S12)
-            .align_y(Alignment::Center)
-            .padding(Padding::from([sp::S14, 0.0])),
-        );
-        if n + 1 < rows.len() {
-            table = table.push(ui::divider());
-        }
-    }
-    container(column![ui::section_label("Accounts"), table].spacing(sp::S8))
-        .padding(Padding {
-            top: sp::S20,
-            right: sp::S24,
-            bottom: sp::S8,
-            left: sp::S24,
-        })
-        .width(Length::Fill)
-        .style(theme::card)
-        .into()
+/// A button that puts `text` on the clipboard: `label`, or "Copied" once
+/// `text` is what the page last copied.
+fn copy<'a>(page: &WalletPage, text: &str, label: &'a str) -> Element<'a, Message> {
+    let copied = page.copied.as_deref() == Some(text);
+    ui::button_with(
+        if copied { "Copied" } else { label },
+        theme::Button::Secondary,
+        Size::Small,
+        Some(if copied { Icon::Check } else { Icon::Copy }),
+        Some(WalletMsg::Copy(text.to_owned()).into()),
+    )
+    .into()
+}
+
+/// The account's destination, or its tag in hex when the library cannot
+/// render one (it documents that as unreachable).
+fn destination(id: AccountId) -> String {
+    id.destination().unwrap_or_else(|| id.hex())
+}
+
+/// An account's name: its destination's first and last six characters
+/// (docs/DECISIONS.md D27, item 3).
+fn name(id: AccountId) -> String {
+    short(&destination(id))
 }
 
 /// A destination shortened as the renderings shorten one ("9xQmT4…3cYdAf"):
@@ -441,6 +332,14 @@ fn short(destination: &str) -> String {
     let head: String = chars[..6].iter().collect();
     let tail: String = chars[chars.len() - 6..].iter().collect();
     format!("{head}…{tail}")
+}
+
+/// "derived" or "imported".
+fn kind(row: &AccountRow) -> &'static str {
+    match row.kind {
+        AccountKind::Derived => "derived",
+        AccountKind::Imported => "imported",
+    }
 }
 
 /// An account's state in a word or two, and its colour (1.7). The
@@ -458,6 +357,84 @@ fn status(state: &AccountState) -> (&'static str, iced::Color) {
         AccountState::Diverged { .. } => ("Spending paused", color::WARNING),
         AccountState::NotReconciled => ("Not reconciled", color::TEXT_MUTED),
     }
+}
+
+/// The account in the open store with this id.
+fn row_of(model: &Model, id: AccountId) -> Option<&AccountRow> {
+    model.wallet.as_ref()?.accounts.iter().find(|a| a.id == id)
+}
+
+/// A choice of account (03 "From account"): one row each, with its name,
+/// destination, balance and next key, `selected` marked. While the page
+/// waits on the worker, the choice stands.
+fn account_choice<'a>(
+    model: &'a Model,
+    ids: impl Iterator<Item = AccountId>,
+    selected: Option<AccountId>,
+    on_pick: impl Fn(AccountId) -> Message,
+) -> Element<'a, Message> {
+    let unit = model.prefs.unit;
+    let idle = model.busy.is_none();
+    let mut list = column![].spacing(sp::S8);
+    for id in ids {
+        let Some(account) = row_of(model, id) else {
+            continue;
+        };
+        let chosen = selected == Some(id);
+        let balance = account.state.balance().map_or_else(
+            || "balance not known".to_owned(),
+            |b| format!("{} {}", ui::amount(b, unit), ui::unit_name(unit)),
+        );
+        let card = container(
+            row![
+                column![
+                    t(name(id), ty::RADIO_TITLE, color::TEXT_PRIMARY),
+                    t(destination(id), ty::MONO_TINY, color::TEXT_MUTED)
+                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                ]
+                .spacing(sp::S2)
+                .width(Length::Fill),
+                column![
+                    t(balance, ty::TABLE_AMOUNT, color::TEXT_PRIMARY),
+                    t(
+                        format!("next key #{}", account.index),
+                        ty::NOTE,
+                        color::TEXT_MUTED
+                    ),
+                ]
+                .spacing(sp::S2)
+                .align_x(Alignment::End),
+            ]
+            .spacing(sp::S12)
+            .align_y(Alignment::Center),
+        )
+        .padding(iced::Padding::from([sp::S12, sp::S16]))
+        .width(Length::Fill)
+        .style(theme::radio_card(chosen));
+        list = list.push(
+            iced::widget::button(card)
+                .padding(0)
+                .width(Length::Fill)
+                .style(theme::button(theme::Button::Bare))
+                .on_press_maybe((idle && !chosen).then(|| on_pick(id))),
+        );
+    }
+    list.into()
+}
+
+/// A labelled figure on one line, as the renderings' summary cards set
+/// them.
+fn figure<'a>(
+    name: impl iced::widget::text::IntoFragment<'a>,
+    value: String,
+) -> Element<'a, Message> {
+    row![
+        t(name, ty::BODY_SMALL, color::TEXT_SECONDARY).width(Length::Fill),
+        t(value, ty::TABLE_AMOUNT, color::TEXT_PRIMARY),
+    ]
+    .spacing(sp::S12)
+    .align_y(Alignment::Center)
+    .into()
 }
 
 #[cfg(test)]

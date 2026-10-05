@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use mochimo_crypto::account::AccountKind as LibraryKind;
 use mochimo_crypto::addr::Tag;
-use mochimo_crypto::recon::{AccountStatus, Divergence, Expiry, Reservation};
+use mochimo_crypto::recon::{AccountStatus, ChainPosition, Divergence, Expiry, Reservation};
 
 /// An account's tag: the twenty bytes that name it on the ledger. Public,
 /// not secret. Commands name accounts by this.
@@ -135,6 +135,9 @@ pub enum AccountState {
     /// `advance_to` is the index an acknowledged advance would move it to,
     /// when advancing is the remedy.
     Diverged {
+        /// What was found, for the interface to say in its own words; the
+        /// report says it in full.
+        kind: DivergenceKind,
         report: String,
         advance_to: Option<u32>,
     },
@@ -169,6 +172,7 @@ impl AccountState {
 
     pub(crate) fn from_divergence(d: &Divergence) -> AccountState {
         AccountState::Diverged {
+            kind: DivergenceKind::of(d),
             report: d.to_string(),
             advance_to: d.advance_target().map(|i| i.get()),
         }
@@ -183,6 +187,97 @@ impl AccountState {
             | AccountState::SpendLanded { balance, .. } => Some(*balance),
             AccountState::Diverged { .. } | AccountState::NotReconciled => None,
         }
+    }
+}
+
+/// What reconciliation found for an account it could not explain, as the
+/// library tells the cases apart, so the interface can summarize the report
+/// in its own words and name the causes that fit (docs/DECISIONS.md D28).
+/// The report is the library's, whole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DivergenceKind {
+    /// The chain holds the account at this seed's key `gap` places ahead of
+    /// the store's index: a spend landed that the store does not record.
+    Ahead { gap: u32 },
+    /// The chain holds it at this seed's key `gap` places behind the
+    /// store's index.
+    Behind { gap: u32 },
+    /// None of the keys the search around the store's index reached is the
+    /// address the chain holds.
+    Unlocated,
+    /// A spend is reserved, and the chain holds the account at neither the
+    /// key that signed nor the change key.
+    ReservationUnexplained,
+    /// The node answered "account not found": no entry, a zero balance, or
+    /// a lookup that failed, and it does not say which.
+    NotFound,
+    /// The node could not be reached for it.
+    Unreachable,
+    /// A derived account, and no master seed to derive its keys from.
+    NoMaster,
+    /// Reconciling it failed: a store error, an answer that did not parse.
+    Failed,
+}
+
+impl DivergenceKind {
+    fn of(d: &Divergence) -> DivergenceKind {
+        let position = |found: &ChainPosition| match found {
+            ChainPosition::Ahead { gap, .. } => DivergenceKind::Ahead { gap: *gap },
+            ChainPosition::Behind { gap, .. } => DivergenceKind::Behind { gap: *gap },
+            ChainPosition::Unlocated { .. } => DivergenceKind::Unlocated,
+        };
+        match d {
+            Divergence::IndexMismatch { found, .. } => position(found),
+            Divergence::ReservationUnexplained { .. } => DivergenceKind::ReservationUnexplained,
+            Divergence::TagUnresolved { .. } => DivergenceKind::NotFound,
+            Divergence::ChainUnreachable { .. } => DivergenceKind::Unreachable,
+            Divergence::NoMasterForDerivedAccount { .. } => DivergenceKind::NoMaster,
+            Divergence::CannotReconcile { .. } => DivergenceKind::Failed,
+        }
+    }
+}
+
+/// What a store's notice is about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoticeKind {
+    /// No node is chosen (the worker's words).
+    NoNode,
+    /// The node was changed and nothing is reconciled against the new one
+    /// yet (the worker's words).
+    NodeChanged,
+    /// The node did not answer (the worker's words, then the library's).
+    NodeSilent,
+    /// Reconciling was cancelled (the worker's words).
+    Cancelled,
+    /// The node could not be used (a refusal, in the library's or the
+    /// worker's words).
+    NodeRefused,
+    /// Some accounts could not be reconciled and are set aside: the
+    /// library's "THIS STORE IS NOT WHOLE". Their rows say how.
+    NotWhole,
+    /// The library would not open the wallet: its "WALLET WILL NOT START".
+    WillNotStart,
+}
+
+/// The store's notice: what it is about, and its text, whole. It reads as
+/// its text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Notice {
+    pub kind: NoticeKind,
+    pub text: String,
+}
+
+impl core::ops::Deref for Notice {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.text
+    }
+}
+
+impl fmt::Display for Notice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.text)
     }
 }
 
@@ -212,10 +307,12 @@ pub struct WalletView {
     /// or every account diverged); the store is still open and its
     /// addresses can be shown.
     pub opened: bool,
-    /// The library's own text for the store as a whole, when there is any:
-    /// its notice that the store is not whole, or why the wallet would not
-    /// open. Shown with the view, never folded away.
-    pub notice: Option<String>,
+    /// What the store as a whole needs said, when anything does: the
+    /// library's notice that it is not whole, why the wallet would not open,
+    /// or the worker's word that no node is chosen or answered. The
+    /// interface says it in its own words and shows the text whole on
+    /// request (docs/DECISIONS.md D28).
+    pub notice: Option<Notice>,
 }
 
 /// What can be said about a store's total balance. An account that diverged

@@ -8,6 +8,8 @@
 //! (`crate::screens`), so the screenshot example can draw any screen from
 //! sample data without a worker (docs/DECISIONS.md D27, item 1).
 
+mod wallet;
+
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -23,6 +25,11 @@ use tawara_wallet_core::{
     RefusalKind, Reply, RequestId, SecretText, WorkerHandle,
 };
 
+pub use wallet::{
+    AccountPage, AddAccountPage, DestinationRow, Done, Level, Page, ReceivePage, ReportKey,
+    ResignPage, SendPage, SendStage, SentPage, SpendForm, SubmitPage, To, WalletMsg, spend_request,
+};
+
 /// What the application shows and holds. Plain data, apart from the
 /// recovery phrase while it is being shown and confirmed, and the text of
 /// the secret fields while they are being typed (see [`wipe`]).
@@ -32,6 +39,9 @@ pub struct Model {
     pub prefs: Preferences,
     /// Where a store goes when the person does not choose (D21).
     pub default_dir: Option<PathBuf>,
+    /// Where "Save artifact" writes (docs/DECISIONS.md D27, item 5), when
+    /// the system names a Downloads folder.
+    pub downloads: Option<PathBuf>,
     /// The command the screen waits on, from when it is sent until its
     /// answer comes.
     pub busy: Option<Busy>,
@@ -41,7 +51,13 @@ pub struct Model {
     /// The worker stopped: `Some(true)` when it panicked. Nothing more can
     /// be done in this run.
     pub stopped: Option<bool>,
+    /// The window's width in logical pixels: below [`WIDE`], rows of two
+    /// cards stack (docs/DECISIONS.md D27, item 9).
+    pub width: f32,
 }
+
+/// The narrowest window that shows two cards side by side.
+pub const WIDE: f32 = 1280.0;
 
 /// The command the screen waits on, and what the worker is doing for it.
 #[derive(Clone, Debug)]
@@ -188,11 +204,17 @@ pub struct UnlockForm {
     pub note: Option<String>,
 }
 
-/// The wallet's pages.
+/// The wallet, with the sidebar: which page, and what it shows.
 #[derive(Clone, Debug, Default)]
 pub struct WalletPage {
+    pub page: Page,
     /// A refusal the last command on this page met, whole.
     pub error: Option<String>,
+    /// What was last put on the clipboard from this page, so its button
+    /// can say so.
+    pub copied: Option<String>,
+    /// How far each of the page's reports is open; closed when absent.
+    pub open: std::collections::BTreeMap<ReportKey, Level>,
 }
 
 /// Text typed into a secret field, on its way into the model. Its `Debug`
@@ -264,6 +286,10 @@ pub enum Message {
     Cancel,
     Lock,
     Refresh,
+    /// A wallet page (W1 to W9).
+    Wallet(WalletMsg),
+    /// The window opened or changed size: its width.
+    Width(f32),
 }
 
 /// The screens a message can go to.
@@ -293,6 +319,16 @@ enum Purpose {
     Refresh,
     Lock,
     Abandon,
+    Receive,
+    Discover,
+    Restore,
+    PlanSend,
+    ConfirmSend,
+    DiscardPlan,
+    Settle,
+    Resign,
+    SubmitArtifact,
+    Status,
 }
 
 impl Purpose {
@@ -307,6 +343,32 @@ impl Purpose {
                 | Purpose::CreateFromPhrase
                 | Purpose::Unlock
                 | Purpose::Refresh
+                | Purpose::Discover
+                | Purpose::Restore
+                | Purpose::PlanSend
+                | Purpose::ConfirmSend
+                | Purpose::Settle
+                | Purpose::Resign
+                | Purpose::SubmitArtifact
+                | Purpose::Status
+        )
+    }
+
+    /// Whether a wallet page sent the command (`wallet::on_wallet_reply`
+    /// takes its answer).
+    fn wallet_page(self) -> bool {
+        matches!(
+            self,
+            Purpose::Receive
+                | Purpose::Discover
+                | Purpose::Restore
+                | Purpose::PlanSend
+                | Purpose::ConfirmSend
+                | Purpose::DiscardPlan
+                | Purpose::Settle
+                | Purpose::Resign
+                | Purpose::SubmitArtifact
+                | Purpose::Status
         )
     }
 }
@@ -354,9 +416,11 @@ impl Model {
             },
             prefs,
             default_dir,
+            downloads: None,
             busy: None,
             wallet: None,
             stopped: None,
+            width: crate::WINDOW.0,
         };
         if let Some(dir) = model.store_to_open() {
             model.screen = Screen::Unlock(UnlockForm {
@@ -465,7 +529,9 @@ impl App {
             .map(preferences::load)
             .unwrap_or_default();
         let default_dir = location::default_store_dir(platform, &env).ok();
-        let (mut app, events) = App::start(Model::new(prefs, default_dir), prefs_path);
+        let mut model = Model::new(prefs, default_dir);
+        model.downloads = location::downloads_dir(platform, &env);
+        let (mut app, events) = App::start(model, prefs_path);
         let Some(events) = events else {
             return (app, Task::none());
         };
@@ -781,6 +847,8 @@ impl App {
                 // (`on_reply`), not queued behind it now.
                 self.send(Command::Refresh, Purpose::Refresh);
             }
+            Message::Wallet(msg) => return self.on_wallet(msg),
+            Message::Width(width) => m.width = width,
         }
         Task::none()
     }
@@ -914,6 +982,9 @@ impl App {
     }
 
     fn on_reply(&mut self, purpose: Purpose, reply: Reply) {
+        if purpose.wallet_page() {
+            return self.on_wallet_reply(purpose, reply);
+        }
         let m = &mut self.model;
         match (purpose, reply) {
             (Purpose::SetNode { form }, Reply::NodeSet { url, view }) => {
@@ -1096,8 +1167,8 @@ pub fn minutes(period: Duration) -> String {
     }
 }
 
-/// The person did something: a key, a click, a scroll, a touch. Pointer
-/// movement alone is not counted. Tab and Shift-Tab move between the fields
+/// The person did something: a key, a click, a scroll, a touch (pointer
+/// movement alone is not counted); or the window opened or changed size. Tab and Shift-Tab move between the fields
 /// as well, unless a widget took the key for itself.
 fn person_input(event: IcedEvent, status: event::Status, _: iced::window::Id) -> Option<Message> {
     match event {
@@ -1113,6 +1184,9 @@ fn person_input(event: IcedEvent, status: event::Status, _: iced::window::Id) ->
         IcedEvent::Keyboard(keyboard::Event::KeyPressed { .. })
         | IcedEvent::Mouse(mouse::Event::ButtonPressed(_) | mouse::Event::WheelScrolled { .. })
         | IcedEvent::Touch(touch::Event::FingerPressed { .. }) => Some(Message::Input),
+        IcedEvent::Window(
+            iced::window::Event::Opened { size, .. } | iced::window::Event::Resized(size),
+        ) => Some(Message::Width(size.width)),
         _ => None,
     }
 }
@@ -1698,6 +1772,285 @@ mod tests {
             "{:?}",
             app.model.screen
         );
+    }
+
+    /// The sample store open on a wallet page, with no worker.
+    fn on_wallet(page: Page) -> App {
+        let mut app = alone();
+        app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        app.model.screen = Screen::Wallet(WalletPage {
+            page,
+            ..WalletPage::default()
+        });
+        app
+    }
+
+    fn wallet_page(app: &App) -> &WalletPage {
+        match &app.model.screen {
+            Screen::Wallet(p) => p,
+            other => panic!("expected the wallet, got {other:?}"),
+        }
+    }
+
+    fn wallet(app: &mut App, msg: WalletMsg) {
+        let _ = app.update(Message::Wallet(msg));
+    }
+
+    #[test]
+    fn the_sent_page_is_shown_whatever_is_open_and_its_bytes_save_anew_each_time() {
+        let scratch = Scratch::new("artifact");
+        let mut app = on_wallet(Page::Receive(ReceivePage::default()));
+        let sent = tawara_wallet_core::sample::sent_view();
+        app.on_reply(Purpose::ConfirmSend, Reply::Sent(sent.clone()));
+        let p = wallet_page(&app);
+        assert!(
+            matches!(&p.page, Page::Send(SendPage { stage: SendStage::Sent(s), .. })
+                if s.sent == sent && !s.resigned),
+            "{:?}",
+            p.page
+        );
+        assert_eq!(
+            p.open.get(&ReportKey::Sent),
+            Some(&Level::Summary),
+            "the three facts start open"
+        );
+        assert_eq!(app.model.wallet.as_ref(), Some(&sent.view));
+
+        let saved = |app: &App| match &wallet_page(app).page {
+            Page::Send(SendPage {
+                stage: SendStage::Sent(s),
+                ..
+            }) => s.saved.clone(),
+            _ => None,
+        };
+        // No Downloads folder: nothing is saved, and the page says so.
+        wallet(&mut app, WalletMsg::SaveArtifact);
+        assert!(matches!(saved(&app), Some(Err(_))), "{:?}", saved(&app));
+
+        app.model.downloads = Some(scratch.0.join("Downloads"));
+        wallet(&mut app, WalletMsg::SaveArtifact);
+        let first = saved(&app).unwrap().unwrap();
+        wallet(&mut app, WalletMsg::SaveArtifact);
+        let second = saved(&app).unwrap().unwrap();
+        assert_ne!(first, second, "a second save never overwrites the first");
+        for path in [&first, &second] {
+            assert_eq!(
+                std::fs::read_to_string(path).unwrap(),
+                format!("{}\n", sent.artifact_hex)
+            );
+            assert!(
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("tawara-spend-5e5e5e5e"),
+                "{}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn a_refused_signing_goes_back_to_the_form_with_why() {
+        let plan = tawara_wallet_core::sample::plan_view();
+        let mut app = on_wallet(Page::Send(SendPage {
+            from: Some(plan.from),
+            form: SpendForm::default(),
+            stage: SendStage::Review(Box::new(plan)),
+        }));
+        app.on_reply(
+            Purpose::ConfirmSend,
+            Reply::Refused(Refusal {
+                kind: RefusalKind::Library,
+                text: "the balance moved".to_owned(),
+            }),
+        );
+        let p = wallet_page(&app);
+        assert!(matches!(
+            &p.page,
+            Page::Send(SendPage {
+                stage: SendStage::Compose,
+                ..
+            })
+        ));
+        assert_eq!(p.error.as_deref(), Some("the balance moved"));
+    }
+
+    #[test]
+    fn the_form_is_kept_through_review_and_edit() {
+        let plan = tawara_wallet_core::sample::plan_view();
+        let form = SpendForm {
+            rows: vec![DestinationRow {
+                to: "somewhere".to_owned(),
+                amount: "1".to_owned(),
+                reference: String::new(),
+            }],
+            ..SpendForm::default()
+        };
+        let mut app = on_wallet(Page::Send(SendPage {
+            from: Some(plan.from),
+            form: form.clone(),
+            stage: SendStage::Compose,
+        }));
+        app.on_reply(Purpose::PlanSend, Reply::Planned(plan));
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Review(_),
+                ..
+            })
+        ));
+        wallet(&mut app, WalletMsg::Edit);
+        assert!(
+            matches!(&wallet_page(&app).page, Page::Send(SendPage {
+                stage: SendStage::Compose,
+                form: kept,
+                ..
+            }) if *kept == form),
+            "{:?}",
+            wallet_page(&app).page
+        );
+    }
+
+    #[test]
+    fn a_plan_is_forgotten_when_its_review_is_left() {
+        let scratch = Scratch::new("discard");
+        let (mut app, events) = app(&scratch);
+        let plan = tawara_wallet_core::sample::plan_view();
+        app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        let review = |app: &mut App| {
+            app.model.screen = Screen::Wallet(WalletPage {
+                page: Page::Send(SendPage {
+                    from: Some(plan.from),
+                    form: SpendForm::default(),
+                    stage: SendStage::Review(Box::new(plan.clone())),
+                }),
+                ..WalletPage::default()
+            });
+        };
+        let discards = |a: &App| {
+            a.worker.as_ref().map_or(0, |w| {
+                w.waiting
+                    .iter()
+                    .filter(|(_, p)| matches!(p, Purpose::DiscardPlan))
+                    .count()
+            })
+        };
+        review(&mut app);
+        wallet(&mut app, WalletMsg::Open(To::Dashboard));
+        assert_eq!(discards(&app), 1);
+        assert!(matches!(wallet_page(&app).page, Page::Dashboard));
+
+        review(&mut app);
+        wallet(&mut app, WalletMsg::Edit);
+        assert_eq!(discards(&app), 2);
+
+        // A plan laid out after its page was left is forgotten as it comes.
+        wallet(&mut app, WalletMsg::Open(To::Dashboard));
+        assert_eq!(discards(&app), 2, "the form held no plan");
+        app.on_reply(Purpose::PlanSend, Reply::Planned(plan.clone()));
+        assert_eq!(discards(&app), 3);
+        pump(&mut app, &events, |a| discards(a) == 0);
+    }
+
+    #[test]
+    fn nothing_moves_while_the_page_waits_on_the_worker() {
+        let mut app = on_wallet(Page::Dashboard);
+        app.model.busy = Some(Busy {
+            id: RequestId::example(),
+            activity: None,
+            progress: None,
+        });
+        wallet(&mut app, WalletMsg::Open(To::Send(None)));
+        assert!(matches!(wallet_page(&app).page, Page::Dashboard));
+    }
+
+    #[test]
+    fn a_report_opens_into_its_summary_then_its_full_text() {
+        let mut app = on_wallet(Page::Dashboard);
+        let level = |a: &App| {
+            wallet_page(a)
+                .open
+                .get(&ReportKey::Notice)
+                .copied()
+                .unwrap_or_default()
+        };
+        assert_eq!(level(&app), Level::Closed);
+        wallet(
+            &mut app,
+            WalletMsg::Report(ReportKey::Notice, Level::Summary),
+        );
+        assert_eq!(level(&app), Level::Summary);
+        wallet(&mut app, WalletMsg::Report(ReportKey::Notice, Level::Full));
+        assert_eq!(level(&app), Level::Full);
+        // Another page and back: closed again.
+        wallet(&mut app, WalletMsg::Open(To::Receive(None)));
+        wallet(&mut app, WalletMsg::Open(To::Dashboard));
+        assert_eq!(level(&app), Level::Closed);
+    }
+
+    #[test]
+    fn a_check_updates_the_account_and_keeps_what_it_found() {
+        let accounts = tawara_wallet_core::sample::wallet_view().accounts;
+        let id = accounts[1].id;
+        let mut app = on_wallet(Page::Account(AccountPage {
+            account: id,
+            report: None,
+        }));
+        app.on_reply(
+            Purpose::Status,
+            Reply::Status {
+                account: id,
+                state: tawara_wallet_core::view::AccountState::InSync { balance: 5 },
+                text: "in sync".to_owned(),
+            },
+        );
+        let row = &app.model.wallet.as_ref().unwrap().accounts[1];
+        assert_eq!(
+            row.state,
+            tawara_wallet_core::view::AccountState::InSync { balance: 5 }
+        );
+        assert!(
+            !row.spendable,
+            "a check does not make an account spendable that was not"
+        );
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Account(AccountPage {
+                report: Some((Done::Checked, text)),
+                ..
+            }) if text == "in sync"
+        ));
+    }
+
+    #[test]
+    fn receive_shows_the_destination_the_worker_gives() {
+        let scratch = Scratch::new("receive");
+        let (mut app, events) = app(&scratch);
+        let _ = app.update(Message::Choose(StartChoice::Restore));
+        let _ = app.update(Message::Continue);
+        let _ = app.update(Message::Password(typed(PASSWORD)));
+        let _ = app.update(Message::Again(typed(PASSWORD)));
+        let _ = app.update(Message::PhraseText(typed(PHRASE)));
+        let _ = app.update(Message::RestoreWallet);
+        pump(&mut app, &events, |a| {
+            matches!(a.model.screen, Screen::Wallet(_))
+        });
+        let first = app.model.wallet.as_ref().unwrap().accounts[0].id;
+        wallet(&mut app, WalletMsg::Open(To::Receive(None)));
+        pump(&mut app, &events, |a| {
+            matches!(
+                &wallet_page(a).page,
+                Page::Receive(ReceivePage { view: Some(_), .. })
+            )
+        });
+        let Page::Receive(ReceivePage {
+            view: Some(view), ..
+        }) = &wallet_page(&app).page
+        else {
+            unreachable!()
+        };
+        assert_eq!(view.account, first);
+        assert_eq!(view.destination, first.destination());
     }
 
     #[test]

@@ -19,7 +19,10 @@ use mochimo_crypto::tx::wire::Destination;
 use crate::command::PlanId;
 use crate::event::{Discovered, PlanView, PlannedDestination, ReceiveView, SentView};
 use crate::text;
-use crate::view::{AccountId, AccountKind, AccountRow, AccountState, ReservationState, WalletView};
+use crate::view::{
+    AccountId, AccountKind, AccountRow, AccountState, Notice, NoticeKind, ReservationState,
+    WalletView,
+};
 use crate::worker::hex;
 
 /// A made-up tag: twenty bytes from `seed`.
@@ -121,7 +124,10 @@ pub fn wallet_view() -> WalletView {
         dir: PathBuf::from("/home/you/.local/share/tawara/keystore"),
         accounts: rows,
         opened: true,
-        notice: crate::text::standing_notice(&[diverged]),
+        notice: crate::text::standing_notice(&[diverged]).map(|text| Notice {
+            kind: NoticeKind::NotWhole,
+            text,
+        }),
     }
 }
 
@@ -135,7 +141,10 @@ pub fn unreconciled_view() -> WalletView {
         row.spendable = false;
     }
     view.opened = false;
-    view.notice = Some(crate::worker::NODE_SILENT.to_owned());
+    view.notice = Some(Notice {
+        kind: NoticeKind::NodeSilent,
+        text: crate::worker::NODE_SILENT.to_owned(),
+    });
     view
 }
 

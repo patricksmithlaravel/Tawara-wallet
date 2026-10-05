@@ -14,8 +14,10 @@ a screenshot in `design/screenshots/` with the same name.
 
 ## The states that fail closed (docs/PLAN.md section 4.9)
 
-Each of these gets a designed screen, never an OK dialog, and each shows
-the library's own page whole (D27, item 13):
+Each of these gets a designed screen, never an OK dialog. Each says what
+happened in a slim banner, which opens into a summary in Tawara's words
+with its common causes, and from there into the library's own page,
+whole (D28; D27 item 13 for how the page is shown):
 
 | state | where it is shown | what the person can do there |
 |---|---|---|
@@ -54,13 +56,13 @@ The sidebar of 02-08: the "Tawara" wordmark, the six items, and on 02 and
 
 | id | screen | rendering | PR | commands | notes |
 |---|---|---|---|---|---|
-| W1 | **Wallet**: total balance, one-time keys, accounts, recent activity, network | 02 | b | `Refresh`, `NetworkStatus`, the explorer reads | Accounts are named by their shortened destination, with "derived" or "imported" (D27, item 3). "Reconcile" on a diverged row and "Review →" open W7, never an advance. The settling chip counts outstanding spends, with no amount. The store's notice (`WalletView::notice`) is shown whole above the cards, never folded away. While a refresh runs, a card says what it is doing in S8's words, with its progress and Cancel, and Refresh and Node wait until it answers. An account with no known balance (diverged, not reconciled) is never counted as zero: the card says "Total balance" only when every balance is known, "Known balance" with what it leaves out when some are not, and shows no figure when none is. The tip is asked for once a refresh has answered, and its latency counts from when the worker starts asking. |
-| W2 | **Receive**: an account's destination | — (nav item of 02) | b | `Receive` | The destination in Base58 with its checksum, a copy button, and the library's explanation of the ledger address beside it, whole. |
-| W3 | **Add an account**: the next derived account's destination, and adding it once funded | 02 "New account", "Discover tags" | b | `Discover`, `Restore` | The library adds a derived account only where the chain already shows it (`restore`), so the screen shows where the next account receives, then adds it. Discovery results are the library's page. |
+| W1 | **Wallet**: total balance, one-time keys, accounts; recent activity and network in (c) | 02 | b | `Refresh`, `NetworkStatus` | Accounts are named by their shortened destination, with "derived" or "imported" (D27, item 3). "Review" on a row that needs a look and "Review →" in the one-time keys open W7, never an advance. The settling chip counts outstanding spends, with no amount. The store's notice is a banner above the cards (D28): what it is about comes from `Notice::kind`, and for a store not whole, each paused account's divergence kind names its causes. Recent activity and the network card (the last block's age, the latest blocks) need the explorer's reads and come with W10 (D27, item 16). While a refresh runs, a card says what it is doing in S8's words, with its progress and Cancel, and Refresh and Node wait until it answers. An account with no known balance (diverged, not reconciled) is never counted as zero: the card says "Total balance" only when every balance is known, "Known balance" with what it leaves out when some are not, and shows no figure when none is. The tip is asked for once a refresh has answered, and its latency counts from when the worker starts asking. |
+| W2 | **Receive**: an account's destination | — (nav item of 02) | b | `Receive` | A choice of account; the destination in Base58 with its checksum and a copy button; the library's explanation of it and of the ledger address as a banner (D28). |
+| W3 | **Add an account**: the next derived account's destination, and adding it once funded | 02 "New account", "Discover tags" | b | `Discover`, `Restore` | The library adds a derived account only where the chain already shows it (`restore`), so the screen shows where the next account receives, then adds it. The sweep's rows are a table, "Add account" on each the chain holds and the store does not, and a copy of the next account's destination to pay; the library's page for the sweep, and for an account added, is a banner (D28). |
 | W4 | **Send: compose** | 03 | b | `PlanSend` | Up to 256 destinations, references by the node's rule, "everything" for one destination. "Import CSV" and "Scan QR" are not built (D27, item 5). No password field (D27, item 3). |
-| W5 | **Send: review before signing** | 03 summary | b | `ConfirmSend`, `DiscardPlan` | The library's "NOT SIGNED" page (`PlanView::text`) whole, with its "THIS EMPTIES THE ACCOUNT" warning when the change is zero, then "Sign & submit". |
-| W6 | **Send: sent** | 03 steps, 04 receipt | b | `Settle` | The library's sent page whole (the three facts). "Save artifact" and "Copy hex" (D27, item 5). The Reserve, Submit and Settle steps show what has happened, nothing more. |
-| W7 | **Account**: its state, and the actions that state allows | 02 rows, 05 rows | b | `Status`, `Settle` | The section 4.9 panel for its state (table above). |
+| W5 | **Send: review before signing** | 03 summary | b | `ConfirmSend`, `DiscardPlan` | The destinations to check against their payees, in the order that goes on the wire, the library's figures, then "Sign & submit" on its own step. The library's "NOT SIGNED" page (`PlanView::text`) is a banner (D28), titled for an emptying spend when the change is zero. Leaving the page, or editing, forgets the plan (`DiscardPlan`). |
+| W6 | **Send: sent** | 03 steps, 04 receipt | b | `Settle` | The three facts, as a banner whose summary starts open (D28; section 4.9), with the library's sent page one click away. "Save artifact" writes to the Downloads folder under a name of its own, never overwriting; "Copy hex" (D27, item 5). The Reserve, Submit and Settle steps show what has happened, nothing more. Shown whatever page is open when the answer comes: it carries the only copy of the bytes. |
+| W7 | **Account**: its state, and the actions that state allows | 02 rows, 05 rows | b | `Status`, `Settle` | The section 4.9 panel for its state (table above); a diverged account's report as a banner whose summary and causes follow its divergence kind (D28). "Check now" and "Settle" report as banners too. |
 | W8 | **Re-sign the reserved spend** | 03 | b | `Resign` | The same spend exactly, or the library refuses it; the library's page says so. |
 | W9 | **Submit a saved artifact** | — | b | `SubmitArtifact` | Paste the hex. Opens no store. |
 | W10 | **Activity**: every account's transactions, and one transaction's detail | 04 | c | the explorer reads | From the node's transaction index, newest 100 per account (D27, item 11). Outstanding spends from the store's own state, with no amounts. No "Receipt verified" (D27, item 3). "Export CSV" not built. |
@@ -80,7 +82,7 @@ The sidebar of 02-08: the "Tawara" wordmark, the six items, and on 02 and
 
 | text | where it is shown |
 |---|---|
-| no node chosen (`NO_NODE`), node changed (`NODE_CHANGED`), node silent (`NODE_SILENT`), reconciling cancelled (`OPEN_CANCELLED`) | the store's notice on W1, after S7 or S8 |
+| no node chosen (`NO_NODE`), node changed (`NODE_CHANGED`), node silent (`NODE_SILENT`), reconciling cancelled (`OPEN_CANCELLED`) | the summary of the store's notice banner on W1, after S7 or S8 (D28) |
 | restore cancelled (`RESTORE_CANCELLED`), advance cancelled (`ADVANCE_CANCELLED`) | W3, W12 |
 | the create refusals, each ending "Nothing was created." | S3, S5, S6 |
 | "there is no keystore at ...: the folder does not exist" | S7 |
@@ -100,5 +102,6 @@ Placeholders on D25's terms, settled with the owner:
 | "Nothing was created": a recovery phrase discarded before it was confirmed, and why (the auto-lock, or the window leaving the screen) | S3 |
 | why the store locked: idle ("Locked after N minutes with nothing done..."), the window leaving the screen, a store that could not be read back | S7 |
 | the notes naming the control for a command-line verb under a library page (D27, item 13) | wherever a library page is shown |
+| the banners' titles, summaries and common causes for each library page (D28; `crates/app/src/screens/wallet/report.rs`) | W1 to W9 |
 | "The wallet stopped", with or without a fault | the stopped screen (whatever the screen before it held, a phrase or a password, is zeroized and dropped) |
 | the account states in a word or two ("Reconciled", "Spend outstanding", "Spending paused"...) | W1 |

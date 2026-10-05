@@ -106,3 +106,11 @@ pub const DISCOVER_DEFAULT_TO: u32 = mochimo_crypto::cli::args::DISCOVER_DEFAULT
 /// The furthest a discovery sweep goes, one node request per account: the
 /// library's ceiling (`cli::args::DISCOVER_MAX_TO`).
 pub const DISCOVER_MAX_TO: u32 = mochimo_crypto::cli::args::DISCOVER_MAX_TO;
+
+/// The most destinations one spend carries: the protocol's
+/// (`tx::MAX_DESTINATIONS`), for the interface to stop adding rows at.
+pub const MAX_DESTINATIONS: u16 = mochimo_crypto::tx::MAX_DESTINATIONS;
+
+/// The node's rule for a destination's reference, in the library's words
+/// (`cli::args::REFERENCE_RULE`), for the interface to say beside the field.
+pub const REFERENCE_RULE: &str = mochimo_crypto::cli::args::REFERENCE_RULE;
