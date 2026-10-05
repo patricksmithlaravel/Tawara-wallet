@@ -20,6 +20,16 @@ use crate::view::AccountId;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RequestId(pub(crate) u64);
 
+impl RequestId {
+    /// An id for sample data (the screenshots, docs/DECISIONS.md D27 item
+    /// 1). The worker numbers requests from 1, so this one never answers
+    /// anything.
+    #[must_use]
+    pub const fn example() -> RequestId {
+        RequestId(0)
+    }
+}
+
 /// A planned spend waiting for confirmation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PlanId(pub(crate) u64);
@@ -51,7 +61,10 @@ pub enum Command {
     /// they match, the store is written, account 0 is put in it, and it is
     /// opened with the password from [`Command::CreateBegin`]. When they do
     /// not, nothing is written and the phrase stays pending, so the
-    /// interface can show it again.
+    /// interface can show it again. It stays pending too when the library
+    /// refuses to write the store (an unsafe folder, a store there since),
+    /// so the folder can be put right and the words given again; only a
+    /// written store, [`Command::CreateAbandon`] or a lock drops it.
     CreateConfirm { answer: SecretText },
     /// Drop a pending phrase; nothing is written.
     CreateAbandon,

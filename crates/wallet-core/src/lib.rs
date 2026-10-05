@@ -43,6 +43,8 @@ pub mod entropy;
 mod event;
 pub mod location;
 pub mod node;
+pub mod preferences;
+pub mod sample;
 mod secret;
 pub mod spend;
 mod text;
@@ -57,6 +59,14 @@ pub use event::{
 pub use node::{Connect, HttpsNode, NodeRefused};
 pub use secret::{PhraseForDisplay, SecretText};
 pub use worker::{Config, DEFAULT_IDLE_LOCK, WorkerHandle, WorkerStopped, save_artifact, spawn};
+
+/// Whether `dir` already holds a store, by the library's own test
+/// (`keystore::occupied`, which `create` refuses on): the interface opens on
+/// unlocking rather than on making a store when it does.
+#[must_use]
+pub fn store_exists(dir: &std::path::Path) -> bool {
+    mochimo_crypto::keystore::occupied(dir).is_some()
+}
 
 /// The shortest password a new store takes, in characters: the library's
 /// floor (`cli::create::MIN_PASSWORD_LEN`), for the interface to say before

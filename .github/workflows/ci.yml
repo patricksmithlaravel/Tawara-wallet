@@ -12,15 +12,17 @@
 # The cost is stated rather than hidden: no dependency cache, so every run
 # builds cold; and no uploaded artifact, because the runner gives the upload
 # token only to actions and not to `run:` steps, so a run's only output is its
-# job log. docs/PLAN.md section 5 asks for phase 3's screenshots to be kept as
-# CI artifacts; that needs an action, and it is put to the owner before phase
-# 3 (docs/DECISIONS.md, D13).
+# job log. docs/PLAN.md section 5 asks for phase 3's screenshots to be kept;
+# they are committed in design/screenshots/ instead of uploaded, and the
+# Linux job checks that they are what the screens draw (docs/DECISIONS.md
+# D13, D27 item 1).
 #
 # WHAT A GREEN RUN SAYS. That this commit builds, lints clean, passes its
 # tests (including the policy checks in crates/wallet-core/tests/policy.rs)
 # and documents without warnings on the three hosts, with the compiler
-# rust-toolchain.toml pins; and that cargo-deny found nothing against
-# deny.toml on the day it ran. It says nothing about Android or iOS, which
+# rust-toolchain.toml pins; that the committed screenshots are pixel for
+# pixel what the screens draw on Linux; and that cargo-deny found nothing
+# against deny.toml on the day it ran. It says nothing about Android or iOS, which
 # phase 1's spike measures.
 
 name: ci
@@ -130,6 +132,17 @@ jobs:
         run: |
           cd "$TAWARA"
           cargo test --workspace --locked
+
+      - name: the screenshots are what the screens draw (Linux)
+        # docs/DECISIONS.md D27, item 1. Every built screen is drawn headlessly
+        # with iced's software renderer from sample data and compared pixel
+        # for pixel with design/screenshots/. On Linux only: the images were
+        # drawn there, and the renderer's floating-point and SIMD paths may
+        # round differently on another processor (the macOS runner is ARM).
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && runner.os == 'Linux' }}
+        run: |
+          cd "$TAWARA"
+          cargo run -p tawara-app --example screenshots --locked -- --check
 
       - name: cargo doc --workspace --no-deps
         # Zero warnings, as in Rep-1: a broken intra-doc link is a defect.

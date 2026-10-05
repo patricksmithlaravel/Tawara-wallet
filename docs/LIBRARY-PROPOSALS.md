@@ -193,3 +193,108 @@ long-running application cannot use step by step.
 - **Importing the older wallets' `.mcm` files** (D23 item 6). Open: it is
   needed before release if moving people from the older wallets is a goal
   of the release.
+
+# Proposed in phase 3
+
+The screens of phase 3 (docs/DECISIONS.md D27, item 11) found more the
+library could serve. None blocks phase 3: each control it would back is
+left out until it lands (D27, item 4). Line numbers are those of Rep-1 at
+`8c2f39a`, the pinned revision. Suggested order: 5, then 6, 7 and 8, then
+9; 10 and 11 wait on the owner.
+
+## 5. The block's own metadata and its type
+
+**What exists.** `MeshClient::block_by_index` and `block_by_hash`
+(`mesh/mod.rs:232`, `:240`) return `codec::MeshBlock { block, parent,
+timestamp_ms, transactions }` (`mesh/codec.rs:466`). The node's `/block`
+reply also carries `block.metadata = {block_size, difficulty, fee, haiku,
+nonce, root, stime, tx_count}`, and `parse_block` drops it on purpose
+(`codec.rs:588-590`: "is not read").
+
+**Why.** The explorer renderings (06, 07) show each block's difficulty,
+haiku, nonce, Merkle root and type (normal, pseudo, neogenesis), and the
+dashboard (02) the types of the last six blocks. Parsing the node's JSON
+in the application would put a second Mesh parser outside the library.
+
+**Proposed.** `MeshBlock` gains `metadata: Option<BlockMetadata>` with the
+fields the node sends, each checked as the codec checks the rest, and a
+`kind()` that names normal, pseudo and neogenesis by the protocol's own
+rules, so the classification lives beside the parser.
+
+## 6. A read of the mempool
+
+**What exists.** Nothing: no request builder, parser or client method.
+`/network/options` reports `"mempool_coins": false`, unparsed.
+
+**Why.** The explorer overview (06) lists the pending transactions with
+their destinations, fee and amount, and counts them.
+
+**Proposed.** `MeshClient::mempool()` over `/mempool` (the transaction
+ids) and `/mempool/transaction` (one), with the same response caps as
+`/block`, and a renderer page for a read-only `mempool` verb.
+
+## 7. An offset for a tag's history
+
+**What exists.** `search_by_account(tag, limit)` (`mesh/mod.rs:263`)
+sends no offset, so a tag's history stops at its newest 100 rows;
+`SearchPage::next_offset` is read and cannot be used.
+
+**Why.** The activity screen (04) and the tag page (08) list a tag's
+history; an account with more than 100 transactions loses the rest
+silently.
+
+**Proposed.** `search_by_account_from(tag, limit, offset)`, and
+`recent-transactions --from N`.
+
+## 8. The network's name and the node's sync state
+
+**What exists.** `network_status` (`mesh/mod.rs:209`) keeps the tip and
+drops the reply's timestamp and `sync_status`; `/network/list` has a
+parser (`codec.rs:260`) and no client method.
+
+**Why.** The node card (05) shows the network ("mochimo · mainnet") and
+whether the node is connected and current. A node that is still syncing
+answers with an old tip, and every reconciliation against it is then
+against the past.
+
+**Proposed.** `ChainTip` stays as it is; `network_status_full()` returns
+it with the timestamp and the sync state, and `networks()` the list.
+
+## 9. Progress for a status read
+
+**What exists.** A status read takes a `Cancel`
+(`recon::reconcile_account_with`) and no progress counter; the four
+long operations of item 1 report progress.
+
+**Why.** The account-recovery screen runs a status read to a key index
+the person types, which can be far, and can show only a spinner while it
+walks.
+
+**Proposed.** `reconcile::account_status_with_progress`, counting as
+`recon::watched` does.
+
+## 9a. A derived account's number
+
+**What exists.** `cli::address::accounts_in` (`cli/address.rs:69`) returns
+`Held { tag, kind, index }`; the derivation number is in the store's record
+(`account::KeyMaterial::Derived { account_index, .. }`), which is
+`pub(crate)` on purpose, so that code outside cannot fabricate one.
+
+**Why.** The command line names a derived account by its number (`address
+--account N`, `restore --account N`); the application can only name it by
+its tag, which a person does not recognise.
+
+**Proposed.** Reading it, not constructing it: `Held` gains `account:
+Option<u32>`, `Some(n)` for a derived account, filled from the record.
+
+## 10. Changing the store's password
+
+**What exists.** No call re-encrypts the store under a new password.
+
+**Why.** The settings rendering (05) has "Password: Change". Only if the
+owner wants it.
+
+## 11. Importing the older wallets' `.mcm` files
+
+D23, item 6: open. The first-run rendering (01) offers it; it is needed
+before release if moving people from the older wallets is a goal.

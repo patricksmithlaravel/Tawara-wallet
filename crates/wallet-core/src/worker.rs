@@ -778,7 +778,7 @@ const NO_NODE: &str = "No node is chosen, so nothing was reconciled and nothing 
                        The store is open: its accounts and their destinations can be shown. \
                        Choose a node to reconcile them.";
 
-const NODE_SILENT: &str = "The node did not answer, so nothing was reconciled and nothing can be \
+pub(crate) const NODE_SILENT: &str = "The node did not answer, so nothing was reconciled and nothing can be \
                            sent. The store is open: its accounts and their destinations can be \
                            shown.";
 
@@ -1142,14 +1142,14 @@ impl<C: Connect> Worker<C> {
                 ),
             );
         }
-        // Before the phrase is taken, so a folder that cannot be made
-        // leaves it waiting.
+        // A folder that cannot be made, or a store the library refuses to
+        // write there (an unsafe folder, one that appeared since), leaves
+        // the phrase waiting, as a wrong answer does: the person can put the
+        // folder right and confirm again, or start over. It is taken only
+        // once the store is written.
         if let Err(r) = prepare_parent(&pending.dir) {
             return Reply::Refused(r);
         }
-        let Some(pending) = self.create.take() else {
-            return refused(RefusalKind::NothingToConfirm, "Nothing was created.");
-        };
         self.busy(id, Activity::DerivingKey);
         let created = match create::create(
             &pending.dir,
@@ -1160,6 +1160,9 @@ impl<C: Connect> Worker<C> {
         ) {
             Ok(c) => c,
             Err(e) => return Reply::Refused(Self::create_refusal(e)),
+        };
+        let Some(pending) = self.create.take() else {
+            return refused(RefusalKind::NothingToConfirm, "Nothing was created.");
         };
         let first = AccountId::from_tag(created.tag);
         let opened = self.unlock(id, pending.dir.clone(), &pending.password);

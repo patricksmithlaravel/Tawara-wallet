@@ -10,9 +10,13 @@
 # edit them"), so git never converts them, whatever their content looks like.
 design/renderings/** -text
 
-# Font binaries are vendored files, kept byte for byte as published. Their
-# licence texts get a rule of their own, by directory, when the fonts are
-# added (phase 3): a licence file's name varies by foundry.
+# Font binaries are vendored files, kept byte for byte as published
+# (crates/app/fonts/SOURCES.md records each file's SHA-256). Their licence
+# texts beside them are text like any other, with LF line endings.
 *.ttf -text
 *.otf -text
 *.woff2 -text
+
+# The screenshots are what the screens draw, compared pixel for pixel in CI
+# (docs/DECISIONS.md D27, item 1).
+design/screenshots/** -text

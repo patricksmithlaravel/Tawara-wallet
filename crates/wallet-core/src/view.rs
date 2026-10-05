@@ -218,15 +218,39 @@ pub struct WalletView {
     pub notice: Option<String>,
 }
 
+/// What can be said about a store's total balance. An account that diverged
+/// or was never reconciled has no known balance, so the sum of the others is
+/// not the store's total and is never offered as one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Total {
+    /// Every account's balance is known, and this is their sum.
+    Whole(u128),
+    /// Only some are: `known` is the sum of those, and `unknown` accounts
+    /// are left out of it.
+    Partial { known: u128, unknown: usize },
+    /// No account's balance is known.
+    Unknown,
+}
+
 impl WalletView {
-    /// The total balance of the accounts whose balance is known.
+    /// The store's total balance, as far as it is known.
     #[must_use]
-    pub fn total(&self) -> u128 {
-        self.accounts
-            .iter()
-            .filter_map(|a| a.state.balance())
-            .map(u128::from)
-            .sum()
+    pub fn total(&self) -> Total {
+        let mut known = 0u128;
+        let mut unknown = 0;
+        for account in &self.accounts {
+            match account.state.balance() {
+                Some(balance) => known += u128::from(balance),
+                None => unknown += 1,
+            }
+        }
+        if unknown == 0 {
+            Total::Whole(known)
+        } else if unknown == self.accounts.len() {
+            Total::Unknown
+        } else {
+            Total::Partial { known, unknown }
+        }
     }
 }
 
@@ -255,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn total_ignores_unknown_balances() {
+    fn a_total_never_counts_an_unknown_balance_as_zero() {
         let row = |state| AccountRow {
             id: AccountId::from_tag([1; 20]),
             kind: AccountKind::Derived,
@@ -277,6 +301,20 @@ mod tests {
             opened: false,
             notice: None,
         };
-        assert_eq!(view.total(), u128::from(u64::MAX) + 5);
+        // One account has no known balance: the sum of the others is not
+        // the total.
+        assert_eq!(
+            view.total(),
+            Total::Partial {
+                known: u128::from(u64::MAX) + 5,
+                unknown: 1,
+            }
+        );
+        let mut whole = view.clone();
+        whole.accounts.pop();
+        assert_eq!(whole.total(), Total::Whole(u128::from(u64::MAX) + 5));
+        let mut none = view;
+        none.accounts.retain(|a| a.state.balance().is_none());
+        assert_eq!(none.total(), Total::Unknown);
     }
 }

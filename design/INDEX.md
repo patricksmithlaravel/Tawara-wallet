@@ -62,9 +62,12 @@ cropped or rescaled.
   below the last card.
 - **Branding.** The frames carry the MOCHIMO wordmark and logo. The
   application is named Tawara and is not branded as an official product of
-  the cryptocurrency (docs/PLAN.md section 6), so this is put to the owner
-  before any screen is built.
+  the cryptocurrency (docs/PLAN.md section 6). The screens show the
+  "Tawara" wordmark and no coin mark (docs/DECISIONS.md D27, item 2).
 - **Conflicts with the threat model.** Several controls conflict with
-  docs/PLAN.md section 4, which wins (section 5, "Conflicts"). They are
-  listed for the owner with the phase 0 review, and each one's safe version
-  is recorded in docs/SCREENS.md when phase 3 builds the screen.
+  docs/PLAN.md section 4, which wins (section 5, "Conflicts"). Each one,
+  and its safe version, is listed in docs/DECISIONS.md D27 (item 3) and in
+  docs/SCREENS.md with the screen it belongs to.
+- **Screenshots.** `design/screenshots/` holds the application's own
+  screens, drawn headlessly at these sizes (docs/DECISIONS.md D27, item 1),
+  to compare side by side with the renderings.
