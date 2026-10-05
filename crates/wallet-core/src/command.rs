@@ -155,16 +155,27 @@ pub enum Command {
     /// nothing found: a sweep that stopped short is not a sweep.
     Discover { to: u32 },
 
-    /// The node's chain tip.
+    /// The node's chain tip, when it was solved, and the Mesh middleware's
+    /// sync state: one request to `/network/status`.
     NetworkStatus,
+    /// The networks the node serves, by name. No store is needed.
+    Networks,
     /// The newest [`crate::explorer::CARD_BLOCKS`] blocks, read down from
     /// the tip: the command line's `blocks`. No store is needed.
     Blocks,
-    /// Every account's transactions from the node's index, newest first, at
-    /// most [`crate::explorer::HISTORY_ROWS`] each: the command line's
+    /// How many transactions wait in the node's queue: the command line's
+    /// `mempool` with none read whole. No store is needed.
+    Mempool,
+    /// Every account's transactions from the node's index, newest first, the
+    /// newest [`crate::explorer::HISTORY_ROWS`] each: the command line's
     /// `recent-transactions` for each account. One request per account; a
     /// cancel stops it between two, and it then reports nothing.
     Activity,
+    /// The next older page of each account named, from the offset given
+    /// (its [`crate::explorer::AccountHistory::next`]): the command line's
+    /// `recent-transactions --from`. An account the store does not hold is
+    /// not read. Cancelled as [`Command::Activity`] is.
+    OlderActivity(Vec<(AccountId, u64)>),
     /// Reconcile every account in the store now and report each, whatever
     /// its state: what account recovery shows before anything else
     /// (docs/DECISIONS.md D19). As [`Command::Status`] for each account, in

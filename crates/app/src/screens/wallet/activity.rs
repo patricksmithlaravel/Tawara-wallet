@@ -2,8 +2,10 @@
 //! node's index, and one transaction's detail beside them
 //! (docs/SCREENS.md W10).
 //!
-//! The rows are the index's, newest 100 for each account (D27, item 11);
-//! spends the store has reserved and not settled are its own record, listed
+//! The rows are the index's, the newest 100 for each account and older ones
+//! a page at a time on "Read older" (D30); a read again starts from the
+//! newest. Spends the store has reserved and not settled are its own record,
+//! listed
 //! with no amount since the store keeps none. "Export CSV" needs a file
 //! dialog and "Receipt verified" claims a check nothing makes (D27, items 3
 //! and 5): neither is built.
@@ -169,15 +171,27 @@ fn listing<'a>(
             .padding(sp::S12),
         );
     }
-    let cut: u64 = histories
-        .iter()
-        .map(|h| h.total.saturating_sub(h.transactions.len() as u64))
-        .sum();
-    if cut > 0 {
+    let unread: u64 = histories.iter().map(AccountHistory::unread).sum();
+    if unread > 0 {
+        let reading = model.activity.reading;
         list = list.push(
-            container(ui::helper(format!(
-                "The index answers the newest 100 for each account; {cut} older are not shown."
-            )))
+            row![
+                container(ui::helper(format!(
+                    "The index holds {unread} older {} for these accounts, not read yet. They \
+                     are read 100 for each account at a time.",
+                    if unread == 1 { "row" } else { "rows" }
+                )))
+                .width(Length::Fill),
+                ui::button_with(
+                    if reading { "Reading…" } else { "Read older" },
+                    theme::Button::Secondary,
+                    Size::Small,
+                    None,
+                    (model.busy.is_none() && !reading).then(|| WalletMsg::ReadOlderActivity.into()),
+                ),
+            ]
+            .spacing(sp::S12)
+            .align_y(Alignment::Center)
             .padding(sp::S12),
         );
     }

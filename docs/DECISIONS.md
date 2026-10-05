@@ -1180,3 +1180,55 @@ cards that D27 item 16 moved here. The choices it makes:
    than searched for. Accounts are still named by their shortened
    destination (D27, item 3).
 
+
+### D30. Phase 3 (c): the library's explorer reads on the wallet's pages
+
+**proposed; for the owner's review in the pull request that introduces
+it.** With the pin at `e41f8c1` (D7), the library serves
+docs/LIBRARY-PROPOSALS.md items 5 to 8, and the controls D27 item 4 left
+out of W1, W10 and W11 for want of them are built. The explorer's own
+pages (E1, E2) stay PR (d)'s. The choices:
+
+1. **The network card shows each block's kind, the difficulty and the
+   queue** (rendering 02). A block's kind is the library's
+   (`MeshBlock::kind`, the C reference's own test): a neogenesis tile is
+   green, a pseudo-block's amber and a normal block's raised, with the
+   rendering's legend under them. A block the node sent no figures for has
+   no kind and is drawn plain, never as normal; the legend is shown only
+   when some block has a kind. The difficulty is the newest block's.
+   "Mempool" is how many transactions wait in the node's queue
+   (`Command::Mempool`, the command line's `mempool` with none read whole:
+   one request). A queue the node did not answer for shows "—"; the queue
+   is the node's own and not its index, so its refusal never reads as "no
+   index".
+2. **The node card names the network and says the middleware's sync
+   state** (rendering 05). `Command::NetworkStatus` now reads
+   `/network/status` whole (`MeshClient::network_status_full`): still one
+   request, so the latency shown is unchanged, and it also gives when the
+   tip was solved and the Mesh middleware's sync state, which the card
+   shows in the middleware's own words, green when its last refresh
+   finished and amber when it did not. The library is plain that this
+   state is the middleware's view of its one node and not whether the node
+   is current with the network, and the card says so under it; the tip's
+   tile says how long ago the tip was solved, which is what shows a chain
+   that has stopped moving. A reply without the tip's timestamp or the
+   genesis block is refused, as Rosetta requires both. The network's name
+   ("mochimo · mainnet") is `/network/list` (`Command::Networks`), asked
+   for when a node is chosen and the tip is asked for, one request at a
+   time, until the node has said; another node is asked again. The
+   sidebar keeps the node's host.
+3. **Activity reads older rows a page at a time** (W10). An account's
+   history is read from the newest, 100 rows a page, and "Read older"
+   reads the next page of every account the index holds more of
+   (`Command::OlderActivity`, the command line's `recent-transactions
+   --from`), from the offset its last page ended at
+   (`AccountHistory::next`). A row the index gained at the top since the
+   first page pushes the rest down, so a later page can repeat a row
+   already read: it is listed once, and the offset still counts it, so
+   the next page starts where the index's own ordering says. Nothing is
+   read without the person asking, since a mining account can hold a row
+   for every block it won. A read again (Refresh, or opening Activity)
+   starts from the newest page and drops the older pages read before:
+   joining them to a fresh first page would need the index's ordering not
+   to have moved by more than a page between the two reads, and a gap
+   between them would be a history cut short shown as a whole one.

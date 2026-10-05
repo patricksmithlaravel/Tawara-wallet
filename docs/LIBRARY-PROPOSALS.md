@@ -202,12 +202,13 @@ left out until it lands (D27, item 4). Line numbers are those of Rep-1 at
 `8c2f39a`, the revision pinned when this was written. Suggested order: 5,
 then 6, 7 and 8, then 9; 10 and 11 wait on the owner.
 
-## Status: 5 to 8 landed, and are not yet used
+## Status: 5 to 8 landed and are in use
 
 Rep-0 made items 5 to 8 (its pull requests #13 to #16, merged at
 `2e69d87`). Rep-1 merged them down (its pull request #7, `e41f8c1`), and
-the pin moved there (docs/DECISIONS.md D7). No screen uses them yet; the
-controls each would back are still left out (D27, item 4).
+the pin moved there (docs/DECISIONS.md D7). The wallet's network card,
+Settings' node card and Activity use them (D30); the explorer's own pages
+(PR (d)) are still to come, and will read item 6's transactions whole.
 
 | item | what the library now has |
 |---|---|

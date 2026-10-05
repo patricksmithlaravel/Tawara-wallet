@@ -57,7 +57,7 @@ pub use event::{
     AccountReport, Activity, Discovered, Event, LockReason, PlanView, PlannedDestination, Progress,
     ReceiveView, Refusal, RefusalKind, Reply, SentView,
 };
-pub use node::{Connect, HttpsNode, NodeRefused};
+pub use node::{Connect, HttpsNode, NetworkName, NodeRefused, SyncState};
 pub use secret::{PhraseForDisplay, SecretText};
 pub use worker::{
     Config, DEFAULT_IDLE_LOCK, WorkerHandle, WorkerStopped, save_artifact, save_artifact_in, spawn,

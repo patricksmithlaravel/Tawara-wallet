@@ -1,10 +1,12 @@
 //! What the node's explorer endpoints say, as the interface shows it:
 //! a tag's transactions from the node's index (Activity, docs/SCREENS.md
-//! W10) and the newest blocks (the wallet's network card, W1).
+//! W10), and the newest blocks and the size of the node's queue (the
+//! wallet's network card, W1).
 //!
 //! The rows are the library's (`mesh::codec`), read with the command
-//! line's own calls (`cli::cmd_recent_transactions`, `cli::cmd_blocks`),
-//! and every read carries the library's page for it, word for word. What
+//! line's own calls (`cli::cmd_recent_transactions_from`, `cli::cmd_blocks`,
+//! `cli::cmd_mempool`), and every read carries the library's page for it,
+//! word for word. What
 //! the interface works out from a row (which way it moved, by how much, for
 //! one account) follows the command line's page for the same rows
 //! (`cli::render`, `recent_transactions`), which is private there and so
@@ -13,14 +15,14 @@
 
 use mochimo_crypto::Error;
 use mochimo_crypto::mesh::codec::{
-    MeshBlock, MeshTransaction, OP_DESTINATION, OP_FEE, OP_REWARD, OP_SOURCE, SearchPage,
+    self, MeshBlock, MeshTransaction, OP_DESTINATION, OP_FEE, OP_REWARD, OP_SOURCE, SearchPage,
 };
 
 use crate::view::AccountId;
 
-/// The most rows the node's index answers for one tag in one request, and
-/// so the most Activity shows for each account: the endpoint takes no
-/// offset the library can send (docs/DECISIONS.md D27, item 11).
+/// The most rows the node's index answers for one tag in one request: one
+/// page of an account's history. Older rows are read a page at a time, from
+/// the offset the last page ended at (docs/DECISIONS.md D30).
 pub const HISTORY_ROWS: u64 = 100;
 
 /// How many of the newest blocks the wallet's network card shows.
@@ -192,34 +194,84 @@ impl TransactionView {
     }
 }
 
-/// One account's transactions, newest first.
+/// One account's transactions, newest first: the pages read so far, from
+/// the newest.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountHistory {
     pub account: AccountId,
-    /// At most [`HISTORY_ROWS`].
+    /// [`HISTORY_ROWS`] a page, each transaction once.
     pub transactions: Vec<TransactionView>,
-    /// How many the index holds for it in all.
+    /// How many the index holds for it in all, as the last page read said.
     pub total: u64,
-    /// The library's page for these rows, word for word.
+    /// The offset the next older page starts at: how many rows, newest
+    /// first, the pages read so far cover. A row the index gained at the top
+    /// since the first page pushes the rest down, so a later page can repeat
+    /// rows already read; it is counted here and listed once.
+    pub next: u64,
+    /// The library's page for each page read, word for word, one after
+    /// another.
     pub text: String,
 }
 
 impl AccountHistory {
-    /// Whether the index holds more than it sent: older rows exist that no
-    /// request can reach.
+    /// Whether the index holds rows older than the pages read so far.
     #[must_use]
     pub fn more(&self) -> bool {
-        self.total > self.transactions.len() as u64
+        self.total > self.next
     }
 
-    pub(crate) fn of(account: AccountId, page: &SearchPage, text: String) -> AccountHistory {
+    /// How many rows the index holds that the pages read so far do not.
+    #[must_use]
+    pub fn unread(&self) -> u64 {
+        self.total.saturating_sub(self.next)
+    }
+
+    /// Add `older`, the page read from [`AccountHistory::next`], below the
+    /// rows already read: each transaction once, the total and the offset as
+    /// that page says them, and its page after the others.
+    pub fn extend(&mut self, older: AccountHistory) {
+        for tx in older.transactions {
+            if !self.transactions.iter().any(|t| t.id == tx.id) {
+                self.transactions.push(tx);
+            }
+        }
+        self.total = older.total;
+        self.next = older.next;
+        if !older.text.is_empty() {
+            if !self.text.is_empty() {
+                self.text.push_str("\n\n");
+            }
+            self.text.push_str(&older.text);
+        }
+    }
+
+    /// The page read at offset `from`.
+    pub(crate) fn of(
+        account: AccountId,
+        page: &SearchPage,
+        from: u64,
+        text: String,
+    ) -> AccountHistory {
         AccountHistory {
             account,
             transactions: page.transactions.iter().map(TransactionView::of).collect(),
             total: page.total_count,
+            next: from.saturating_add(page.transactions.len() as u64),
             text,
         }
     }
+}
+
+/// What kind of block a block is, by the C reference's own test as the
+/// library applies it (`MeshBlock::kind`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockKind {
+    /// Transactions, solved by proof of work.
+    Normal,
+    /// No transactions: made when no block was solved in time.
+    Pseudo,
+    /// The ledger, at a block number whose low byte is zero.
+    Neogenesis,
 }
 
 /// One block, as the newest blocks list it.
@@ -232,6 +284,11 @@ pub struct BlockSummary {
     pub time_ms: i64,
     /// How many transactions it carries, its reward among them.
     pub transactions: usize,
+    /// Its kind; `None` when the node sent none of its own figures and its
+    /// number does not make it a neogenesis block.
+    pub kind: Option<BlockKind>,
+    /// The difficulty it was solved at, when the node sent its figures.
+    pub difficulty: Option<u32>,
 }
 
 impl BlockSummary {
@@ -241,6 +298,12 @@ impl BlockSummary {
             hash: hex(&block.block.hash),
             time_ms: block.timestamp_ms,
             transactions: block.transactions.len(),
+            kind: block.kind().map(|k| match k {
+                codec::BlockKind::Normal => BlockKind::Normal,
+                codec::BlockKind::Pseudo => BlockKind::Pseudo,
+                codec::BlockKind::Neogenesis => BlockKind::Neogenesis,
+            }),
+            difficulty: block.metadata.as_ref().map(|m| m.difficulty),
         }
     }
 }
@@ -251,6 +314,15 @@ pub struct BlocksView {
     pub tip: u64,
     pub blocks: Vec<BlockSummary>,
     /// The library's page for them, word for word.
+    pub text: String,
+}
+
+/// The node's queue of transactions waiting to be mined: how many wait,
+/// with none of them read whole.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MempoolView {
+    pub waiting: usize,
+    /// The library's page, word for word.
     pub text: String,
 }
 

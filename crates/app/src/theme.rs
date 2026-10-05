@@ -35,6 +35,9 @@ pub mod color {
     pub const BORDER_STRONG: Color = Color::from_rgb8(0x3A, 0x4D, 0x52);
     pub const ACCENT_BORDER: Color = Color::from_rgb8(0x1F, 0x5A, 0x49);
     pub const WARNING_BORDER: Color = Color::from_rgb8(0x5A, 0x4A, 0x22);
+    /// Only the "Normal" legend swatch under the network card's newest
+    /// blocks (02).
+    pub const SWATCH_NORMAL: Color = Color::from_rgb8(0x4A, 0x5E, 0x63);
 
     // 1.3 Text.
     pub const TEXT_PRIMARY: Color = Color::from_rgb8(0xFF, 0xFF, 0xFF);
@@ -234,6 +237,17 @@ pub fn radio_card(selected: bool) -> impl Fn(&Theme) -> container::Style {
             radius::R16,
         )
     }
+}
+
+/// One of the network card's newest blocks (02): its kind's fill, and its
+/// edge, the green ring for the current tip (`design/TOKENS.md` 1.7).
+pub fn block_tile(fill: Color, edge: Color) -> impl Fn(&Theme) -> container::Style {
+    move |_| surface(fill, edge, radius::R10)
+}
+
+/// A legend swatch (`design/TOKENS.md` 4.1).
+pub fn swatch(fill: Color) -> impl Fn(&Theme) -> container::Style {
+    move |_| surface(fill, fill, radius::R2)
 }
 
 /// A field-like box drawn as a container (the account selector, a read-only

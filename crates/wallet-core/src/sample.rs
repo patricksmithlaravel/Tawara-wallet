@@ -13,7 +13,8 @@ use mochimo_crypto::account::{AccountKind as LibraryKind, StreamId, WotsIndex};
 use mochimo_crypto::cli::discover::{Sighting, Sweep};
 use mochimo_crypto::cli::outcome::{Outcome, Shipped};
 use mochimo_crypto::mesh::codec::{
-    MeshBlock, MeshTransaction, OP_DESTINATION, OP_FEE, OP_REWARD, OP_SOURCE, Operation, SearchPage,
+    BlockMetadata, MeshBlock, MeshTransaction, OP_DESTINATION, OP_FEE, OP_REWARD, OP_SOURCE,
+    Operation, SearchPage,
 };
 use mochimo_crypto::mesh::{ChainTip, LedgerEntry, TxId};
 use mochimo_crypto::recon::{AccountStatus, ChainPosition, Divergence, Reservation};
@@ -23,7 +24,7 @@ use crate::command::PlanId;
 use crate::event::{
     AccountReport, Discovered, PlanView, PlannedDestination, ReceiveView, SentView,
 };
-use crate::explorer::{AccountHistory, BlockSummary, BlocksView};
+use crate::explorer::{AccountHistory, BlockSummary, BlocksView, MempoolView};
 use crate::text;
 use crate::view::{
     AccountId, AccountKind, AccountRow, AccountState, Notice, NoticeKind, ReservationState,
@@ -519,7 +520,7 @@ pub fn activity() -> Vec<AccountHistory> {
                     page: Box::new(page.clone()),
                 },
             );
-            AccountHistory::of(AccountId::from_tag(t), &page, text)
+            AccountHistory::of(AccountId::from_tag(t), &page, 0, text)
         })
         .collect()
 }
@@ -528,17 +529,32 @@ pub fn activity() -> Vec<AccountHistory> {
 pub const TIP_MS: i64 = 1_791_186_252_000;
 
 /// The six newest blocks of the sample chain, read down from its tip, and
-/// the library's page for them.
+/// the library's page for them. Block 871,168 is a neogenesis block (its
+/// number's low byte is zero) and 871,171 a pseudo-block (it carries no
+/// transactions); the others are normal, their reward among the
+/// transactions `/block` lists and not among those their figures count.
 #[must_use]
 pub fn blocks() -> BlocksView {
     let tip = 871_173;
     let gaps = [0, 312, 289, 405, 251, 338];
-    let counts = [3, 1, 5, 2, 1, 4];
+    let counts: [u32; 6] = [3, 2, 0, 5, 2, 0];
     let mut at = TIP_MS;
     let mut rows = Vec::new();
     for (n, (gap, count)) in gaps.iter().zip(counts).enumerate() {
         at -= gap * 1_000;
         let index = tip - n as u64;
+        let seed = u8::try_from(index % 251).unwrap_or(0);
+        let metadata = BlockMetadata {
+            block_size: 164 + 2_408 * u64::from(count),
+            difficulty: 37,
+            fee: 500,
+            haiku: "a quiet frost / falls on the sleeping cedar / the moon holds its breath"
+                .to_owned(),
+            nonce: [seed ^ 0x5a; 32],
+            root: [seed ^ 0xa5; 32],
+            stime_ms: at,
+            tx_count: count.saturating_sub(1),
+        };
         rows.push(MeshBlock {
             block: ChainTip {
                 index,
@@ -558,7 +574,7 @@ pub fn blocks() -> BlocksView {
                     metadata: Vec::new(),
                 })
                 .collect(),
-            metadata: None,
+            metadata: Some(metadata),
         });
     }
     let blocks = rows.iter().map(BlockSummary::of).collect();
@@ -575,6 +591,22 @@ pub fn blocks() -> BlocksView {
                 count: crate::explorer::CARD_BLOCKS,
                 tip,
                 rows,
+            },
+        ),
+    }
+}
+
+/// The sample node's queue: fourteen transactions waiting, none read whole.
+#[must_use]
+pub fn mempool() -> MempoolView {
+    MempoolView {
+        waiting: 14,
+        text: text::page(
+            &[],
+            Outcome::Mempool {
+                count: 0,
+                total: 14,
+                rows: Vec::new(),
             },
         ),
     }

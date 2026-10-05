@@ -10,7 +10,8 @@ use core::fmt;
 use std::path::PathBuf;
 
 use crate::command::{PlanId, RequestId};
-use crate::explorer::{AccountHistory, BlocksView, ExplorerRefusal};
+use crate::explorer::{AccountHistory, BlocksView, ExplorerRefusal, MempoolView};
+use crate::node::{NetworkName, SyncState};
 use crate::secret::PhraseForDisplay;
 use crate::spend::SpendInputError;
 use crate::view::{AccountId, AccountState, WalletView};
@@ -192,13 +193,25 @@ pub enum Reply {
         text: String,
         accounts: Vec<Discovered>,
     },
-    /// The node's chain tip.
-    Network { tip_index: u64, tip_hash: String },
+    /// The node's chain tip, when it was solved, in milliseconds since the
+    /// epoch, and the Mesh middleware's own sync state, when it sent one.
+    Network {
+        tip_index: u64,
+        tip_hash: String,
+        tip_time_ms: i64,
+        sync: Option<SyncState>,
+    },
+    /// The networks the node serves, by name.
+    Networks(Vec<NetworkName>),
     /// The newest blocks, or why the node did not serve them.
     Blocks(Result<BlocksView, ExplorerRefusal>),
-    /// Every account's transactions, in the store's order, or why the node
-    /// did not serve them: a refusal for one account is the answer for all,
-    /// since every read goes to the same index.
+    /// How many transactions wait in the node's queue, or why it did not
+    /// say.
+    Mempool(Result<MempoolView, ExplorerRefusal>),
+    /// The accounts' transactions, in the store's order, one page each for
+    /// those asked about, or why the node did not serve them: a refusal for
+    /// one account is the answer for all, since every read goes to the same
+    /// index.
     Activity(Result<Vec<AccountHistory>, ExplorerRefusal>),
     /// Every account reconciled now, in the store's order.
     Reviewed(Vec<AccountReport>),

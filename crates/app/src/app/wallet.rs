@@ -368,6 +368,9 @@ pub enum WalletMsg {
     Select(String),
     /// W10: read the node's index again.
     ReadActivity,
+    /// W10: read the next older page of every account the index holds more
+    /// of.
+    ReadOlderActivity,
     /// W11.
     Unit(AmountUnit),
     /// W11: the auto-lock period, in minutes.
@@ -1096,6 +1099,7 @@ impl App {
                 }
             }
             WalletMsg::ReadActivity => self.read_activity(),
+            WalletMsg::ReadOlderActivity => self.read_older_activity(),
             WalletMsg::Unit(unit) => {
                 self.model.prefs.unit = unit;
                 self.save_prefs();

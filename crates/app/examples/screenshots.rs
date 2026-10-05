@@ -37,7 +37,9 @@ use tawara_wallet_core::location::SyncWarning;
 use tawara_wallet_core::preferences::Preferences;
 use tawara_wallet_core::sample;
 use tawara_wallet_core::view::AccountState;
-use tawara_wallet_core::{Activity, CONFIRM_POSITIONS, PhraseForDisplay, Progress};
+use tawara_wallet_core::{
+    Activity, CONFIRM_POSITIONS, NetworkName, PhraseForDisplay, Progress, SyncState,
+};
 
 /// The rendering's frame size for each screen (`design/INDEX.md`), and the
 /// smallest window (`tawara_app::WINDOW_MIN`, docs/DECISIONS.md D27 item 9).
@@ -58,6 +60,15 @@ fn base() -> Model {
     model.node = NodeState {
         url: Some(NODE.to_owned()),
         tip: Some((871_173, Duration::from_millis(42))),
+        solved_ms: Some(sample::TIP_MS),
+        sync: Some(SyncState {
+            stage: "synchronized".to_owned(),
+            synced: true,
+        }),
+        network: Some(NetworkName {
+            blockchain: "mochimo".to_owned(),
+            network: "mainnet".to_owned(),
+        }),
         error: None,
     };
     // The clock stands 48 seconds after the sample chain's newest block,
@@ -93,6 +104,7 @@ fn on(page: Page) -> Model {
     m.wallet = Some(sample::wallet_view());
     m.activity = read(sample::activity());
     m.blocks = read(sample::blocks());
+    m.mempool = read(sample::mempool());
     m
 }
 
