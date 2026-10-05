@@ -85,7 +85,9 @@
 //!   each walk. A restore or an advance is asked once more just before its
 //!   one write, so a cancel that stops it has written nothing; one that
 //!   arrives after the write is too late, and the command reports what it
-//!   wrote.
+//!   wrote. A stop, once heard, holds for the rest of the command, even
+//!   when the person returns before it ends: the library's walk ended on
+//!   it, and what it reports is cut short.
 //! - What a stopped command answers: `Cancelled`, with nothing it read
 //!   applied, for a refresh with the wallet open, a status read and a sweep
 //!   (a sweep that stopped short reports nothing, never the accounts asked
@@ -107,7 +109,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -322,6 +324,7 @@ pub fn spawn<C: Connect>(
                 idle: config.idle_lock,
                 activity: person,
                 idle_stops: false,
+                stopped: Arc::new(AtomicBool::new(false)),
                 next_plan: 1,
             };
             worker.run(&rx);
@@ -415,6 +418,10 @@ struct Worker<C: Connect> {
     /// for every command but those carrying the person's input (module
     /// doc, "Lifecycle").
     idle_stops: bool,
+    /// Whether the running command has been told to stop, shared by every
+    /// stop predicate made for it ([`stop_predicate`]). Fresh for each
+    /// command.
+    stopped: Arc<AtomicBool>,
     next_plan: u64,
 }
 
@@ -440,6 +447,42 @@ fn typed_by_the_person(command: &Command) -> bool {
             | Command::CreateConfirm { .. }
             | Command::CreateFromPhrase { .. }
     )
+}
+
+/// The stop predicate for the running request `id`, for the library's
+/// `Cancel`: a cancel reached it (`cancel` holds the newest request id to
+/// stop), or, with `idle`, the person has been away for the idle period
+/// (module doc, "Lifecycle").
+///
+/// **Once it says stop, it says stop for the rest of the request**, through
+/// `stopped`, which every predicate made for the request shares. A cancel
+/// stays raised by itself, but the idle period does not: the person can
+/// touch the interface after it has passed ([`WorkerHandle::touch`] counts
+/// at once, from another thread). By then the library has ended its walk on
+/// the first stop, and the report it hands back is cut short. A predicate
+/// asked again afterwards that answered "go on" would let that report be
+/// applied as a finding about the account, and would let the wallet opening
+/// that follows a stopped restore or advance run against the stop that
+/// ended it.
+fn stop_predicate(
+    cancel: Arc<AtomicU64>,
+    id: RequestId,
+    idle: Option<(Arc<PersonActivity>, Duration)>,
+    stopped: Arc<AtomicBool>,
+) -> impl Fn() -> bool + 'static {
+    move || {
+        if stopped.load(Ordering::Relaxed) {
+            return true;
+        }
+        let stop = cancel.load(Ordering::Relaxed) >= id.0
+            || idle
+                .as_ref()
+                .is_some_and(|(person, period)| person.idle_for() >= *period);
+        if stop {
+            stopped.store(true, Ordering::Relaxed);
+        }
+        stop
+    }
 }
 
 fn refused(kind: RefusalKind, text: impl Into<String>) -> Reply {
@@ -767,21 +810,16 @@ impl<C: Connect> Worker<C> {
     }
 
     /// Whether the running request `id` should stop, for the library's
-    /// `Cancel`: a cancel reached it, or the idle period has passed while it
-    /// ran (module doc, "Lifecycle"). Once it says stop it goes on saying
-    /// so, so a walk the library hands on after it stopped one is stopped at
-    /// once too.
+    /// `Cancel`: [`stop_predicate`], sharing the request's memory of a stop
+    /// with every other predicate made for it.
     fn stop_asked(&self, id: RequestId) -> impl Fn() -> bool + 'static {
-        let flag = Arc::clone(&self.cancel);
-        let idle = self
-            .idle_stops
-            .then(|| (Arc::clone(&self.activity), self.idle));
-        move || {
-            flag.load(Ordering::Relaxed) >= id.0
-                || idle
-                    .as_ref()
-                    .is_some_and(|(person, period)| person.idle_for() >= *period)
-        }
+        stop_predicate(
+            Arc::clone(&self.cancel),
+            id,
+            self.idle_stops
+                .then(|| (Arc::clone(&self.activity), self.idle)),
+            Arc::clone(&self.stopped),
+        )
     }
 
     /// Send on how far request `id` has got, as the library counted it.
@@ -818,6 +856,7 @@ impl<C: Connect> Worker<C> {
                 Envelope::Command(id, command) => {
                     let typed = typed_by_the_person(&command);
                     self.idle_stops = !typed;
+                    self.stopped = Arc::new(AtomicBool::new(false));
                     let reply = if stops_before_starting(&command) && self.cancel_reached(id) {
                         // Sent before a cancel and not yet started: it does
                         // nothing at all (module doc). This is what keeps a
@@ -2087,6 +2126,58 @@ pub fn save_artifact(path: &Path, artifact_hex: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The interleaving the predicate's memory is for: the idle period
+    /// passes and stops a walk, the person touches the interface, and the
+    /// request asks again.
+    #[test]
+    fn an_idle_stop_holds_for_the_rest_of_the_request() {
+        let person = Arc::new(PersonActivity::new());
+        let period = Duration::from_millis(200);
+        let no_cancel = Arc::new(AtomicU64::new(0));
+        let request = Arc::new(AtomicBool::new(false));
+        let asked = stop_predicate(
+            Arc::clone(&no_cancel),
+            RequestId(1),
+            Some((Arc::clone(&person), period)),
+            Arc::clone(&request),
+        );
+        assert!(!asked(), "not idle yet");
+        thread::sleep(period + Duration::from_millis(50));
+        assert!(asked(), "the idle period has passed");
+        person.mark();
+        assert!(asked(), "a touch after the stop does not undo it");
+        // A predicate made later for the same request (the wallet opening
+        // after a restore or an advance) is stopped too.
+        let reopen = stop_predicate(
+            Arc::clone(&no_cancel),
+            RequestId(1),
+            Some((Arc::clone(&person), period)),
+            Arc::clone(&request),
+        );
+        assert!(reopen(), "the reopening hears the same stop");
+        // The next request starts afresh.
+        let next = stop_predicate(
+            no_cancel,
+            RequestId(2),
+            Some((person, period)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        assert!(!next(), "the person is back; the next request runs");
+    }
+
+    #[test]
+    fn a_cancel_stops_the_requests_sent_before_it_only() {
+        let cancel = Arc::new(AtomicU64::new(3));
+        let fresh = || Arc::new(AtomicBool::new(false));
+        assert!(stop_predicate(
+            Arc::clone(&cancel),
+            RequestId(3),
+            None,
+            fresh()
+        )());
+        assert!(!stop_predicate(cancel, RequestId(4), None, fresh())());
+    }
 
     #[test]
     fn reference_text_stops_at_the_first_nul() {
