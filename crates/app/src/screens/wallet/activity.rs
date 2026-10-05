@@ -242,7 +242,9 @@ fn pending_row<'a>(
 fn index_row<'a>(model: &'a Model, r: &Row<'a>, selected: bool) -> Element<'a, Message> {
     let (title, detail) = describe(r);
     let (amount, ink) = amount(r, model.prefs.unit);
-    let when = r.tx.time_ms.map_or_else(|| "—".to_owned(), ui::date_time);
+    let when =
+        r.tx.time_ms
+            .map_or_else(|| "—".to_owned(), |ms| ui::date_time(ms, model.zone));
     let content = row![
         t(when, ty::TABLE_BODY, color::TEXT_SECONDARY).width(Length::FillPortion(3)),
         column![
@@ -357,8 +359,10 @@ fn detail<'a>(model: &'a Model, page: &'a WalletPage, r: &Row<'a>) -> Element<'a
         .spacing(sp::S12)
         .align_y(Alignment::Center),
         t(
-            r.tx.time_ms
-                .map_or_else(|| "time not given".to_owned(), ui::full_time),
+            r.tx.time_ms.map_or_else(
+                || "time not given".to_owned(),
+                |ms| ui::full_time(ms, model.zone)
+            ),
             ty::NOTE,
             color::TEXT_MUTED
         ),

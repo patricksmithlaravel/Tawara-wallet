@@ -12,6 +12,7 @@ repository.workspace = true
 # `tests/policy.rs` checks this manifest.
 
 [dependencies]
+chrono.workspace = true
 iced.workspace = true
 tawara-wallet-core.workspace = true
 

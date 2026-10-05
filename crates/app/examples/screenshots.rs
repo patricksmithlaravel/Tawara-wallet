@@ -63,6 +63,8 @@ fn base() -> Model {
     // The clock stands 48 seconds after the sample chain's newest block,
     // so the drawn age is the same on every run.
     model.clock_ms = sample::TIP_MS + 48_000;
+    // Dates in UTC whatever the machine's zone, for the same reason.
+    model.zone = tawara_app::ui::Zone::Fixed(0);
     model.screen = Screen::Start {
         choice: StartChoice::Create,
     };

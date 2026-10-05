@@ -449,7 +449,9 @@ fn recent<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> {
                     Kind::Received | Kind::Reward => (Icon::Receive, color::ACCENT),
                     Kind::Own | Kind::Other => (Icon::Swap, color::TEXT_SECONDARY),
                 };
-                let when = r.tx.time_ms.map_or_else(|| "—".to_owned(), ui::short_date);
+                let when =
+                    r.tx.time_ms
+                        .map_or_else(|| "—".to_owned(), |ms| ui::short_date(ms, model.zone));
                 list = list.push(line(
                     glyph,
                     tint,

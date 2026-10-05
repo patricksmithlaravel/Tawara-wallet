@@ -1093,11 +1093,20 @@ cards that D27 item 16 moved here. The choices it makes:
    transaction's id under a row instead, and no reference is inferred.
    Text the node sends is made safe to show by the command line's rule
    for external text (`cli::terminal_text`, repeated likewise).
-4. **Dates are shown in UTC, and say so.** The library carries no calendar
-   and prints the raw count; Tawara reads no time zone from the system.
-   The age of the newest block is measured by a clock that moves each
-   second, on a thread of its own, as the worker's events are (iced's
-   thread-pool executor keeps no timer; no dependency is added).
+4. **Dates are shown in the system's time zone** (the owner, on PR (c)'s
+   first draft, which showed UTC). The library carries no calendar and
+   prints the raw count, so the application reads the zone with `chrono`,
+   its `clock` feature alone: chrono reads the zone itself (the TZ
+   variable or /etc/localtime on Unix, the system's API on Windows, the tz
+   data on Android) and never calls the C library's `localtime`, which is
+   unsound beside other threads; the `time` crate refuses a local offset
+   in a program with threads for that reason. It adds three crates
+   (`chrono`, `iana-time-zone` and its Haiku shim), all MIT or Apache-2.0;
+   the rest of what it needs was already in the graph. A transaction's
+   full time names its offset ("UTC+2"). The screenshots are drawn in UTC,
+   so they are the same on every machine. The age of the newest block is
+   measured by a clock that moves each second, on a thread of its own, as
+   the worker's events are (iced's thread-pool executor keeps no timer).
 5. **Account recovery shows every report whole first.** D19 asks for the
    library's whole report for every account before anything else; D28
    puts each library page behind a banner. On W12 each account's banner

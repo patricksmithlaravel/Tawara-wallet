@@ -70,6 +70,8 @@ pub struct Model {
     /// The wall clock, in milliseconds since the epoch, moved on each
     /// second: what a block's age is told against.
     pub clock_ms: i64,
+    /// The time zone dates are shown in: the system's.
+    pub zone: crate::ui::Zone,
     /// The open store's transactions from the node's index (W1, W10).
     pub activity: Explored<Vec<AccountHistory>>,
     /// The node's newest blocks (W1's network card).
@@ -483,6 +485,7 @@ impl Model {
             stopped: None,
             width: crate::WINDOW.0,
             clock_ms: now_ms(),
+            zone: crate::ui::Zone::System,
             activity: Explored::default(),
             blocks: Explored::default(),
         };

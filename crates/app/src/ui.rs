@@ -520,63 +520,95 @@ pub fn unit_name(unit: tawara_wallet_core::preferences::AmountUnit) -> &'static 
     }
 }
 
-/// A time the node gave (milliseconds since the epoch) on the UTC calendar:
-/// year, month (1 to 12), day, hour, minute, second. The library carries no
-/// calendar and prints the raw count; the screens show dates, always in UTC
-/// and saying so, since no time zone is read from the system.
-#[must_use]
-pub fn utc(ms: i64) -> (i64, u32, u32, u32, u32, u32) {
-    let secs = ms.div_euclid(1_000);
-    let days = secs.div_euclid(86_400);
-    let of_day = secs.rem_euclid(86_400);
-    // Howard Hinnant's days-to-civil, for the proleptic Gregorian calendar.
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    let part = |n: i64| u32::try_from(n).unwrap_or(0);
-    (
-        year,
-        part(month),
-        part(day),
-        part(of_day / 3_600),
-        part(of_day % 3_600 / 60),
-        part(of_day % 60),
-    )
+/// Which clock the screens tell a time by.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Zone {
+    /// The system's time zone, with its summer time, as chrono reads it:
+    /// the TZ variable or /etc/localtime on Unix, the system's API on
+    /// Windows, the tz data on Android.
+    #[default]
+    System,
+    /// A fixed offset from UTC, in seconds east: the screenshots, so they
+    /// are drawn the same on every machine.
+    Fixed(i32),
+}
+
+/// A time the node gave (milliseconds since the epoch) as the wall clock
+/// read it in `zone`. The library carries no calendar and prints the raw
+/// count; `None` for a count no calendar holds.
+fn wall(ms: i64, zone: Zone) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    let at = chrono::DateTime::from_timestamp_millis(ms)?;
+    let offset = match zone {
+        Zone::System => *at.with_timezone(&chrono::Local).offset(),
+        Zone::Fixed(east) => chrono::FixedOffset::east_opt(east)?,
+    };
+    Some(at.with_timezone(&offset))
 }
 
 const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
-/// "Oct 3", in UTC.
+/// "Oct 3", on the wall clock.
 #[must_use]
-pub fn short_date(ms: i64) -> String {
-    let (_, month, day, ..) = utc(ms);
-    let name = MONTHS
-        .get(usize::try_from(month).unwrap_or(1).saturating_sub(1))
-        .copied()
-        .unwrap_or("");
-    format!("{name} {day}")
+pub fn short_date(ms: i64, zone: Zone) -> String {
+    use chrono::Datelike as _;
+    wall(ms, zone).map_or_else(
+        || "—".to_owned(),
+        |t| format!("{} {}", MONTHS[t.month0() as usize], t.day()),
+    )
 }
 
-/// "Oct 3 · 14:03", in UTC.
+/// "Oct 3 · 14:03", on the wall clock.
 #[must_use]
-pub fn date_time(ms: i64) -> String {
-    let (.., hour, minute, _) = utc(ms);
-    format!("{} · {hour:02}:{minute:02}", short_date(ms))
+pub fn date_time(ms: i64, zone: Zone) -> String {
+    use chrono::Timelike as _;
+    wall(ms, zone).map_or_else(
+        || "—".to_owned(),
+        |t| {
+            format!(
+                "{} · {:02}:{:02}",
+                short_date(ms, zone),
+                t.hour(),
+                t.minute()
+            )
+        },
+    )
 }
 
-/// "2026-10-03 14:03:20 UTC".
+/// "2026-10-03 16:03:20 UTC+2", on the wall clock, saying its offset.
 #[must_use]
-pub fn full_time(ms: i64) -> String {
-    let (year, month, day, hour, minute, second) = utc(ms);
-    format!("{year}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} UTC")
+pub fn full_time(ms: i64, zone: Zone) -> String {
+    use chrono::{Datelike as _, Timelike as _};
+    wall(ms, zone).map_or_else(
+        || "—".to_owned(),
+        |t| {
+            format!(
+                "{}-{:02}-{:02} {:02}:{:02}:{:02} {}",
+                t.year(),
+                t.month(),
+                t.day(),
+                t.hour(),
+                t.minute(),
+                t.second(),
+                offset_name(t.offset().local_minus_utc())
+            )
+        },
+    )
+}
+
+/// An offset from UTC as a person reads it: "UTC", "UTC+2", "UTC-5:30".
+fn offset_name(east: i32) -> String {
+    if east == 0 {
+        return "UTC".to_owned();
+    }
+    let sign = if east > 0 { '+' } else { '-' };
+    let (hours, minutes) = (east.abs() / 3_600, east.abs() % 3_600 / 60);
+    if minutes == 0 {
+        format!("UTC{sign}{hours}")
+    } else {
+        format!("UTC{sign}{hours}:{minutes:02}")
+    }
 }
 
 /// How long before `now` the time `then` was, both in milliseconds since
@@ -646,12 +678,26 @@ mod tests {
     }
 
     #[test]
-    fn times_are_read_on_the_utc_calendar() {
-        assert_eq!(utc(0), (1970, 1, 1, 0, 0, 0));
-        assert_eq!(full_time(1_791_036_200_000), "2026-10-03 14:03:20 UTC");
-        assert_eq!(date_time(1_791_036_200_000), "Oct 3 · 14:03");
-        assert_eq!(full_time(951_782_400_000), "2000-02-29 00:00:00 UTC");
-        assert_eq!(full_time(-1_000), "1969-12-31 23:59:59 UTC");
+    fn times_are_told_on_the_wall_clock_of_the_zone() {
+        let utc = Zone::Fixed(0);
+        assert_eq!(full_time(0, utc), "1970-01-01 00:00:00 UTC");
+        assert_eq!(full_time(1_791_036_200_000, utc), "2026-10-03 14:03:20 UTC");
+        assert_eq!(date_time(1_791_036_200_000, utc), "Oct 3 · 14:03");
+        assert_eq!(full_time(951_782_400_000, utc), "2000-02-29 00:00:00 UTC");
+        assert_eq!(full_time(-1_000, utc), "1969-12-31 23:59:59 UTC");
+        // East of UTC the date can turn over; west of it, back.
+        let tokyo = Zone::Fixed(9 * 3_600);
+        assert_eq!(
+            full_time(1_791_036_200_000, tokyo),
+            "2026-10-03 23:03:20 UTC+9"
+        );
+        assert_eq!(date_time(1_791_050_000_000, tokyo), "Oct 4 · 02:53");
+        let delhi = Zone::Fixed(5 * 3_600 + 1_800);
+        assert!(full_time(0, delhi).ends_with("UTC+5:30"));
+        let la = Zone::Fixed(-7 * 3_600);
+        assert_eq!(short_date(1_791_000_000_000, la), "Oct 2");
+        // The system's zone gives a time too, whichever it is.
+        assert_ne!(full_time(1_791_036_200_000, Zone::System), "—");
         assert_eq!(age(10_000, 10_000), "just now");
         assert_eq!(age(58_000, 10_000), "48 s ago");
         assert_eq!(age(10_000 + 360_000, 10_000), "6 min ago");
