@@ -843,6 +843,21 @@ fn an_idle_store_locks_itself() {
 }
 
 #[test]
+fn a_shorter_idle_period_takes_effect_at_once() {
+    let scratch = Scratch::new("idle-period");
+    let mut h = Harness::with(Config {
+        idle_lock: Duration::from_secs(3_600),
+    });
+    let _ = opened(h.create_from_phrase(&scratch.store()));
+    // The worker is waiting out the hour it started with; the new period
+    // wakes it, and counts from the person's last input.
+    h.handle.set_idle_lock(Duration::from_millis(300));
+    let started = Instant::now();
+    assert_eq!(h.wait_locked(Duration::from_secs(10)), LockReason::Idle);
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
 fn an_idle_lock_drops_a_waiting_phrase_and_says_so() {
     let scratch = Scratch::new("idle-phrase");
     let mut h = Harness::with(Config {

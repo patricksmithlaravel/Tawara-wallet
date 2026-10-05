@@ -176,24 +176,47 @@ impl std::error::Error for WorkerStopped {}
 enum Envelope {
     Command(RequestId, Command),
     Background,
+    /// The idle period changed ([`WorkerHandle::set_idle_lock`]): measure the
+    /// wait for the next command again.
+    Wake,
     Shutdown,
 }
 
-/// When the person last did something, shared by the handle and the worker
-/// so that input during a long command counts at once rather than queueing
+/// When the person last did something, and how long the store may stay
+/// open after that, shared by the handle and the worker so that input or a
+/// new period during a long command counts at once rather than queueing
 /// behind it (module doc, "Lifecycle").
 struct PersonActivity {
     epoch: Instant,
     /// Milliseconds after `epoch`.
     last: AtomicU64,
+    /// The idle period, in milliseconds.
+    period: AtomicU64,
 }
 
 impl PersonActivity {
-    fn new() -> PersonActivity {
-        PersonActivity {
+    fn new(period: Duration) -> PersonActivity {
+        let activity = PersonActivity {
             epoch: Instant::now(),
             last: AtomicU64::new(0),
-        }
+            period: AtomicU64::new(0),
+        };
+        activity.set_period(period);
+        activity
+    }
+
+    fn period(&self) -> Duration {
+        Duration::from_millis(self.period.load(Ordering::Relaxed))
+    }
+
+    fn set_period(&self, period: Duration) {
+        let ms = u64::try_from(period.as_millis()).unwrap_or(u64::MAX);
+        self.period.store(ms, Ordering::Relaxed);
+    }
+
+    /// Whether the person has been away for the idle period.
+    fn away(&self) -> bool {
+        self.idle_for() >= self.period()
     }
 
     fn now(&self) -> u64 {
@@ -268,6 +291,16 @@ impl WorkerHandle {
         self.activity.mark();
     }
 
+    /// Lock after `period` with nothing done from now on, in place of the
+    /// period the worker was started with ([`Config::idle_lock`]). It takes
+    /// effect at once, for a running command too, and counts from the
+    /// person's last input, so a shorter period can lock straight away. The
+    /// interface offers [`crate::preferences::IDLE_LOCK_MINUTES`].
+    pub fn set_idle_lock(&self, period: Duration) {
+        self.activity.set_period(period);
+        let _ = self.tx.send(Envelope::Wake);
+    }
+
     /// Ask every command sent so far to stop (module doc, "Cancellation"):
     /// one not yet started does nothing and answers with a refusal of kind
     /// [`RefusalKind::Cancelled`], and a running one stops where the library
@@ -304,7 +337,7 @@ pub fn spawn<C: Connect>(
     let (events, received) = mpsc::channel();
     let cancel = Arc::new(AtomicU64::new(0));
     let flag = Arc::clone(&cancel);
-    let activity = Arc::new(PersonActivity::new());
+    let activity = Arc::new(PersonActivity::new(config.idle_lock));
     let person = Arc::clone(&activity);
     thread::Builder::new()
         .name("tawara-wallet-core".into())
@@ -321,7 +354,6 @@ pub fn spawn<C: Connect>(
                 plan: None,
                 events,
                 cancel: flag,
-                idle: config.idle_lock,
                 activity: person,
                 idle_stops: false,
                 stopped: Arc::new(AtomicBool::new(false)),
@@ -412,7 +444,7 @@ struct Worker<C: Connect> {
     plan: Option<PendingPlan>,
     events: Sender<Event>,
     cancel: Arc<AtomicU64>,
-    idle: Duration,
+    /// The person's last input and the idle period, shared with the handle.
     activity: Arc<PersonActivity>,
     /// Whether the idle period stops the running command, as a cancel does:
     /// for every command but those carrying the person's input (module
@@ -451,8 +483,8 @@ fn typed_by_the_person(command: &Command) -> bool {
 
 /// The stop predicate for the running request `id`, for the library's
 /// `Cancel`: a cancel reached it (`cancel` holds the newest request id to
-/// stop), or, with `idle`, the person has been away for the idle period
-/// (module doc, "Lifecycle").
+/// stop), or, with `idle`, the person has been away for the idle period as
+/// it is when asked (module doc, "Lifecycle").
 ///
 /// **Once it says stop, it says stop for the rest of the request**, through
 /// `stopped`, which every predicate made for the request shares. A cancel
@@ -467,7 +499,7 @@ fn typed_by_the_person(command: &Command) -> bool {
 fn stop_predicate(
     cancel: Arc<AtomicU64>,
     id: RequestId,
-    idle: Option<(Arc<PersonActivity>, Duration)>,
+    idle: Option<Arc<PersonActivity>>,
     stopped: Arc<AtomicBool>,
 ) -> impl Fn() -> bool + 'static {
     move || {
@@ -475,9 +507,7 @@ fn stop_predicate(
             return true;
         }
         let stop = cancel.load(Ordering::Relaxed) >= id.0
-            || idle
-                .as_ref()
-                .is_some_and(|(person, period)| person.idle_for() >= *period);
+            || idle.as_ref().is_some_and(|person| person.away());
         if stop {
             stopped.store(true, Ordering::Relaxed);
         }
@@ -831,8 +861,7 @@ impl<C: Connect> Worker<C> {
         stop_predicate(
             Arc::clone(&self.cancel),
             id,
-            self.idle_stops
-                .then(|| (Arc::clone(&self.activity), self.idle)),
+            self.idle_stops.then(|| Arc::clone(&self.activity)),
             Arc::clone(&self.stopped),
         )
     }
@@ -854,11 +883,14 @@ impl<C: Connect> Worker<C> {
             // Checked before anything more is taken from the queue: commands
             // queued behind a slow one (polls outrunning a slow node) must
             // not keep the store open past the idle period.
-            if self.holds_secrets() && self.activity.idle_for() >= self.idle {
+            if self.holds_secrets() && self.activity.away() {
                 self.lock(LockReason::Idle);
             }
             let envelope = if self.holds_secrets() {
-                let left = self.idle.saturating_sub(self.activity.idle_for());
+                let left = self
+                    .activity
+                    .period()
+                    .saturating_sub(self.activity.idle_for());
                 match rx.recv_timeout(left) {
                     Ok(e) => e,
                     Err(RecvTimeoutError::Timeout) => continue,
@@ -890,6 +922,7 @@ impl<C: Connect> Worker<C> {
                     self.emit(Event::Done { id, reply });
                 }
                 Envelope::Background => self.lock(LockReason::Background),
+                Envelope::Wake => {}
                 Envelope::Shutdown => {
                     self.lock(LockReason::Shutdown);
                     return;
@@ -2199,14 +2232,14 @@ mod tests {
     /// request asks again.
     #[test]
     fn an_idle_stop_holds_for_the_rest_of_the_request() {
-        let person = Arc::new(PersonActivity::new());
         let period = Duration::from_millis(200);
+        let person = Arc::new(PersonActivity::new(period));
         let no_cancel = Arc::new(AtomicU64::new(0));
         let request = Arc::new(AtomicBool::new(false));
         let asked = stop_predicate(
             Arc::clone(&no_cancel),
             RequestId(1),
-            Some((Arc::clone(&person), period)),
+            Some(Arc::clone(&person)),
             Arc::clone(&request),
         );
         assert!(!asked(), "not idle yet");
@@ -2219,7 +2252,7 @@ mod tests {
         let reopen = stop_predicate(
             Arc::clone(&no_cancel),
             RequestId(1),
-            Some((Arc::clone(&person), period)),
+            Some(Arc::clone(&person)),
             Arc::clone(&request),
         );
         assert!(reopen(), "the reopening hears the same stop");
@@ -2227,7 +2260,7 @@ mod tests {
         let next = stop_predicate(
             no_cancel,
             RequestId(2),
-            Some((person, period)),
+            Some(person),
             Arc::new(AtomicBool::new(false)),
         );
         assert!(!next(), "the person is back; the next request runs");
