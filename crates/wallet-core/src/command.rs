@@ -20,6 +20,16 @@ use crate::view::AccountId;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RequestId(pub(crate) u64);
 
+impl RequestId {
+    /// An id for sample data (the screenshots, docs/DECISIONS.md D27 item
+    /// 1). The worker numbers requests from 1, so this one never answers
+    /// anything.
+    #[must_use]
+    pub const fn example() -> RequestId {
+        RequestId(0)
+    }
+}
+
 /// A planned spend waiting for confirmation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PlanId(pub(crate) u64);

@@ -89,6 +89,19 @@ impl PhraseForDisplay {
         }
     }
 
+    /// The BIP39 all-`abandon` 24-word test vector, for drawing the phrase
+    /// screen with sample data (the screenshots, docs/DECISIONS.md D27 item
+    /// 1). It is a published test vector, so it is no one's phrase; a
+    /// phrase a person is shown comes only from the worker.
+    #[must_use]
+    pub fn example() -> PhraseForDisplay {
+        PhraseForDisplay::new(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+             abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+             abandon abandon abandon art",
+        )
+    }
+
     /// The words, in order, for laying out one per cell.
     pub fn words(&self) -> impl Iterator<Item = &str> {
         self.words.split_whitespace()
