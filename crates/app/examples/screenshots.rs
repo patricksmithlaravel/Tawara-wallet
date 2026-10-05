@@ -501,6 +501,16 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
                 ..ActivityPage::default()
             })),
         ),
+        // A payment received chosen: its reference is on the destination
+        // that reached the account.
+        (
+            "w10-activity-received",
+            DASHBOARD,
+            on(Page::Activity(ActivityPage {
+                selected: Some(sample::activity()[0].transactions[1].id.clone()),
+                ..ActivityPage::default()
+            })),
+        ),
         ("w10-activity-no-index", DASHBOARD, no_index),
         (
             "w11-settings",

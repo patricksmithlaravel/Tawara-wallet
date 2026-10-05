@@ -62,7 +62,10 @@ pub struct OperationView {
     /// In nanoMCM; negative for a source debited.
     pub amount: i128,
     /// The reference the node carries for it, made safe to show; empty for
-    /// none.
+    /// none. The node sends a destination's reference as its whole
+    /// sixteen-byte field, a short one padded with NUL bytes, on `/block` and
+    /// on the index's rows alike; the padding is not part of it and is left
+    /// off.
     pub memo: String,
 }
 
@@ -182,7 +185,7 @@ impl TransactionView {
                     },
                     party: party(&o.address),
                     amount: o.amount,
-                    memo: shown(&o.memo),
+                    memo: shown(o.memo.trim_end_matches('\0')),
                 })
                 .collect(),
         }
@@ -383,6 +386,15 @@ mod tests {
         );
         assert_eq!(party("pool"), Party::Other("pool".to_owned()));
         assert_eq!(party(&"zz".repeat(20)), Party::Other("zz".repeat(20)));
+    }
+
+    #[test]
+    fn a_reference_is_shown_without_its_field_padding() {
+        let t = tx(vec![op(OP_DESTINATION, &tag_hex(2), 1, "INV-1\0\0\0\0\0")]);
+        assert_eq!(t.operations[0].memo, "INV-1");
+        // Only the padding: a NUL inside is the node's text, shown escaped.
+        let t = tx(vec![op(OP_DESTINATION, &tag_hex(2), 1, "A\0B\0")]);
+        assert_eq!(t.operations[0].memo, "A\\u{0}B");
     }
 
     #[test]

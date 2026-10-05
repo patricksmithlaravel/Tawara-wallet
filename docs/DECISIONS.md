@@ -1089,11 +1089,25 @@ cards that D27 item 16 moved here. The choices it makes:
    accounts' rows and is listed once, from the account it left. The words
    (sent, received, between own accounts, mining reward) are Tawara's;
    they say nothing a row does not.
-3. **References appear only where the node sends them.** The library
-   notes that the index carries none on these rows, so Activity shows the
-   transaction's id under a row instead, and no reference is inferred.
-   Text the node sends is made safe to show by the command line's rule
-   for external text (`cli::terminal_text`, repeated likewise).
+3. **References come from the index's rows** (the owner, on PR (c)'s
+   first draft). The first draft said the index carries none, after the
+   library's codec, which notes that `metadata` is absent on every
+   `/search` operation; that note generalises from the one transaction the
+   library captured live, which had no reference. At the pinned middleware
+   (`mochimo-mesh` at `ddc1ee5`) the indexer records each destination's
+   reference (`indexer/transactions.go:235`) and `/search` returns it as
+   `metadata.memo` when it is not empty (`indexer/search.go:143`), and the
+   library already reads it there (`Operation::memo`). A read of each
+   transaction's block, built on the wrong premise and taken out again,
+   would only repeat it. A row shows its own references: for a payment
+   received, those on the destinations that reached the account; for
+   anything else, those on the destinations it paid, the change left out.
+   Where a row carries none, the transaction's id is shown under it, and
+   no reference is inferred. Both endpoints send a reference as its whole
+   sixteen-byte field, padded with NUL bytes; the padding is left off, and
+   any other text the node sends is made safe to show by the command
+   line's rule for external text (`cli::terminal_text`, repeated
+   likewise).
 4. **Dates are shown in the system's time zone** (the owner, on PR (c)'s
    first draft, which showed UTC). The library carries no calendar and
    prints the raw count, so the application reads the zone with `chrono`,

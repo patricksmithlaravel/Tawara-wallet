@@ -209,8 +209,18 @@ impl Chain {
 
     /// The index records a transfer of `amount` from `from` to `to` in
     /// `block`, as the index spells one: the source debited gross, the
-    /// change back to it as a destination of its own, and the fee.
-    pub fn index_transfer(&self, from: Tag, to: Tag, amount: u64, change: u64, block: u64) {
+    /// change back to it as a destination of its own, and the fee. A
+    /// `reference` that is not empty rides on the payee's operation as the
+    /// indexer stores it: the whole sixteen-byte field, padded with NULs.
+    pub fn index_transfer(
+        &self,
+        from: Tag,
+        to: Tag,
+        amount: u64,
+        change: u64,
+        block: u64,
+        reference: &str,
+    ) {
         let mut s = self.0.lock().expect("chain");
         s.indexed += 1;
         let fee = 500;
@@ -223,13 +233,18 @@ impl Chain {
             })
         };
         let gross = i128::from(amount + change + fee);
+        let mut paid = op(1, "DESTINATION_TRANSFER", &to, i128::from(amount));
+        if !reference.is_empty() {
+            let field = format!("{reference:\0<16}");
+            paid["metadata"] = serde_json::json!({ "memo": field });
+        }
         let row = serde_json::json!({
             "transaction_identifier": { "hash": format!("0x{:064x}", s.indexed) },
             "block_identifier": { "index": block, "hash": format!("0x{:064x}", block) },
             "timestamp": block * 60_000,
             "operations": [
                 op(0, "SOURCE_TRANSFER", &from, -gross),
-                op(1, "DESTINATION_TRANSFER", &to, i128::from(amount)),
+                paid,
                 op(2, "DESTINATION_TRANSFER", &from, i128::from(change)),
                 {
                     "operation_identifier": { "index": 3 },

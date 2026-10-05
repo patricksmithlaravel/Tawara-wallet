@@ -421,6 +421,20 @@ fn detail<'a>(model: &'a Model, page: &'a WalletPage, r: &Row<'a>) -> Element<'a
         (Some(b), _) => ui::group(&b.to_string()),
         (None, _) => "—".to_owned(),
     };
+    // A payment received carries its reference on the destination that
+    // reached the account, not on the payer listed above.
+    if r.kind == Kind::Received {
+        let references = r.references();
+        card = card.push(fact(
+            "Reference",
+            if references.is_empty() {
+                "none".to_owned()
+            } else {
+                references.join(" · ")
+            },
+            !references.is_empty(),
+        ));
+    }
     card = card
         .push(fact("Transaction id", r.tx.id.clone(), true))
         .push(fact("Block", confirmations, false))

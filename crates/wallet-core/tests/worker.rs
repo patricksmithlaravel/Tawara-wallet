@@ -2048,7 +2048,8 @@ fn activity_reads_every_account_from_the_index_and_says_when_there_is_none() {
     let scratch = Scratch::new("activity");
     let (mut h, _) = funded(&scratch);
     let payee = AccountId::from_tag(tag(5));
-    h.chain.index_transfer(tag(0), tag(5), 400_000, 1_000, 990);
+    h.chain
+        .index_transfer(tag(0), tag(5), 400_000, 1_000, 990, "INV-7");
 
     let id = h.handle.send(Command::Activity).expect("worker running");
     assert_eq!(h.wait_busy(id), Activity::ReadingIndex);
@@ -2070,6 +2071,11 @@ fn activity_reads_every_account_from_the_index_and_says_when_there_is_none() {
     assert_eq!(tx.paid_out(account0()).count(), 1);
     assert_eq!(tx.fee(), 500);
     assert_eq!(tx.net(payee), 400_000);
+    let paid: Vec<_> = tx.paid_out(account0()).collect();
+    assert_eq!(
+        paid[0].memo, "INV-7",
+        "the index's row carries the reference, its padding left off"
+    );
 
     // A node that runs no index: the library's reading, for every account.
     h.chain.set_no_index(true);

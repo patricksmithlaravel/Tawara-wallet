@@ -6,12 +6,12 @@
 //! (`TransactionView::net` and `direction`, the command line's own sums).
 //! What this module adds is the person's word for it: sent, received,
 //! between the store's own accounts, or a mining reward. It says nothing a
-//! row does not: the index carries no reference on its rows, so none is
-//! shown that the node did not send, and a spend still settling is the
-//! store's own record, with no amount, never a row of the index.
+//! row does not: a reference is the one the index's row carries on a
+//! destination (docs/DECISIONS.md D29, item 3), and a spend still settling
+//! is the store's own record, with no amount, never a row of the index.
 
 use tawara_wallet_core::explorer::{
-    AccountHistory, Direction, OperationView, Party, TransactionView,
+    AccountHistory, Direction, OperationKind, OperationView, Party, TransactionView,
 };
 use tawara_wallet_core::view::{AccountId, AccountRow, AccountState};
 
@@ -56,11 +56,22 @@ impl Row<'_> {
         self.tx.paid_by(self.account)
     }
 
-    /// The references the node sent with it, if any.
+    /// The references the index's row carries that are this row's to show:
+    /// those on the destinations that reached the account, for a payment
+    /// received; those on the destinations it paid, for anything else.
     pub fn references(&self) -> Vec<&str> {
-        self.tx
+        let to_me = |o: &&OperationView| o.party == Party::Account(self.account);
+        let carried = self
+            .tx
             .operations
             .iter()
+            .filter(|o| o.kind == OperationKind::Destination);
+        let mine: Vec<&OperationView> = if self.kind == Kind::Received {
+            carried.filter(to_me).collect()
+        } else {
+            carried.filter(|o| !to_me(o)).collect()
+        };
+        mine.into_iter()
             .map(|o| o.memo.as_str())
             .filter(|m| !m.is_empty())
             .collect()
@@ -224,7 +235,30 @@ mod tests {
         assert_eq!(kinds[0], Kind::Sent, "newest first: the batch send");
         assert_eq!(rows[0].payees().count(), 2);
         assert!(rows[0].amount < 0);
-        assert!(kinds.contains(&Kind::Received));
+        assert_eq!(
+            rows[0].references(),
+            ["INV-0412"],
+            "the payee's reference, its padding left off"
+        );
+        let received = rows
+            .iter()
+            .find(|r| r.kind == Kind::Received)
+            .expect("a payment received");
+        assert_eq!(received.references(), ["ORDER-77"]);
+        // Seen from the other payee, who was given none, the batch shows no
+        // reference: the first payee's is not theirs.
+        let payee = match &rows[0].tx.operations[2].party {
+            Party::Account(id) => *id,
+            other => panic!("expected an account, got {other:?}"),
+        };
+        let seen = Row {
+            tx: rows[0].tx,
+            account: payee,
+            kind: Kind::Received,
+            amount: 0,
+            history: rows[0].history,
+        };
+        assert!(seen.references().is_empty(), "the other payee's has none");
         assert!(kinds.contains(&Kind::Reward));
         let own = rows
             .iter()

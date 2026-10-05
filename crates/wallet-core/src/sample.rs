@@ -408,9 +408,21 @@ fn spend(
 
 const MCM: i128 = 1_000_000_000;
 
+/// `tx` with `reference` on its destination to `to`, as the indexer stores
+/// one: the whole sixteen-byte field, padded with NULs.
+fn referenced(mut tx: MeshTransaction, to: [u8; 20], reference: &str) -> MeshTransaction {
+    let address = format!("0x{}", hex(&to));
+    for op in &mut tx.operations {
+        if op.kind == OP_DESTINATION && op.address == address {
+            op.memo = format!("{reference:\0<16}");
+        }
+    }
+    tx
+}
+
 /// What the node's index holds for each account of the sample store, newest
-/// first, and the library's page for each. The index carries no references
-/// on these rows, as the library notes of `/search`.
+/// first, and the library's page for each. Some rows carry a reference on a
+/// destination, as the index does when the spend gave one.
 #[must_use]
 pub fn activity() -> Vec<AccountHistory> {
     let own = spend(
@@ -425,21 +437,29 @@ pub fn activity() -> Vec<AccountHistory> {
         (
             tag(1),
             vec![
-                spend(
-                    0x91,
-                    870_668,
-                    1_791_036_200_000,
-                    tag(1),
-                    &[(tag(7), 420 * MCM), (tag(8), 380 * MCM)],
-                    9_215 * MCM,
+                referenced(
+                    spend(
+                        0x91,
+                        870_668,
+                        1_791_036_200_000,
+                        tag(1),
+                        &[(tag(7), 420 * MCM), (tag(8), 380 * MCM)],
+                        9_215 * MCM,
+                    ),
+                    tag(7),
+                    "INV-0412",
                 ),
-                spend(
-                    0x37,
-                    870_645,
-                    1_791_029_405_000,
-                    tag(9),
-                    &[(tag(1), 420 * MCM)],
-                    1_200 * MCM,
+                referenced(
+                    spend(
+                        0x37,
+                        870_645,
+                        1_791_029_405_000,
+                        tag(9),
+                        &[(tag(1), 420 * MCM)],
+                        1_200 * MCM,
+                    ),
+                    tag(1),
+                    "ORDER-77",
                 ),
                 spend(
                     0x62,
