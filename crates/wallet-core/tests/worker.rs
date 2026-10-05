@@ -232,6 +232,66 @@ fn abandoning_drops_the_pending_phrase() {
     assert_eq!(keystore::occupied(&scratch.store()), None);
 }
 
+#[cfg(unix)]
+#[test]
+fn a_store_the_library_will_not_write_leaves_its_phrase_waiting() {
+    use std::os::unix::fs::PermissionsExt;
+    let scratch = Scratch::new("create-unsafe");
+    let dir = scratch.store();
+    // An empty folder anyone may write to: the library will not put a
+    // store in it.
+    std::fs::create_dir_all(&dir).expect("store folder");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).expect("mode");
+    let mut h = Harness::new();
+    let (words, positions) = match h.call(Command::CreateBegin {
+        dir: dir.clone(),
+        password: secret(PASSWORD),
+        password_again: secret(PASSWORD),
+    }) {
+        Reply::CreatePhrase {
+            phrase,
+            confirm_positions,
+        } => (
+            phrase.words().map(str::to_owned).collect::<Vec<_>>(),
+            confirm_positions,
+        ),
+        other => panic!("expected a phrase, got {other:?}"),
+    };
+    let answer = positions
+        .iter()
+        .map(|&p| words[p - 1].as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    // The right words, and a folder the library refuses: nothing written,
+    // and the phrase still waits.
+    let unsafe_folder = refusal(h.call(Command::CreateConfirm {
+        answer: secret(&answer),
+    }));
+    assert_eq!(
+        unsafe_folder.kind,
+        RefusalKind::UnsafeDirectory,
+        "{}",
+        unsafe_folder.text
+    );
+    assert!(
+        unsafe_folder.text.contains("Nothing was created"),
+        "{}",
+        unsafe_folder.text
+    );
+    assert_eq!(keystore::occupied(&dir), None);
+
+    // Put right, the same words write the store.
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).expect("mode");
+    match h.call(Command::CreateConfirm {
+        answer: secret(&answer),
+    }) {
+        Reply::Created { dir: written, .. } => assert_eq!(written, dir),
+        other => panic!("expected a written store, got {other:?}"),
+    }
+    assert!(keystore::occupied(&dir).is_some());
+}
+
 // ------------------------------------------------------------------ unlock
 
 #[test]

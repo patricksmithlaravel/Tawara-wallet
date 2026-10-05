@@ -20,7 +20,7 @@ use tawara_wallet_core::preferences::{self, Preferences};
 use tawara_wallet_core::view::WalletView;
 use tawara_wallet_core::{
     Activity, Command, Config, Event, HttpsNode, LockReason, PhraseForDisplay, Progress, Refusal,
-    Reply, RequestId, SecretText, WorkerHandle,
+    RefusalKind, Reply, RequestId, SecretText, WorkerHandle,
 };
 
 /// What the application shows and holds. Plain data, apart from the
@@ -995,6 +995,18 @@ impl App {
             (Purpose::Unlock, Reply::Unlocked(view)) | (Purpose::Refresh, Reply::Wallet(view)) => {
                 self.opened(view);
             }
+            // The worker holds no phrase to confirm, so the one on the
+            // screen can no longer make a store: drop it, and back to S3 for
+            // a new one. Every other refusal of the words leaves the phrase
+            // waiting in the worker, and S5 shows it.
+            (Purpose::CreateConfirm, Reply::Refused(r))
+                if r.kind == RefusalKind::NothingToConfirm =>
+            {
+                self.model.back_to_new_wallet(None);
+                if let Screen::NewWallet(f) = &mut self.model.screen {
+                    f.error = Some(r.text);
+                }
+            }
             (_, Reply::Refused(r)) => self.refused(r),
             _ => {}
         }
@@ -1587,6 +1599,60 @@ mod tests {
             other => panic!("expected S3 again, got {other:?}"),
         }
         assert!(!tawara_wallet_core::store_exists(Path::new(&chosen)));
+    }
+
+    #[test]
+    fn a_phrase_the_worker_no_longer_holds_is_dropped_from_the_screen() {
+        let confirming = || {
+            Screen::Confirm(PhraseState {
+                phrase: PhraseForDisplay::example(),
+                dir: "/a/chosen/folder".to_owned(),
+                positions: tawara_wallet_core::CONFIRM_POSITIONS,
+                written: true,
+                words: Default::default(),
+                error: None,
+            })
+        };
+        let refusal = |kind, text: &str| {
+            Reply::Refused(Refusal {
+                kind,
+                text: text.to_owned(),
+            })
+        };
+
+        // A refusal that leaves the phrase waiting keeps S5, with why.
+        let mut app = alone();
+        app.model.screen = confirming();
+        app.on_reply(
+            Purpose::CreateConfirm,
+            refusal(RefusalKind::UnsafeDirectory, "unsafe. Nothing was created."),
+        );
+        assert!(
+            matches!(&app.model.screen, Screen::Confirm(p) if p.error.is_some()),
+            "{:?}",
+            app.model.screen
+        );
+
+        // No phrase waiting: the one shown goes, and S3 says why.
+        let mut app = alone();
+        app.model.screen = confirming();
+        app.on_reply(
+            Purpose::CreateConfirm,
+            refusal(
+                RefusalKind::NothingToConfirm,
+                "no phrase. Nothing was created.",
+            ),
+        );
+        assert!(
+            matches!(
+                &app.model.screen,
+                Screen::NewWallet(f)
+                    if f.dir == "/a/chosen/folder"
+                        && f.error.as_deref() == Some("no phrase. Nothing was created.")
+            ),
+            "{:?}",
+            app.model.screen
+        );
     }
 
     #[test]
