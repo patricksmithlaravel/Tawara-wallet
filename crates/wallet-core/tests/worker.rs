@@ -922,29 +922,76 @@ fn touching_keeps_the_store_open_and_polling_does_not() {
 }
 
 #[test]
-fn a_move_to_the_background_says_when_the_lock_is_done() {
-    // PR Tawara-mobile#1's review: the worker locks after the command it is
-    // running, so a shell the system may suspend waits on this rather than
-    // on having asked (docs/DECISIONS.md D32 item 6).
-    let quiet = Harness::new();
-    assert!(
-        quiet.handle.background().wait(Duration::from_secs(10)),
-        "nothing open: done at once"
-    );
-
-    let scratch = Scratch::new("locking");
+fn a_move_to_the_background_is_answered_in_turn_with_its_number() {
+    // Tawara-mobile#1's reviews: the worker locks after the command it is
+    // running, and what that command answers (a recovery phrase, for one)
+    // comes before the lock. A shell waits for the interface to have taken
+    // this move's `Backgrounded`, which comes after both
+    // (docs/DECISIONS.md D32 item 6).
+    let scratch = Scratch::new("backgrounded-in-turn");
     let (mut h, _) = funded(&scratch);
     let gate = h.chain.close_gate();
     let refresh = h.handle.send(Command::Refresh).expect("worker running");
     assert_eq!(h.wait_busy(refresh), Activity::AskingNode);
-    let locking = h.handle.background();
-    assert!(
-        !locking.wait(Duration::from_millis(300)),
-        "the lock was reported done while a node request held the worker"
-    );
+    // `Busy` comes before the request is made: wait until the worker is at
+    // the gate, so the move cannot cancel the refresh before it asks (it
+    // would then lock at once, as it should, and this test would not be
+    // about a held command).
+    gate.wait_reached(1);
+    let first = h.handle.background();
+    h.no_backgrounded(Duration::from_millis(300));
     gate.open();
-    assert!(locking.wait(Duration::from_secs(10)));
-    assert_eq!(h.wait_locked(Duration::ZERO), LockReason::Background);
+    let (seq, before) = h.wait_backgrounded(Duration::from_secs(10));
+    assert_eq!(seq, first, "the number background() gave");
+    let answered = before
+        .iter()
+        .position(|e| matches!(e, Event::Done { id, .. } if *id == refresh))
+        .expect("the refresh answered before the move was");
+    let locked = before
+        .iter()
+        .position(|e| matches!(e, Event::Locked { .. }))
+        .expect("the store locked before the move was answered");
+    assert!(answered < locked, "{before:?}");
+
+    let second = h.handle.background();
+    assert_eq!(second, first + 1);
+    assert_eq!(h.wait_backgrounded(Duration::from_secs(10)).0, second);
+}
+
+#[test]
+fn once_stopped_is_said_no_command_is_left_in_the_queue() {
+    // Tawara-wallet#15's review: a command still queued when the worker
+    // ends (here an unlock, with its password, sent behind the shutdown) is
+    // dropped before `Stopped`, so a shell that lets the process be
+    // suspended on `Stopped` leaves no secret behind. After it, the queue
+    // takes nothing more.
+    let scratch = Scratch::new("stopped-queue");
+    let dir = scratch.store();
+    let h = Harness::new();
+    h.handle.shutdown();
+    let _ = h.handle.send(Command::Unlock {
+        dir: dir.clone(),
+        password: secret(PASSWORD),
+    });
+    loop {
+        if let Event::Stopped { panicked } = h
+            .events
+            .recv_timeout(Duration::from_secs(10))
+            .expect("Stopped")
+        {
+            assert!(!panicked);
+            break;
+        }
+    }
+    assert!(
+        h.handle
+            .send(Command::Unlock {
+                dir,
+                password: secret(PASSWORD),
+            })
+            .is_err(),
+        "the queue still took a command after Stopped"
+    );
 }
 
 #[test]
@@ -956,7 +1003,7 @@ fn every_move_to_the_background_is_reported_after_any_lock() {
     let dir = scratch.store();
     let mut h = Harness::new();
     let _ = h.handle.background();
-    let before = h.wait_backgrounded(Duration::from_secs(10));
+    let (_, before) = h.wait_backgrounded(Duration::from_secs(10));
     assert!(
         !before.iter().any(|e| matches!(e, Event::Locked { .. })),
         "nothing was open: {before:?}"
@@ -965,7 +1012,7 @@ fn every_move_to_the_background_is_reported_after_any_lock() {
     // With a store open, `Locked` comes first.
     let _ = opened(h.create_from_phrase(&dir));
     let _ = h.handle.background();
-    let before = h.wait_backgrounded(Duration::from_secs(10));
+    let (_, before) = h.wait_backgrounded(Duration::from_secs(10));
     assert!(
         matches!(
             before.last(),
@@ -1724,7 +1771,7 @@ fn dropping_the_last_handle_stops_a_queued_spend_before_it_signs() {
                 assert!(!panicked);
                 break;
             }
-            Event::Busy { .. } | Event::Progress { .. } | Event::Backgrounded => {}
+            Event::Busy { .. } | Event::Progress { .. } | Event::Backgrounded { .. } => {}
         }
     }
     assert!(chain.submits().is_empty(), "nothing was signed or sent");

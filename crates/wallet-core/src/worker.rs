@@ -195,9 +195,8 @@ impl std::error::Error for WorkerStopped {}
 
 enum Envelope {
     Command(RequestId, Command),
-    /// With the sender [`Locking`] waits on: dropped once the lock is done,
-    /// which is the signal (nothing is ever sent on it).
-    Background(mpsc::SyncSender<()>),
+    /// The move's number, for its [`Event::Backgrounded`].
+    Background(u64),
     /// The idle period changed ([`WorkerHandle::set_idle_lock`]): measure the
     /// wait for the next command again.
     Wake,
@@ -256,27 +255,14 @@ impl PersonActivity {
     }
 }
 
-/// A move to the background on its way: [`Locking::wait`] says when the
-/// worker has dropped the session and everything pending.
-#[derive(Debug)]
-pub struct Locking(Receiver<()>);
-
-impl Locking {
-    /// Wait up to `within` for the lock. `true` once it is done, or when
-    /// the worker has stopped, which drops everything it held on the way
-    /// out (either way the sender is gone); `false` when it is still running
-    /// a command after `within`.
-    pub fn wait(&self, within: Duration) -> bool {
-        !matches!(self.0.recv_timeout(within), Err(RecvTimeoutError::Timeout))
-    }
-}
-
 /// The request ids, shared by every clone of a handle and dropped with the
 /// last one.
 struct Requests {
     /// The newest request id to stop (0 for none); see the module doc.
     cancel: Arc<AtomicU64>,
     next: AtomicU64,
+    /// The moves to the background asked for so far.
+    backgrounds: AtomicU64,
 }
 
 impl Requests {
@@ -357,15 +343,16 @@ impl WorkerHandle {
     ///
     /// The lock is done by the worker, after the command it is running:
     /// a node request, or a spend between its reservation and its
-    /// submission, can hold it. The returned [`Locking`] says when it is
-    /// done, for a shell that must keep the process running until then
+    /// submission, can hold it. The returned number is the one its
+    /// `Backgrounded` carries, so a shell that must keep the process running
+    /// until the interface has taken it can tell which it waits for
     /// (docs/DECISIONS.md D32 item 6).
-    #[must_use = "a shell that may be suspended waits on it"]
-    pub fn background(&self) -> Locking {
+    #[must_use = "a shell that may be suspended waits for its Backgrounded"]
+    pub fn background(&self) -> u64 {
         self.cancel();
-        let (done, rx) = mpsc::sync_channel(1);
-        let _ = self.tx.send(Envelope::Background(done));
-        Locking(rx)
+        let seq = self.requests.backgrounds.fetch_add(1, Ordering::Relaxed) + 1;
+        let _ = self.tx.send(Envelope::Background(seq));
+        seq
     }
 
     /// Lock and stop the worker. [`Event::Stopped`] follows.
@@ -386,13 +373,21 @@ pub fn spawn<C: Connect>(
     let flag = Arc::clone(&cancel);
     let activity = Arc::new(PersonActivity::new(config.idle_lock));
     let person = Arc::clone(&activity);
+    // The queue goes into the guard before the thread starts, so the thread
+    // never holds it but through the guard, and it is dropped with the
+    // guard, before `Stopped` (Tawara-wallet#15's review).
+    let stop = events.clone();
+    let guard = StopGuard::new(rx, move |panicked| {
+        let _ = stop.send(Event::Stopped { panicked });
+    });
     thread::Builder::new()
         .name("tawara-wallet-core".into())
         .spawn(move || {
             // Declared first, dropped last: `Stopped` goes out after the
-            // worker, and every secret it held, has been dropped -- on a
-            // panic too, since the release profile unwinds.
-            let _stopped = StopGuard(events.clone());
+            // worker, and every secret it held, has been dropped, and after
+            // the commands still queued -- on a panic too, since the release
+            // profile unwinds.
+            let guard = guard;
             let mut worker = Worker {
                 connect,
                 node: None,
@@ -407,13 +402,14 @@ pub fn spawn<C: Connect>(
                 next_plan: 1,
                 numbers: RefCell::new(BTreeMap::new()),
             };
-            worker.run(&rx);
+            worker.run(guard.queue());
         })?;
     Ok((
         WorkerHandle {
             requests: Arc::new(Requests {
                 cancel,
                 next: AtomicU64::new(1),
+                backgrounds: AtomicU64::new(0),
             }),
             tx,
             activity,
@@ -422,13 +418,34 @@ pub fn spawn<C: Connect>(
     ))
 }
 
-struct StopGuard(Sender<Event>);
+/// Owns the worker's queue of commands until the worker ends, however it
+/// ends, and then says so: first the queue goes, and with it every command
+/// still waiting in it (a password to unlock with, a recovery phrase to
+/// restore from), then `stopped` is told, with whether the thread is
+/// unwinding (Tawara-wallet#15's review). A `Receiver` dropped drops what
+/// is queued in it at once, even while handles hold senders, and refuses
+/// what they send after; so a shell that lets the process be suspended on
+/// `Stopped` (docs/DECISIONS.md D32 item 6) leaves no command behind.
+struct StopGuard<T, S: FnMut(bool)> {
+    queue: Receiver<T>,
+    stopped: S,
+}
 
-impl Drop for StopGuard {
+impl<T, S: FnMut(bool)> StopGuard<T, S> {
+    fn new(queue: Receiver<T>, stopped: S) -> Self {
+        StopGuard { queue, stopped }
+    }
+
+    fn queue(&self) -> &Receiver<T> {
+        &self.queue
+    }
+}
+
+impl<T, S: FnMut(bool)> Drop for StopGuard<T, S> {
     fn drop(&mut self) {
-        let _ = self.0.send(Event::Stopped {
-            panicked: thread::panicking(),
-        });
+        // The queue goes now, an empty one already closed in its place.
+        drop(std::mem::replace(&mut self.queue, mpsc::channel().1));
+        (self.stopped)(thread::panicking());
     }
 }
 
@@ -1165,14 +1182,13 @@ impl<C: Connect> Worker<C> {
                     }
                     self.emit(Event::Done { id, reply });
                 }
-                Envelope::Background(done) => {
+                Envelope::Background(seq) => {
                     self.lock(LockReason::Background);
                     // Every time, not only when something was open: what is
-                    // typed and not yet submitted lives in the interface.
-                    self.emit(Event::Backgrounded);
-                    // The session is dropped: the waiting shell may let the
-                    // process be suspended. Dropping the sender tells it.
-                    drop(done);
+                    // typed and not yet submitted lives in the interface,
+                    // and it is the interface's taking this that a shell
+                    // waits for.
+                    self.emit(Event::Backgrounded { seq });
                 }
                 Envelope::Wake => {}
                 Envelope::Shutdown => {
@@ -2970,6 +2986,56 @@ pub fn save_artifact_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A queued command, as far as the stop guard can tell: something
+    /// that says when it is dropped.
+    struct Queued(Arc<std::sync::Mutex<Vec<&'static str>>>);
+
+    impl Drop for Queued {
+        fn drop(&mut self) {
+            self.0.lock().unwrap().push("queued command dropped");
+        }
+    }
+
+    /// The order the guard keeps, on an ordinary end or a panic: the queue
+    /// and what is in it first, then `Stopped` (Tawara-wallet#15's review).
+    fn stop_order(panic: bool) -> Vec<&'static str> {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (tx, rx) = mpsc::channel();
+        tx.send(Queued(Arc::clone(&log))).unwrap();
+        let said = Arc::clone(&log);
+        let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let guard = StopGuard::new(rx, move |panicked| {
+                said.lock().unwrap().push(if panicked {
+                    "stopped, panicking"
+                } else {
+                    "stopped"
+                });
+            });
+            let _ = guard.queue();
+            assert!(!panic, "a fault in the worker");
+        }));
+        assert_eq!(ended.is_err(), panic);
+        // A handle still holds its sender, and what it sends now is refused.
+        assert!(
+            tx.send(Queued(Arc::new(std::sync::Mutex::new(Vec::new()))))
+                .is_err()
+        );
+        log.lock().unwrap().clone()
+    }
+
+    #[test]
+    fn the_queued_commands_go_before_stopped_is_said() {
+        assert_eq!(stop_order(false), ["queued command dropped", "stopped"]);
+    }
+
+    #[test]
+    fn the_queued_commands_go_before_stopped_is_said_on_a_panic_too() {
+        assert_eq!(
+            stop_order(true),
+            ["queued command dropped", "stopped, panicking"]
+        );
+    }
 
     /// The interleaving the predicate's memory is for: the idle period
     /// passes and stops a walk, the person touches the interface, and the

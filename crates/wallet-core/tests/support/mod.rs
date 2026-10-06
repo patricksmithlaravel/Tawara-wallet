@@ -777,22 +777,41 @@ impl Harness {
         }
     }
 
-    /// Wait for `Backgrounded`, and return every event that came before it,
-    /// in order, those already set aside included.
-    pub fn wait_backgrounded(&mut self, within: Duration) -> Vec<Event> {
+    /// Wait for `Backgrounded`, and return its number and every event that
+    /// came before it, in order, those already set aside included.
+    pub fn wait_backgrounded(&mut self, within: Duration) -> (u64, Vec<Event>) {
         let mut before = std::mem::take(&mut self.seen);
-        if let Some(i) = before.iter().position(|e| matches!(e, Event::Backgrounded)) {
+        if let Some(i) = before
+            .iter()
+            .position(|e| matches!(e, Event::Backgrounded { .. }))
+        {
             self.seen = before.split_off(i + 1);
-            let _ = before.pop();
-            return before;
+            let Some(Event::Backgrounded { seq }) = before.pop() else {
+                unreachable!("found just above")
+            };
+            return (seq, before);
         }
         let deadline = Instant::now() + within;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             match self.events.recv_timeout(left) {
-                Ok(Event::Backgrounded) => return before,
+                Ok(Event::Backgrounded { seq }) => return (seq, before),
                 Ok(other) => before.push(other),
                 Err(e) => panic!("no Backgrounded event: {e}"),
+            }
+        }
+    }
+
+    /// No `Backgrounded` comes within `within`; anything else that does is
+    /// set aside.
+    pub fn no_backgrounded(&mut self, within: Duration) {
+        let deadline = Instant::now() + within;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.events.recv_timeout(left) {
+                Ok(Event::Backgrounded { seq }) => panic!("Backgrounded {seq} came early"),
+                Ok(other) => self.seen.push(other),
+                Err(_) => return,
             }
         }
     }
