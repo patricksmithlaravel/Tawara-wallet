@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use mochimo_crypto::keystore::{self, Keystore, Unlock};
 use support::*;
+use tawara_wallet_core::explorer::IndexState;
 use tawara_wallet_core::location::{Environment, Platform, default_store_dir};
 use tawara_wallet_core::spend::{Amount, DestinationInput, SpendInputError, SpendRequest};
 use tawara_wallet_core::view::{
@@ -19,7 +20,8 @@ use tawara_wallet_core::view::{
 };
 use tawara_wallet_core::{
     Activity, CONFIRM_POSITIONS, Command, Config, DISCOVER_MAX_TO, Event, LockReason,
-    MAX_KEY_INDEX, PlanView, Progress, Refusal, RefusalKind, Reply, RequestId, SentView,
+    MAX_KEY_INDEX, NetworkName, PlanView, Progress, Refusal, RefusalKind, Reply, RequestId,
+    SentView, SyncState,
 };
 
 const FUNDS: u64 = 5_000_000;
@@ -1286,11 +1288,43 @@ fn the_node_is_chosen_https_or_loopback_only() {
         Reply::Network {
             tip_index,
             tip_hash,
+            tip_time_ms,
+            sync,
         } => {
             assert_eq!(tip_index, 1_000);
             assert_eq!(tip_hash, "ab".repeat(32));
+            assert_eq!(tip_time_ms, 1_000 * 60_000);
+            assert_eq!(
+                sync,
+                Some(SyncState {
+                    stage: "synchronized".into(),
+                    synced: true
+                })
+            );
         }
         other => panic!("expected the tip, got {other:?}"),
+    }
+    // The middleware's own word for a refresh that failed, as it sent it.
+    h.chain.sync("latest block error", false);
+    match h.call(Command::NetworkStatus) {
+        Reply::Network { sync, .. } => assert_eq!(
+            sync,
+            Some(SyncState {
+                stage: "latest block error".into(),
+                synced: false
+            })
+        ),
+        other => panic!("expected the tip, got {other:?}"),
+    }
+    match h.call(Command::Networks) {
+        Reply::Networks(names) => assert_eq!(
+            names,
+            vec![NetworkName {
+                blockchain: "mochimo".into(),
+                network: "mainnet".into()
+            }]
+        ),
+        other => panic!("expected the networks, got {other:?}"),
     }
     assert!(matches!(
         h.call(Command::ClearNode),
@@ -1300,6 +1334,7 @@ fn the_node_is_chosen_https_or_loopback_only() {
         refusal(h.call(Command::NetworkStatus)).kind,
         RefusalKind::NoNode
     );
+    assert_eq!(refusal(h.call(Command::Networks)).kind, RefusalKind::NoNode);
 }
 
 // ------------------------------------------------------- node and idle edges
@@ -2077,18 +2112,38 @@ fn activity_reads_every_account_from_the_index_and_says_when_there_is_none() {
         "the index's row carries the reference, its padding left off"
     );
 
-    // A node that runs no index: the library's reading, for every account.
+    // A node that runs no index does not serve the search, for any account.
     h.chain.set_no_index(true);
     match h.call(Command::Activity) {
         Reply::Activity(Err(refused)) => {
-            assert!(refused.no_index);
-            assert!(refused.text.contains("indexer"), "{}", refused.text);
+            assert_eq!(refused.index, Some(IndexState::Absent));
+            assert!(refused.text.contains("HTTP 404"), "{}", refused.text);
+            assert!(
+                refused.text.contains("this node does not index"),
+                "the library's page says which: {}",
+                refused.text
+            );
+        }
+        other => panic!("expected the index refused, got {other:?}"),
+    }
+    // One that runs an index that does not answer answers code 2.
+    h.chain.set_no_index(false);
+    h.chain.set_index_down(true);
+    match h.call(Command::OlderActivity(vec![(account0(), 0)])) {
+        Reply::Activity(Err(refused)) => {
+            assert_eq!(refused.index, Some(IndexState::Unavailable));
+            assert!(refused.text.contains("code 2"), "{}", refused.text);
+            assert!(
+                refused.text.contains("it did not answer"),
+                "the library's page says which: {}",
+                refused.text
+            );
         }
         other => panic!("expected the index refused, got {other:?}"),
     }
 
     // A cancel stops it before it starts, and nothing is reported.
-    h.chain.set_no_index(false);
+    h.chain.set_index_down(false);
     let gate = h.chain.close_gate();
     let id = h.handle.send(Command::Activity).expect("worker running");
     assert_eq!(h.wait_busy(id), Activity::ReadingIndex);
@@ -2098,20 +2153,187 @@ fn activity_reads_every_account_from_the_index_and_says_when_there_is_none() {
 }
 
 #[test]
+fn older_activity_reads_on_from_where_the_last_page_ended() {
+    let scratch = Scratch::new("older-activity");
+    let (mut h, _) = funded(&scratch);
+    for n in 0..105 {
+        h.chain
+            .index_transfer(tag(0), tag(5), 1_000 + n, 1_000, 900 + n, "");
+    }
+    let mut mine = match h.call(Command::Activity) {
+        Reply::Activity(Ok(mut histories)) => histories.remove(0),
+        other => panic!("expected the activity, got {other:?}"),
+    };
+    assert_eq!(mine.transactions.len(), 100);
+    assert_eq!((mine.total, mine.next, mine.unread()), (105, 100, 5));
+    assert!(mine.more());
+
+    // A row the index gains at the top pushes the rest down a place: the
+    // older page repeats one row, which is listed once.
+    h.chain
+        .index_transfer(tag(0), tag(5), 9_999, 1_000, 1_100, "");
+    let older = match h.call(Command::OlderActivity(vec![
+        (account0(), mine.next),
+        (AccountId::from_tag(tag(9)), 0),
+    ])) {
+        Reply::Activity(Ok(histories)) => histories,
+        other => panic!("expected the older page, got {other:?}"),
+    };
+    assert_eq!(
+        older.len(),
+        1,
+        "an account the store does not hold is not read"
+    );
+    assert_eq!(older[0].transactions.len(), 6);
+    let first_text = mine.text.clone();
+    mine.extend(older.into_iter().next().expect("one page"));
+    assert_eq!(mine.transactions.len(), 105, "the repeated row once");
+    assert_eq!((mine.total, mine.next), (106, 106));
+    assert!(!mine.more());
+    assert!(mine.text.starts_with(&first_text));
+    assert!(
+        mine.text.len() > first_text.len(),
+        "both pages, one after the other"
+    );
+    let blocks: Vec<_> = mine.transactions.iter().map(|t| t.block).collect();
+    assert!(
+        blocks.windows(2).all(|w| w[0] > w[1]),
+        "newest first, each once: {blocks:?}"
+    );
+
+    // Locked, nothing is read.
+    assert!(matches!(h.call(Command::Lock), Reply::Locked));
+    assert_eq!(
+        refusal(h.call(Command::OlderActivity(vec![(account0(), 100)]))).kind,
+        RefusalKind::NotUnlocked
+    );
+}
+
+#[test]
 fn the_newest_blocks_are_read_down_from_the_tip_without_a_store() {
+    use tawara_wallet_core::explorer::BlockKind;
     let mut h = Harness::with_node();
+    h.chain.pseudo(997);
     match h.call(Command::Blocks) {
         Reply::Blocks(Ok(view)) => {
             assert_eq!(view.tip, 1_000);
             let indexes: Vec<u64> = view.blocks.iter().map(|b| b.index).collect();
             assert_eq!(indexes, vec![1_000, 999, 998, 997, 996, 995]);
             assert_eq!(view.blocks[0].time_ms, 1_000 * 60_000);
-            assert!(!view.text.is_empty());
+            assert_eq!(view.blocks[0].difficulty, Some(30));
+            assert_eq!(view.blocks[1].difficulty, Some(34));
+            let kinds: Vec<_> = view.blocks.iter().map(|b| b.kind).collect();
+            let normal = Some(BlockKind::Normal);
+            assert_eq!(
+                kinds,
+                vec![
+                    normal,
+                    normal,
+                    normal,
+                    Some(BlockKind::Pseudo),
+                    normal,
+                    normal
+                ],
+                "a block whose figures count no transactions is a pseudo-block"
+            );
+            assert!(view.text.contains("pseudo"), "{}", view.text);
+        }
+        other => panic!("expected the blocks, got {other:?}"),
+    }
+    // A block numbered at a multiple of 256 is a neogenesis block, whatever
+    // its figures count.
+    h.chain.set_tip(1_026);
+    h.chain.pseudo(1_024);
+    match h.call(Command::Blocks) {
+        Reply::Blocks(Ok(view)) => {
+            assert_eq!(view.blocks[2].index, 1_024);
+            assert_eq!(view.blocks[2].kind, Some(BlockKind::Neogenesis));
         }
         other => panic!("expected the blocks, got {other:?}"),
     }
     assert_eq!(
         refusal(Harness::new().call(Command::Blocks)).kind,
+        RefusalKind::NoNode
+    );
+}
+
+/// The network card's read holds the worker, which holds the open store,
+/// for as long as it asks the node: a lock, a cancel or the idle period
+/// stops it between two requests, and the store is then locked at once.
+#[test]
+fn a_lock_or_the_idle_period_stops_the_newest_blocks_between_requests() {
+    // Lock pressed while the node is slow to answer the first request: the
+    // application cancels what is running, then sends the lock.
+    let scratch = Scratch::new("blocks-lock");
+    let (mut h, _) = funded(&scratch);
+    let gate = h.chain.close_gate();
+    let calls = h.chain.calls();
+    let id = h.handle.send(Command::Blocks).expect("worker running");
+    assert_eq!(h.wait_busy(id), Activity::ReadingIndex);
+    gate.wait_reached(1);
+    h.handle.cancel();
+    let lock = h.handle.send(Command::Lock).expect("worker running");
+    gate.open();
+    assert_eq!(refusal(h.wait_for(id)).kind, RefusalKind::Cancelled);
+    assert!(matches!(h.wait_for(lock), Reply::Locked));
+    assert_eq!(
+        h.chain.calls() - calls,
+        1,
+        "the tip was asked for, and no block after the cancel"
+    );
+
+    // The idle period runs out while a slow node answers one request at a
+    // time: the walk of seven requests stops partway, and the store locks.
+    let scratch = Scratch::new("blocks-idle");
+    let mut h = Harness::with(Config {
+        idle_lock: Duration::from_millis(1_500),
+    });
+    assert!(matches!(
+        h.call(Command::SetNode { url: NODE.into() }),
+        Reply::NodeSet { .. }
+    ));
+    h.chain.hold(tag(0), address(0, 0), FUNDS);
+    assert!(opened(h.create_from_phrase(&scratch.store())).opened);
+    h.chain.slow(Duration::from_millis(600));
+    let calls = h.chain.calls();
+    h.handle.touch();
+    let id = h.handle.send(Command::Blocks).expect("worker running");
+    assert_eq!(refusal(h.wait_for(id)).kind, RefusalKind::Cancelled);
+    assert_eq!(h.wait_locked(Duration::from_secs(10)), LockReason::Idle);
+    let made = h.chain.calls() - calls;
+    assert!(made < 7, "the whole walk ran: {made} requests");
+}
+
+#[test]
+fn the_queue_is_counted_without_a_store() {
+    let mut h = Harness::with_node();
+    match h.call(Command::Mempool) {
+        Reply::Mempool(Ok(view)) => {
+            assert_eq!(view.waiting, 0, "Go's null is an empty queue");
+            assert!(!view.text.is_empty());
+        }
+        other => panic!("expected the queue, got {other:?}"),
+    }
+    h.chain.queue(&[[1; 32], [2; 32], [3; 32]]);
+    let calls = h.chain.calls();
+    match h.call(Command::Mempool) {
+        Reply::Mempool(Ok(view)) => assert_eq!(view.waiting, 3),
+        other => panic!("expected the queue, got {other:?}"),
+    }
+    assert_eq!(
+        h.chain.calls() - calls,
+        1,
+        "the ids are counted, and none is read whole"
+    );
+    h.chain.set_unreachable(true);
+    match h.call(Command::Mempool) {
+        Reply::Mempool(Err(refused)) => {
+            assert_eq!(refused.index, None, "the queue is not the index")
+        }
+        other => panic!("expected the queue refused, got {other:?}"),
+    }
+    assert_eq!(
+        refusal(Harness::new().call(Command::Mempool)).kind,
         RefusalKind::NoNode
     );
 }

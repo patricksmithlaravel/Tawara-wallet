@@ -199,8 +199,31 @@ long-running application cannot use step by step.
 The screens of phase 3 (docs/DECISIONS.md D27, item 11) found more the
 library could serve. None blocks phase 3: each control it would back is
 left out until it lands (D27, item 4). Line numbers are those of Rep-1 at
-`8c2f39a`, the pinned revision. Suggested order: 5, then 6, 7 and 8, then
-9; 10 and 11 wait on the owner.
+`8c2f39a`, the revision pinned when this was written. Suggested order: 5,
+then 6, 7 and 8, then 9; 10 and 11 wait on the owner.
+
+## Status: 5 to 8 landed and are in use
+
+Rep-0 made items 5 to 8 (its pull requests #13 to #16, merged at
+`2e69d87`). Rep-1 merged them down (its pull request #7, `e41f8c1`), and
+the pin moved there (docs/DECISIONS.md D7). The wallet's network card,
+Settings' node card and Activity use them (D30); the explorer's own pages
+(PR (d)) are still to come, and will read item 6's transactions whole.
+The library's reading of a refused search, which read the middleware's
+code 1 as "no indexer", was fixed the same way: Rep-0's pull request #17,
+merged down in Rep-1's #8 (`7cdc2e9`), where the pin now is.
+
+| item | what the library now has |
+|---|---|
+| 5 | `MeshBlock::metadata`, an `Option<BlockMetadata>` read only when all eight of the node's keys are there, and `MeshBlock::kind()`: normal, pseudo or neogenesis, and `None` for a block that is not neogenesis when the node sent no metadata |
+| 6 | `MeshClient::mempool()`, the waiting ids in the queue's order, and `MeshClient::mempool_transaction(id)`, one of them read whole; a `mempool [--count N]` verb |
+| 7 | `MeshClient::search_by_account_from(tag, limit, offset)` and `cli::cmd_recent_transactions_from`; `recent-transactions --from M` |
+| 8 | `MeshClient::networks()` over `/network/list`, and `MeshClient::network_status_full()`: the tip, its solve time, the genesis block and the middleware's own sync state |
+
+Item 8's sync state is the middleware's view of its one node: whether its
+last refresh of the node's tip finished, every five seconds by default. It
+does not say whether the node is current with the network; the tip's solve
+time is what shows a tip that has stopped moving.
 
 ## 5. The block's own metadata and its type
 

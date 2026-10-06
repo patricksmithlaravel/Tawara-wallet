@@ -57,7 +57,7 @@ pub use event::{
     AccountReport, Activity, Discovered, Event, LockReason, PlanView, PlannedDestination, Progress,
     ReceiveView, Refusal, RefusalKind, Reply, SentView,
 };
-pub use node::{Connect, HttpsNode, NodeRefused};
+pub use node::{Connect, HttpsNode, NetworkName, NodeRefused, SyncState};
 pub use secret::{PhraseForDisplay, SecretText};
 pub use worker::{
     Config, DEFAULT_IDLE_LOCK, WorkerHandle, WorkerStopped, save_artifact, save_artifact_in, spawn,
@@ -116,7 +116,7 @@ pub const MAX_DESTINATIONS: u16 = mochimo_crypto::tx::MAX_DESTINATIONS;
 /// docs/DECISIONS.md D7), for Settings to show. Written here because the
 /// library carries no version of its own to read; the policy tests hold it
 /// to the workspace's `rev`.
-pub const LIBRARY_REV: &str = "8c2f39a2cdc2710ac7363b1d64026b6875a16537";
+pub const LIBRARY_REV: &str = "7cdc2e986319d508e4c197a4ba44220dd49a5b1d";
 
 /// How a new store's key is derived from its password.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

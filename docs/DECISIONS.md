@@ -77,7 +77,7 @@ Features the renderings may need later (`svg`, and `qr_code` only with the
 owner's approval) are added by the change that needs them, with
 `cargo deny check` run against the result. No git revision of iced is used.
 
-### D7. The library pin: Rep-1 at `8c2f39a`
+### D7. The library pin: Rep-1 at `7cdc2e9`
 
 **owner, 2026-10-03.** The owner's instructions for phase 0 named Rep-1's
 `02239c1`, or a later commit the owner named; by the time the work began, Rep-1's `main` was at
@@ -99,11 +99,33 @@ library's own line and nowhere else. What wallet-core does with the new
 API is D26. The phase 1 spikes keep `121daf3`: they are the record of that
 phase, and nothing in them uses what changed.
 
+**Moved again, 2026-10-05, when the owner reported Rep-1's merge.** The pin
+is now `e41f8c13e605b9fd098c913784bc9eadc20543bd`, Rep-1's `main` after its
+pull request #7, the merge of Rep-0's `2e69d87`: the explorer reads of
+docs/LIBRARY-PROPOSALS.md, items 5 to 8 (Rep-0's pull requests #13 to #16).
+The merge changed no manifest, so `Cargo.lock` again changes in the
+library's own line and nowhere else. Two of the additions are fields, and
+wallet-core's sample data fills them: `Outcome::RecentTransactions` gains
+`from`, the offset its page starts at, and `MeshBlock` gains
+`metadata`, which the sample blocks leave absent. Nothing else in Tawara
+names what changed. The screens that use the new reads are later work.
+
+**Moved again, 2026-10-05, when the owner reported Rep-1's merge.** The pin
+is now `7cdc2e986319d508e4c197a4ba44220dd49a5b1d`, Rep-1's `main` after its
+pull request #8, the merge of Rep-0's `4738baf`: the library's own reading
+of a refused search (Rep-0's pull request #17, D30 item 4). Its tree is
+that of `3ec5929`, the commit that pull request tested Tawara against. The
+merge changed no manifest, so `Cargo.lock` changes in the library's own
+line and nowhere else. A refused search now arrives as
+`Outcome::SearchFailed`, and the worker's history read matches it where it
+matched `ExplorerFailed`; the sample's refusals are written from it, so
+their pages say which refusal each was.
+
 The workspace line takes the plan's form (D1) exactly:
 
 ```toml
 mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-windows",
-                   rev = "8c2f39a2cdc2710ac7363b1d64026b6875a16537",
+                   rev = "7cdc2e986319d508e4c197a4ba44220dd49a5b1d",
                    default-features = false, features = ["native", "mesh-https"] }
 ```
 
@@ -1079,14 +1101,34 @@ cards that D27 item 16 moved here. The choices it makes:
    while the next comes, and a refusal that is not the node's answer (a
    cancel, no node) leaves it. They are commands like any other, so they
    do not keep the store open (D24), and a lock drops what the index held
-   for the store.
+   for the store. Each stops between two of its requests when a cancel, a
+   lock or the idle period reaches it, since the worker that makes them
+   holds the open store meanwhile: the history between accounts, and the
+   newest blocks between the tip and each block. The library's walk of the
+   newest blocks (`cli::cmd_blocks`) looks for no stop, so the worker makes
+   that walk itself, repeated as D19 says, and has the library write the
+   page from the same outcome (the owner's review of PR (c)).
 2. **A row is what the transaction did to the account,** net of its
    change, by the command line's own sums: the index debits a spend's
    source gross and lists the change as a destination of its own
    (`cli::render`, `recent_transactions`; the rule is private there and
    repeated in `wallet-core::explorer`, naming it, as D19 does for the
-   others). A transfer between two of the store's accounts is in both
-   accounts' rows and is listed once, from the account it left. The words
+   others). A transaction that left one of the store's accounts is in the
+   rows of every one of them it paid as well, and is listed once, from the
+   account it left: a transfer between two of them, or a spend that paid
+   one of them among others. One that left none of them, a payment from
+   elsewhere to several of them, is listed once for each account it
+   reached, with what it did to that account and that account's
+   references (the owner's review of PR (c)); a row is chosen by its
+   transaction and its account together. The account it left is read from
+   its own source operation, not from whose history held it, so a row is
+   the same whichever pages have been read: a send from an account whose
+   older pages are not read yet is that account's send, debit and all,
+   when only its payee's page holds it (the owner's second review). A
+   transfer to several of the store's accounts at once is one row whose
+   amount is theirs together, so its title calls it a batch rather than
+   naming one of them for the whole, and the line under it names the
+   sender and every recipient (the owner's third review). The words
    (sent, received, between own accounts, mining reward) are Tawara's;
    they say nothing a row does not.
 3. **References come from the index's rows** (the owner, on PR (c)'s
@@ -1169,3 +1211,75 @@ cards that D27 item 16 moved here. The choices it makes:
    than searched for. Accounts are still named by their shortened
    destination (D27, item 3).
 
+
+### D30. Phase 3 (c): the library's explorer reads on the wallet's pages
+
+**proposed; for the owner's review in the pull request that introduces
+it.** With the pin at `e41f8c1` (D7), the library serves
+docs/LIBRARY-PROPOSALS.md items 5 to 8, and the controls D27 item 4 left
+out of W1, W10 and W11 for want of them are built. The explorer's own
+pages (E1, E2) stay PR (d)'s. The choices:
+
+1. **The network card shows each block's kind, the difficulty and the
+   queue** (rendering 02). A block's kind is the library's
+   (`MeshBlock::kind`, the C reference's own test): a neogenesis tile is
+   green, a pseudo-block's amber and a normal block's raised, with the
+   rendering's legend under them. A block the node sent no figures for has
+   no kind and is drawn plain, never as normal; the legend is shown only
+   when some block has a kind. The difficulty is the newest block's.
+   "Mempool" is how many transactions wait in the node's queue
+   (`Command::Mempool`, the command line's `mempool` with none read whole:
+   one request). A queue the node did not answer for shows "—"; the queue
+   is the node's own and not its index, so its refusal never reads as "no
+   index".
+2. **The node card names the network and says the middleware's sync
+   state** (rendering 05). `Command::NetworkStatus` now reads
+   `/network/status` whole (`MeshClient::network_status_full`): still one
+   request, so the latency shown is unchanged, and it also gives when the
+   tip was solved and the Mesh middleware's sync state, which the card
+   shows in the middleware's own words, green when its last refresh
+   finished and amber when it did not. The library is plain that this
+   state is the middleware's view of its one node and not whether the node
+   is current with the network, and the card says so under it; the tip's
+   tile says how long ago the tip was solved, which is what shows a chain
+   that has stopped moving. A reply without the tip's timestamp or the
+   genesis block is refused, as Rosetta requires both. The network's name
+   ("mochimo · mainnet") is `/network/list` (`Command::Networks`), asked
+   for when a node is chosen and the tip is asked for, one request at a
+   time, until the node has said; another node is asked again. The
+   sidebar keeps the node's host.
+3. **Activity reads older rows a page at a time** (W10). An account's
+   history is read from the newest, 100 rows a page, and "Read older"
+   reads the next page of every account the index holds more of
+   (`Command::OlderActivity`, the command line's `recent-transactions
+   --from`), from the offset its last page ended at
+   (`AccountHistory::next`). A row the index gained at the top since the
+   first page pushes the rest down, so a later page can repeat a row
+   already read: it is listed once, and the offset still counts it, so
+   the next page starts where the index's own ordering says. Nothing is
+   read without the person asking, since a mining account can hold a row
+   for every block it won. A read again (Refresh, or opening Activity)
+   starts from the newest page and drops the older pages read before:
+   joining them to a fresh first page would need the index's ordering not
+   to have moved by more than a page between the two reads, and a gap
+   between them would be a history cut short shown as a whole one.
+4. **A refused search says whether the node runs an index** (the owner
+   asked for the reading to be fixed in the library and here). The
+   library, and wallet-core after it, read the middleware's code 1 as "no
+   indexer". At the pinned middleware (`mochimo-mesh` at `ddc1ee5`) code 1
+   is *Invalid request*, a body it could not decode. A deployment that runs
+   no indexer never registers `/search/transactions` (`main.go`), so it
+   answers that route with HTTP 404; one that runs an indexer answers code
+   2, its internal error, while the indexer's database is not connected and
+   when a search fails (`search_handler.go`). So Activity now has three
+   refusals: a 404 is "This node keeps no transaction index", as before; a
+   code 2 is "This node's transaction index did not answer", with reading
+   again later and another node as what helps, since the node itself
+   answered; anything else is the node not serving the read, as before.
+   The blocks and the queue are the node's own, not its index, so their
+   refusals say nothing about an index, though the middleware answers code
+   2 for a queue it could not read as well. The library's fix is Rep-0's
+   pull request #17: the three search reads get an outcome of their own
+   (`Outcome::SearchFailed`), whose page says which of the two it was. The
+   pin reached it at `7cdc2e9` (D7): the worker matches `SearchFailed`, and
+   the library's page under each summary says which refusal it was.

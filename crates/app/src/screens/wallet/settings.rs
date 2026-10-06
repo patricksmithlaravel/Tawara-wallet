@@ -272,7 +272,9 @@ fn keystore(model: &Model) -> Element<'_, Message> {
     .into()
 }
 
-/// The node (05): its address, whether it answers, and its tip.
+/// The node (05): its address, the network it serves, whether it answers,
+/// its tip and when that was solved, and the Mesh middleware's own sync
+/// state.
 fn node<'a>(model: &'a Model, s: &'a SettingsPage) -> Element<'a, Message> {
     let idle = model.busy.is_none();
     let mut field = text_input("https://", &s.node)
@@ -299,17 +301,41 @@ fn node<'a>(model: &'a Model, s: &'a SettingsPage) -> Element<'a, Message> {
         .node
         .tip
         .map_or_else(|| "—".to_owned(), |(tip, _)| ui::group(&tip.to_string()));
-    let tile = |label: &'static str, value: String, ink: iced::Color| {
-        container(
-            column![
-                t(label, ty::NOTE, color::TEXT_MUTED),
-                t(value, ty::MONO, ink).wrapping(Wrapping::WordOrGlyph),
-            ]
-            .spacing(sp::S4),
-        )
-        .padding(sp::S14)
-        .width(Length::Fill)
-        .style(theme::field_box)
+    let solved = model
+        .node
+        .solved_ms
+        .filter(|_| model.node.tip.is_some())
+        .map(|at| format!("solved {}", ui::age(model.clock_ms, at)));
+    let network = model.node.network.as_ref().map_or_else(
+        || "—".to_owned(),
+        |n| format!("{} · {}", n.blockchain, n.network),
+    );
+    // The middleware's own words for its last refresh, as it sent them.
+    let (sync, sync_ink) = match (&model.node.sync, model.node.tip) {
+        (Some(s), Some(_)) => (
+            s.stage.clone(),
+            if s.synced {
+                color::ACCENT
+            } else {
+                color::WARNING
+            },
+        ),
+        (None, Some(_)) => ("Not said".to_owned(), color::TEXT_MUTED),
+        (_, None) => ("—".to_owned(), color::TEXT_MUTED),
+    };
+    let tile = |label: &'static str, value: String, ink: iced::Color, under: Option<String>| {
+        let mut body = column![
+            t(label, ty::NOTE, color::TEXT_MUTED),
+            t(value, ty::MONO, ink).wrapping(Wrapping::WordOrGlyph),
+        ]
+        .spacing(sp::S4);
+        if let Some(under) = under {
+            body = body.push(t(under, ty::NOTE, color::TEXT_MUTED));
+        }
+        container(body)
+            .padding(sp::S14)
+            .width(Length::Fill)
+            .style(theme::field_box)
     };
     ui::card(
         column![
@@ -334,10 +360,20 @@ fn node<'a>(model: &'a Model, s: &'a SettingsPage) -> Element<'a, Message> {
             .align_y(Alignment::Center),
             ui::helper("https:// only, or http:// to this computer. There is no default node."),
             row![
-                tile("Status", state, ink),
-                tile("Tip", tip, color::TEXT_PRIMARY)
+                tile("Network", network, color::TEXT_PRIMARY, None),
+                tile("Status", state, ink, None),
             ]
             .spacing(sp::S12),
+            row![
+                tile("Tip", tip, color::TEXT_PRIMARY, solved),
+                tile("Middleware sync", sync, sync_ink, None),
+            ]
+            .spacing(sp::S12),
+            ui::helper(
+                "Sync is the Mesh middleware's view of its own node: whether its last read of \
+                 the node's tip finished. It does not say the node is current with the network; \
+                 how long ago the tip was solved does."
+            ),
             action(
                 model,
                 "Check now",

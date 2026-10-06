@@ -32,12 +32,14 @@ use tawara_app::app::{
 };
 use tawara_app::history::Filter;
 use tawara_app::{fonts, screens, theme};
-use tawara_wallet_core::explorer::ExplorerRefusal;
+use tawara_wallet_core::explorer::IndexState;
 use tawara_wallet_core::location::SyncWarning;
 use tawara_wallet_core::preferences::Preferences;
 use tawara_wallet_core::sample;
 use tawara_wallet_core::view::AccountState;
-use tawara_wallet_core::{Activity, CONFIRM_POSITIONS, PhraseForDisplay, Progress};
+use tawara_wallet_core::{
+    Activity, CONFIRM_POSITIONS, NetworkName, PhraseForDisplay, Progress, SyncState,
+};
 
 /// The rendering's frame size for each screen (`design/INDEX.md`), and the
 /// smallest window (`tawara_app::WINDOW_MIN`, docs/DECISIONS.md D27 item 9).
@@ -58,6 +60,15 @@ fn base() -> Model {
     model.node = NodeState {
         url: Some(NODE.to_owned()),
         tip: Some((871_173, Duration::from_millis(42))),
+        solved_ms: Some(sample::TIP_MS),
+        sync: Some(SyncState {
+            stage: "synchronized".to_owned(),
+            synced: true,
+        }),
+        network: Some(NetworkName {
+            blockchain: "mochimo".to_owned(),
+            network: "mainnet".to_owned(),
+        }),
         error: None,
     };
     // The clock stands 48 seconds after the sample chain's newest block,
@@ -93,6 +104,7 @@ fn on(page: Page) -> Model {
     m.wallet = Some(sample::wallet_view());
     m.activity = read(sample::activity());
     m.blocks = read(sample::blocks());
+    m.mempool = read(sample::mempool());
     m
 }
 
@@ -219,16 +231,28 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         m.wallet = Some(aside.clone());
         m
     };
-    let mut no_index = on(Page::Activity(ActivityPage::default()));
-    no_index.activity = Explored {
-        last: Some(Err(ExplorerRefusal {
-            no_index: true,
-            text: "the node answered error 1: Internal error\n  The Mesh's search endpoint \
-                   answers an internal error when its indexer database is not initialised."
-                .to_owned(),
-        })),
-        reading: false,
+    let refused = |state| {
+        let mut m = on(Page::Activity(ActivityPage::default()));
+        m.activity = Explored {
+            last: Some(Err(sample::index_refusal(state))),
+            reading: false,
+        };
+        m
     };
+    // The payment received, as Activity lists it.
+    let histories = sample::activity();
+    let received = tawara_app::history::rows(&histories)
+        .into_iter()
+        .find(|r| r.tx.id == histories[0].transactions[1].id)
+        .map(|r| r.id())
+        .expect("the sample's payment received is a row");
+    let no_index = refused(IndexState::Absent);
+    // Opened to its summary, so its words are drawn.
+    let index_down = opened(
+        refused(IndexState::Unavailable),
+        ReportKey::Explorer,
+        Level::Summary,
+    );
     // Every account's report (D19), each opened to its summary (D29); the
     // paused one chosen, its index typed and the second wallet ruled out.
     // `read` is how many accounts' full reports have been opened, the
@@ -507,11 +531,12 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
             "w10-activity-received",
             DASHBOARD,
             on(Page::Activity(ActivityPage {
-                selected: Some(sample::activity()[0].transactions[1].id.clone()),
+                selected: Some(received.clone()),
                 ..ActivityPage::default()
             })),
         ),
         ("w10-activity-no-index", DASHBOARD, no_index),
+        ("w10-activity-index-down", DASHBOARD, index_down),
         (
             "w11-settings",
             DASHBOARD,

@@ -88,6 +88,31 @@ impl fmt::Display for NodeRefused {
 
 impl std::error::Error for NodeRefused {}
 
+/// The Mesh middleware's own sync state (`/network/status`'s
+/// `sync_status`): how its last refresh of its one node's tip went.
+///
+/// It says nothing about whether that node is current with the network: a
+/// node that has fallen behind answers its old tip, and the middleware,
+/// having taken it, says it is synchronized. How long ago the tip was
+/// solved is what shows a tip that has stopped moving.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SyncState {
+    /// In the middleware's words, made safe to show: `synchronized` once a
+    /// refresh has finished, `synchronizing` while one takes a new tip, or
+    /// the step that failed.
+    pub stage: String,
+    /// Whether its last refresh finished.
+    pub synced: bool,
+}
+
+/// A network the node serves (`/network/list`), by name, each made safe to
+/// show: the chain (`mochimo`) and the network (`mainnet`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NetworkName {
+    pub blockchain: String,
+    pub network: String,
+}
+
 /// Check a node URL by the plan's rule and the library's transport, and
 /// build its transport.
 ///

@@ -9,7 +9,10 @@
 //! (its `tests/support/chain.rs`, after the live captures in
 //! `fixtures/group_n_mesh_live.json`): `tag_resolve` answers with
 //! `result.{address,amount}` or the middleware's code 4 "Account not found",
-//! `/network/status` with `current_block_identifier`, and
+//! `/network/status` with `current_block_identifier`, the tip's timestamp,
+//! the genesis block and `sync_status`, `/network/list` with the one
+//! network the middleware serves, `/block` with the eight keys of
+//! `block.metadata`, `/mempool` with its ids (Go's `null` for none), and
 //! `/construction/submit` with `transaction_identifier.hash` in bare hex.
 //!
 //! The submit echo is computed the way the library's own `submit` verb
@@ -114,29 +117,58 @@ struct State {
     /// The index's rows for each tag, newest first, as the endpoint spells
     /// them.
     history: BTreeMap<Tag, Vec<serde_json::Value>>,
-    /// The deployment runs no index: a search answers its internal error.
+    /// The deployment runs no index: the search is not served, and answers
+    /// the router's 404.
     no_index: bool,
+    /// The deployment runs an index that does not answer: a search answers
+    /// the middleware's internal error, code 2.
+    index_down: bool,
     /// How many transactions the index has recorded, for their ids.
     indexed: u64,
+    /// The blocks whose figures count no transactions: pseudo-blocks.
+    pseudo: Vec<u64>,
+    /// The ids in the node's queue, in its order.
+    mempool: Vec<[u8; 32]>,
+    /// The middleware's sync state: its stage and whether it finished.
+    sync: (String, bool),
 }
 
 /// Holds every request at the chain until it is opened, so a test can act
 /// while the worker is waiting on the node.
 #[derive(Clone, Default)]
-pub struct Gate(Arc<(Mutex<bool>, Condvar)>);
+pub struct Gate(Arc<(Mutex<GateState>, Condvar)>);
+
+#[derive(Default)]
+struct GateState {
+    open: bool,
+    /// How many requests have reached the gate, held or let through.
+    reached: usize,
+}
 
 impl Gate {
     pub fn open(&self) {
-        let (open, changed) = &*self.0;
-        *open.lock().expect("gate") = true;
+        let (state, changed) = &*self.0;
+        state.lock().expect("gate").open = true;
         changed.notify_all();
     }
 
+    /// Wait until `n` requests have reached the gate: the worker is then
+    /// waiting on the node, not about to ask it.
+    pub fn wait_reached(&self, n: usize) {
+        let (state, changed) = &*self.0;
+        let mut s = state.lock().expect("gate");
+        while s.reached < n {
+            s = changed.wait(s).expect("gate");
+        }
+    }
+
     fn pass(&self) {
-        let (open, changed) = &*self.0;
-        let mut is_open = open.lock().expect("gate");
-        while !*is_open {
-            is_open = changed.wait(is_open).expect("gate");
+        let (state, changed) = &*self.0;
+        let mut s = state.lock().expect("gate");
+        s.reached += 1;
+        changed.notify_all();
+        while !s.open {
+            s = changed.wait(s).expect("gate");
         }
     }
 }
@@ -149,8 +181,32 @@ pub struct Chain(Arc<Mutex<State>>);
 impl Chain {
     pub fn new() -> Chain {
         let chain = Chain::default();
-        chain.0.lock().expect("chain").tip = 1_000;
+        {
+            let mut s = chain.0.lock().expect("chain");
+            s.tip = 1_000;
+            s.sync = ("synchronized".to_owned(), true);
+        }
         chain
+    }
+
+    /// The chain's tip is block `tip`.
+    pub fn set_tip(&self, tip: u64) {
+        self.0.lock().expect("chain").tip = tip;
+    }
+
+    /// Block `index` counts no transactions in its figures.
+    pub fn pseudo(&self, index: u64) {
+        self.0.lock().expect("chain").pseudo.push(index);
+    }
+
+    /// The node's queue holds `ids`, in that order.
+    pub fn queue(&self, ids: &[[u8; 32]]) {
+        self.0.lock().expect("chain").mempool = ids.to_vec();
+    }
+
+    /// The middleware says its last refresh reached `stage`, finished or not.
+    pub fn sync(&self, stage: &str, synced: bool) {
+        self.0.lock().expect("chain").sync = (stage.to_owned(), synced);
     }
 
     /// The ledger holds `tag` at `address` with `balance`.
@@ -263,6 +319,10 @@ impl Chain {
         self.0.lock().expect("chain").no_index = no_index;
     }
 
+    pub fn set_index_down(&self, down: bool) {
+        self.0.lock().expect("chain").index_down = down;
+    }
+
     /// Hold every request from now on until the returned gate is opened.
     pub fn close_gate(&self) -> Gate {
         let gate = Gate::default();
@@ -298,12 +358,26 @@ impl Transport for Chain {
         let req: serde_json::Value =
             serde_json::from_slice(body).map_err(|_| mesh("test: request json"))?;
         match path {
-            "/network/status" => Ok(format!(
-                r#"{{"current_block_identifier":{{"index":{},"hash":"0x{}"}},"sync_status":{{"stage":"synchronized","synced":true}}}}"#,
-                s.tip,
-                "ab".repeat(32)
-            )
+            "/network/status" => Ok(serde_json::json!({
+                "current_block_identifier": { "index": s.tip, "hash": format!("0x{}", "ab".repeat(32)) },
+                "current_block_timestamp": s.tip * 60_000,
+                "genesis_block_identifier": { "index": 0, "hash": format!("0x{}", "00".repeat(32)) },
+                "sync_status": { "stage": s.sync.0, "synced": s.sync.1 },
+            })
+            .to_string()
             .into_bytes()),
+            "/network/list" => Ok(
+                br#"{"network_identifiers":[{"blockchain":"mochimo","network":"mainnet"}]}"#.to_vec(),
+            ),
+            "/mempool" => {
+                let ids: Vec<_> = s
+                    .mempool
+                    .iter()
+                    .map(|id| serde_json::json!({ "hash": format!("0x{}", hex_of(id)) }))
+                    .collect();
+                let list = if ids.is_empty() { serde_json::Value::Null } else { ids.into() };
+                Ok(serde_json::json!({ "transaction_identifiers": list }).to_string().into_bytes())
+            }
             "/call" => {
                 let asked = req["parameters"]["tag"].as_str().ok_or(mesh("test: parameters.tag"))?;
                 let raw = asked
@@ -327,16 +401,27 @@ impl Transport for Chain {
                 }
             }
             "/search/transactions" => {
+                // `mochimo-mesh` registers the route only with its indexer
+                // enabled; the library's transport reports the router's 404 as
+                // a status other than 200.
                 if s.no_index {
-                    return Ok(br#"{"code":1,"message":"Internal error","retriable":false}"#.to_vec());
+                    return Err(Error::HttpStatus { status: 404 });
+                }
+                if s.index_down {
+                    return Ok(br#"{"code":2,"message":"Internal general error","retriable":true}"#.to_vec());
                 }
                 let asked = req["account_identifier"]["address"].as_str().ok_or(mesh("test: account_identifier"))?;
                 let limit = req["limit"].as_u64().filter(|l| (1..=100).contains(l)).unwrap_or(10);
                 let raw = asked.strip_prefix("0x").and_then(unhex).ok_or(mesh("test: tag hex"))?;
                 let tag: Tag = raw.try_into().map_err(|_| mesh("test: tag length"))?;
+                let offset = req["offset"].as_u64().unwrap_or(0);
                 let rows = s.history.get(&tag).cloned().unwrap_or_default();
                 let total = rows.len();
-                let page: Vec<_> = rows.into_iter().take(usize::try_from(limit).unwrap_or(10)).collect();
+                let page: Vec<_> = rows
+                    .into_iter()
+                    .skip(usize::try_from(offset).unwrap_or(usize::MAX))
+                    .take(usize::try_from(limit).unwrap_or(10))
+                    .collect();
                 Ok(serde_json::json!({ "transactions": page, "total_count": total }).to_string().into_bytes())
             }
             "/block" => {
@@ -346,11 +431,22 @@ impl Transport for Chain {
                 if index > s.tip {
                     return Ok(br#"{"code":2,"message":"Block not found","retriable":false}"#.to_vec());
                 }
+                let tx_count = u32::from(!s.pseudo.contains(&index));
                 Ok(serde_json::json!({ "block": {
                     "block_identifier": { "index": index, "hash": format!("0x{index:064x}") },
                     "parent_block_identifier": { "index": index - 1, "hash": format!("0x{:064x}", index - 1) },
                     "timestamp": index * 60_000,
                     "transactions": [],
+                    "metadata": {
+                        "block_size": 4_096,
+                        "difficulty": 30 + index % 5,
+                        "fee": 500,
+                        "haiku": "",
+                        "nonce": format!("0x{:064x}", index + 1),
+                        "root": format!("0x{:064x}", index + 2),
+                        "stime": index * 60_000,
+                        "tx_count": tx_count,
+                    },
                 }})
                 .to_string()
                 .into_bytes())

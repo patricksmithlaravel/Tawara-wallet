@@ -17,13 +17,13 @@ use std::time::{Duration, Instant};
 use iced::futures::channel::mpsc;
 use iced::widget::operation;
 use iced::{Element, Event as IcedEvent, Subscription, Task, event, keyboard, mouse, touch};
-use tawara_wallet_core::explorer::{AccountHistory, BlocksView, ExplorerRefusal};
+use tawara_wallet_core::explorer::{AccountHistory, BlocksView, ExplorerRefusal, MempoolView};
 use tawara_wallet_core::location::{self, Environment, Platform};
 use tawara_wallet_core::preferences::{self, Preferences};
 use tawara_wallet_core::view::WalletView;
 use tawara_wallet_core::{
-    Activity, Command, Config, Event, HttpsNode, LockReason, PhraseForDisplay, Progress, Refusal,
-    RefusalKind, Reply, RequestId, SecretText, WorkerHandle,
+    Activity, Command, Config, Event, HttpsNode, LockReason, NetworkName, PhraseForDisplay,
+    Progress, Refusal, RefusalKind, Reply, RequestId, SecretText, SyncState, WorkerHandle,
 };
 
 pub use wallet::{
@@ -76,6 +76,8 @@ pub struct Model {
     pub activity: Explored<Vec<AccountHistory>>,
     /// The node's newest blocks (W1's network card).
     pub blocks: Explored<BlocksView>,
+    /// How many transactions wait in the node's queue (W1's network card).
+    pub mempool: Explored<MempoolView>,
 }
 
 /// What an explorer read last answered, and whether another is on its way.
@@ -123,6 +125,12 @@ pub struct NodeState {
     pub url: Option<String>,
     /// The chain tip it last reported, and how long it took to answer.
     pub tip: Option<(u64, Duration)>,
+    /// When that tip was solved, in milliseconds since the epoch.
+    pub solved_ms: Option<i64>,
+    /// The Mesh middleware's own sync state, as it last said it.
+    pub sync: Option<SyncState>,
+    /// The network it serves, by name, once it has said.
+    pub network: Option<NetworkName>,
     /// Why it last did not answer, in the library's words.
     pub error: Option<String>,
 }
@@ -379,10 +387,16 @@ enum Purpose {
     Resign,
     SubmitArtifact,
     Status,
+    /// The network the node serves, in the background.
+    Networks,
     /// The network card's blocks, in the background.
     Blocks,
+    /// The network card's count of the node's queue, in the background.
+    Mempool,
     /// The index's rows, in the background.
     Activity,
+    /// The next older page of the index's rows, in the background.
+    OlderActivity,
     /// Account recovery's report of every account.
     Review,
     /// The acknowledged advance.
@@ -488,6 +502,7 @@ impl Model {
             zone: crate::ui::Zone::System,
             activity: Explored::default(),
             blocks: Explored::default(),
+            mempool: Explored::default(),
         };
         if let Some(dir) = model.store_to_open() {
             model.screen = Screen::Unlock(UnlockForm {
@@ -945,6 +960,8 @@ impl App {
     /// Ask the node for its tip. How long it took to answer is measured
     /// from when the worker starts asking (its `Busy`), not from when the
     /// request was queued behind others.
+    /// The network the node serves is asked for until it has said, one
+    /// request at a time.
     fn ask_tip(&mut self) {
         if self.model.node.url.is_some() {
             self.send(
@@ -953,20 +970,34 @@ impl App {
                     sent: Instant::now(),
                 },
             );
+            if self.model.node.network.is_none()
+                && !self.waiting_on(|p| matches!(p, Purpose::Networks))
+            {
+                self.send(Command::Networks, Purpose::Networks);
+            }
             self.read_blocks();
         }
     }
 
-    /// Read the newest blocks for the wallet's network card, in the
-    /// background, unless a read is already on its way or no store is open
-    /// to show them.
+    /// Whether a command sent for a purpose `is` holds is still unanswered.
+    fn waiting_on(&self, is: impl Fn(Purpose) -> bool) -> bool {
+        self.worker
+            .as_ref()
+            .is_some_and(|w| w.waiting.iter().any(|&(_, p)| is(p)))
+    }
+
+    /// Read the newest blocks and count the node's queue for the wallet's
+    /// network card, in the background, each unless a read of it is already
+    /// on its way or no store is open to show it.
     fn read_blocks(&mut self) {
-        if self.model.wallet.is_some()
-            && self.model.node.url.is_some()
-            && !self.model.blocks.reading
-            && self.send(Command::Blocks, Purpose::Blocks).is_some()
-        {
+        if self.model.wallet.is_none() || self.model.node.url.is_none() {
+            return;
+        }
+        if !self.model.blocks.reading && self.send(Command::Blocks, Purpose::Blocks).is_some() {
             self.model.blocks.reading = true;
+        }
+        if !self.model.mempool.reading && self.send(Command::Mempool, Purpose::Mempool).is_some() {
+            self.model.mempool.reading = true;
         }
     }
 
@@ -977,6 +1008,28 @@ impl App {
             && self.model.node.url.is_some()
             && !self.model.activity.reading
             && self.send(Command::Activity, Purpose::Activity).is_some()
+        {
+            self.model.activity.reading = true;
+        }
+    }
+
+    /// Read the next older page of every account whose history the index
+    /// holds more of, in the background, unless a read is already on its
+    /// way.
+    pub(crate) fn read_older_activity(&mut self) {
+        let Some(Ok(histories)) = &self.model.activity.last else {
+            return;
+        };
+        let pages: Vec<_> = histories
+            .iter()
+            .filter(|h| h.more())
+            .map(|h| (h.account, h.next))
+            .collect();
+        if !pages.is_empty()
+            && !self.model.activity.reading
+            && self
+                .send(Command::OlderActivity(pages), Purpose::OlderActivity)
+                .is_some()
         {
             self.model.activity.reading = true;
         }
@@ -1130,6 +1183,7 @@ impl App {
                 if m.node.url.as_deref() != Some(url.as_str()) {
                     m.activity = Explored::default();
                     m.blocks = Explored::default();
+                    m.mempool = Explored::default();
                 }
                 m.node = NodeState {
                     url: Some(url.clone()),
@@ -1162,19 +1216,41 @@ impl App {
                     m.blocks.last = Some(read);
                 }
             }
+            (Purpose::Mempool, reply) => {
+                m.mempool.reading = false;
+                if let Reply::Mempool(read) = reply {
+                    m.mempool.last = Some(read);
+                }
+            }
             (Purpose::Activity, reply) => {
                 m.activity.reading = false;
                 if let Reply::Activity(read) = reply {
                     m.activity.last = Some(read);
                 }
             }
+            // A page is added below the rows already read for its account;
+            // a refusal leaves those rows as they were.
+            (Purpose::OlderActivity, reply) => {
+                m.activity.reading = false;
+                if let Reply::Activity(Ok(pages)) = reply
+                    && let Some(Ok(histories)) = &mut m.activity.last
+                {
+                    for page in pages {
+                        if let Some(h) = histories.iter_mut().find(|h| h.account == page.account) {
+                            h.extend(page);
+                        }
+                    }
+                }
+            }
+            (Purpose::Networks, Reply::Networks(names)) => {
+                m.node.network = names.into_iter().next();
+            }
             (Purpose::SetNode { form: false }, Reply::Refused(r)) => {
                 // A remembered node this version will not use: forget it, and
                 // say why where the node is shown.
                 m.node = NodeState {
-                    url: None,
-                    tip: None,
                     error: Some(r.text),
+                    ..NodeState::default()
                 };
                 m.prefs.node = None;
                 self.save_prefs();
@@ -1183,6 +1259,7 @@ impl App {
                 m.node = NodeState::default();
                 m.activity = Explored::default();
                 m.blocks = Explored::default();
+                m.mempool = Explored::default();
                 m.prefs.node = None;
                 if let Some(v) = view {
                     m.wallet = Some(v);
@@ -1192,12 +1269,24 @@ impl App {
                 }
                 self.save_prefs();
             }
-            (Purpose::Network { sent }, Reply::Network { tip_index, .. }) => {
+            (
+                Purpose::Network { sent },
+                Reply::Network {
+                    tip_index,
+                    tip_time_ms,
+                    sync,
+                    ..
+                },
+            ) => {
                 m.node.tip = Some((tip_index, sent.elapsed()));
+                m.node.solved_ms = Some(tip_time_ms);
+                m.node.sync = sync;
                 m.node.error = None;
             }
             (Purpose::Network { .. }, Reply::Refused(r)) => {
                 m.node.tip = None;
+                m.node.solved_ms = None;
+                m.node.sync = None;
                 m.node.error = Some(r.text);
             }
             (
@@ -2454,7 +2543,7 @@ mod tests {
 
     #[test]
     fn the_index_and_the_blocks_are_kept_until_the_store_or_the_node_changes() {
-        use tawara_wallet_core::explorer::ExplorerRefusal;
+        use tawara_wallet_core::explorer::IndexState;
         let mut app = on_wallet(Page::Activity(ActivityPage::default()));
         app.model.node.url = Some("https://node.example".to_owned());
         app.model.activity.reading = true;
@@ -2486,12 +2575,13 @@ mod tests {
         // A node with no index says so, for every account.
         app.on_reply(
             Purpose::Activity,
-            Reply::Activity(Err(ExplorerRefusal {
-                no_index: true,
-                text: "no index".to_owned(),
-            })),
+            Reply::Activity(Err(tawara_wallet_core::sample::index_refusal(
+                IndexState::Absent,
+            ))),
         );
-        assert!(matches!(&app.model.activity.last, Some(Err(r)) if r.no_index));
+        assert!(
+            matches!(&app.model.activity.last, Some(Err(r)) if r.index == Some(IndexState::Absent))
+        );
 
         // Another node: another index and another chain.
         app.on_reply(
@@ -2512,6 +2602,165 @@ mod tests {
             reason: LockReason::Asked,
         });
         assert!(app.model.activity.last.is_none());
+    }
+
+    /// What the worker has been sent and not yet answered, by purpose.
+    fn waiting(app: &App) -> Vec<String> {
+        app.worker
+            .as_ref()
+            .map(|w| {
+                w.waiting
+                    .iter()
+                    .map(|(_, p)| {
+                        let name = format!("{p:?}");
+                        name.split([' ', '{']).next().unwrap_or("").to_owned()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn the_cards_read_the_network_the_queue_and_the_sync_state() {
+        use tawara_wallet_core::sample;
+        let scratch = Scratch::new("network-reads");
+        let (mut app, _events) = app(&scratch);
+        app.model.wallet = Some(sample::wallet_view());
+        // The worker is given no node, so nothing leaves this machine: what
+        // is checked is what the application asks for.
+        app.model.node.url = Some("https://node.example".to_owned());
+        app.ask_tip();
+        assert_eq!(
+            waiting(&app),
+            ["Network", "Networks", "Blocks", "Mempool"],
+            "the tip, the network's name, the blocks and the queue"
+        );
+        assert!(app.model.blocks.reading && app.model.mempool.reading);
+        // Asked again before any answer: the reads on their way are not
+        // asked for twice.
+        app.ask_tip();
+        assert_eq!(
+            waiting(&app),
+            ["Network", "Networks", "Blocks", "Mempool", "Network"]
+        );
+
+        app.on_reply(
+            Purpose::Network {
+                sent: Instant::now(),
+            },
+            Reply::Network {
+                tip_index: 871_173,
+                tip_hash: "ab".repeat(32),
+                tip_time_ms: sample::TIP_MS,
+                sync: Some(SyncState {
+                    stage: "synchronized".to_owned(),
+                    synced: true,
+                }),
+            },
+        );
+        assert_eq!(app.model.node.solved_ms, Some(sample::TIP_MS));
+        assert!(app.model.node.sync.as_ref().is_some_and(|s| s.synced));
+        let mainnet = NetworkName {
+            blockchain: "mochimo".to_owned(),
+            network: "mainnet".to_owned(),
+        };
+        app.on_reply(Purpose::Networks, Reply::Networks(vec![mainnet.clone()]));
+        assert_eq!(app.model.node.network, Some(mainnet));
+        app.on_reply(Purpose::Mempool, Reply::Mempool(Ok(sample::mempool())));
+        assert!(!app.model.mempool.reading);
+        assert!(matches!(&app.model.mempool.last, Some(Ok(m)) if m.waiting == 14));
+
+        // A node that stops answering: no tip, so no solve time or sync
+        // state either. The network it serves is still the one it said.
+        app.on_reply(
+            Purpose::Network {
+                sent: Instant::now(),
+            },
+            Reply::Refused(Refusal {
+                kind: RefusalKind::Library,
+                text: "connection refused".to_owned(),
+            }),
+        );
+        assert_eq!(app.model.node.solved_ms, None);
+        assert_eq!(app.model.node.sync, None);
+        assert!(app.model.node.network.is_some());
+
+        // Known, the network is not asked for again.
+        let before = waiting(&app).len();
+        app.model.blocks.reading = false;
+        app.model.mempool.reading = false;
+        app.ask_tip();
+        assert!(!waiting(&app)[before..].contains(&"Networks".to_owned()));
+
+        // Another node: its own network and its own queue.
+        app.on_reply(
+            Purpose::SetNode { form: true },
+            Reply::NodeSet {
+                url: "https://other.example".to_owned(),
+                view: None,
+            },
+        );
+        assert!(app.model.node.network.is_none() && app.model.mempool.last.is_none());
+    }
+
+    #[test]
+    fn older_activity_is_read_on_from_each_account_with_more_and_added_below() {
+        use tawara_wallet_core::sample;
+        let scratch = Scratch::new("older-activity");
+        let (mut app, _events) = app(&scratch);
+        app.model.wallet = Some(sample::wallet_view());
+        app.model.node.url = Some("https://node.example".to_owned());
+        let mut histories = sample::activity();
+        app.model.activity.last = Some(Ok(histories.clone()));
+        wallet(&mut app, WalletMsg::ReadOlderActivity);
+        assert!(
+            waiting(&app).is_empty(),
+            "every history is whole: nothing to read"
+        );
+
+        histories[0].total = histories[0].next + 40;
+        app.model.activity.last = Some(Ok(histories.clone()));
+        wallet(&mut app, WalletMsg::ReadOlderActivity);
+        assert_eq!(waiting(&app), ["OlderActivity"]);
+        assert!(app.model.activity.reading);
+        wallet(&mut app, WalletMsg::ReadOlderActivity);
+        assert_eq!(waiting(&app), ["OlderActivity"], "one read at a time");
+
+        // A refusal (a cancel) leaves the rows as they were.
+        app.on_reply(
+            Purpose::OlderActivity,
+            Reply::Refused(Refusal {
+                kind: RefusalKind::Cancelled,
+                text: "cancelled".to_owned(),
+            }),
+        );
+        assert!(!app.model.activity.reading);
+        assert!(matches!(&app.model.activity.last, Some(Ok(h)) if *h == histories));
+
+        // The page is added below its own account's rows, each once.
+        let mut page = histories[0].clone();
+        let repeated = page.transactions[0].clone();
+        let mut older = page.transactions[1].clone();
+        older.id = "older".to_owned();
+        older.block = Some(1);
+        page.transactions = vec![repeated, older];
+        page.next = histories[0].total;
+        page.text = "the older page".to_owned();
+        let rows = histories[0].transactions.len();
+        app.model.activity.reading = true;
+        app.on_reply(Purpose::OlderActivity, Reply::Activity(Ok(vec![page])));
+        assert!(!app.model.activity.reading);
+        let Some(Ok(now)) = &app.model.activity.last else {
+            panic!("the rows read");
+        };
+        assert_eq!(now[0].transactions.len(), rows + 1);
+        assert_eq!(
+            now[0].transactions.last().map(|t| t.id.as_str()),
+            Some("older")
+        );
+        assert!(!now[0].more());
+        assert!(now[0].text.ends_with("the older page"));
+        assert_eq!(now[1..], histories[1..], "the other accounts as they were");
     }
 
     #[test]

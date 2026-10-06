@@ -11,7 +11,7 @@
 
 use iced::widget::{button, column, container, row};
 use iced::{Alignment, Element, Length};
-use tawara_wallet_core::explorer::{AccountHistory, ExplorerRefusal};
+use tawara_wallet_core::explorer::{AccountHistory, ExplorerRefusal, IndexState};
 use tawara_wallet_core::view::{AccountRow, AccountState, DivergenceKind, NoticeKind, WalletView};
 use tawara_wallet_core::{AccountReport, Discovered, PlanView, SentView};
 
@@ -592,19 +592,37 @@ const NO_INDEX: &str = "Activity reads the node's transaction index, which a nod
                         when its operator sets one up. Nothing is wrong with the store or its \
                         accounts.";
 const OTHER_NODE: &str = "Another node may run one: Change node, in the sidebar or in Settings.";
+const INDEX_DOWN: &str = "The node answered, and runs a transaction index, but the index did not: \
+                          its database is not connected yet, or not at all, or the search failed. \
+                          Nothing is wrong with the store or its accounts.";
+const READ_AGAIN: &str = "Read again in a while: an index that is starting answers once its \
+                          database is connected.";
+const OTHER_INDEX: &str = "Another node's index may answer: Change node, in the sidebar or in \
+                           Settings.";
 
 /// An explorer read the node did not serve: `what` it was for (W1, W10).
 pub fn explorer<'a>(refusal: &'a ExplorerRefusal, what: &str) -> Report<'a> {
-    let r = if refusal.no_index {
-        let mut r = Report::new(Tone::Note, "This node keeps no transaction index")
-            .says(NO_INDEX)
-            .causes(&[OTHER_NODE]);
-        r.causes_title = "What helps";
-        r
-    } else {
-        Report::new(Tone::Warning, format!("The node did not serve {what}"))
+    let r = match refusal.index {
+        Some(IndexState::Absent) => {
+            let mut r = Report::new(Tone::Note, "This node keeps no transaction index")
+                .says(NO_INDEX)
+                .causes(&[OTHER_NODE]);
+            r.causes_title = "What helps";
+            r
+        }
+        Some(IndexState::Unavailable) => {
+            let mut r = Report::new(
+                Tone::Warning,
+                "This node's transaction index did not answer",
+            )
+            .says(INDEX_DOWN)
+            .causes(&[READ_AGAIN, OTHER_INDEX]);
+            r.causes_title = "What helps";
+            r
+        }
+        None => Report::new(Tone::Warning, format!("The node did not serve {what}"))
             .says("Nothing was read, and nothing was written.")
-            .causes(&[NODE_DOWN, OFFLINE, NODE_ADDRESS])
+            .causes(&[NODE_DOWN, OFFLINE, NODE_ADDRESS]),
     };
     r.full(&refusal.text)
 }

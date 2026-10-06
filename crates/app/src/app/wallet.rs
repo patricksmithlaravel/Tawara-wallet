@@ -14,7 +14,7 @@ use tawara_wallet_core::spend::{Amount, DestinationInput, SpendRequest};
 use tawara_wallet_core::view::{AccountId, AccountState, DivergenceKind, WalletView};
 use tawara_wallet_core::{AccountReport, amount};
 
-use crate::history::Filter;
+use crate::history::{Filter, RowId};
 use tawara_wallet_core::{
     Command, Discovered, MAX_DESTINATIONS, PlanView, ReceiveView, Reply, SentView,
 };
@@ -53,9 +53,8 @@ pub struct ActivityPage {
     pub filter: Filter,
     /// What is typed in the search field.
     pub search: String,
-    /// The transaction shown beside the list, by id; the newest when none
-    /// is chosen.
-    pub selected: Option<String>,
+    /// The row shown beside the list; the newest when none is chosen.
+    pub selected: Option<RowId>,
 }
 
 /// W11.
@@ -365,9 +364,12 @@ pub enum WalletMsg {
     /// W10.
     Filter(Filter),
     Search(String),
-    Select(String),
+    Select(RowId),
     /// W10: read the node's index again.
     ReadActivity,
+    /// W10: read the next older page of every account the index holds more
+    /// of.
+    ReadOlderActivity,
     /// W11.
     Unit(AmountUnit),
     /// W11: the auto-lock period, in minutes.
@@ -1096,6 +1098,7 @@ impl App {
                 }
             }
             WalletMsg::ReadActivity => self.read_activity(),
+            WalletMsg::ReadOlderActivity => self.read_older_activity(),
             WalletMsg::Unit(unit) => {
                 self.model.prefs.unit = unit;
                 self.save_prefs();

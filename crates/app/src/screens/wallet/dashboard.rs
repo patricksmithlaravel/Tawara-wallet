@@ -6,6 +6,7 @@
 use iced::widget::text::Wrapping;
 use iced::widget::{column, container, row, space};
 use iced::{Alignment, Element, Length, Padding};
+use tawara_wallet_core::explorer::BlockKind;
 use tawara_wallet_core::preferences::AmountUnit;
 use tawara_wallet_core::view::{AccountRow, AccountState, Total, WalletView};
 
@@ -540,9 +541,8 @@ fn line<'a>(
 }
 
 /// The network card (02): the chain's height, how long ago its last block
-/// was made, and the newest blocks. A block's type, the difficulty and the
-/// mempool are not read: the library does not serve them yet
-/// (docs/DECISIONS.md D27, item 4).
+/// was made, the difficulty it was solved at, how many transactions wait in
+/// the node's queue, and the newest blocks by kind.
 fn network(model: &Model) -> Element<'_, Message> {
     let stat = |label: &'static str, value: String| {
         column![
@@ -555,41 +555,81 @@ fn network(model: &Model) -> Element<'_, Message> {
     let mut card = column![ui::section_label("Network")].spacing(sp::S16);
     match &model.blocks.last {
         Some(Ok(view)) => {
-            let last = view
-                .blocks
-                .first()
-                .map_or_else(|| "—".to_owned(), |b| ui::age(model.clock_ms, b.time_ms));
-            card = card.push(row![
-                stat("Block height", ui::group(&view.tip.to_string())),
-                stat("Last block", last),
-            ]);
-            let mut chips = row![].spacing(sp::S8);
+            let newest = view.blocks.first();
+            let last =
+                newest.map_or_else(|| "—".to_owned(), |b| ui::age(model.clock_ms, b.time_ms));
+            let difficulty = newest
+                .and_then(|b| b.difficulty)
+                .map_or_else(|| "—".to_owned(), |d| d.to_string());
+            let waiting = match &model.mempool.last {
+                Some(Ok(m)) => ui::group(&m.waiting.to_string()),
+                _ => "—".to_owned(),
+            };
+            card = card
+                .push(row![
+                    stat("Block height", ui::group(&view.tip.to_string())),
+                    stat("Last block", last),
+                ])
+                .push(row![
+                    stat("Difficulty", difficulty),
+                    stat("Mempool", waiting)
+                ]);
+            let mut tiles = row![].spacing(sp::S6);
             for (n, b) in view.blocks.iter().rev().enumerate() {
-                let newest = n + 1 == view.blocks.len();
+                let tip = n + 1 == view.blocks.len();
                 let digits = b.index.to_string();
                 let tail = digits[digits.len().saturating_sub(3)..].to_owned();
-                chips = chips.push(
-                    container(t(
-                        tail,
-                        ty::MONO_SMALL,
-                        if newest {
-                            color::ACCENT
-                        } else {
-                            color::TEXT_SECONDARY
-                        },
-                    ))
-                    .center_x(Length::Fill)
-                    .padding(Padding::from([sp::S10, 0.0]))
-                    .style(theme::radio_card(newest)),
+                let (fill, ink) = match b.kind {
+                    Some(BlockKind::Neogenesis) => (color::ACCENT, color::TEXT_ON_ACCENT),
+                    Some(BlockKind::Pseudo) => (color::WARNING_SOFT, color::WARNING),
+                    Some(BlockKind::Normal) => (color::BG_RAISED, color::TEXT_PRIMARY),
+                    // The node sent none of its figures: no kind is shown.
+                    None => (color::BG_SURFACE, color::TEXT_SECONDARY),
+                };
+                let edge = match (tip, b.kind) {
+                    (true, _) => color::ACCENT,
+                    (false, None) => color::BORDER_SUBTLE,
+                    (false, Some(_)) => fill,
+                };
+                tiles = tiles.push(
+                    container(t(tail, ty::MONO_TINY, ink))
+                        .center(Length::Fill)
+                        .height(Length::Fixed(44.0))
+                        .style(theme::block_tile(fill, edge)),
                 );
             }
-            card = card
-                .push(t(
-                    format!("Last {} blocks", view.blocks.len()),
-                    ty::NOTE,
-                    color::TEXT_MUTED,
-                ))
-                .push(chips);
+            card = card.push(
+                column![
+                    t(
+                        format!("Last {} blocks", view.blocks.len()),
+                        ty::NOTE,
+                        color::TEXT_MUTED,
+                    ),
+                    tiles,
+                ]
+                .spacing(sp::S8),
+            );
+            if view.blocks.iter().any(|b| b.kind.is_some()) {
+                let key = |fill, label: &'static str| {
+                    row![
+                        container(space())
+                            .width(Length::Fixed(8.0))
+                            .height(Length::Fixed(8.0))
+                            .style(theme::swatch(fill)),
+                        t(label, ty::TINY, color::TEXT_MUTED),
+                    ]
+                    .spacing(sp::S6)
+                    .align_y(Alignment::Center)
+                };
+                card = card.push(
+                    row![
+                        key(color::ACCENT, "Neogenesis"),
+                        key(color::WARNING, "Pseudo"),
+                        key(color::SWATCH_NORMAL, "Normal"),
+                    ]
+                    .spacing(sp::S14),
+                );
+            }
         }
         Some(Err(_)) => {
             card = card.push(t(

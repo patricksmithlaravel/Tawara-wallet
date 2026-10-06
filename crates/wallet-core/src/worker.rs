@@ -148,8 +148,10 @@ use crate::event::{
     AccountReport, Activity, Discovered, Event, LockReason, PlanView, PlannedDestination, Progress,
     ReceiveView, Refusal, RefusalKind, Reply, SentView,
 };
-use crate::explorer::{self, AccountHistory, BlockSummary, BlocksView, ExplorerRefusal};
-use crate::node::{self, Connect};
+use crate::explorer::{
+    self, AccountHistory, BlockSummary, BlocksView, ExplorerRefusal, MempoolView,
+};
+use crate::node::{self, Connect, NetworkName, SyncState};
 use crate::secret::{PhraseForDisplay, SecretText};
 use crate::spend::{self, SpendRequest};
 use crate::text;
@@ -535,6 +537,46 @@ fn stop_predicate(
         }
         stop
     }
+}
+
+/// `cli::cmd_blocks`'s walk, repeated as the worker repeats the command
+/// line's other private decisions (docs/DECISIONS.md D19), with `asked`
+/// consulted before each request: the tip, then the `count` newest blocks
+/// down from it, stopping above index 0, which the endpoint reads as the tip
+/// and never as genesis. A block not served discards the blocks read before
+/// it, as the library's walk does. `None` when `asked` said stop.
+fn walk_blocks<T: Transport>(
+    client: &MeshClient<T>,
+    count: u64,
+    asked: &dyn Fn() -> bool,
+) -> Option<Outcome> {
+    if asked() {
+        return None;
+    }
+    let tip = match client.network_status() {
+        Ok(t) => t,
+        Err(cause) => return Some(Outcome::ExplorerFailed { cause }),
+    };
+    let mut rows = Vec::new();
+    for i in 0..count {
+        let Some(index) = tip.index.checked_sub(i) else {
+            break;
+        };
+        if index == 0 {
+            break;
+        }
+        if asked() {
+            return None;
+        }
+        match client.block_by_index(index) {
+            Ok(b) => rows.push(b),
+            Err(cause) => return Some(Outcome::BlocksStopped { index, cause }),
+        }
+    }
+    if asked() {
+        return None;
+    }
+    Some(Outcome::Blocks { count, tip, rows })
 }
 
 fn refused(kind: RefusalKind, text: impl Into<String>) -> Reply {
@@ -1101,8 +1143,11 @@ impl<C: Connect> Worker<C> {
             } => self.restore(id, account_index, scan_to),
             Command::Discover { to } => self.discover(id, to),
             Command::NetworkStatus => self.network_status(id),
+            Command::Networks => self.networks(id),
             Command::Blocks => self.blocks(id),
-            Command::Activity => self.activity(id),
+            Command::Mempool => self.mempool(id),
+            Command::Activity => self.activity(id, None),
+            Command::OlderActivity(pages) => self.activity(id, Some(&pages)),
             Command::Review => self.review(id),
         }
     }
@@ -2226,65 +2271,118 @@ impl<C: Connect> Worker<C> {
         }
     }
 
-    fn network_status(&self, id: RequestId) -> Reply {
-        let tip = match &self.session {
+    /// Ask the chosen node with `ask`: through the open wallet's own client
+    /// when the wallet was opened against that node, or through a new one.
+    fn ask_node<R>(&self, ask: impl FnOnce(&MeshClient<C::Transport>) -> R) -> Result<R, Refusal> {
+        match &self.session {
             Session::Wallet(w) if self.node.as_deref() == Some(w.node.as_str()) => {
-                self.busy(id, Activity::AskingNode);
-                w.wallet.client().network_status()
+                Ok(ask(w.wallet.client()))
             }
-            _ => match self.client() {
-                Ok((_, client)) => {
-                    self.busy(id, Activity::AskingNode);
-                    client.network_status()
-                }
-                Err(r) => return Reply::Refused(r),
-            },
-        };
-        match tip {
-            Ok(tip) => Reply::Network {
-                tip_index: tip.index,
-                tip_hash: hex(&tip.hash),
-            },
-            Err(e) => Reply::Refused(library(e)),
+            _ => self.client().map(|(_, client)| ask(&client)),
         }
     }
 
-    /// The command line's `blocks`, for the wallet's network card.
-    fn blocks(&self, id: RequestId) -> Reply {
-        let fresh;
-        let client = match &self.session {
-            Session::Wallet(w) if self.node.as_deref() == Some(w.node.as_str()) => {
-                w.wallet.client()
-            }
-            _ => match self.client() {
-                Ok((_, c)) => {
-                    fresh = c;
-                    &fresh
-                }
-                Err(r) => return Reply::Refused(r),
+    /// `/network/status`, read whole: the tip, when it was solved, and the
+    /// middleware's sync state.
+    fn network_status(&self, id: RequestId) -> Reply {
+        let read = self.ask_node(|client| {
+            self.busy(id, Activity::AskingNode);
+            client.network_status_full()
+        });
+        match read {
+            Ok(Ok(status)) => Reply::Network {
+                tip_index: status.tip.index,
+                tip_hash: hex(&status.tip.hash),
+                tip_time_ms: status.tip_timestamp_ms,
+                sync: status.sync.map(|s| SyncState {
+                    stage: explorer::shown(&s.stage),
+                    synced: s.synced,
+                }),
             },
+            Ok(Err(e)) => Reply::Refused(library(e)),
+            Err(r) => Reply::Refused(r),
+        }
+    }
+
+    /// `/network/list`: the networks the node serves, by name.
+    fn networks(&self, id: RequestId) -> Reply {
+        let read = self.ask_node(|client| {
+            self.busy(id, Activity::AskingNode);
+            client.networks()
+        });
+        match read {
+            Ok(Ok(list)) => Reply::Networks(
+                list.iter()
+                    .map(|n| NetworkName {
+                        blockchain: explorer::shown(&n.blockchain),
+                        network: explorer::shown(&n.network),
+                    })
+                    .collect(),
+            ),
+            Ok(Err(e)) => Reply::Refused(library(e)),
+            Err(r) => Reply::Refused(r),
+        }
+    }
+
+    /// The command line's `blocks`, for the wallet's network card: its walk
+    /// (`cli::cmd_blocks`) made here, so that a cancel, a lock or the idle
+    /// period stops it between two requests, as [`Worker::activity`] stops.
+    /// The library's walk asks for the tip and every block without looking
+    /// for a stop, and this worker holds the open store meanwhile.
+    fn blocks(&self, id: RequestId) -> Reply {
+        let asked = self.stop_asked(id);
+        let outcome = match self.ask_node(|client| {
+            self.busy(id, Activity::ReadingIndex);
+            walk_blocks(client, explorer::CARD_BLOCKS, &asked)
+        }) {
+            Ok(Some(outcome)) => outcome,
+            // A walk cut short is not shown as a whole one.
+            Ok(None) => return Reply::Refused(library(Error::Cancelled)),
+            Err(r) => return Reply::Refused(r),
         };
-        self.busy(id, Activity::ReadingIndex);
-        let outcome = cli::cmd_blocks(client, explorer::CARD_BLOCKS);
         let read = match &outcome {
             Outcome::Blocks { tip, rows, .. } => {
-                Ok((tip.index, rows.iter().map(BlockSummary::of).collect()))
+                Some((tip.index, rows.iter().map(BlockSummary::of).collect()))
             }
-            Outcome::BlocksStopped { cause, .. } | Outcome::ExplorerFailed { cause } => {
-                Err(explorer::no_index(cause))
-            }
-            _ => Err(false),
+            _ => None,
         };
         let text = text::page(&[], outcome);
+        // Blocks are the node's own, not its index: no refusal here says
+        // anything about the index.
         Reply::Blocks(match read {
-            Ok((tip, blocks)) => Ok(BlocksView { tip, blocks, text }),
-            Err(no_index) => Err(ExplorerRefusal { no_index, text }),
+            Some((tip, blocks)) => Ok(BlocksView { tip, blocks, text }),
+            None => Err(ExplorerRefusal { index: None, text }),
         })
     }
 
-    /// The command line's `recent-transactions`, for every account in the
-    /// store's order.
-    fn activity(&self, id: RequestId) -> Reply {
+    /// The command line's `mempool` with none of the queue read whole, for
+    /// the wallet's network card.
+    fn mempool(&self, id: RequestId) -> Reply {
+        let outcome = match self.ask_node(|client| {
+            self.busy(id, Activity::AskingNode);
+            cli::cmd_mempool(client, 0)
+        }) {
+            Ok(outcome) => outcome,
+            Err(r) => return Reply::Refused(r),
+        };
+        let read = match &outcome {
+            Outcome::Mempool { total, .. } => Some(*total),
+            _ => None,
+        };
+        let text = text::page(&[], outcome);
+        // The queue is the node's own, not its index: no refusal here says
+        // anything about the index, though the middleware answers its code 2
+        // for a queue it could not read as well.
+        Reply::Mempool(match read {
+            Some(waiting) => Ok(MempoolView { waiting, text }),
+            None => Err(ExplorerRefusal { index: None, text }),
+        })
+    }
+
+    /// The command line's `recent-transactions` for every account in the
+    /// store's order, the newest page of each; or, given `pages`, the page
+    /// at each offset given, for the accounts named that the store holds.
+    fn activity(&self, id: RequestId, pages: Option<&[(AccountId, u64)]>) -> Reply {
         let fresh;
         let (accounts, client) = match &self.session {
             Session::Locked => return Self::not_unlocked(),
@@ -2303,11 +2401,21 @@ impl<C: Connect> Worker<C> {
             }
             Session::Wallet(w) => (&w.rows, w.wallet.client()),
         };
+        let wanted: Vec<(AccountId, u64)> = accounts
+            .iter()
+            .filter_map(|row| match pages {
+                None => Some((row.id, 0)),
+                Some(pages) => pages
+                    .iter()
+                    .find(|(account, _)| *account == row.id)
+                    .map(|&(_, from)| (row.id, from)),
+            })
+            .collect();
         let asked = self.stop_asked(id);
         self.busy(id, Activity::ReadingIndex);
-        let count = u32::try_from(accounts.len()).unwrap_or(u32::MAX);
-        let mut out = Vec::with_capacity(accounts.len());
-        for (n, row) in accounts.iter().enumerate() {
+        let count = u32::try_from(wanted.len()).unwrap_or(u32::MAX);
+        let mut out = Vec::with_capacity(wanted.len());
+        for (n, &(account, from)) in wanted.iter().enumerate() {
             // Between two requests: a history cut short is not shown as
             // a whole one.
             if asked() {
@@ -2322,21 +2430,25 @@ impl<C: Connect> Worker<C> {
                     ceiling: 0,
                 },
             });
-            let outcome =
-                cli::cmd_recent_transactions(client, &row.id.tag(), explorer::HISTORY_ROWS);
+            let outcome = cli::cmd_recent_transactions_from(
+                client,
+                &account.tag(),
+                explorer::HISTORY_ROWS,
+                from,
+            );
             let read = match &outcome {
-                Outcome::RecentTransactions { page, .. } => {
-                    Ok(AccountHistory::of(row.id, page, String::new()))
+                Outcome::RecentTransactions { page, from, .. } => {
+                    Ok(AccountHistory::of(account, page, *from, String::new()))
                 }
-                Outcome::ExplorerFailed { cause } => Err(explorer::no_index(cause)),
-                _ => Err(false),
+                Outcome::SearchFailed { cause } => Err(explorer::index_state(cause)),
+                _ => Err(None),
             };
             let text = text::page(&[], outcome);
             match read {
                 Ok(history) => out.push(AccountHistory { text, ..history }),
                 // Every account is read from the same index: one refusal
                 // is the answer for all of them.
-                Err(no_index) => return Reply::Activity(Err(ExplorerRefusal { no_index, text })),
+                Err(index) => return Reply::Activity(Err(ExplorerRefusal { index, text })),
             }
         }
         if asked() {

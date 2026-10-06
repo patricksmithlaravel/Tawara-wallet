@@ -1,10 +1,12 @@
 //! What the node's explorer endpoints say, as the interface shows it:
 //! a tag's transactions from the node's index (Activity, docs/SCREENS.md
-//! W10) and the newest blocks (the wallet's network card, W1).
+//! W10), and the newest blocks and the size of the node's queue (the
+//! wallet's network card, W1).
 //!
 //! The rows are the library's (`mesh::codec`), read with the command
-//! line's own calls (`cli::cmd_recent_transactions`, `cli::cmd_blocks`),
-//! and every read carries the library's page for it, word for word. What
+//! line's own calls (`cli::cmd_recent_transactions_from`, `cli::cmd_blocks`,
+//! `cli::cmd_mempool`), and every read carries the library's page for it,
+//! word for word. What
 //! the interface works out from a row (which way it moved, by how much, for
 //! one account) follows the command line's page for the same rows
 //! (`cli::render`, `recent_transactions`), which is private there and so
@@ -13,14 +15,14 @@
 
 use mochimo_crypto::Error;
 use mochimo_crypto::mesh::codec::{
-    MeshBlock, MeshTransaction, OP_DESTINATION, OP_FEE, OP_REWARD, OP_SOURCE, SearchPage,
+    self, MeshBlock, MeshTransaction, OP_DESTINATION, OP_FEE, OP_REWARD, OP_SOURCE, SearchPage,
 };
 
 use crate::view::AccountId;
 
-/// The most rows the node's index answers for one tag in one request, and
-/// so the most Activity shows for each account: the endpoint takes no
-/// offset the library can send (docs/DECISIONS.md D27, item 11).
+/// The most rows the node's index answers for one tag in one request: one
+/// page of an account's history. Older rows are read a page at a time, from
+/// the offset the last page ended at (docs/DECISIONS.md D30).
 pub const HISTORY_ROWS: u64 = 100;
 
 /// How many of the newest blocks the wallet's network card shows.
@@ -192,34 +194,84 @@ impl TransactionView {
     }
 }
 
-/// One account's transactions, newest first.
+/// One account's transactions, newest first: the pages read so far, from
+/// the newest.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountHistory {
     pub account: AccountId,
-    /// At most [`HISTORY_ROWS`].
+    /// [`HISTORY_ROWS`] a page, each transaction once.
     pub transactions: Vec<TransactionView>,
-    /// How many the index holds for it in all.
+    /// How many the index holds for it in all, as the last page read said.
     pub total: u64,
-    /// The library's page for these rows, word for word.
+    /// The offset the next older page starts at: how many rows, newest
+    /// first, the pages read so far cover. A row the index gained at the top
+    /// since the first page pushes the rest down, so a later page can repeat
+    /// rows already read; it is counted here and listed once.
+    pub next: u64,
+    /// The library's page for each page read, word for word, one after
+    /// another.
     pub text: String,
 }
 
 impl AccountHistory {
-    /// Whether the index holds more than it sent: older rows exist that no
-    /// request can reach.
+    /// Whether the index holds rows older than the pages read so far.
     #[must_use]
     pub fn more(&self) -> bool {
-        self.total > self.transactions.len() as u64
+        self.total > self.next
     }
 
-    pub(crate) fn of(account: AccountId, page: &SearchPage, text: String) -> AccountHistory {
+    /// How many rows the index holds that the pages read so far do not.
+    #[must_use]
+    pub fn unread(&self) -> u64 {
+        self.total.saturating_sub(self.next)
+    }
+
+    /// Add `older`, the page read from [`AccountHistory::next`], below the
+    /// rows already read: each transaction once, the total and the offset as
+    /// that page says them, and its page after the others.
+    pub fn extend(&mut self, older: AccountHistory) {
+        for tx in older.transactions {
+            if !self.transactions.iter().any(|t| t.id == tx.id) {
+                self.transactions.push(tx);
+            }
+        }
+        self.total = older.total;
+        self.next = older.next;
+        if !older.text.is_empty() {
+            if !self.text.is_empty() {
+                self.text.push_str("\n\n");
+            }
+            self.text.push_str(&older.text);
+        }
+    }
+
+    /// The page read at offset `from`.
+    pub(crate) fn of(
+        account: AccountId,
+        page: &SearchPage,
+        from: u64,
+        text: String,
+    ) -> AccountHistory {
         AccountHistory {
             account,
             transactions: page.transactions.iter().map(TransactionView::of).collect(),
             total: page.total_count,
+            next: from.saturating_add(page.transactions.len() as u64),
             text,
         }
     }
+}
+
+/// What kind of block a block is, by the C reference's own test as the
+/// library applies it (`MeshBlock::kind`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockKind {
+    /// Transactions, solved by proof of work.
+    Normal,
+    /// No transactions: made when no block was solved in time.
+    Pseudo,
+    /// The ledger, at a block number whose low byte is zero.
+    Neogenesis,
 }
 
 /// One block, as the newest blocks list it.
@@ -232,6 +284,11 @@ pub struct BlockSummary {
     pub time_ms: i64,
     /// How many transactions it carries, its reward among them.
     pub transactions: usize,
+    /// Its kind; `None` when the node sent none of its own figures and its
+    /// number does not make it a neogenesis block.
+    pub kind: Option<BlockKind>,
+    /// The difficulty it was solved at, when the node sent its figures.
+    pub difficulty: Option<u32>,
 }
 
 impl BlockSummary {
@@ -241,6 +298,12 @@ impl BlockSummary {
             hash: hex(&block.block.hash),
             time_ms: block.timestamp_ms,
             transactions: block.transactions.len(),
+            kind: block.kind().map(|k| match k {
+                codec::BlockKind::Normal => BlockKind::Normal,
+                codec::BlockKind::Pseudo => BlockKind::Pseudo,
+                codec::BlockKind::Neogenesis => BlockKind::Neogenesis,
+            }),
+            difficulty: block.metadata.as_ref().map(|m| m.difficulty),
         }
     }
 }
@@ -254,21 +317,56 @@ pub struct BlocksView {
     pub text: String,
 }
 
-/// Why an explorer read answered nothing.
+/// The node's queue of transactions waiting to be mined: how many wait,
+/// with none of them read whole.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ExplorerRefusal {
-    /// The node runs no transaction index, by the library's reading of its
-    /// answer: a deployment indexes only when configured to, and another
-    /// node may.
-    pub no_index: bool,
+pub struct MempoolView {
+    pub waiting: usize,
     /// The library's page, word for word.
     pub text: String,
 }
 
-/// Whether `cause` says the node runs no transaction index: the command
-/// line's reading of it (`cli::explorer_refusal`).
-pub(crate) fn no_index(cause: &Error) -> bool {
-    matches!(cause, Error::Mesh { code: 1, .. })
+/// Why an explorer read answered nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExplorerRefusal {
+    /// What a refused search of the node's index says about that index;
+    /// `None` for any other read, and for a refusal that says nothing about
+    /// it.
+    pub index: Option<IndexState>,
+    /// The library's page, word for word.
+    pub text: String,
+}
+
+/// What a refused search of the node's transaction index says about it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndexState {
+    /// The node runs none: a deployment indexes only when configured to,
+    /// and another node may.
+    Absent,
+    /// The node runs one, and it did not answer: its database is not
+    /// connected, or the search failed. Asked again it may answer.
+    Unavailable,
+}
+
+/// What `cause`, a refused search of the node's index, says about that
+/// index, by the Mesh middleware's own answers (`mochimo-mesh` at
+/// `ddc1ee5`). It registers `/search/transactions` only when its indexer is
+/// enabled as it starts (`main.go`), so a node that runs none answers that
+/// route with a 404; one that runs an indexer answers its internal error,
+/// code 2, while the indexer's database is not connected and when a search
+/// fails (`search_handler.go`). Code 1 is a request it could not decode.
+///
+/// The library reads a refused search the same way, for the page it
+/// writes (`Outcome::SearchFailed`, `cli::search_refusal`), which says
+/// which of the two it was in its own words; the interface's reading is
+/// repeated here, as D19 has the worker repeat the command line's other
+/// private decisions (docs/DECISIONS.md D30, item 4).
+pub(crate) fn index_state(cause: &Error) -> Option<IndexState> {
+    match cause {
+        Error::HttpStatus { status: 404 } => Some(IndexState::Absent),
+        Error::Mesh { code: 2, .. } => Some(IndexState::Unavailable),
+        _ => None,
+    }
 }
 
 /// An operation's address, as the command line's page reads one
@@ -403,5 +501,26 @@ mod tests {
         assert_eq!(shown("A\u{202e}B"), "A\\u{202e}B");
         assert_eq!(shown("A\u{200b}B"), "A\\u{200b}B");
         assert_eq!(shown("A\nB\\"), "A\\nB\\\\");
+    }
+
+    #[test]
+    fn a_refused_search_says_whether_the_node_runs_an_index() {
+        let not_served = Error::HttpStatus { status: 404 };
+        let down = Error::Mesh {
+            code: 2,
+            retriable: true,
+        };
+        let invalid = Error::Mesh {
+            code: 1,
+            retriable: false,
+        };
+        assert_eq!(index_state(&not_served), Some(IndexState::Absent));
+        assert_eq!(index_state(&down), Some(IndexState::Unavailable));
+        assert_eq!(
+            index_state(&invalid),
+            None,
+            "an invalid request is not about the index"
+        );
+        assert_eq!(index_state(&Error::HttpStatus { status: 502 }), None);
     }
 }
