@@ -1306,7 +1306,11 @@ on the library's reads at `7cdc2e9` (D7). The choices:
    left out when that request is refused.
 2. **The figures the node does not send are worked out, and the page says
    how.** A block's solve time is its time less the time of the block
-   below it, whose hash it names. The average solve is the tip's time less
+   below it, whose hash it names. E1's newest blocks are read one by one,
+   so the chain can reorganize between two reads: a block whose parent's
+   hash is not the hash of the block read below it has no solve time
+   (PR #12's second review), as E2's block has none when its parent is not
+   the one it names. The average solve is the tip's time less
    the time of the block a hundred below it, over a hundred, so pseudo-
    blocks count as blocks. The next neogenesis is the next block number
    whose low byte is zero, the library's own test for one

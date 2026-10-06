@@ -68,6 +68,23 @@ fn the_chain_is_read_with_each_blocks_solve_time_and_the_average() {
         }
         other => panic!("expected the chain, got {other:?}"),
     }
+    // The chain reorganized between reading 998 and 997: 998 names a parent
+    // that is not the 997 read, so no solve time is told between them.
+    h.chain.fork(998);
+    match h.call(Command::Chain) {
+        Reply::Chain(Ok(view)) => {
+            let solves: Vec<Option<i64>> = view.blocks.iter().map(|b| b.solve_ms).collect();
+            assert_eq!(solves[2], None, "998 and 997 are of different branches");
+            assert!(
+                solves
+                    .iter()
+                    .enumerate()
+                    .all(|(i, s)| i == 2 || *s == Some(60_000)),
+                "{solves:?}"
+            );
+        }
+        other => panic!("expected the chain, got {other:?}"),
+    }
     // The block a span below the tip is not served: the blocks are still
     // shown, with no average.
     h.chain.unserve(900);

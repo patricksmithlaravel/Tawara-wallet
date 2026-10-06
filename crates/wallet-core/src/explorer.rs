@@ -364,13 +364,17 @@ impl BlockSummary {
     }
 
     /// `blocks`, newest first, each with its solve time told from the block
-    /// after it in the list when that is the block below it. The last has
-    /// none: the block below it was not read.
+    /// after it in the list when that is its parent: the block whose hash
+    /// it names. Each block is asked for on its own, so the chain can
+    /// reorganize between two of them, and two blocks of different branches
+    /// have no solve time between them. The last has none: the block below
+    /// it was not read.
     pub(crate) fn of_walk(blocks: &[MeshBlock]) -> Vec<BlockSummary> {
         let mut out: Vec<BlockSummary> = blocks.iter().map(BlockSummary::of).collect();
-        for i in 1..out.len() {
-            if out[i].index.checked_add(1) == Some(out[i - 1].index) {
-                out[i - 1].solve_ms = between(out[i].time_ms, out[i - 1].time_ms);
+        for (i, pair) in blocks.windows(2).enumerate() {
+            let (above, below) = (&pair[0], &pair[1]);
+            if above.parent.hash == below.block.hash {
+                out[i].solve_ms = between(below.timestamp_ms, above.timestamp_ms);
             }
         }
         out

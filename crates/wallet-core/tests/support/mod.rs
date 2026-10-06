@@ -146,6 +146,9 @@ struct State {
     /// The times `/block` sends for blocks, in milliseconds, where not a
     /// block a minute.
     times: BTreeMap<u64, i64>,
+    /// The blocks `/block` serves from another branch: each names a parent
+    /// that is not the block below it as served.
+    forked: Vec<u64>,
 }
 
 /// The tag every reward of the scripted chain is paid to.
@@ -408,6 +411,13 @@ impl Chain {
         self.0.lock().expect("chain").times.insert(index, ms);
     }
 
+    /// `/block` serves block `index` from another branch, as a node does
+    /// when the chain reorganizes between two reads: its parent's hash is
+    /// not the hash of the block below it as served.
+    pub fn fork(&self, index: u64) {
+        self.0.lock().expect("chain").forked.push(index);
+    }
+
     pub fn set_no_index(&self, no_index: bool) {
         self.0.lock().expect("chain").no_index = no_index;
     }
@@ -562,7 +572,10 @@ impl Transport for Chain {
                 }
                 Ok(serde_json::json!({ "block": {
                     "block_identifier": { "index": index, "hash": format!("0x{index:064x}") },
-                    "parent_block_identifier": { "index": index - 1, "hash": format!("0x{:064x}", index - 1) },
+                    "parent_block_identifier": {
+                        "index": index - 1,
+                        "hash": format!("0x{:064x}", u128::from(index - 1) | u128::from(s.forked.contains(&index)) << 120),
+                    },
                     "timestamp": s.times.get(&index).copied().unwrap_or_else(|| i64::try_from(index * 60_000).unwrap_or(i64::MAX)),
                     "transactions": transactions,
                     "metadata": {
