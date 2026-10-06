@@ -1471,6 +1471,26 @@ on the three conditions D18 left open.
    confirm one. One function lists those fields (`wipe_typed`), for
    leaving a screen and for leaving the foreground; it names every
    screen, so a new screen with a secret has to be added to it.
+
+   **And is waited for on iOS (Tawara-mobile#1's review, [P1]; owner,
+   2026-10-06).** Asking the worker to lock is not the lock: it locks
+   after the command it is running, and a node request (up to the
+   transport's timeout) or a spend between its reservation and its
+   submission can hold it, while iOS may suspend the process as soon as
+   the notification returns, with the store's key in memory.
+   `WorkerHandle::background` therefore returns a `Locking`, which the
+   worker answers once the session and everything pending are dropped,
+   and `left_foreground` hands it to the shell as a `Leaving`. The iOS
+   shell asks UIKit for background time (`beginBackgroundTask`), waits on
+   it off the main thread, and ends the task when the lock is done. If
+   the time runs out first, the owner chose that the process ends itself
+   rather than be suspended holding the key: nothing persistent is lost,
+   since the move to the background cancelled what could be cancelled and
+   the library's key index only moves forward and is written before a
+   spend is signed, so a spend cut off between reservation and
+   submission is reconciled at the next unlock. Of the options put to the
+   owner, letting iOS suspend and locking on the return was declined, and
+   so, for now, was the same bound on Android.
 7. **Where the store lives.** Android: `no_backup/` (D21), with
    `android:allowBackup="false"` and `dataExtractionRules` that exclude
    every domain from cloud backup and device transfer, so the store

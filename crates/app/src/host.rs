@@ -9,6 +9,9 @@
 
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock, PoisonError};
+use std::time::Duration;
+
+use tawara_wallet_core::Locking;
 
 /// What a mobile shell supplies.
 #[derive(Clone, Debug)]
@@ -31,22 +34,45 @@ static COPY: OnceLock<fn(&str)> = OnceLock::new();
 static BACK: OnceLock<fn()> = OnceLock::new();
 
 /// What [`left_foreground`] does: the running worker's lock.
-type Lock = Box<dyn Fn() + Send>;
+type Lock = Box<dyn Fn() -> Leaving + Send>;
+
+/// A move to the background on its way (docs/DECISIONS.md D32 item 6). The
+/// worker locks after the command it is running, which a node request or a
+/// spend being submitted can hold; a shell whose process the system may
+/// suspend keeps it running until [`Leaving::wait`] says the lock is done.
+#[derive(Debug)]
+#[must_use = "a shell that may be suspended waits on it"]
+pub struct Leaving(Option<Locking>);
+
+impl Leaving {
+    /// Wait up to `within` for the lock. `true` once it is done, or when
+    /// there was no worker to lock; `false` when it is still running a
+    /// command after `within`.
+    pub fn wait(&self, within: Duration) -> bool {
+        self.0.as_ref().is_none_or(|locking| locking.wait(within))
+    }
+
+    pub(crate) fn of(locking: Locking) -> Leaving {
+        Leaving(Some(locking))
+    }
+}
 
 static LOCK: Mutex<Option<Lock>> = Mutex::new(None);
 
 /// The application has left the foreground: stop what can be stopped and
 /// lock, at once, on the calling thread (docs/PLAN.md section 4.1). It does
 /// not wait for iced, which may not run again before the system suspends
-/// the process. Nothing happens before the worker has started.
-pub fn left_foreground() {
-    if let Some(lock) = LOCK.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
-        lock();
+/// the process, nor for the lock itself: the returned [`Leaving`] says when
+/// that is done. Nothing happens before the worker has started.
+pub fn left_foreground() -> Leaving {
+    match LOCK.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+        Some(lock) => lock(),
+        None => Leaving(None),
     }
 }
 
 /// `lock` is what [`left_foreground`] does from now on.
-pub(crate) fn on_leaving(lock: impl Fn() + Send + 'static) {
+pub(crate) fn on_leaving(lock: impl Fn() -> Leaving + Send + 'static) {
     *LOCK.lock().unwrap_or_else(PoisonError::into_inner) = Some(Box::new(lock));
 }
 
@@ -76,21 +102,24 @@ mod tests {
 
     #[test]
     fn leaving_the_foreground_locks_with_whatever_was_registered_last() {
-        // Nothing registered: nothing to do, and no panic.
-        left_foreground();
+        // Nothing registered: nothing to do, no panic, and nothing to wait
+        // for.
+        assert!(left_foreground().wait(Duration::ZERO));
         let first = Arc::new(AtomicUsize::new(0));
         let second = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&first);
         on_leaving(move || {
             counter.fetch_add(1, Ordering::SeqCst);
+            Leaving(None)
         });
-        left_foreground();
+        let _ = left_foreground();
         let counter = Arc::clone(&second);
         on_leaving(move || {
             counter.fetch_add(1, Ordering::SeqCst);
+            Leaving(None)
         });
-        left_foreground();
-        left_foreground();
+        let _ = left_foreground();
+        let _ = left_foreground();
         assert_eq!(first.load(Ordering::SeqCst), 1);
         assert_eq!(second.load(Ordering::SeqCst), 2, "the worker started last");
     }

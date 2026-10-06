@@ -195,7 +195,9 @@ impl std::error::Error for WorkerStopped {}
 
 enum Envelope {
     Command(RequestId, Command),
-    Background,
+    /// With the sender [`Locking`] waits on: dropped once the lock is done,
+    /// which is the signal (nothing is ever sent on it).
+    Background(mpsc::SyncSender<()>),
     /// The idle period changed ([`WorkerHandle::set_idle_lock`]): measure the
     /// wait for the next command again.
     Wake,
@@ -251,6 +253,21 @@ impl PersonActivity {
     /// How long since the person last did something.
     fn idle_for(&self) -> Duration {
         Duration::from_millis(self.now().saturating_sub(self.last.load(Ordering::Relaxed)))
+    }
+}
+
+/// A move to the background on its way: [`Locking::wait`] says when the
+/// worker has dropped the session and everything pending.
+#[derive(Debug)]
+pub struct Locking(Receiver<()>);
+
+impl Locking {
+    /// Wait up to `within` for the lock. `true` once it is done, or when
+    /// the worker has stopped, which drops everything it held on the way
+    /// out (either way the sender is gone); `false` when it is still running
+    /// a command after `within`.
+    pub fn wait(&self, within: Duration) -> bool {
+        !matches!(self.0.recv_timeout(within), Err(RecvTimeoutError::Timeout))
     }
 }
 
@@ -337,9 +354,18 @@ impl WorkerHandle {
     /// (docs/PLAN.md section 4.1). Answered by [`Event::Locked`] with
     /// [`LockReason::Background`] when a store was open or a recovery
     /// phrase was waiting, and then, every time, by [`Event::Backgrounded`].
-    pub fn background(&self) {
+    ///
+    /// The lock is done by the worker, after the command it is running:
+    /// a node request, or a spend between its reservation and its
+    /// submission, can hold it. The returned [`Locking`] says when it is
+    /// done, for a shell that must keep the process running until then
+    /// (docs/DECISIONS.md D32 item 6).
+    #[must_use = "a shell that may be suspended waits on it"]
+    pub fn background(&self) -> Locking {
         self.cancel();
-        let _ = self.tx.send(Envelope::Background);
+        let (done, rx) = mpsc::sync_channel(1);
+        let _ = self.tx.send(Envelope::Background(done));
+        Locking(rx)
     }
 
     /// Lock and stop the worker. [`Event::Stopped`] follows.
@@ -1139,11 +1165,14 @@ impl<C: Connect> Worker<C> {
                     }
                     self.emit(Event::Done { id, reply });
                 }
-                Envelope::Background => {
+                Envelope::Background(done) => {
                     self.lock(LockReason::Background);
                     // Every time, not only when something was open: what is
                     // typed and not yet submitted lives in the interface.
                     self.emit(Event::Backgrounded);
+                    // The session is dropped: the waiting shell may let the
+                    // process be suspended. Dropping the sender tells it.
+                    drop(done);
                 }
                 Envelope::Wake => {}
                 Envelope::Shutdown => {

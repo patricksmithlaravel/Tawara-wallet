@@ -673,7 +673,7 @@ impl App {
         );
         if let Some(worker) = &app.worker {
             let handle = worker.handle.clone();
-            host::on_leaving(move || handle.background());
+            host::on_leaving(move || host::Leaving::of(handle.background()));
         }
         (app, task)
     }
@@ -1832,7 +1832,7 @@ mod tests {
 
         // S7: the right password typed, not submitted.
         let _ = app.update(Message::Password(typed(PASSWORD)));
-        app.worker.as_ref().expect("a worker").handle.background();
+        let _ = app.worker.as_ref().expect("a worker").handle.background();
         through_backgrounded(&mut app, &events);
         match &app.model.screen {
             Screen::Unlock(u) => assert!(u.password.is_empty(), "the password was kept"),
@@ -1859,7 +1859,7 @@ mod tests {
         let _ = app.update(Message::Password(typed(PASSWORD)));
         let _ = app.update(Message::Again(typed(PASSWORD)));
         let _ = app.update(Message::PhraseText(typed(PHRASE)));
-        app.worker.as_ref().expect("a worker").handle.background();
+        let _ = app.worker.as_ref().expect("a worker").handle.background();
         through_backgrounded(&mut app, &events);
         match &app.model.screen {
             Screen::Restore(r) => {

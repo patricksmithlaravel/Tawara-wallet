@@ -922,6 +922,32 @@ fn touching_keeps_the_store_open_and_polling_does_not() {
 }
 
 #[test]
+fn a_move_to_the_background_says_when_the_lock_is_done() {
+    // PR Tawara-mobile#1's review: the worker locks after the command it is
+    // running, so a shell the system may suspend waits on this rather than
+    // on having asked (docs/DECISIONS.md D32 item 6).
+    let quiet = Harness::new();
+    assert!(
+        quiet.handle.background().wait(Duration::from_secs(10)),
+        "nothing open: done at once"
+    );
+
+    let scratch = Scratch::new("locking");
+    let (mut h, _) = funded(&scratch);
+    let gate = h.chain.close_gate();
+    let refresh = h.handle.send(Command::Refresh).expect("worker running");
+    assert_eq!(h.wait_busy(refresh), Activity::AskingNode);
+    let locking = h.handle.background();
+    assert!(
+        !locking.wait(Duration::from_millis(300)),
+        "the lock was reported done while a node request held the worker"
+    );
+    gate.open();
+    assert!(locking.wait(Duration::from_secs(10)));
+    assert_eq!(h.wait_locked(Duration::ZERO), LockReason::Background);
+}
+
+#[test]
 fn every_move_to_the_background_is_reported_after_any_lock() {
     // With nothing open there is nothing to lock and no `Locked`, but the
     // interface still hears of it: what is typed and unsubmitted is its own
@@ -929,7 +955,7 @@ fn every_move_to_the_background_is_reported_after_any_lock() {
     let scratch = Scratch::new("backgrounded");
     let dir = scratch.store();
     let mut h = Harness::new();
-    h.handle.background();
+    let _ = h.handle.background();
     let before = h.wait_backgrounded(Duration::from_secs(10));
     assert!(
         !before.iter().any(|e| matches!(e, Event::Locked { .. })),
@@ -938,7 +964,7 @@ fn every_move_to_the_background_is_reported_after_any_lock() {
 
     // With a store open, `Locked` comes first.
     let _ = opened(h.create_from_phrase(&dir));
-    h.handle.background();
+    let _ = h.handle.background();
     let before = h.wait_backgrounded(Duration::from_secs(10));
     assert!(
         matches!(
@@ -958,7 +984,7 @@ fn the_background_and_an_explicit_lock_close_the_store() {
     let mut h = Harness::new();
     let _ = opened(h.create_from_phrase(&dir));
 
-    h.handle.background();
+    let _ = h.handle.background();
     assert_eq!(
         h.wait_locked(Duration::from_secs(10)),
         LockReason::Background
@@ -1098,7 +1124,7 @@ fn moving_to_the_background_stops_a_queued_spend_before_it_signs() {
         .handle
         .send(Command::ConfirmSend { plan: plan.plan })
         .expect("worker running");
-    h.handle.background();
+    let _ = h.handle.background();
     gate.open();
 
     assert_eq!(refusal(h.wait_for(refresh)).kind, RefusalKind::Cancelled);
