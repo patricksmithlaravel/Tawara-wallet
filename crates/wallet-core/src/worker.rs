@@ -130,7 +130,7 @@ use std::time::{Duration, Instant};
 use mochimo_crypto::addr::Tag;
 use mochimo_crypto::cli::args::Spend;
 use mochimo_crypto::cli::create::{self, CONFIRM_POSITIONS, CreateEntropy, nothing_was_created};
-use mochimo_crypto::cli::outcome::{Outcome, Shipped};
+use mochimo_crypto::cli::outcome::{MempoolRow, Outcome, Shipped};
 use mochimo_crypto::cli::{self, Code, address, discover, reconcile, restore};
 use mochimo_crypto::consts::SEED_LEN;
 use mochimo_crypto::keystore::{self, Disk, Keystore, SALT_LEN, Unlock};
@@ -149,7 +149,9 @@ use crate::event::{
     ReceiveView, Refusal, RefusalKind, Reply, SentView,
 };
 use crate::explorer::{
-    self, AccountHistory, BlockSummary, BlocksView, ExplorerRefusal, MempoolView,
+    self, AccountHistory, BlockAt, BlockDetail, BlockSummary, BlocksView, ChainView,
+    ExplorerRefusal, Found, LedgerRead, MempoolView, PendingRow, PendingView, TagView,
+    TransactionView,
 };
 use crate::node::{self, Connect, NetworkName, SyncState};
 use crate::secret::{PhraseForDisplay, SecretText};
@@ -577,6 +579,133 @@ fn walk_blocks<T: Transport>(
         return None;
     }
     Some(Outcome::Blocks { count, tip, rows })
+}
+
+/// `cli::cmd_mempool`'s walk, repeated as [`walk_blocks`] repeats the
+/// blocks' walk, with `asked` consulted before each request: the queue's
+/// ids, then the first `count` of them read whole. A transaction the queue
+/// no longer holds when it is asked for (code 3) has been mined since the
+/// list was read, or dropped, and its row says so; any other failure
+/// discards the rows read before it, as the library's walk does. `None`
+/// when `asked` said stop.
+fn walk_mempool<T: Transport>(
+    client: &MeshClient<T>,
+    count: u64,
+    asked: &dyn Fn() -> bool,
+) -> Option<Outcome> {
+    if asked() {
+        return None;
+    }
+    let ids = match client.mempool() {
+        Ok(ids) => ids,
+        Err(cause) => return Some(Outcome::ExplorerFailed { cause }),
+    };
+    let mut rows = Vec::new();
+    for id in ids
+        .iter()
+        .take(usize::try_from(count).unwrap_or(usize::MAX))
+    {
+        if asked() {
+            return None;
+        }
+        let transaction = match client.mempool_transaction(id) {
+            Ok(t) => Some(Box::new(t)),
+            Err(Error::Mesh { code: 3, .. }) => None,
+            Err(cause) => return Some(Outcome::MempoolStopped { id: *id, cause }),
+        };
+        rows.push(MempoolRow {
+            id: *id,
+            transaction,
+        });
+    }
+    if asked() {
+        return None;
+    }
+    Some(Outcome::Mempool {
+        count,
+        total: ids.len(),
+        rows,
+    })
+}
+
+/// One block, whole (`cli::cmd_block`), then the block below it, for its
+/// solve time, and the tip, for how many blocks stand on it. Neither of
+/// those two is needed to show the block, so a refusal of either leaves
+/// its figure out. `None` when `asked` said stop.
+fn read_block<T: Transport>(
+    client: &MeshClient<T>,
+    at: BlockAt,
+    asked: &dyn Fn() -> bool,
+) -> Option<Result<BlockDetail, ExplorerRefusal>> {
+    if asked() {
+        return None;
+    }
+    let outcome = cli::cmd_block(
+        client,
+        &match at {
+            BlockAt::Number(n) => cli::args::BlockAt::Index(n),
+            BlockAt::Hash(h) => cli::args::BlockAt::Hash(h),
+        },
+    );
+    let block = match &outcome {
+        Outcome::Block { block } => block.clone(),
+        // A block is the node's own, not its index: its refusal says
+        // nothing about an index.
+        _ => {
+            return Some(Err(ExplorerRefusal {
+                index: None,
+                text: text::page(&[], outcome),
+            }));
+        }
+    };
+    let text = text::page(&[], outcome);
+    // Block 1's parent is genesis, which `/block` cannot be asked for: it
+    // serves index 0 as the tip. A parent whose hash is not the one the
+    // block names is another chain's, and tells this block's time nothing.
+    let parent_ms =
+        if block.parent.index > 0 && block.parent.index.checked_add(1) == Some(block.block.index) {
+            if asked() {
+                return None;
+            }
+            client
+                .block_by_index(block.parent.index)
+                .ok()
+                .filter(|p| p.block.hash == block.parent.hash)
+                .map(|p| p.timestamp_ms)
+        } else {
+            None
+        };
+    if asked() {
+        return None;
+    }
+    let tip = client.network_status().ok().map(|t| t.index);
+    if asked() {
+        return None;
+    }
+    Some(Ok(BlockDetail::of(&block, parent_ms, tip, text)))
+}
+
+/// A page of `account`'s transactions from the node's index, from offset
+/// `from`: the command line's `recent-transactions --from`.
+fn read_history<T: Transport>(
+    client: &MeshClient<T>,
+    account: AccountId,
+    from: u64,
+) -> Result<AccountHistory, ExplorerRefusal> {
+    let outcome =
+        cli::cmd_recent_transactions_from(client, &account.tag(), explorer::HISTORY_ROWS, from);
+    let read = match &outcome {
+        Outcome::RecentTransactions { page, from, .. } => {
+            Ok(AccountHistory::of(account, page, *from, String::new()))
+        }
+        Outcome::SearchFailed { cause } => Err(explorer::index_state(cause)),
+        _ => Err(None),
+    };
+    let text = text::page(&[], outcome);
+    match read {
+        Ok(history) => Ok(AccountHistory { text, ..history }),
+        Err(index) => Err(ExplorerRefusal { index, text }),
+    }
 }
 
 fn refused(kind: RefusalKind, text: impl Into<String>) -> Reply {
@@ -1146,6 +1275,12 @@ impl<C: Connect> Worker<C> {
             Command::Networks => self.networks(id),
             Command::Blocks => self.blocks(id),
             Command::Mempool => self.mempool(id),
+            Command::Chain => self.chain(id),
+            Command::Pending => self.pending(id),
+            Command::Block(at) => self.block(id, at),
+            Command::Tag(account) => self.tag(id, account),
+            Command::TagHistory { account, from } => self.tag_history(id, account, from),
+            Command::Find(hash) => self.find(id, hash),
             Command::Activity => self.activity(id, None),
             Command::OlderActivity(pages) => self.activity(id, Some(&pages)),
             Command::Review => self.review(id),
@@ -2379,6 +2514,210 @@ impl<C: Connect> Worker<C> {
         })
     }
 
+    /// The explorer's chain (E1): the newest blocks' walk
+    /// ([`walk_blocks`]), one block further down so the last one shown has
+    /// its solve time, then the block [`explorer::SOLVE_SPAN`] below the tip
+    /// for the average. That block is not needed to show the others, so a
+    /// refusal of it leaves the average out.
+    fn chain(&self, id: RequestId) -> Reply {
+        let asked = self.stop_asked(id);
+        let shown = explorer::LATEST_BLOCKS;
+        let read = self.ask_node(|client| {
+            self.busy(id, Activity::AskingNode);
+            let outcome = walk_blocks(client, shown + 1, &asked)?;
+            let Outcome::Blocks { tip, rows, .. } = outcome else {
+                return Some(Err(outcome));
+            };
+            let span = explorer::SOLVE_SPAN;
+            let average = match (rows.first(), tip.index.checked_sub(span)) {
+                (Some(newest), Some(below)) if below > 0 => {
+                    if asked() {
+                        return None;
+                    }
+                    client.block_by_index(below).ok().and_then(|b| {
+                        (newest.timestamp_ms - b.timestamp_ms)
+                            .checked_div(i64::try_from(span).ok()?)
+                    })
+                }
+                _ => None,
+            };
+            if asked() {
+                return None;
+            }
+            Some(Ok((tip, rows, average)))
+        });
+        match read {
+            Err(r) => Reply::Refused(r),
+            // A walk cut short is not shown as a whole one.
+            Ok(None) => Reply::Refused(library(Error::Cancelled)),
+            Ok(Some(Err(outcome))) => Reply::Chain(Err(ExplorerRefusal {
+                index: None,
+                text: text::page(&[], outcome),
+            })),
+            Ok(Some(Ok((tip, mut rows, average_ms)))) => {
+                let keep = usize::try_from(shown).unwrap_or(usize::MAX);
+                let mut blocks = BlockSummary::of_walk(&rows);
+                blocks.truncate(keep);
+                rows.truncate(keep);
+                let text = text::page(
+                    &[],
+                    Outcome::Blocks {
+                        count: shown,
+                        tip,
+                        rows,
+                    },
+                );
+                Reply::Chain(Ok(ChainView {
+                    tip: tip.index,
+                    blocks,
+                    average_ms,
+                    text,
+                }))
+            }
+        }
+    }
+
+    /// The node's queue with its first [`explorer::PENDING_ROWS`] read whole
+    /// ([`walk_mempool`]), for the explorer.
+    fn pending(&self, id: RequestId) -> Reply {
+        let asked = self.stop_asked(id);
+        let outcome = match self.ask_node(|client| {
+            self.busy(id, Activity::AskingNode);
+            walk_mempool(client, explorer::PENDING_ROWS, &asked)
+        }) {
+            Ok(Some(outcome)) => outcome,
+            Ok(None) => return Reply::Refused(library(Error::Cancelled)),
+            Err(r) => return Reply::Refused(r),
+        };
+        let read = match &outcome {
+            Outcome::Mempool { total, rows, .. } => Some((
+                *total,
+                rows.iter()
+                    .map(|r| PendingRow {
+                        id: hex(&r.id),
+                        transaction: r.transaction.as_deref().map(TransactionView::of),
+                    })
+                    .collect(),
+            )),
+            _ => None,
+        };
+        let text = text::page(&[], outcome);
+        // The queue is the node's own, not its index (as [`Worker::mempool`]).
+        Reply::Pending(match read {
+            Some((waiting, rows)) => Ok(PendingView {
+                waiting,
+                rows,
+                text,
+            }),
+            None => Err(ExplorerRefusal { index: None, text }),
+        })
+    }
+
+    /// One block, whole ([`read_block`]).
+    fn block(&self, id: RequestId, at: BlockAt) -> Reply {
+        let asked = self.stop_asked(id);
+        match self.ask_node(|client| {
+            self.busy(id, Activity::AskingNode);
+            read_block(client, at, &asked)
+        }) {
+            Ok(Some(read)) => Reply::Block(read.map(Box::new)),
+            Ok(None) => Reply::Refused(library(Error::Cancelled)),
+            Err(r) => Reply::Refused(r),
+        }
+    }
+
+    /// What the ledger holds for a tag (`MeshClient::resolve_tag`, as the
+    /// wallet resolves its own accounts), then the newest page of its
+    /// transactions from the node's index. Each says for itself when the
+    /// node did not answer.
+    fn tag(&self, id: RequestId, account: AccountId) -> Reply {
+        let asked = self.stop_asked(id);
+        let read = self.ask_node(|client| {
+            self.busy(id, Activity::AskingNode);
+            if asked() {
+                return None;
+            }
+            let ledger = match client.resolve_tag(&account.tag()) {
+                Ok(entry) => LedgerRead::Held {
+                    address: format!("0x{}", hex(&entry.address)),
+                    balance: entry.balance,
+                },
+                Err(Error::Mesh { code: 4, .. }) => LedgerRead::Unresolved,
+                Err(e) => LedgerRead::Refused(text::refusal(e)),
+            };
+            if asked() {
+                return None;
+            }
+            let history = read_history(client, account, 0);
+            if asked() {
+                return None;
+            }
+            Some(TagView {
+                account,
+                ledger,
+                history,
+            })
+        });
+        match read {
+            Ok(Some(view)) => Reply::Tag(Box::new(view)),
+            Ok(None) => Reply::Refused(library(Error::Cancelled)),
+            Err(r) => Reply::Refused(r),
+        }
+    }
+
+    /// An older page of a tag's transactions ([`read_history`]).
+    fn tag_history(&self, id: RequestId, account: AccountId, from: u64) -> Reply {
+        match self.ask_node(|client| {
+            self.busy(id, Activity::ReadingIndex);
+            read_history(client, account, from)
+        }) {
+            Ok(read) => Reply::TagHistory(read),
+            Err(r) => Reply::Refused(r),
+        }
+    }
+
+    /// What a hash names: a transaction the node's index holds (the command
+    /// line's `transaction`), else a block the node serves by that hash
+    /// ([`read_block`]). A transaction is looked for first: a block by its
+    /// hash is served only from the deployment's archive, and nothing in
+    /// the digits says which they are.
+    fn find(&self, id: RequestId, hash: [u8; 32]) -> Reply {
+        let asked = self.stop_asked(id);
+        let read = self.ask_node(|client| {
+            self.busy(id, Activity::ReadingIndex);
+            if asked() {
+                return None;
+            }
+            let outcome = cli::cmd_transaction(client, &hash);
+            let index = match &outcome {
+                Outcome::LookedUpTransaction { page } => match page.transactions.first() {
+                    Some(t) => {
+                        return Some(Found::Transaction {
+                            transaction: TransactionView::of(t),
+                            text: text::page(&[], outcome),
+                        });
+                    }
+                    None => None,
+                },
+                Outcome::SearchFailed { cause } => explorer::index_state(cause),
+                _ => None,
+            };
+            let transaction = ExplorerRefusal {
+                index,
+                text: text::page(&[], outcome),
+            };
+            Some(match read_block(client, BlockAt::Hash(hash), &asked)? {
+                Ok(block) => Found::Block(Box::new(block)),
+                Err(block) => Found::Neither { transaction, block },
+            })
+        });
+        match read {
+            Ok(Some(found)) => Reply::Found(Box::new(found)),
+            Ok(None) => Reply::Refused(library(Error::Cancelled)),
+            Err(r) => Reply::Refused(r),
+        }
+    }
+
     /// The command line's `recent-transactions` for every account in the
     /// store's order, the newest page of each; or, given `pages`, the page
     /// at each offset given, for the accounts named that the store holds.
@@ -2430,25 +2769,11 @@ impl<C: Connect> Worker<C> {
                     ceiling: 0,
                 },
             });
-            let outcome = cli::cmd_recent_transactions_from(
-                client,
-                &account.tag(),
-                explorer::HISTORY_ROWS,
-                from,
-            );
-            let read = match &outcome {
-                Outcome::RecentTransactions { page, from, .. } => {
-                    Ok(AccountHistory::of(account, page, *from, String::new()))
-                }
-                Outcome::SearchFailed { cause } => Err(explorer::index_state(cause)),
-                _ => Err(None),
-            };
-            let text = text::page(&[], outcome);
-            match read {
-                Ok(history) => out.push(AccountHistory { text, ..history }),
+            match read_history(client, account, from) {
+                Ok(history) => out.push(history),
                 // Every account is read from the same index: one refusal
                 // is the answer for all of them.
-                Err(index) => return Reply::Activity(Err(ExplorerRefusal { index, text })),
+                Err(refusal) => return Reply::Activity(Err(refusal)),
             }
         }
         if asked() {

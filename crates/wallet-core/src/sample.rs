@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use mochimo_crypto::account::{AccountKind as LibraryKind, StreamId, WotsIndex};
 use mochimo_crypto::cli::discover::{Sighting, Sweep};
-use mochimo_crypto::cli::outcome::{Outcome, Shipped};
+use mochimo_crypto::cli::outcome::{MempoolRow, Outcome, Shipped};
 use mochimo_crypto::mesh::codec::{
     BlockMetadata, MeshBlock, MeshTransaction, OP_DESTINATION, OP_FEE, OP_REWARD, OP_SOURCE,
     Operation, SearchPage,
@@ -25,7 +25,8 @@ use crate::event::{
     AccountReport, Discovered, PlanView, PlannedDestination, ReceiveView, SentView,
 };
 use crate::explorer::{
-    AccountHistory, BlockSummary, BlocksView, ExplorerRefusal, IndexState, MempoolView,
+    AccountHistory, BlockDetail, BlockSummary, BlocksView, ChainView, ExplorerRefusal, IndexState,
+    LedgerRead, MempoolView, PendingRow, PendingView, TagView, TransactionView,
 };
 use crate::text;
 use crate::view::{
@@ -632,6 +633,312 @@ pub fn mempool() -> MempoolView {
     }
 }
 
+/// The miners of the sample chain: made-up tags.
+const MINERS: [u8; 4] = [41, 42, 43, 44];
+
+/// What the sample chain pays a miner for a normal block, in nanoMCM.
+const REWARD: i128 = 5_084_197_712;
+
+/// The reward transaction of block `index`, paid to `miner`.
+fn reward(index: u64, miner: [u8; 20]) -> MeshTransaction {
+    let mut id = [0u8; 32];
+    id[..8].copy_from_slice(&index.to_be_bytes());
+    id[31] = 0xee;
+    MeshTransaction {
+        hash: id,
+        block: None,
+        timestamp_ms: None,
+        operations: vec![Operation {
+            index: 0,
+            kind: OP_REWARD.to_owned(),
+            address: format!("0x{}", hex(&miner)),
+            amount: REWARD,
+            memo: String::new(),
+        }],
+        metadata: Vec::new(),
+    }
+}
+
+/// A spend as `/block` and `/mempool/transaction` list one: the source
+/// debited what left it net of its change, each payee, and the fee at the
+/// node's floor for each destination. The change is not an operation.
+fn listed(id: [u8; 32], from: [u8; 20], to: &[([u8; 20], i128, &str)]) -> MeshTransaction {
+    let fee = i128::from(mochimo_crypto::consts::MFEE) * to.len() as i128;
+    let sent: i128 = to.iter().map(|(_, a, _)| a).sum();
+    let op = |i: usize, kind: &str, t: Option<[u8; 20]>, amount: i128, memo: &str| Operation {
+        index: i as u64,
+        kind: kind.to_owned(),
+        address: t.map(|t| format!("0x{}", hex(&t))).unwrap_or_default(),
+        amount,
+        memo: if memo.is_empty() {
+            String::new()
+        } else {
+            format!("{memo:\0<16}")
+        },
+    };
+    let mut ops = vec![op(0, OP_SOURCE, Some(from), -(sent + fee), "")];
+    for (i, (t, a, memo)) in to.iter().enumerate() {
+        ops.push(op(i + 1, OP_DESTINATION, Some(*t), *a, memo));
+    }
+    ops.push(op(to.len() + 1, OP_FEE, None, fee, ""));
+    MeshTransaction {
+        hash: id,
+        block: None,
+        timestamp_ms: None,
+        operations: ops,
+        metadata: Vec::new(),
+    }
+}
+
+/// A made-up transaction id.
+fn txid(seed: u8) -> [u8; 32] {
+    let mut id = [0u8; 32];
+    for (i, b) in id.iter_mut().enumerate() {
+        *b = seed
+            .wrapping_mul(73)
+            .wrapping_add(u8::try_from(i).unwrap_or(0).wrapping_mul(29));
+    }
+    id
+}
+
+/// Block `index` of the sample chain, made at `at` with `spends` and its
+/// reward paid to `miner`; a pseudo-block and a neogenesis block carry no
+/// reward. Its figures are the node's, with `haiku` for a normal block.
+fn sample_block(
+    index: u64,
+    at: i64,
+    kind: &str,
+    miner: [u8; 20],
+    spends: Vec<MeshTransaction>,
+    haiku: &str,
+) -> MeshBlock {
+    let normal = kind == "normal";
+    let counted = if normal {
+        u32::try_from(spends.len()).unwrap_or(u32::MAX)
+    } else {
+        0
+    };
+    let mut transactions = Vec::new();
+    if normal {
+        transactions.push(reward(index, miner));
+        transactions.extend(spends);
+    }
+    let seed = u8::try_from(index % 251).unwrap_or(0);
+    MeshBlock {
+        block: ChainTip {
+            index,
+            hash: [seed; 32],
+        },
+        parent: ChainTip {
+            index: index - 1,
+            hash: [u8::try_from((index - 1) % 251).unwrap_or(0); 32],
+        },
+        timestamp_ms: at,
+        transactions,
+        metadata: Some(BlockMetadata {
+            block_size: 164 + 2_408 * u64::from(counted),
+            difficulty: 37,
+            fee: 500,
+            haiku: haiku.to_owned(),
+            nonce: [seed ^ 0x5a; 32],
+            root: [seed ^ 0xa5; 32],
+            stime_ms: at,
+            tx_count: counted,
+        }),
+    }
+}
+
+/// `n` spends of a block, made up, none of them the sample store's.
+fn filler(n: usize, block: u64) -> Vec<MeshTransaction> {
+    (0..n)
+        .map(|i| {
+            let seed = u8::try_from((block as usize + i) % 200).unwrap_or(0);
+            listed(
+                txid(seed),
+                tag(seed.wrapping_add(50)),
+                &[(tag(seed.wrapping_add(90)), 1_000 * MCM, "")],
+            )
+        })
+        .collect()
+}
+
+/// The sample chain as the explorer shows it: the tip, the ten newest
+/// blocks with each one's solve time, and the average over a hundred.
+/// Block 871,171 is a pseudo-block and 871,168 a neogenesis block, as in
+/// [`blocks`].
+#[must_use]
+pub fn chain() -> ChainView {
+    let tip: u64 = 871_173;
+    // Each block's solve time in seconds, newest first; the eleventh is read
+    // only for the tenth's time.
+    let solves = [66, 78, 949, 122, 91, 75, 72, 58, 107, 82, 70];
+    let counts = [126, 211, 0, 94, 158, 0, 173, 88, 142, 119, 97];
+    let mut at = TIP_MS;
+    let mut rows = Vec::new();
+    for (n, (solve, count)) in solves.iter().zip(counts).enumerate() {
+        let index = tip - n as u64;
+        let kind = match index {
+            871_171 => "pseudo",
+            871_168 => "neogenesis",
+            _ => "normal",
+        };
+        let miner = tag(MINERS[n % MINERS.len()]);
+        rows.push(sample_block(
+            index,
+            at,
+            kind,
+            miner,
+            filler(count, index),
+            "",
+        ));
+        at -= solve * 1_000;
+    }
+    let mut blocks = BlockSummary::of_walk(&rows);
+    let shown = usize::try_from(crate::explorer::LATEST_BLOCKS).unwrap_or(usize::MAX);
+    blocks.truncate(shown);
+    rows.truncate(shown);
+    let tip = ChainTip {
+        index: tip,
+        hash: [u8::try_from(tip % 251).unwrap_or(0); 32],
+    };
+    ChainView {
+        tip: tip.index,
+        blocks,
+        average_ms: Some(86_000),
+        text: text::page(
+            &[],
+            Outcome::Blocks {
+                count: crate::explorer::LATEST_BLOCKS,
+                tip,
+                rows,
+            },
+        ),
+    }
+}
+
+/// The sample node's queue: fourteen transactions waiting, the first five
+/// read whole.
+#[must_use]
+pub fn pending() -> PendingView {
+    let payees = |n: usize, each: i128| -> Vec<([u8; 20], i128, &'static str)> {
+        (0..n)
+            .map(|i| (tag(120 + u8::try_from(i).unwrap_or(0)), each, ""))
+            .collect()
+    };
+    let rows: Vec<MempoolRow> = [
+        (txid(1), tag(60), payees(3, 32_133_333_333)),
+        (txid(2), tag(61), payees(1, 12 * MCM)),
+        (txid(3), tag(62), payees(18, 100_236_111_111)),
+        (txid(4), tag(63), payees(1, MCM / 2)),
+        (txid(5), tag(64), payees(2, 155 * MCM)),
+    ]
+    .into_iter()
+    .map(|(id, from, to)| MempoolRow {
+        id,
+        transaction: Some(Box::new(listed(id, from, &to))),
+    })
+    .collect();
+    PendingView {
+        waiting: 14,
+        rows: rows
+            .iter()
+            .map(|r| PendingRow {
+                id: hex(&r.id),
+                transaction: r.transaction.as_deref().map(TransactionView::of),
+            })
+            .collect(),
+        text: text::page(
+            &[],
+            Outcome::Mempool {
+                count: crate::explorer::PENDING_ROWS,
+                total: 14,
+                rows,
+            },
+        ),
+    }
+}
+
+/// Block 871,172 of the sample chain, whole: a normal block with its haiku,
+/// twelve spends, the first from the sample store's first account, and two
+/// blocks standing on it.
+#[must_use]
+pub fn block() -> BlockDetail {
+    let index = 871_172;
+    let mut spends = vec![listed(
+        txid(9),
+        tag(1),
+        &[
+            (tag(7), 1_000 * MCM, "INV-2048"),
+            (tag(8), 250 * MCM, "INV-2049"),
+        ],
+    )];
+    spends.extend(filler(11, index));
+    let at = TIP_MS - 66_000;
+    let block = sample_block(
+        index,
+        at,
+        "normal",
+        tag(MINERS[1]),
+        spends,
+        "patient winter moon\nthe river carries the frost\nquiet as a crane",
+    );
+    let text = text::page(
+        &[],
+        Outcome::Block {
+            block: Box::new(block.clone()),
+        },
+    );
+    BlockDetail::of(&block, Some(at - 78_000), Some(871_173), text)
+}
+
+/// The sample store's first account as the explorer shows it: the ledger's
+/// entry for it and its history from the index ([`activity`]'s).
+#[must_use]
+pub fn tag_view() -> TagView {
+    let account = AccountId::from_tag(tag(1));
+    TagView {
+        account,
+        ledger: LedgerRead::Held {
+            address: format!("0x{}", hex(&address(tag(1), 0xb7))),
+            balance: FIRST_BALANCE,
+        },
+        history: activity()
+            .into_iter()
+            .find(|h| h.account == account)
+            .ok_or_else(|| index_refusal(IndexState::Absent)),
+    }
+}
+
+/// A payment received by the sample store's first account, found in the
+/// index by its id, and the library's page for it.
+#[must_use]
+pub fn transaction() -> (TransactionView, String) {
+    let tx = referenced(
+        spend(
+            0x37,
+            870_645,
+            1_791_029_405_000,
+            tag(9),
+            &[(tag(1), 420 * MCM)],
+            1_200 * MCM,
+        ),
+        tag(1),
+        "ORDER-77",
+    );
+    let view = TransactionView::of(&tx);
+    let text = text::page(
+        &[],
+        Outcome::LookedUpTransaction {
+            page: Box::new(SearchPage {
+                transactions: vec![tx],
+                total_count: 1,
+                next_offset: None,
+            }),
+        },
+    );
+    (view, text)
+}
+
 /// Every account of the sample store reconciled now, as account recovery
 /// shows them first: the library's report for each.
 #[must_use]
@@ -700,6 +1007,37 @@ mod tests {
         assert_eq!(b.blocks.len(), 6);
         assert_eq!(b.blocks[0].index, b.tip);
         assert_eq!(b.blocks[0].time_ms, TIP_MS);
+
+        let c = chain();
+        assert_eq!(c.blocks.len(), 10);
+        assert_eq!(c.tip, b.tip, "the explorer's chain is the network card's");
+        assert_eq!(c.blocks[0].solve_ms, Some(66_000));
+        assert_eq!(c.blocks[9].solve_ms, Some(82_000), "read one further");
+        assert!(c.blocks[2].reward.is_none(), "871,171 is a pseudo-block");
+        assert!(c.text.contains("the 10 newest"), "{}", c.text);
+
+        let p = pending();
+        assert_eq!((p.waiting, p.rows.len()), (14, 5));
+        assert!(p.text.contains("14 transaction(s) waiting"), "{}", p.text);
+
+        let block = block();
+        assert_eq!(block.confirmations(), Some(2));
+        assert_eq!(block.summary.solve_ms, Some(78_000));
+        assert_eq!(block.spends.len(), 12);
+        assert_eq!(
+            block.spends[0].source(),
+            Some(&crate::explorer::Party::Account(first))
+        );
+        assert_eq!(block.figures.as_ref().map(|f| f.haiku.len()), Some(3));
+        assert!(block.text.contains("block 871172"), "{}", block.text);
+
+        let tag_view = tag_view();
+        assert_eq!(tag_view.account, first);
+        assert!(tag_view.history.is_ok());
+
+        let (tx, text) = transaction();
+        assert_eq!(tx.block, Some(870_645));
+        assert!(!text.is_empty());
 
         let r = review();
         assert_eq!(r.len(), 3);

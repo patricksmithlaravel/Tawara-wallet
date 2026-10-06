@@ -10,7 +10,10 @@ use core::fmt;
 use std::path::PathBuf;
 
 use crate::command::{PlanId, RequestId};
-use crate::explorer::{AccountHistory, BlocksView, ExplorerRefusal, MempoolView};
+use crate::explorer::{
+    AccountHistory, BlockDetail, BlocksView, ChainView, ExplorerRefusal, Found, MempoolView,
+    PendingView, TagView,
+};
 use crate::node::{NetworkName, SyncState};
 use crate::secret::PhraseForDisplay;
 use crate::spend::SpendInputError;
@@ -213,6 +216,21 @@ pub enum Reply {
     /// one account is the answer for all, since every read goes to the same
     /// index.
     Activity(Result<Vec<AccountHistory>, ExplorerRefusal>),
+    /// The explorer's chain, or why the node did not serve it.
+    Chain(Result<ChainView, ExplorerRefusal>),
+    /// The node's queue, with its first transactions read whole, or why the
+    /// node did not serve it.
+    Pending(Result<PendingView, ExplorerRefusal>),
+    /// One block, or why the node did not serve it.
+    Block(Result<Box<BlockDetail>, ExplorerRefusal>),
+    /// What the ledger and the node's index hold for a tag; each says for
+    /// itself when the node did not answer.
+    Tag(Box<TagView>),
+    /// An older page of a tag's transactions, or why the index did not
+    /// serve it.
+    TagHistory(Result<AccountHistory, ExplorerRefusal>),
+    /// What a hash names.
+    Found(Box<Found>),
     /// Every account reconciled now, in the store's order.
     Reviewed(Vec<AccountReport>),
     /// The command was refused; nothing it would have changed was changed

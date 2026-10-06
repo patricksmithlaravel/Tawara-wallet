@@ -1,12 +1,14 @@
 //! What the node's explorer endpoints say, as the interface shows it:
 //! a tag's transactions from the node's index (Activity, docs/SCREENS.md
-//! W10), and the newest blocks and the size of the node's queue (the
-//! wallet's network card, W1).
+//! W10), the newest blocks and the size of the node's queue (the wallet's
+//! network card, W1), and the explorer's own pages: the chain and the queue
+//! (E1), a block (E2), a tag (E3) and a transaction (E4).
 //!
 //! The rows are the library's (`mesh::codec`), read with the command
 //! line's own calls (`cli::cmd_recent_transactions_from`, `cli::cmd_blocks`,
-//! `cli::cmd_mempool`), and every read carries the library's page for it,
-//! word for word. What
+//! `cli::cmd_mempool`, `cli::cmd_block`, `cli::cmd_transaction`) or their
+//! walks made in the worker, and every read carries the library's page for
+//! it, word for word. What
 //! the interface works out from a row (which way it moved, by how much, for
 //! one account) follows the command line's page for the same rows
 //! (`cli::render`, `recent_transactions`), which is private there and so
@@ -169,6 +171,32 @@ impl TransactionView {
             .any(|o| o.kind == OperationKind::Reward && Self::touches(o, account))
     }
 
+    /// Its destinations. As `/block` and `/mempool` list a transaction, the
+    /// change is not an operation, so these are the payees; as the index
+    /// lists one, the change back to the source is among them.
+    pub fn destinations(&self) -> impl Iterator<Item = &OperationView> {
+        self.operations
+            .iter()
+            .filter(|o| o.kind == OperationKind::Destination)
+    }
+
+    /// What it paid its destinations, in nanoMCM, as the command line's
+    /// block and mempool pages total a transaction: for one as `/block` or
+    /// `/mempool` lists it, what it sent.
+    #[must_use]
+    pub fn sent(&self) -> u128 {
+        self.destinations().map(|o| o.amount.unsigned_abs()).sum()
+    }
+
+    /// Who it left: its first source's address.
+    #[must_use]
+    pub fn source(&self) -> Option<&Party> {
+        self.operations
+            .iter()
+            .find(|o| o.kind == OperationKind::Source)
+            .map(|o| &o.party)
+    }
+
     pub(crate) fn of(tx: &MeshTransaction) -> TransactionView {
         TransactionView {
             id: hex(&tx.hash),
@@ -289,10 +317,36 @@ pub struct BlockSummary {
     pub kind: Option<BlockKind>,
     /// The difficulty it was solved at, when the node sent its figures.
     pub difficulty: Option<u32>,
+    /// Its reward, and who it was paid to: the miner. `None` for a block
+    /// that carries none, as a pseudo-block and a neogenesis block do not.
+    pub reward: Option<Reward>,
+    /// How long after the block below it it was made, in milliseconds: how
+    /// long it took to solve. `None` until the block below it is read.
+    pub solve_ms: Option<i64>,
+}
+
+/// A block's reward: newly minted, paid to the miner who solved it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reward {
+    pub to: Party,
+    /// In nanoMCM.
+    pub amount: u128,
 }
 
 impl BlockSummary {
     pub(crate) fn of(block: &MeshBlock) -> BlockSummary {
+        // The reward transaction is the one carrying a REWARD operation, as
+        // the command line's block page finds it (`cli::render`,
+        // `block_page`).
+        let reward = block
+            .transactions
+            .iter()
+            .flat_map(|t| t.operations.iter())
+            .find(|o| o.kind == OP_REWARD)
+            .map(|o| Reward {
+                to: party(&o.address),
+                amount: o.amount.unsigned_abs(),
+            });
         BlockSummary {
             index: block.block.index,
             hash: hex(&block.block.hash),
@@ -304,8 +358,369 @@ impl BlockSummary {
                 codec::BlockKind::Neogenesis => BlockKind::Neogenesis,
             }),
             difficulty: block.metadata.as_ref().map(|m| m.difficulty),
+            reward,
+            solve_ms: None,
         }
     }
+
+    /// `blocks`, newest first, each with its solve time told from the block
+    /// after it in the list when that is the block below it. The last has
+    /// none: the block below it was not read.
+    pub(crate) fn of_walk(blocks: &[MeshBlock]) -> Vec<BlockSummary> {
+        let mut out: Vec<BlockSummary> = blocks.iter().map(BlockSummary::of).collect();
+        for i in 1..out.len() {
+            if out[i].index.checked_add(1) == Some(out[i - 1].index) {
+                out[i - 1].solve_ms = Some(out[i - 1].time_ms - out[i].time_ms);
+            }
+        }
+        out
+    }
+}
+
+/// How many of the newest blocks the explorer lists (docs/SCREENS.md E1).
+pub const LATEST_BLOCKS: u64 = 10;
+
+/// How many blocks the explorer's average solve time is taken over.
+pub const SOLVE_SPAN: u64 = 100;
+
+/// How many transactions of the node's queue the explorer reads whole.
+pub const PENDING_ROWS: u64 = 5;
+
+/// A neogenesis block comes at every block number whose low byte is zero
+/// (the library's `MeshBlock::kind`, the C reference's own test): every
+/// 256th block.
+pub const NEOGENESIS_EVERY: u64 = 256;
+
+/// The next neogenesis block above `tip`.
+#[must_use]
+pub fn next_neogenesis(tip: u64) -> u64 {
+    (tip / NEOGENESIS_EVERY)
+        .saturating_add(1)
+        .saturating_mul(NEOGENESIS_EVERY)
+}
+
+/// The chain as the explorer shows it: the tip, the newest blocks, and how
+/// long a block has taken lately.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChainView {
+    pub tip: u64,
+    /// The [`LATEST_BLOCKS`] newest, newest first, each with its solve time.
+    pub blocks: Vec<BlockSummary>,
+    /// The time between blocks over the [`SOLVE_SPAN`] below the tip, on
+    /// average, in milliseconds: the tip's time less the time of the block
+    /// that many below it, over the span. `None` when the chain is not that
+    /// long, or the node did not serve that block.
+    pub average_ms: Option<i64>,
+    /// The library's page for the blocks shown, word for word.
+    pub text: String,
+}
+
+/// One transaction waiting in the node's queue.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingRow {
+    /// Its id, in hex.
+    pub id: String,
+    /// The transaction as `/mempool/transaction` renders it; `None` when the
+    /// queue no longer held it by the time it was asked for: mined since the
+    /// list was read, or dropped.
+    pub transaction: Option<TransactionView>,
+}
+
+/// The node's queue, as the explorer shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingView {
+    /// How many transactions wait.
+    pub waiting: usize,
+    /// The first [`PENDING_ROWS`] of them, in the queue's order.
+    pub rows: Vec<PendingRow>,
+    /// The library's page, word for word.
+    pub text: String,
+}
+
+/// A block's own figures, as the node sent them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockFigures {
+    /// In hex.
+    pub nonce: String,
+    /// The Merkle root, in hex.
+    pub root: String,
+    /// In bytes.
+    pub size: u64,
+    /// How many transactions it carries besides the reward.
+    pub counted: u32,
+    /// The least fee it took, in nanoMCM.
+    pub minimum_fee: u64,
+    /// For a normal block, the haiku the node sent, a line each, made safe
+    /// to show; empty for any other, as the command line's block page shows
+    /// it.
+    pub haiku: Vec<String>,
+}
+
+/// One block, whole.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockDetail {
+    pub summary: BlockSummary,
+    /// The block below it, by number and hash.
+    pub parent: u64,
+    pub parent_hash: String,
+    /// `None` when the node sent none of its figures.
+    pub figures: Option<BlockFigures>,
+    /// Its transactions other than the reward, in the block's order, as
+    /// `/block` lists them: each source debited what left it net of its
+    /// change, and the change not an operation.
+    pub spends: Vec<TransactionView>,
+    /// What every fee operation in it paid, in nanoMCM, as the command
+    /// line's block page sums them.
+    pub fees: u128,
+    /// The chain's tip when the block was read, when the node said.
+    pub tip: Option<u64>,
+    /// The library's page for it, word for word.
+    pub text: String,
+}
+
+impl BlockDetail {
+    /// `block`, its solve time told from `parent_ms`, the time of the block
+    /// below it when that was read.
+    pub(crate) fn of(
+        block: &MeshBlock,
+        parent_ms: Option<i64>,
+        tip: Option<u64>,
+        text: String,
+    ) -> BlockDetail {
+        let mut summary = BlockSummary::of(block);
+        summary.solve_ms = parent_ms.map(|p| block.timestamp_ms - p);
+        let normal = summary.kind == Some(BlockKind::Normal);
+        let figures = block.metadata.as_ref().map(|m| BlockFigures {
+            nonce: hex(&m.nonce),
+            root: hex(&m.root),
+            size: m.block_size,
+            counted: m.tx_count,
+            minimum_fee: m.fee,
+            haiku: if normal {
+                m.haiku
+                    .split('\n')
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(shown)
+                    .collect()
+            } else {
+                Vec::new()
+            },
+        });
+        let spends = block
+            .transactions
+            .iter()
+            .filter(|t| !t.operations.iter().any(|o| o.kind == OP_REWARD))
+            .map(|t| TransactionView {
+                block: Some(block.block.index),
+                time_ms: Some(block.timestamp_ms),
+                ..TransactionView::of(t)
+            })
+            .collect();
+        let fees = block
+            .transactions
+            .iter()
+            .flat_map(|t| t.operations.iter())
+            .filter(|o| o.kind == OP_FEE)
+            .map(|o| o.amount.unsigned_abs())
+            .sum();
+        BlockDetail {
+            summary,
+            parent: block.parent.index,
+            parent_hash: hex(&block.parent.hash),
+            figures,
+            spends,
+            fees,
+            tip,
+            text,
+        }
+    }
+
+    /// What its transactions paid their destinations, in nanoMCM: the
+    /// command line's "moved". The reward is newly minted, not moved, and is
+    /// not counted.
+    #[must_use]
+    pub fn moved(&self) -> u128 {
+        self.spends.iter().map(TransactionView::sent).sum()
+    }
+
+    /// How many destinations its transactions paid.
+    #[must_use]
+    pub fn paid(&self) -> usize {
+        self.spends.iter().map(|t| t.destinations().count()).sum()
+    }
+
+    /// How many blocks stand on it, itself among them, at the tip read with
+    /// it.
+    #[must_use]
+    pub fn confirmations(&self) -> Option<u64> {
+        let tip = self.tip?;
+        (tip >= self.summary.index).then(|| tip - self.summary.index + 1)
+    }
+}
+
+/// What the ledger holds for a tag.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LedgerRead {
+    /// An entry: the ledger address it is held at now (the tag and the hash
+    /// of its current key, `0x` and eighty hex digits) and its balance in
+    /// nanoMCM.
+    Held { address: String, balance: u64 },
+    /// The node did not resolve it: the Mesh's code 4, *Account not
+    /// found*, which it answers for a tag the ledger has no entry for, for
+    /// one the ledger holds at zero, and for a lookup that failed (too few
+    /// nodes answered, a node between blocks). It says nothing about whether
+    /// the account exists (the library's `recon`, fact 3), and is shown as
+    /// what the node said.
+    Unresolved,
+    /// The node did not say; the library's words for why.
+    Refused(String),
+}
+
+/// One tag as the explorer shows it: what the ledger holds for it, and its
+/// transactions from the node's index.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TagView {
+    pub account: AccountId,
+    pub ledger: LedgerRead,
+    /// The newest page of its history, [`HISTORY_ROWS`] rows.
+    pub history: Result<AccountHistory, ExplorerRefusal>,
+}
+
+/// What a hash names: a transaction the node's index holds, a block the
+/// node serves, or neither.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Found {
+    Transaction {
+        transaction: TransactionView,
+        /// The library's page for it, word for word.
+        text: String,
+    },
+    Block(Box<BlockDetail>),
+    /// Neither: the index's answer for a transaction, and the node's for a
+    /// block, each in the library's words.
+    Neither {
+        transaction: ExplorerRefusal,
+        block: ExplorerRefusal,
+    },
+}
+
+/// A block to read: by its number, or by its hash.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockAt {
+    Number(u64),
+    Hash([u8; 32]),
+}
+
+/// What is typed in the explorer's search field, read as the command line
+/// reads the same arguments (`cli::args`: `block_at`, `hash_arg` and
+/// `tag_from_text`, which are private there and so repeated here, as D19
+/// has the worker repeat the command line's other private decisions).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Query {
+    /// A block, by its number.
+    Block(u64),
+    /// Sixty-four hex digits: a transaction's id, or a block's hash. Nothing
+    /// in the digits says which.
+    Hash([u8; 32]),
+    /// An account, by its Base58 address or its tag in hex.
+    Tag(AccountId),
+}
+
+impl Query {
+    /// `text` as one of the things the explorer finds, or why it is none of
+    /// them. Spaces around it are left off, as the command line leaves them
+    /// off a destination.
+    ///
+    /// # Errors
+    /// A sentence saying what was typed and what the field takes.
+    pub fn parse(text: &str) -> Result<Query, String> {
+        let t = text.trim();
+        if t.is_empty() {
+            return Err(
+                "Type a block's number or hash, a transaction's id, an address or a tag.".into(),
+            );
+        }
+        let body = t.strip_prefix("0x").unwrap_or(t);
+        let hex_digits = !body.is_empty() && body.bytes().all(|b| b.is_ascii_hexdigit());
+        // Sixty-four decimal digits are a hash whose digits are all decimal,
+        // not a number.
+        if t.bytes().all(|b| b.is_ascii_digit()) && t.len() != 64 {
+            let n: u64 = t
+                .parse()
+                .map_err(|_| format!("{t} is larger than any block's number."))?;
+            if n == 0 {
+                // The endpoint serves index 0 as the current block, not as
+                // genesis (`cli::args::block_at`).
+                return Err(
+                    "A node serves block 0 as its newest block, not as genesis, so it \
+                            cannot be asked for by number. Blocks are numbered from 1."
+                        .into(),
+                );
+            }
+            return Ok(Query::Block(n));
+        }
+        if hex_digits && body.len() == 64 {
+            return Ok(Query::Hash(bytes(body)));
+        }
+        if t.starts_with("0x") {
+            if !hex_digits {
+                return Err(format!("{t} starts with 0x but is not hexadecimal."));
+            }
+            if body.len() != 40 {
+                return Err(format!(
+                    "{t} has {} hex digits after 0x. A tag has 40, and a block's hash or a \
+                     transaction's id 64. A ledger address, 80, is a tag and the hash of one key: \
+                     its first 40 digits are the tag.",
+                    body.len()
+                ));
+            }
+            return Self::tag(bytes(body));
+        }
+        if hex_digits && body.len() == 40 {
+            // As the command line refuses a bare hex tag: the second half of
+            // a ledger address printed as eighty hex digits is forty hex
+            // digits as well, a tag nobody holds.
+            return Err(format!(
+                "Write a tag in hex with 0x before it: 0x{t}. Hex carries no checksum, so it is \
+                 read as a tag only when it says it is one: the second half of a ledger address \
+                 is forty hex digits too."
+            ));
+        }
+        match mochimo_crypto::addr::tag_from_base58(t) {
+            Ok(tag) => Self::tag(tag),
+            Err(e) => Err(format!(
+                "{t} is not a block's number, a hash or an id (64 hex digits), or a tag (0x and \
+                 40 hex digits); read as an address, {e}."
+            )),
+        }
+    }
+
+    /// The all-zero tag is refused, as the command line refuses it: its
+    /// checksum is zero too, so the checksum cannot catch it, it is what an
+    /// empty or truncated buffer holds, and nothing paid to it can be spent.
+    fn tag(tag: [u8; 20]) -> Result<Query, String> {
+        if tag.iter().all(|&b| b == 0) {
+            return Err(
+                "That is the all-zero tag, which names no one's account: nothing paid to \
+                        it can ever be spent."
+                    .into(),
+            );
+        }
+        Ok(Query::Tag(AccountId::from_tag(tag)))
+    }
+}
+
+/// `N` bytes from `2N` hex digits already checked as such.
+fn bytes<const N: usize>(digits: &str) -> [u8; N] {
+    let mut out = [0u8; N];
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = digits
+            .get(i * 2..i * 2 + 2)
+            .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+            .unwrap_or(0);
+    }
+    out
 }
 
 /// The chain's tip and the newest blocks below it, newest first.
