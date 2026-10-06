@@ -60,8 +60,7 @@ pub use event::{
 pub use node::{Connect, HttpsNode, NetworkName, NodeRefused, SyncState};
 pub use secret::{PhraseForDisplay, SecretText};
 pub use worker::{
-    Config, DEFAULT_IDLE_LOCK, Locking, WorkerHandle, WorkerStopped, save_artifact,
-    save_artifact_in, spawn,
+    Config, DEFAULT_IDLE_LOCK, WorkerHandle, WorkerStopped, save_artifact, save_artifact_in, spawn,
 };
 
 /// Whether `dir` already holds a store, by the library's own test

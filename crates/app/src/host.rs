@@ -9,9 +9,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
-use std::time::{Duration, Instant};
-
-use tawara_wallet_core::Locking;
+use std::time::Duration;
 
 /// What a mobile shell supplies.
 #[derive(Clone, Debug)]
@@ -36,63 +34,83 @@ static BACK: OnceLock<fn()> = OnceLock::new();
 /// What [`left_foreground`] does: the running worker's lock.
 type Lock = Box<dyn Fn() -> Leaving + Send>;
 
-/// A move to the background on its way (docs/DECISIONS.md D32 item 6). The
-/// worker locks after the command it is running, which a node request or a
-/// spend being submitted can hold; a shell whose process the system may
-/// suspend keeps it running until [`Leaving::wait`] says the lock is done.
+/// A move to the background on its way (docs/DECISIONS.md D32 item 6). A
+/// shell whose process the system may suspend keeps it running until
+/// [`Leaving::wait`] says the interface has done with the move: taken the
+/// worker's `Backgrounded` for it, which comes after the worker has locked
+/// and after every answer that came before (a recovery phrase among them,
+/// dropped by the lock that follows it); or, with no worker, wiped what is
+/// typed. Either way the fields' own wipe on the interface's next message
+/// comes first (Tawara-mobile#1's reviews).
 #[derive(Debug)]
 #[must_use = "a shell that may be suspended waits on it"]
-pub struct Leaving {
-    locking: Option<Locking>,
-    /// The interface's wipe, and the move it must have acted on.
-    wiped: Option<(Arc<Wiped>, u64)>,
+pub struct Leaving(Option<(Arc<Wiped>, Done)>);
+
+/// What the interface must have done for a [`Leaving`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Done {
+    /// Taken the worker's `Backgrounded` with this number.
+    Taken(u64),
+    /// With no worker: wiped for this many moves.
+    Wiped(u64),
 }
 
 impl Leaving {
-    /// Wait up to `within`, in all, for the lock and for the interface's
-    /// wipe of what it holds (Tawara-mobile#1's second review). `true` once
-    /// both are done, or when there was nothing to do; `false` when either
+    /// Wait up to `within` for the interface to have done with the move.
+    /// `true` once it has, or when there was nothing to do; `false` when it
     /// is still waited on after `within`.
     pub fn wait(&self, within: Duration) -> bool {
-        let deadline = Instant::now() + within;
-        self.locking
+        self.0
             .as_ref()
-            .is_none_or(|locking| locking.wait(within))
-            && self.wiped.as_ref().is_none_or(|(wiped, wanted)| {
-                wiped.wait_for(*wanted, deadline.saturating_duration_since(Instant::now()))
-            })
+            .is_none_or(|(wiped, done)| wiped.wait_for(*done, within))
     }
 
-    pub(crate) fn of(locking: Option<Locking>, wiped: Option<(Arc<Wiped>, u64)>) -> Leaving {
-        Leaving { locking, wiped }
+    pub(crate) fn of(wiped: Option<(Arc<Wiped>, Done)>) -> Leaving {
+        Leaving(wiped)
     }
 }
 
-/// How many moves to the background the interface has wiped for: the
-/// password, phrase and words typed, and a recovery phrase shown. The
-/// application's thread raises it, and a shell's thread waits on it.
+/// What the interface has done for the moves to the background: the moves
+/// it has wiped what is typed for, and the last of the worker's
+/// `Backgrounded` it has taken. The application's thread raises them, and a
+/// shell's thread waits on them.
 #[derive(Debug, Default)]
 pub(crate) struct Wiped {
-    moves: Mutex<u64>,
+    state: Mutex<(u64, u64)>,
     raised: Condvar,
 }
 
 impl Wiped {
     /// The interface has wiped for `moves` moves.
-    pub(crate) fn set(&self, moves: u64) {
-        let mut done = self.moves.lock().unwrap_or_else(PoisonError::into_inner);
-        *done = (*done).max(moves);
+    pub(crate) fn wiped(&self, moves: u64) {
+        self.raise(|state| state.0 = state.0.max(moves));
+    }
+
+    /// The interface has taken the worker's `Backgrounded` numbered `seq`,
+    /// and so every event before it. `u64::MAX` when the worker has stopped:
+    /// nothing more comes from it.
+    pub(crate) fn taken(&self, seq: u64) {
+        self.raise(|state| state.1 = state.1.max(seq));
+    }
+
+    fn raise(&self, change: impl FnOnce(&mut (u64, u64))) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        change(&mut state);
         self.raised.notify_all();
     }
 
-    /// Wait up to `within` for the wipe of move `wanted`.
-    fn wait_for(&self, wanted: u64, within: Duration) -> bool {
-        let done = self.moves.lock().unwrap_or_else(PoisonError::into_inner);
-        let (done, _) = self
+    /// Wait up to `within` for `done`.
+    fn wait_for(&self, done: Done, within: Duration) -> bool {
+        let reached = |state: &(u64, u64)| match done {
+            Done::Taken(seq) => state.1 >= seq,
+            Done::Wiped(moves) => state.0 >= moves,
+        };
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let (state, _) = self
             .raised
-            .wait_timeout_while(done, within, |done| *done < wanted)
+            .wait_timeout_while(state, within, |state| !reached(state))
             .unwrap_or_else(PoisonError::into_inner);
-        *done >= wanted
+        reached(&state)
     }
 }
 
@@ -106,7 +124,7 @@ static LOCK: Mutex<Option<Lock>> = Mutex::new(None);
 pub fn left_foreground() -> Leaving {
     match LOCK.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
         Some(lock) => lock(),
-        None => Leaving::of(None, None),
+        None => Leaving::of(None),
     }
 }
 
@@ -149,13 +167,13 @@ mod tests {
         let counter = Arc::clone(&first);
         on_leaving(move || {
             counter.fetch_add(1, Ordering::SeqCst);
-            Leaving::of(None, None)
+            Leaving::of(None)
         });
         let _ = left_foreground();
         let counter = Arc::clone(&second);
         on_leaving(move || {
             counter.fetch_add(1, Ordering::SeqCst);
-            Leaving::of(None, None)
+            Leaving::of(None)
         });
         let _ = left_foreground();
         let _ = left_foreground();

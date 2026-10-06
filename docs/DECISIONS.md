@@ -1499,9 +1499,10 @@ on the three conditions D18 left open.
    transport's timeout) or a spend between its reservation and its
    submission can hold it, while iOS may suspend the process as soon as
    the notification returns, with the store's key in memory.
-   `WorkerHandle::background` therefore returns a `Locking`, which the
-   worker answers once the session and everything pending are dropped,
-   and `left_foreground` hands it to the shell as a `Leaving`. The iOS
+   `WorkerHandle::background` therefore returned a `Locking`, which the
+   worker answered once the session and everything pending were dropped,
+   and `left_foreground` hands the shell a `Leaving` (since made to wait
+   for the interface instead; see below). The iOS
    shell asks UIKit for background time (`beginBackgroundTask`), waits on
    it off the main thread, and ends the task when the lock is done. If
    the time runs out first, the owner chose that the process ends itself
@@ -1525,11 +1526,40 @@ on the three conditions D18 left open.
    would give; the folder chosen stays. With no background time at all,
    the shell's only thread to wait on is the main one, which the
    interface's wipe needs: the process ends there at once.
+
+   **What "done" means is the interface's taking of the worker's answer
+   to the move (Tawara-mobile#1's third review).** The wipe above can come
+   before an answer still on its way: the app leaves while the worker is
+   making a recovery phrase, the next tick wipes the fields, and then the
+   phrase arrives and is shown, until the `Locked` after it drops it. So
+   each move now has a number (`WorkerHandle::background` returns it, and
+   its `Event::Backgrounded { seq }` carries it), the worker sends that
+   event after the command it was running has answered and after the lock,
+   and `Leaving` is done when the interface has taken it: by then it has
+   taken every event before it, the phrase and the `Locked` that dropped
+   it among them, in order. That also says the worker has locked, so the
+   `Locking` the worker answered separately is gone. The fields' own wipe
+   on the next message stays, for the race with input above. A worker that
+   has stopped sends no more, and its `Stopped` comes after it dropped
+   everything, so taking `Stopped` lets every move go. With no worker at
+   all, the fields' wipe is what is waited for.
 7. **Where the store lives.** Android: `no_backup/` (D21), with
    `android:allowBackup="false"` and `dataExtractionRules` that exclude
    every domain from cloud backup and device transfer, so the store
    relies on neither guard alone. iOS: `Library/Application Support`, as
    item 3 protects and excludes it.
+
+   **And only there (Tawara-mobile#1's third review).** The folder field
+   of S3, S6 and S7 was free, and only the default folder was in the
+   protected place: a store made in a sibling such as `Library/Application
+   Support/SecondWallet` would have had neither iOS's file protection nor
+   the backup exclusion, on any launch. In a mobile shell the application
+   now takes a store's folder only strictly inside the app-private folder
+   the shell gives (`Host::private_dir`: iOS's `Library/Application
+   Support/Tawara`, Android's `no_backup/`), as the file system resolves
+   what exists of it, so neither `..` nor a link leads out. Anything else
+   is refused on the screen, with nothing sent and nothing typed taken.
+   The desktop is unchanged.
 8. **What waits on winit.** An Android activity destroyed while its
    process lives cannot start again (phase 1, A18), and winit has no
    UIScene life cycle, which Apple's TN3187 says apps built with SDKs

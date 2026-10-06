@@ -92,9 +92,15 @@ pub struct Model {
     /// those this model has acted on (docs/DECISIONS.md D32 item 6).
     pub(crate) left: Arc<AtomicU64>,
     left_seen: u64,
-    /// The moves this model has wiped for, which a shell waits on before it
+    /// What this model has done for the moves to the background (the moves
+    /// it has wiped for, the worker's `Backgrounded` it has taken), which a
+    /// shell waits on before it
     /// lets the system suspend the process (docs/DECISIONS.md D32 item 6).
     pub(crate) wiped: Arc<host::Wiped>,
+    /// In a mobile shell, the app-private folder every store must be
+    /// inside: the one the system keeps out of backups and away from other
+    /// apps, and on iOS protects (docs/DECISIONS.md D32 items 3 and 7).
+    pub(crate) confined: Option<PathBuf>,
 }
 
 /// What an explorer read last answered, and whether another is on its way.
@@ -239,6 +245,36 @@ fn sync_note(dir: &str) -> Option<String> {
         &Environment::from_process(),
     )
     .map(|w| w.to_string())
+}
+
+/// Whether `dir` lies strictly inside `root`, as the file system resolves
+/// what exists of it: the deepest part of `dir` that exists is made
+/// canonical, so neither a `..` nor a link leads out, and the rest, which
+/// does not exist yet, must be plain names (`file_name` gives none for a
+/// trailing `..`, and a `.` is no component).
+fn within(dir: &Path, root: &Path) -> bool {
+    let Ok(root) = root.canonicalize() else {
+        return false;
+    };
+    let mut existing = dir;
+    let mut rest = Vec::new();
+    let resolved = loop {
+        if let Ok(resolved) = existing.canonicalize() {
+            break resolved;
+        }
+        match (existing.file_name(), existing.parent()) {
+            (Some(name), Some(parent)) if !name.is_empty() => {
+                rest.push(name.to_owned());
+                existing = parent;
+            }
+            _ => return false,
+        }
+    };
+    let full = rest
+        .iter()
+        .rev()
+        .fold(resolved, |path, name| path.join(name));
+    full != root && full.starts_with(&root)
 }
 
 /// The folder typed in a field, as an absolute path: the store is opened,
@@ -590,6 +626,7 @@ impl Model {
             left: Arc::new(AtomicU64::new(0)),
             left_seen: 0,
             wiped: Arc::default(),
+            confined: None,
             width: crate::WINDOW.0,
             clock_ms: now_ms(),
             zone: crate::ui::Zone::System,
@@ -682,6 +719,27 @@ impl Model {
         });
     }
 
+    /// Why the folder on the screen cannot hold a store here: in a mobile
+    /// shell, it is outside the app-private folder, where neither the
+    /// backup exclusion nor iOS's file protection reaches (Tawara-mobile#1's
+    /// third review). Nothing is sent, and nothing typed is taken.
+    fn outside(&self) -> Option<String> {
+        let typed = match &self.screen {
+            Screen::NewWallet(f) => &f.dir,
+            Screen::Restore(r) => &r.form.dir,
+            Screen::Unlock(u) => &u.dir,
+            _ => return None,
+        };
+        let root = self.confined.as_deref()?;
+        (!within(&store_dir(typed), root)).then(|| {
+            format!(
+                "On a phone the store must be inside the app's own folder, {}: the system \
+                 keeps it out of backups and away from other apps. Choose a folder inside it.",
+                root.display()
+            )
+        })
+    }
+
     /// The unlock screen for `dir`, or the default folder.
     fn unlock_screen(&mut self, dir: Option<String>, error: Option<String>, note: Option<String>) {
         let _ = self.leave();
@@ -716,28 +774,40 @@ impl App {
     /// (docs/DECISIONS.md D32).
     pub fn boot_in(host: &Host) -> (App, Task<Message>) {
         host::set(host);
-        let (app, task) = App::begin(
-            Some(host.private_dir.join(preferences::FILE_NAME)),
-            Some(location::store_dir_in(&host.private_dir)),
+        let (app, task) = App::hosted(&host.private_dir);
+        host::on_leaving(app.leaving_hook());
+        (app, task)
+    }
+
+    /// The application as a mobile shell runs it, in `private_dir`, before
+    /// the shell's hooks are registered: the store and the preferences
+    /// there, and every store confined to it.
+    fn hosted(private_dir: &Path) -> (App, Task<Message>) {
+        let (mut app, task) = App::begin(
+            Some(private_dir.join(preferences::FILE_NAME)),
+            Some(location::store_dir_in(private_dir)),
             None,
         );
-        host::on_leaving(app.leaving_hook());
+        app.model.confined = Some(private_dir.to_path_buf());
         (app, task)
     }
 
     /// What [`host::left_foreground`] does for this application: count the
     /// move first, on the shell's thread, so the next message the
-    /// application takes already finds it; then the worker's lock.
+    /// application takes already finds it; then the worker's lock. What the
+    /// shell then waits for is the interface's taking of that lock's
+    /// `Backgrounded`, or, with no worker, its wipe for the move.
     fn leaving_hook(&self) -> impl Fn() -> host::Leaving + Send + 'static {
         let left = Arc::clone(&self.model.left);
         let wiped = Arc::clone(&self.model.wiped);
         let worker = self.worker.as_ref().map(|w| w.handle.clone());
         move || {
             let this_move = left.fetch_add(1, Ordering::SeqCst) + 1;
-            host::Leaving::of(
-                worker.as_ref().map(WorkerHandle::background),
-                Some((Arc::clone(&wiped), this_move)),
-            )
+            let done = match &worker {
+                Some(handle) => host::Done::Taken(handle.background()),
+                None => host::Done::Wiped(this_move),
+            };
+            host::Leaving::of(Some((Arc::clone(&wiped), done)))
         }
     }
 
@@ -897,7 +967,7 @@ impl App {
         if left != self.model.left_seen {
             self.model.left_seen = left;
             self.model.backgrounded();
-            self.model.wiped.set(left);
+            self.model.wiped.wiped(left);
         }
         // iced takes a whole batch of messages against the fields as drawn
         // before it draws them again, so every one of them from a field
@@ -1028,7 +1098,10 @@ impl App {
                 }
             }
             Message::CreateWallet => {
-                if let Screen::NewWallet(f) = &mut m.screen {
+                let outside = m.outside();
+                if let (Screen::NewWallet(f), Some(why)) = (&mut m.screen, outside) {
+                    f.error = Some(why);
+                } else if let Screen::NewWallet(f) = &mut m.screen {
                     f.error = None;
                     f.note = None;
                     let command = Command::CreateBegin {
@@ -1078,7 +1151,10 @@ impl App {
                 }
             }
             Message::RestoreWallet => {
-                if let Screen::Restore(r) = &mut m.screen {
+                let outside = m.outside();
+                if let (Screen::Restore(r), Some(why)) = (&mut m.screen, outside) {
+                    r.form.error = Some(why);
+                } else if let Screen::Restore(r) = &mut m.screen {
                     r.form.error = None;
                     let command = Command::CreateFromPhrase {
                         dir: store_dir(&r.form.dir),
@@ -1090,7 +1166,10 @@ impl App {
                 }
             }
             Message::UnlockWallet => {
-                if let Screen::Unlock(u) = &mut m.screen {
+                let outside = m.outside();
+                if let (Screen::Unlock(u), Some(why)) = (&mut m.screen, outside) {
+                    u.error = Some(why);
+                } else if let Screen::Unlock(u) = &mut m.screen {
                     u.error = None;
                     u.note = None;
                     let command = Command::Unlock {
@@ -1343,8 +1422,19 @@ impl App {
                     }
                 }
             }
-            Event::Backgrounded => self.model.backgrounded(),
-            Event::Stopped { panicked } => self.stop(panicked),
+            Event::Backgrounded { seq } => {
+                self.model.backgrounded();
+                // Taken in turn: every answer before it, a recovery phrase
+                // among them, and the `Locked` that dropped it, have been
+                // too. The shell may let the process be suspended.
+                self.model.wiped.taken(seq);
+            }
+            Event::Stopped { panicked } => {
+                self.stop(panicked);
+                // Nothing more comes from the worker, and what it held was
+                // dropped before this was sent.
+                self.model.wiped.taken(u64::MAX);
+            }
         }
     }
 
@@ -1916,7 +2006,7 @@ mod tests {
             let event = events
                 .recv_timeout(Duration::from_secs(30))
                 .expect("Backgrounded from the worker");
-            let last = matches!(event, Event::Backgrounded);
+            let last = matches!(event, Event::Backgrounded { .. });
             let _ = app.update(Message::Worker(WorkerEvent::new(event)));
             if last {
                 return;
@@ -2083,9 +2173,17 @@ mod tests {
             !leaving.wait(Duration::from_millis(500)),
             "reported done while the interface still showed the phrase"
         );
-        // The clock's next tick is enough.
+        // The clock's next tick drops the phrase from the screen at once,
+        // but the move is done only when the interface has taken the
+        // worker's `Backgrounded` for it (Tawara-mobile#1's third review).
         let _ = app.update(Message::Tick(now_ms()));
-        assert!(leaving.wait(Duration::from_secs(10)));
+        assert!(matches!(app.model.screen, Screen::NewWallet(_)));
+        assert!(
+            !leaving.wait(Duration::from_millis(300)),
+            "reported done before the worker's events were taken"
+        );
+        through_backgrounded(&mut app, &events);
+        assert!(leaving.wait(Duration::ZERO));
         let s3 = |app: &App| match &app.model.screen {
             Screen::NewWallet(f) => {
                 assert_eq!(f.dir, chosen, "the folder chosen stays");
@@ -2099,11 +2197,187 @@ mod tests {
             }
             other => panic!("expected S3, the phrase gone, got {other:?}"),
         };
-        s3(&app);
-        // The worker's own `Locked`, for the phrase it dropped, changes
+        // The worker's own `Locked`, for the phrase it dropped, changed
         // nothing more.
-        through_backgrounded(&mut app, &events);
         s3(&app);
+    }
+
+    #[test]
+    fn a_stopped_worker_lets_the_shell_go() {
+        // No `Backgrounded` comes from a worker that has stopped; what it
+        // held was dropped before its `Stopped`, so a move is done once the
+        // interface has taken that.
+        let scratch = Scratch::new("background-stopped");
+        let (mut app, events) = app(&scratch);
+        // Made while the worker runs, as `boot_in` registers it.
+        let hook = app.leaving_hook();
+        app.worker.as_ref().expect("a worker").handle.shutdown();
+        pump(&mut app, &events, |a| a.model.stopped.is_some());
+        let leaving = hook();
+        assert!(leaving.wait(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn a_phrase_answered_after_the_move_is_dropped_before_the_move_is_done() {
+        // Tawara-mobile#1's third review: the app leaves while the worker is
+        // still making a recovery phrase. The interface wipes its fields at
+        // once, but the phrase arrives after that, and must be gone before
+        // the shell lets the process be suspended.
+        let scratch = Scratch::new("background-phrase");
+        let (mut app, events) = app(&scratch);
+        let _ = app.update(Message::Continue);
+        let _ = app.update(Message::Password(typed(PASSWORD)));
+        let _ = app.update(Message::Again(typed(PASSWORD)));
+        let _ = app.update(Message::CreateWallet);
+        // CreateBegin is sent; the move is queued behind it.
+        let leaving = (app.leaving_hook())();
+        let _ = app.update(Message::Tick(now_ms()));
+        assert!(
+            !leaving.wait(Duration::from_millis(500)),
+            "done while the phrase's answer was still to be taken"
+        );
+        // Taken in turn: the phrase is shown, the lock drops it, and only
+        // then is the move done.
+        let mut shown = false;
+        loop {
+            let event = events
+                .recv_timeout(Duration::from_secs(30))
+                .expect("events from the worker");
+            let last = matches!(event, Event::Backgrounded { .. });
+            let _ = app.update(Message::Worker(WorkerEvent::new(event)));
+            shown |= matches!(app.model.screen, Screen::Phrase(_));
+            if last {
+                break;
+            }
+            assert!(!leaving.wait(Duration::ZERO), "done before Backgrounded");
+        }
+        assert!(shown, "the phrase came after the move, as in the review");
+        assert!(leaving.wait(Duration::ZERO));
+        assert!(
+            matches!(&app.model.screen, Screen::NewWallet(f)
+                if f.note.as_deref().is_some_and(|n| n.contains("left the screen"))),
+            "{:?}",
+            app.model.screen
+        );
+    }
+
+    #[test]
+    fn a_folder_is_within_the_root_only_as_the_file_system_resolves_it() {
+        let scratch = Scratch::new("within");
+        let root = scratch.0.join("root");
+        let other = scratch.0.join("other");
+        std::fs::create_dir_all(root.join("there")).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        assert!(
+            within(&root.join("keystore"), &root),
+            "a store not yet made"
+        );
+        assert!(within(&root.join("there/savings"), &root));
+        assert!(
+            !within(&root, &root),
+            "the folder itself holds the preferences"
+        );
+        assert!(!within(&other.join("keystore"), &root), "a sibling");
+        assert!(!within(&root.join("../other/keystore"), &root), "out by ..");
+        assert!(
+            !within(&root.join("missing/../../other"), &root),
+            "out by .. after a folder that does not exist"
+        );
+        assert!(!within(Path::new(""), &root));
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&other, root.join("link")).unwrap();
+            assert!(!within(&root.join("link/keystore"), &root), "out by a link");
+        }
+    }
+
+    #[test]
+    fn a_hosted_application_confines_stores_to_its_private_folder() {
+        let scratch = Scratch::new("hosted");
+        let (app, _) = App::hosted(&scratch.0);
+        assert_eq!(app.model.confined.as_deref(), Some(scratch.0.as_path()));
+        // The folder offered by default is one a store may be made in.
+        let offered = app.model.default_dir_text();
+        assert!(within(&store_dir(&offered), &scratch.0), "{offered}");
+    }
+
+    #[test]
+    fn on_a_phone_a_store_is_made_or_opened_only_inside_the_private_folder() {
+        // Tawara-mobile#1's third review: the folder field is free, and a
+        // store made elsewhere in the app's container has neither the backup
+        // exclusion nor iOS's file protection.
+        let scratch = Scratch::new("confined");
+        let (mut app, events) = app(&scratch);
+        let root = scratch.0.join("private");
+        std::fs::create_dir_all(&root).unwrap();
+        app.model.confined = Some(root.clone());
+        let outside = scratch
+            .0
+            .join("SecondWallet/keystore")
+            .display()
+            .to_string();
+        let refused = |app: &App| {
+            let error = match &app.model.screen {
+                Screen::NewWallet(f) | Screen::Restore(RestoreForm { form: f, .. }) => {
+                    f.error.clone()
+                }
+                Screen::Unlock(u) => u.error.clone(),
+                other => panic!("unexpected screen {other:?}"),
+            };
+            assert!(
+                error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("inside the app's own folder")),
+                "{error:?}"
+            );
+            assert!(app.model.busy.is_none(), "a command was sent");
+        };
+
+        // S3.
+        let _ = app.update(Message::Continue);
+        let _ = app.update(Message::Dir(outside.clone()));
+        let _ = app.update(Message::Password(typed(PASSWORD)));
+        let _ = app.update(Message::Again(typed(PASSWORD)));
+        let _ = app.update(Message::CreateWallet);
+        refused(&app);
+        assert!(
+            matches!(&app.model.screen, Screen::NewWallet(f) if f.password == PASSWORD),
+            "what was typed is kept for another folder"
+        );
+
+        // S6.
+        let _ = app.update(Message::Go(Go::Start));
+        let _ = app.update(Message::Choose(StartChoice::Restore));
+        let _ = app.update(Message::Continue);
+        let _ = app.update(Message::Dir(outside.clone()));
+        let _ = app.update(Message::Password(typed(PASSWORD)));
+        let _ = app.update(Message::Again(typed(PASSWORD)));
+        let _ = app.update(Message::PhraseText(typed(PHRASE)));
+        let _ = app.update(Message::RestoreWallet);
+        refused(&app);
+
+        // Inside: made, and then opened, as anywhere else.
+        let inside = root.join("keystore").display().to_string();
+        let _ = app.update(Message::Dir(inside.clone()));
+        let _ = app.update(Message::RestoreWallet);
+        pump(&mut app, &events, |a| {
+            matches!(a.model.screen, Screen::Wallet(_))
+        });
+        let _ = app.update(Message::Lock);
+        pump(&mut app, &events, |a| {
+            matches!(a.model.screen, Screen::Unlock(_))
+        });
+
+        // S7: not outside either.
+        let _ = app.update(Message::Dir(outside));
+        let _ = app.update(Message::Password(typed(PASSWORD)));
+        let _ = app.update(Message::UnlockWallet);
+        refused(&app);
+        let _ = app.update(Message::Dir(inside));
+        let _ = app.update(Message::UnlockWallet);
+        pump(&mut app, &events, |a| {
+            matches!(a.model.screen, Screen::Wallet(_))
+        });
     }
 
     #[test]

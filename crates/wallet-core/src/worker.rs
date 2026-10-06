@@ -195,9 +195,8 @@ impl std::error::Error for WorkerStopped {}
 
 enum Envelope {
     Command(RequestId, Command),
-    /// With the sender [`Locking`] waits on: dropped once the lock is done,
-    /// which is the signal (nothing is ever sent on it).
-    Background(mpsc::SyncSender<()>),
+    /// The move's number, for its [`Event::Backgrounded`].
+    Background(u64),
     /// The idle period changed ([`WorkerHandle::set_idle_lock`]): measure the
     /// wait for the next command again.
     Wake,
@@ -256,27 +255,14 @@ impl PersonActivity {
     }
 }
 
-/// A move to the background on its way: [`Locking::wait`] says when the
-/// worker has dropped the session and everything pending.
-#[derive(Debug)]
-pub struct Locking(Receiver<()>);
-
-impl Locking {
-    /// Wait up to `within` for the lock. `true` once it is done, or when
-    /// the worker has stopped, which drops everything it held on the way
-    /// out (either way the sender is gone); `false` when it is still running
-    /// a command after `within`.
-    pub fn wait(&self, within: Duration) -> bool {
-        !matches!(self.0.recv_timeout(within), Err(RecvTimeoutError::Timeout))
-    }
-}
-
 /// The request ids, shared by every clone of a handle and dropped with the
 /// last one.
 struct Requests {
     /// The newest request id to stop (0 for none); see the module doc.
     cancel: Arc<AtomicU64>,
     next: AtomicU64,
+    /// The moves to the background asked for so far.
+    backgrounds: AtomicU64,
 }
 
 impl Requests {
@@ -357,15 +343,16 @@ impl WorkerHandle {
     ///
     /// The lock is done by the worker, after the command it is running:
     /// a node request, or a spend between its reservation and its
-    /// submission, can hold it. The returned [`Locking`] says when it is
-    /// done, for a shell that must keep the process running until then
+    /// submission, can hold it. The returned number is the one its
+    /// `Backgrounded` carries, so a shell that must keep the process running
+    /// until the interface has taken it can tell which it waits for
     /// (docs/DECISIONS.md D32 item 6).
-    #[must_use = "a shell that may be suspended waits on it"]
-    pub fn background(&self) -> Locking {
+    #[must_use = "a shell that may be suspended waits for its Backgrounded"]
+    pub fn background(&self) -> u64 {
         self.cancel();
-        let (done, rx) = mpsc::sync_channel(1);
-        let _ = self.tx.send(Envelope::Background(done));
-        Locking(rx)
+        let seq = self.requests.backgrounds.fetch_add(1, Ordering::Relaxed) + 1;
+        let _ = self.tx.send(Envelope::Background(seq));
+        seq
     }
 
     /// Lock and stop the worker. [`Event::Stopped`] follows.
@@ -414,6 +401,7 @@ pub fn spawn<C: Connect>(
             requests: Arc::new(Requests {
                 cancel,
                 next: AtomicU64::new(1),
+                backgrounds: AtomicU64::new(0),
             }),
             tx,
             activity,
@@ -1165,14 +1153,13 @@ impl<C: Connect> Worker<C> {
                     }
                     self.emit(Event::Done { id, reply });
                 }
-                Envelope::Background(done) => {
+                Envelope::Background(seq) => {
                     self.lock(LockReason::Background);
                     // Every time, not only when something was open: what is
-                    // typed and not yet submitted lives in the interface.
-                    self.emit(Event::Backgrounded);
-                    // The session is dropped: the waiting shell may let the
-                    // process be suspended. Dropping the sender tells it.
-                    drop(done);
+                    // typed and not yet submitted lives in the interface,
+                    // and it is the interface's taking this that a shell
+                    // waits for.
+                    self.emit(Event::Backgrounded { seq });
                 }
                 Envelope::Wake => {}
                 Envelope::Shutdown => {
