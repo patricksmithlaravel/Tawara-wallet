@@ -11,8 +11,9 @@
 
 use iced::widget::{button, column, container, row};
 use iced::{Alignment, Element, Length};
+use tawara_wallet_core::explorer::{AccountHistory, ExplorerRefusal};
 use tawara_wallet_core::view::{AccountRow, AccountState, DivergenceKind, NoticeKind, WalletView};
-use tawara_wallet_core::{Discovered, PlanView, SentView};
+use tawara_wallet_core::{AccountReport, Discovered, PlanView, SentView};
 
 use super::name;
 use crate::app::{Done, Level, Message, ReportKey, WalletMsg, WalletPage};
@@ -557,6 +558,100 @@ pub fn done<'a>(done: Done, account: &AccountRow, text: &'a str) -> Report<'a> {
             .says("The account's state above is what the chain showed."),
         (Done::Checked, _) => Report::new(Tone::Note, "Checked against the chain just now")
             .says("The account's state above is what the chain showed."),
+    };
+    r.full(text)
+}
+
+/// What the node's index holds for one account (W10): what its rows are,
+/// and the library's page for them.
+pub fn history(h: &AccountHistory) -> Report<'_> {
+    let mut r = Report::new(
+        Tone::Note,
+        format!("The node's index for {}", name(h.account)),
+    )
+    .says(
+        "These are the transactions the node's index holds for this account, newest first. It \
+         answers at most 100, and no request reaches older ones.",
+    )
+    .says(
+        "The index counts a spend's source at its gross amount and lists the change as a \
+         destination of its own. The amounts shown are what each transaction did to the \
+         account, net of its change.",
+    );
+    if h.more() {
+        r = r.says(format!(
+            "It holds {} for this account in all; the oldest {} are not shown.",
+            h.total,
+            h.total - h.transactions.len() as u64
+        ));
+    }
+    r.full(&h.text)
+}
+
+const NO_INDEX: &str = "Activity reads the node's transaction index, which a node runs only \
+                        when its operator sets one up. Nothing is wrong with the store or its \
+                        accounts.";
+const OTHER_NODE: &str = "Another node may run one: Change node, in the sidebar or in Settings.";
+
+/// An explorer read the node did not serve: `what` it was for (W1, W10).
+pub fn explorer<'a>(refusal: &'a ExplorerRefusal, what: &str) -> Report<'a> {
+    let r = if refusal.no_index {
+        let mut r = Report::new(Tone::Note, "This node keeps no transaction index")
+            .says(NO_INDEX)
+            .causes(&[OTHER_NODE]);
+        r.causes_title = "What helps";
+        r
+    } else {
+        Report::new(Tone::Warning, format!("The node did not serve {what}"))
+            .says("Nothing was read, and nothing was written.")
+            .causes(&[NODE_DOWN, OFFLINE, NODE_ADDRESS])
+    };
+    r.full(&refusal.text)
+}
+
+/// One account's report on the recovery page (W12): what the chain shows
+/// for it now.
+pub fn review(a: &AccountReport) -> Report<'_> {
+    let r = match &a.state {
+        AccountState::Diverged { kind, .. } => return diverged(*kind, &a.text),
+        AccountState::InSync { .. } if a.spendable => Report::new(
+            Tone::Note,
+            "Reconciled: the chain holds it at the key this store expects",
+        )
+        .says("Nothing needs doing for it."),
+        AccountState::InSync { .. } => Report::new(
+            Tone::Note,
+            "Reconciled: the chain holds it at the key this store expects",
+        )
+        .says(
+            "It was set aside when the wallet opened, so it spends again once Refresh opens \
+             the wallet with it.",
+        ),
+        AccountState::SpendOutstanding { .. } => {
+            Report::new(Tone::Warning, "A spend is reserved and not settled").says(
+                "Settle it from the account's page once the chain shows it landed, or re-sign \
+                 it there if its signed bytes were lost.",
+            )
+        }
+        AccountState::SpendLanded { .. } => Report::new(Tone::Warning, "The spend landed")
+            .says("Settling it, from the account's page, records it and frees the account."),
+        AccountState::NotReconciled => {
+            Report::new(Tone::Note, "Not reconciled").says("No node answered for it.")
+        }
+    };
+    r.full(&a.text)
+}
+
+/// What an acknowledged advance did (W12).
+pub fn advanced(ok: bool, text: &str) -> Report<'_> {
+    let r = if ok {
+        Report::new(Tone::Note, "The advance is done, as the library reports it")
+            .says("The reports above are read again from the chain.")
+    } else {
+        Report::new(Tone::Warning, "Not advanced").says(
+            "The library did not move the account: an advance goes only to the index its live \
+             report names. Its page says what it found.",
+        )
     };
     r.full(text)
 }

@@ -74,6 +74,13 @@ iced = { version = "=0.14.0", default-features = false, features = [
     "wayland",
 ] }
 
+# The local time zone, for the dates the screens show (docs/DECISIONS.md
+# D29, item 4). `clock` alone: chrono reads the system's zone itself (the
+# TZ variable or /etc/localtime on Unix, the system's API on Windows, the
+# tz data on Android) and never calls the C library's localtime, which is
+# unsound beside other threads. No `serde`, no `std` formatting beyond it.
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+
 # The screenshot example only (docs/DECISIONS.md D27, item 1), as
 # dev-dependencies of `tawara-app`; neither reaches a shipped build.
 # `iced_runtime` is iced's own (already in every build at this version, and

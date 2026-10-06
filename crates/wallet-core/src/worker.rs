@@ -100,6 +100,17 @@
 //! - A spend is never stopped between its reservation and its submission:
 //!   the last point it can be stopped is before it starts.
 //!
+//! # Account numbers
+//!
+//! The command line names a derived account by its number (`restore
+//! --account N`); the store keeps it in a record the library does not show
+//! (docs/LIBRARY-PROPOSALS.md, 9a). The worker finds it as the command line
+//! makes it: account N's tag is `derive::derive_account_tag(master, N)`, so
+//! it derives 0, 1, 2 and on from the session's seed until every derived
+//! account is found, or until the discovery sweep's ceiling, and remembers
+//! what it found for as long as it runs. Nothing is asked of the node and
+//! nothing written.
+//!
 //! # Progress
 //!
 //! The library counts how far its long operations have got (opening the
@@ -107,6 +118,8 @@
 //! on as [`Event::Progress`]. A status read reports none: the library's walk
 //! for it takes a cancel and no counter.
 
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -126,20 +139,23 @@ use mochimo_crypto::mesh::{MeshClient, Transport};
 use mochimo_crypto::recon::{self, Cancel, Divergence, ScanScope, Unfinished};
 use mochimo_crypto::tx::wire::Destination;
 use mochimo_crypto::wallet::{StartupRefusal, Unopened, Wallet};
-use mochimo_crypto::{Error, Secret, mnemonic};
+use mochimo_crypto::{Error, Secret, derive, mnemonic};
 use zeroize::Zeroizing;
 
 use crate::command::{Command, PlanId, RequestId};
 use crate::entropy::{self, EntropyUnavailable};
 use crate::event::{
-    Activity, Discovered, Event, LockReason, PlanView, PlannedDestination, Progress, ReceiveView,
-    Refusal, RefusalKind, Reply, SentView,
+    AccountReport, Activity, Discovered, Event, LockReason, PlanView, PlannedDestination, Progress,
+    ReceiveView, Refusal, RefusalKind, Reply, SentView,
 };
+use crate::explorer::{self, AccountHistory, BlockSummary, BlocksView, ExplorerRefusal};
 use crate::node::{self, Connect};
 use crate::secret::{PhraseForDisplay, SecretText};
 use crate::spend::{self, SpendRequest};
 use crate::text;
-use crate::view::{AccountId, AccountRow, AccountState, Notice, NoticeKind, WalletView};
+use crate::view::{
+    AccountId, AccountKind, AccountRow, AccountState, Notice, NoticeKind, WalletView,
+};
 
 /// How long the wallet stays unlocked with nothing done, unless the
 /// interface sets another period. Five minutes, as the dashboard rendering
@@ -176,24 +192,47 @@ impl std::error::Error for WorkerStopped {}
 enum Envelope {
     Command(RequestId, Command),
     Background,
+    /// The idle period changed ([`WorkerHandle::set_idle_lock`]): measure the
+    /// wait for the next command again.
+    Wake,
     Shutdown,
 }
 
-/// When the person last did something, shared by the handle and the worker
-/// so that input during a long command counts at once rather than queueing
+/// When the person last did something, and how long the store may stay
+/// open after that, shared by the handle and the worker so that input or a
+/// new period during a long command counts at once rather than queueing
 /// behind it (module doc, "Lifecycle").
 struct PersonActivity {
     epoch: Instant,
     /// Milliseconds after `epoch`.
     last: AtomicU64,
+    /// The idle period, in milliseconds.
+    period: AtomicU64,
 }
 
 impl PersonActivity {
-    fn new() -> PersonActivity {
-        PersonActivity {
+    fn new(period: Duration) -> PersonActivity {
+        let activity = PersonActivity {
             epoch: Instant::now(),
             last: AtomicU64::new(0),
-        }
+            period: AtomicU64::new(0),
+        };
+        activity.set_period(period);
+        activity
+    }
+
+    fn period(&self) -> Duration {
+        Duration::from_millis(self.period.load(Ordering::Relaxed))
+    }
+
+    fn set_period(&self, period: Duration) {
+        let ms = u64::try_from(period.as_millis()).unwrap_or(u64::MAX);
+        self.period.store(ms, Ordering::Relaxed);
+    }
+
+    /// Whether the person has been away for the idle period.
+    fn away(&self) -> bool {
+        self.idle_for() >= self.period()
     }
 
     fn now(&self) -> u64 {
@@ -268,6 +307,16 @@ impl WorkerHandle {
         self.activity.mark();
     }
 
+    /// Lock after `period` with nothing done from now on, in place of the
+    /// period the worker was started with ([`Config::idle_lock`]). It takes
+    /// effect at once, for a running command too, and counts from the
+    /// person's last input, so a shorter period can lock straight away. The
+    /// interface offers [`crate::preferences::IDLE_LOCK_MINUTES`].
+    pub fn set_idle_lock(&self, period: Duration) {
+        self.activity.set_period(period);
+        let _ = self.tx.send(Envelope::Wake);
+    }
+
     /// Ask every command sent so far to stop (module doc, "Cancellation"):
     /// one not yet started does nothing and answers with a refusal of kind
     /// [`RefusalKind::Cancelled`], and a running one stops where the library
@@ -304,7 +353,7 @@ pub fn spawn<C: Connect>(
     let (events, received) = mpsc::channel();
     let cancel = Arc::new(AtomicU64::new(0));
     let flag = Arc::clone(&cancel);
-    let activity = Arc::new(PersonActivity::new());
+    let activity = Arc::new(PersonActivity::new(config.idle_lock));
     let person = Arc::clone(&activity);
     thread::Builder::new()
         .name("tawara-wallet-core".into())
@@ -321,11 +370,11 @@ pub fn spawn<C: Connect>(
                 plan: None,
                 events,
                 cancel: flag,
-                idle: config.idle_lock,
                 activity: person,
                 idle_stops: false,
                 stopped: Arc::new(AtomicBool::new(false)),
                 next_plan: 1,
+                numbers: RefCell::new(BTreeMap::new()),
             };
             worker.run(&rx);
         })?;
@@ -412,7 +461,7 @@ struct Worker<C: Connect> {
     plan: Option<PendingPlan>,
     events: Sender<Event>,
     cancel: Arc<AtomicU64>,
-    idle: Duration,
+    /// The person's last input and the idle period, shared with the handle.
     activity: Arc<PersonActivity>,
     /// Whether the idle period stops the running command, as a cancel does:
     /// for every command but those carrying the person's input (module
@@ -423,6 +472,11 @@ struct Worker<C: Connect> {
     /// command.
     stopped: Arc<AtomicBool>,
     next_plan: u64,
+    /// The derived accounts' numbers found so far, by tag: a tag names one
+    /// account of one seed, so what was found holds for as long as the
+    /// worker runs. Not secret: a tag is public, and its number is the
+    /// command line's name for it.
+    numbers: RefCell<BTreeMap<Tag, Option<u32>>>,
 }
 
 /// Whether a command does nothing when a cancel reached it before it
@@ -451,8 +505,8 @@ fn typed_by_the_person(command: &Command) -> bool {
 
 /// The stop predicate for the running request `id`, for the library's
 /// `Cancel`: a cancel reached it (`cancel` holds the newest request id to
-/// stop), or, with `idle`, the person has been away for the idle period
-/// (module doc, "Lifecycle").
+/// stop), or, with `idle`, the person has been away for the idle period as
+/// it is when asked (module doc, "Lifecycle").
 ///
 /// **Once it says stop, it says stop for the rest of the request**, through
 /// `stopped`, which every predicate made for the request shares. A cancel
@@ -467,7 +521,7 @@ fn typed_by_the_person(command: &Command) -> bool {
 fn stop_predicate(
     cancel: Arc<AtomicU64>,
     id: RequestId,
-    idle: Option<(Arc<PersonActivity>, Duration)>,
+    idle: Option<Arc<PersonActivity>>,
     stopped: Arc<AtomicBool>,
 ) -> impl Fn() -> bool + 'static {
     move || {
@@ -475,9 +529,7 @@ fn stop_predicate(
             return true;
         }
         let stop = cancel.load(Ordering::Relaxed) >= id.0
-            || idle
-                .as_ref()
-                .is_some_and(|(person, period)| person.idle_for() >= *period);
+            || idle.as_ref().is_some_and(|person| person.away());
         if stop {
             stopped.store(true, Ordering::Relaxed);
         }
@@ -680,6 +732,7 @@ fn store_rows(store: &Keystore<Disk>) -> Result<Vec<AccountRow>, Refusal> {
             index: h.index.get(),
             state: AccountState::NotReconciled,
             spendable: false,
+            number: None,
         })
         .collect())
 }
@@ -762,9 +815,32 @@ fn wallet_rows<T: Transport>(wallet: &Wallet<Disk, T>) -> Result<Vec<AccountRow>
                 index: h.index.get(),
                 state,
                 spendable,
+                number: None,
             }
         })
         .collect())
+}
+
+/// Which of `derived` the seed derives, and as which account: the tag of
+/// account N is `derive::derive_account_tag(master, N)`, as `restore
+/// --account N` makes it, so N is found by deriving 0, 1, 2 and on until
+/// every one is found or the discovery sweep's ceiling is passed. One
+/// derivation is one key's public half, about what a sweep pays per
+/// account without the node. An account not found is `None`.
+fn derivation_numbers(master: &Secret<SEED_LEN>, derived: &[Tag]) -> Vec<(Tag, Option<u32>)> {
+    let mut left: Vec<Tag> = derived.to_vec();
+    let mut found = Vec::with_capacity(derived.len());
+    for n in 0..=crate::DISCOVER_MAX_TO {
+        if left.is_empty() {
+            break;
+        }
+        let tag = derive::derive_account_tag(master, n);
+        if let Some(at) = left.iter().position(|t| *t == tag) {
+            found.push((left.swap_remove(at), Some(n)));
+        }
+    }
+    found.extend(left.into_iter().map(|t| (t, None)));
+    found
 }
 
 /// Replace one account's row after an operation on it.
@@ -831,8 +907,7 @@ impl<C: Connect> Worker<C> {
         stop_predicate(
             Arc::clone(&self.cancel),
             id,
-            self.idle_stops
-                .then(|| (Arc::clone(&self.activity), self.idle)),
+            self.idle_stops.then(|| Arc::clone(&self.activity)),
             Arc::clone(&self.stopped),
         )
     }
@@ -854,11 +929,14 @@ impl<C: Connect> Worker<C> {
             // Checked before anything more is taken from the queue: commands
             // queued behind a slow one (polls outrunning a slow node) must
             // not keep the store open past the idle period.
-            if self.holds_secrets() && self.activity.idle_for() >= self.idle {
+            if self.holds_secrets() && self.activity.away() {
                 self.lock(LockReason::Idle);
             }
             let envelope = if self.holds_secrets() {
-                let left = self.idle.saturating_sub(self.activity.idle_for());
+                let left = self
+                    .activity
+                    .period()
+                    .saturating_sub(self.activity.idle_for());
                 match rx.recv_timeout(left) {
                     Ok(e) => e,
                     Err(RecvTimeoutError::Timeout) => continue,
@@ -890,6 +968,7 @@ impl<C: Connect> Worker<C> {
                     self.emit(Event::Done { id, reply });
                 }
                 Envelope::Background => self.lock(LockReason::Background),
+                Envelope::Wake => {}
                 Envelope::Shutdown => {
                     self.lock(LockReason::Shutdown);
                     return;
@@ -924,20 +1003,46 @@ impl<C: Connect> Worker<C> {
     }
 
     fn view(&self) -> Option<WalletView> {
-        match &self.session {
-            Session::Locked => None,
-            Session::Store(s) => Some(WalletView {
+        let mut view = match &self.session {
+            Session::Locked => return None,
+            Session::Store(s) => WalletView {
                 dir: s.dir.clone(),
                 accounts: s.rows.clone(),
                 opened: false,
                 notice: s.notice.clone(),
-            }),
-            Session::Wallet(w) => Some(WalletView {
+            },
+            Session::Wallet(w) => WalletView {
                 dir: w.dir.clone(),
                 accounts: w.rows.clone(),
                 opened: true,
                 notice: not_whole(w.wallet.diverged()),
-            }),
+            },
+        };
+        self.number(&mut view.accounts);
+        Some(view)
+    }
+
+    /// Put each derived account's number on its row (module doc, "Account
+    /// numbers"), searching once for those not yet known.
+    fn number(&self, rows: &mut [AccountRow]) {
+        let master = match &self.session {
+            Session::Locked => None,
+            Session::Store(s) => s.master.as_ref(),
+            Session::Wallet(w) => w.master.as_ref(),
+        };
+        let mut known = self.numbers.borrow_mut();
+        let missing: Vec<Tag> = rows
+            .iter()
+            .filter(|r| r.kind == AccountKind::Derived && !known.contains_key(&r.id.tag()))
+            .map(|r| r.id.tag())
+            .collect();
+        if let Some(master) = master
+            && !missing.is_empty()
+        {
+            known.extend(derivation_numbers(master, &missing));
+        }
+        for row in rows {
+            row.number = known.get(&row.id.tag()).copied().flatten();
         }
     }
 
@@ -996,6 +1101,9 @@ impl<C: Connect> Worker<C> {
             } => self.restore(id, account_index, scan_to),
             Command::Discover { to } => self.discover(id, to),
             Command::NetworkStatus => self.network_status(id),
+            Command::Blocks => self.blocks(id),
+            Command::Activity => self.activity(id),
+            Command::Review => self.review(id),
         }
     }
 
@@ -2140,6 +2248,196 @@ impl<C: Connect> Worker<C> {
             Err(e) => Reply::Refused(library(e)),
         }
     }
+
+    /// The command line's `blocks`, for the wallet's network card.
+    fn blocks(&self, id: RequestId) -> Reply {
+        let fresh;
+        let client = match &self.session {
+            Session::Wallet(w) if self.node.as_deref() == Some(w.node.as_str()) => {
+                w.wallet.client()
+            }
+            _ => match self.client() {
+                Ok((_, c)) => {
+                    fresh = c;
+                    &fresh
+                }
+                Err(r) => return Reply::Refused(r),
+            },
+        };
+        self.busy(id, Activity::ReadingIndex);
+        let outcome = cli::cmd_blocks(client, explorer::CARD_BLOCKS);
+        let read = match &outcome {
+            Outcome::Blocks { tip, rows, .. } => {
+                Ok((tip.index, rows.iter().map(BlockSummary::of).collect()))
+            }
+            Outcome::BlocksStopped { cause, .. } | Outcome::ExplorerFailed { cause } => {
+                Err(explorer::no_index(cause))
+            }
+            _ => Err(false),
+        };
+        let text = text::page(&[], outcome);
+        Reply::Blocks(match read {
+            Ok((tip, blocks)) => Ok(BlocksView { tip, blocks, text }),
+            Err(no_index) => Err(ExplorerRefusal { no_index, text }),
+        })
+    }
+
+    /// The command line's `recent-transactions`, for every account in the
+    /// store's order.
+    fn activity(&self, id: RequestId) -> Reply {
+        let fresh;
+        let (accounts, client) = match &self.session {
+            Session::Locked => return Self::not_unlocked(),
+            Session::Store(s) => {
+                let client = match &s.client {
+                    Some((_, c)) => c,
+                    None => match self.client() {
+                        Ok((_, c)) => {
+                            fresh = c;
+                            &fresh
+                        }
+                        Err(r) => return Reply::Refused(r),
+                    },
+                };
+                (&s.rows, client)
+            }
+            Session::Wallet(w) => (&w.rows, w.wallet.client()),
+        };
+        let asked = self.stop_asked(id);
+        self.busy(id, Activity::ReadingIndex);
+        let count = u32::try_from(accounts.len()).unwrap_or(u32::MAX);
+        let mut out = Vec::with_capacity(accounts.len());
+        for (n, row) in accounts.iter().enumerate() {
+            // Between two requests: a history cut short is not shown as
+            // a whole one.
+            if asked() {
+                return Reply::Refused(library(Error::Cancelled));
+            }
+            self.emit(Event::Progress {
+                id,
+                progress: Progress {
+                    account: u32::try_from(n).unwrap_or(u32::MAX),
+                    accounts: count,
+                    position: 0,
+                    ceiling: 0,
+                },
+            });
+            let outcome =
+                cli::cmd_recent_transactions(client, &row.id.tag(), explorer::HISTORY_ROWS);
+            let read = match &outcome {
+                Outcome::RecentTransactions { page, .. } => {
+                    Ok(AccountHistory::of(row.id, page, String::new()))
+                }
+                Outcome::ExplorerFailed { cause } => Err(explorer::no_index(cause)),
+                _ => Err(false),
+            };
+            let text = text::page(&[], outcome);
+            match read {
+                Ok(history) => out.push(AccountHistory { text, ..history }),
+                // Every account is read from the same index: one refusal
+                // is the answer for all of them.
+                Err(no_index) => return Reply::Activity(Err(ExplorerRefusal { no_index, text })),
+            }
+        }
+        if asked() {
+            return Reply::Refused(library(Error::Cancelled));
+        }
+        Reply::Activity(Ok(out))
+    }
+
+    /// [`Command::Status`] for every account, applied only once all have
+    /// answered.
+    fn review(&mut self, id: RequestId) -> Reply {
+        let asked = self.stop_asked(id);
+        let scope = reconcile::scope_to(None);
+        let fresh;
+        let (store, client, master, tags) = match &self.session {
+            Session::Locked => return Self::not_unlocked(),
+            Session::Store(s) => {
+                let client = match &s.client {
+                    Some((_, c)) => c,
+                    None => match self.client() {
+                        Ok((_, c)) => {
+                            fresh = c;
+                            &fresh
+                        }
+                        Err(r) => return Reply::Refused(r),
+                    },
+                };
+                (
+                    &s.store,
+                    client,
+                    s.master.as_ref(),
+                    s.rows.iter().map(|r| r.id.tag()).collect::<Vec<_>>(),
+                )
+            }
+            Session::Wallet(w) => (
+                w.wallet.store(),
+                w.wallet.client(),
+                w.master.as_ref(),
+                w.rows.iter().map(|r| r.id.tag()).collect(),
+            ),
+        };
+        self.busy(id, Activity::AskingNode);
+        let count = u32::try_from(tags.len()).unwrap_or(u32::MAX);
+        let mut found = Vec::with_capacity(tags.len());
+        for (n, tag) in tags.iter().enumerate() {
+            self.emit(Event::Progress {
+                id,
+                progress: Progress {
+                    account: u32::try_from(n).unwrap_or(u32::MAX),
+                    accounts: count,
+                    position: 0,
+                    ceiling: 0,
+                },
+            });
+            let result = match recon::access_for(store, tag, master) {
+                Ok(access) => recon::reconcile_account_with(
+                    store,
+                    client,
+                    tag,
+                    &access,
+                    &scope,
+                    &Cancel::when(&asked),
+                ),
+                Err(d) => Err(d),
+            };
+            // A walk told to stop is no finding about the account, and a
+            // review cut short is not shown as a whole one.
+            if asked() {
+                return Reply::Refused(library(Error::Cancelled));
+            }
+            let state = match &result {
+                Ok(status) => AccountState::from_status(status),
+                Err(d) => AccountState::from_divergence(d),
+            };
+            let text = text::page(&[], cli::status_outcome(tag, result));
+            found.push((*tag, state, text));
+        }
+        let mut reports = Vec::with_capacity(found.len());
+        for (tag, state, text) in found {
+            let spendable = match &mut self.session {
+                Session::Store(s) => {
+                    update_row(&mut s.rows, &tag, state.clone(), false, None);
+                    false
+                }
+                Session::Wallet(w) => {
+                    let spendable = w.wallet.accounts().iter().any(|(t, _)| *t == tag)
+                        && matches!(state, AccountState::InSync { .. });
+                    update_row(&mut w.rows, &tag, state.clone(), spendable, None);
+                    spendable
+                }
+                Session::Locked => false,
+            };
+            reports.push(AccountReport {
+                account: AccountId::from_tag(tag),
+                state,
+                spendable,
+                text,
+            });
+        }
+        Reply::Reviewed(reports)
+    }
 }
 
 /// Write a signed spend's bytes to `path` as hex, the form
@@ -2199,14 +2497,14 @@ mod tests {
     /// request asks again.
     #[test]
     fn an_idle_stop_holds_for_the_rest_of_the_request() {
-        let person = Arc::new(PersonActivity::new());
         let period = Duration::from_millis(200);
+        let person = Arc::new(PersonActivity::new(period));
         let no_cancel = Arc::new(AtomicU64::new(0));
         let request = Arc::new(AtomicBool::new(false));
         let asked = stop_predicate(
             Arc::clone(&no_cancel),
             RequestId(1),
-            Some((Arc::clone(&person), period)),
+            Some(Arc::clone(&person)),
             Arc::clone(&request),
         );
         assert!(!asked(), "not idle yet");
@@ -2219,7 +2517,7 @@ mod tests {
         let reopen = stop_predicate(
             Arc::clone(&no_cancel),
             RequestId(1),
-            Some((Arc::clone(&person), period)),
+            Some(Arc::clone(&person)),
             Arc::clone(&request),
         );
         assert!(reopen(), "the reopening hears the same stop");
@@ -2227,7 +2525,7 @@ mod tests {
         let next = stop_predicate(
             no_cancel,
             RequestId(2),
-            Some((person, period)),
+            Some(person),
             Arc::new(AtomicBool::new(false)),
         );
         assert!(!next(), "the person is back; the next request runs");

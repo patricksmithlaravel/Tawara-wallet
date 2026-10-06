@@ -94,6 +94,34 @@ pub fn t<'a>(content: impl text::IntoFragment<'a>, ty: Type, color: Color) -> Te
         .color(color)
 }
 
+/// `content` as [`t`] sets it, wrapping at words or glyphs, with each "→"
+/// drawn from [`fonts::ARROW`] when `ty` is Poppins: Poppins has no arrow,
+/// and one drawn from whatever system font the machine has would make the
+/// screenshots differ from machine to machine (`design/TOKENS.md` section
+/// 9).
+pub fn arrowed<'a, M: 'a>(content: String, ty: Type, color: Color) -> Element<'a, M> {
+    let poppins = ty.font.family == iced::font::Family::Name("Poppins");
+    if !poppins || !content.contains('→') {
+        return t(content, ty, color).wrapping(Wrapping::WordOrGlyph).into();
+    }
+    let mut spans: Vec<iced::widget::text::Span<'a, (), Font>> = Vec::new();
+    for (n, part) in content.split('→').enumerate() {
+        if n > 0 {
+            spans.push(iced::widget::span("→").font(fonts::ARROW));
+        }
+        if !part.is_empty() {
+            spans.push(iced::widget::span(part.to_owned()));
+        }
+    }
+    iced::widget::rich_text(spans)
+        .font(ty.font)
+        .size(ty.size)
+        .line_height(LineHeight::Relative(ty.line_height()))
+        .color(color)
+        .wrapping(Wrapping::WordOrGlyph)
+        .into()
+}
+
 /// `content` in role `ty`, in the colour of whatever it sits in (a
 /// button's label takes the button's text colour).
 pub fn label<'a>(content: impl text::IntoFragment<'a>, ty: Type) -> Text<'a> {
@@ -492,6 +520,112 @@ pub fn unit_name(unit: tawara_wallet_core::preferences::AmountUnit) -> &'static 
     }
 }
 
+/// Which clock the screens tell a time by.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Zone {
+    /// The system's time zone, with its summer time, as chrono reads it:
+    /// the TZ variable or /etc/localtime on Unix, the system's API on
+    /// Windows, the tz data on Android.
+    #[default]
+    System,
+    /// A fixed offset from UTC, in seconds east: the screenshots, so they
+    /// are drawn the same on every machine.
+    Fixed(i32),
+}
+
+/// A time the node gave (milliseconds since the epoch) as the wall clock
+/// read it in `zone`. The library carries no calendar and prints the raw
+/// count; `None` for a count no calendar holds.
+fn wall(ms: i64, zone: Zone) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    let at = chrono::DateTime::from_timestamp_millis(ms)?;
+    let offset = match zone {
+        Zone::System => *at.with_timezone(&chrono::Local).offset(),
+        Zone::Fixed(east) => chrono::FixedOffset::east_opt(east)?,
+    };
+    Some(at.with_timezone(&offset))
+}
+
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// "Oct 3", on the wall clock.
+#[must_use]
+pub fn short_date(ms: i64, zone: Zone) -> String {
+    use chrono::Datelike as _;
+    wall(ms, zone).map_or_else(
+        || "—".to_owned(),
+        |t| format!("{} {}", MONTHS[t.month0() as usize], t.day()),
+    )
+}
+
+/// "Oct 3 · 14:03", on the wall clock.
+#[must_use]
+pub fn date_time(ms: i64, zone: Zone) -> String {
+    use chrono::Timelike as _;
+    wall(ms, zone).map_or_else(
+        || "—".to_owned(),
+        |t| {
+            format!(
+                "{} · {:02}:{:02}",
+                short_date(ms, zone),
+                t.hour(),
+                t.minute()
+            )
+        },
+    )
+}
+
+/// "2026-10-03 16:03:20 UTC+2", on the wall clock, saying its offset.
+#[must_use]
+pub fn full_time(ms: i64, zone: Zone) -> String {
+    use chrono::{Datelike as _, Timelike as _};
+    wall(ms, zone).map_or_else(
+        || "—".to_owned(),
+        |t| {
+            format!(
+                "{}-{:02}-{:02} {:02}:{:02}:{:02} {}",
+                t.year(),
+                t.month(),
+                t.day(),
+                t.hour(),
+                t.minute(),
+                t.second(),
+                offset_name(t.offset().local_minus_utc())
+            )
+        },
+    )
+}
+
+/// An offset from UTC as a person reads it: "UTC", "UTC+2", "UTC-5:30".
+fn offset_name(east: i32) -> String {
+    if east == 0 {
+        return "UTC".to_owned();
+    }
+    let sign = if east > 0 { '+' } else { '-' };
+    let (hours, minutes) = (east.abs() / 3_600, east.abs() % 3_600 / 60);
+    if minutes == 0 {
+        format!("UTC{sign}{hours}")
+    } else {
+        format!("UTC{sign}{hours}:{minutes:02}")
+    }
+}
+
+/// How long before `now` the time `then` was, both in milliseconds since
+/// the epoch: "48 s ago", "6 min ago", "3 h ago", "2 days ago". A time
+/// after `now` (a clock behind the node's) is "just now".
+#[must_use]
+pub fn age(now: i64, then: i64) -> String {
+    let secs = now.saturating_sub(then) / 1_000;
+    match secs {
+        ..=0 => "just now".to_owned(),
+        1..=99 => format!("{secs} s ago"),
+        100..=5_999 => format!("{} min ago", secs / 60),
+        6_000..=172_799 => format!("{} h ago", secs / 3_600),
+        _ => format!("{} days ago", secs / 86_400),
+    }
+}
+
 /// Fixed pixels, for the sizes the renderings state.
 #[must_use]
 pub fn px(n: f32) -> Length {
@@ -541,5 +675,33 @@ mod tests {
         );
         assert_eq!(group("100"), "100");
         assert_eq!(group("1000"), "1,000");
+    }
+
+    #[test]
+    fn times_are_told_on_the_wall_clock_of_the_zone() {
+        let utc = Zone::Fixed(0);
+        assert_eq!(full_time(0, utc), "1970-01-01 00:00:00 UTC");
+        assert_eq!(full_time(1_791_036_200_000, utc), "2026-10-03 14:03:20 UTC");
+        assert_eq!(date_time(1_791_036_200_000, utc), "Oct 3 · 14:03");
+        assert_eq!(full_time(951_782_400_000, utc), "2000-02-29 00:00:00 UTC");
+        assert_eq!(full_time(-1_000, utc), "1969-12-31 23:59:59 UTC");
+        // East of UTC the date can turn over; west of it, back.
+        let tokyo = Zone::Fixed(9 * 3_600);
+        assert_eq!(
+            full_time(1_791_036_200_000, tokyo),
+            "2026-10-03 23:03:20 UTC+9"
+        );
+        assert_eq!(date_time(1_791_050_000_000, tokyo), "Oct 4 · 02:53");
+        let delhi = Zone::Fixed(5 * 3_600 + 1_800);
+        assert!(full_time(0, delhi).ends_with("UTC+5:30"));
+        let la = Zone::Fixed(-7 * 3_600);
+        assert_eq!(short_date(1_791_000_000_000, la), "Oct 2");
+        // The system's zone gives a time too, whichever it is.
+        assert_ne!(full_time(1_791_036_200_000, Zone::System), "—");
+        assert_eq!(age(10_000, 10_000), "just now");
+        assert_eq!(age(58_000, 10_000), "48 s ago");
+        assert_eq!(age(10_000 + 360_000, 10_000), "6 min ago");
+        assert_eq!(age(3 * 86_400_000, 0), "3 days ago");
+        assert_eq!(age(0, 5_000), "just now", "a clock behind the node's");
     }
 }

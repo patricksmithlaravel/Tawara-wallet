@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use iced::futures::channel::mpsc;
 use iced::widget::operation;
 use iced::{Element, Event as IcedEvent, Subscription, Task, event, keyboard, mouse, touch};
+use tawara_wallet_core::explorer::{AccountHistory, BlocksView, ExplorerRefusal};
 use tawara_wallet_core::location::{self, Environment, Platform};
 use tawara_wallet_core::preferences::{self, Preferences};
 use tawara_wallet_core::view::WalletView;
@@ -26,9 +27,9 @@ use tawara_wallet_core::{
 };
 
 pub use wallet::{
-    AccountPage, AddAccountPage, DestinationRow, Done, Level, Page, ReceivePage, ReportKey,
-    ResignPage, SendPage, SendStage, SentPage, Signed, SpendForm, SubmitPage, To, WalletMsg,
-    spend_request,
+    AccountPage, ActivityPage, AddAccountPage, DestinationRow, Done, Level, Page, ReceivePage,
+    RecoveryPage, Remedy, ReportKey, ResignPage, SendPage, SendStage, SentPage, SettingsPage,
+    Signed, SpendForm, SubmitPage, To, WalletMsg, remedy, spend_request,
 };
 
 /// What the application shows and holds. Plain data, apart from the
@@ -66,6 +67,40 @@ pub struct Model {
     /// The window's width in logical pixels: below [`WIDE`], rows of two
     /// cards stack (docs/DECISIONS.md D27, item 9).
     pub width: f32,
+    /// The wall clock, in milliseconds since the epoch, moved on each
+    /// second: what a block's age is told against.
+    pub clock_ms: i64,
+    /// The time zone dates are shown in: the system's.
+    pub zone: crate::ui::Zone,
+    /// The open store's transactions from the node's index (W1, W10).
+    pub activity: Explored<Vec<AccountHistory>>,
+    /// The node's newest blocks (W1's network card).
+    pub blocks: Explored<BlocksView>,
+}
+
+/// What an explorer read last answered, and whether another is on its way.
+/// Reads go on in the background: the screen shows the last answer while
+/// the next comes.
+#[derive(Clone, Debug)]
+pub struct Explored<T> {
+    pub last: Option<Result<T, ExplorerRefusal>>,
+    pub reading: bool,
+}
+
+impl<T> Default for Explored<T> {
+    fn default() -> Explored<T> {
+        Explored {
+            last: None,
+            reading: false,
+        }
+    }
+}
+
+/// The wall clock, in milliseconds since the epoch.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 /// The narrowest window that shows two cards side by side.
@@ -302,6 +337,9 @@ pub enum Message {
     Wallet(WalletMsg),
     /// The window opened or changed size: its width.
     Width(f32),
+    /// A second passed: the wall clock, in milliseconds since the epoch.
+    /// Not the person's input.
+    Tick(i64),
 }
 
 /// The screens a message can go to.
@@ -341,6 +379,14 @@ enum Purpose {
     Resign,
     SubmitArtifact,
     Status,
+    /// The network card's blocks, in the background.
+    Blocks,
+    /// The index's rows, in the background.
+    Activity,
+    /// Account recovery's report of every account.
+    Review,
+    /// The acknowledged advance.
+    Reconcile,
 }
 
 impl Purpose {
@@ -363,6 +409,8 @@ impl Purpose {
                 | Purpose::Resign
                 | Purpose::SubmitArtifact
                 | Purpose::Status
+                | Purpose::Review
+                | Purpose::Reconcile
         )
     }
 
@@ -381,6 +429,8 @@ impl Purpose {
                 | Purpose::Resign
                 | Purpose::SubmitArtifact
                 | Purpose::Status
+                | Purpose::Review
+                | Purpose::Reconcile
         )
     }
 }
@@ -434,6 +484,10 @@ impl Model {
             signed: Vec::new(),
             stopped: None,
             width: crate::WINDOW.0,
+            clock_ms: now_ms(),
+            zone: crate::ui::Zone::System,
+            activity: Explored::default(),
+            blocks: Explored::default(),
         };
         if let Some(dir) = model.store_to_open() {
             model.screen = Screen::Unlock(UnlockForm {
@@ -565,7 +619,26 @@ impl App {
         if bridged.is_err() {
             app.model.stopped = Some(false);
         }
-        (app, Task::run(rx, Message::Worker))
+        // iced's thread-pool executor keeps no timer, so the clock is a
+        // thread of its own, as the worker's events are.
+        let (tick, ticks) = mpsc::unbounded();
+        let _clock = std::thread::Builder::new()
+            .name("tawara-clock".into())
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(Duration::from_secs(1));
+                    if tick.unbounded_send(now_ms()).is_err() {
+                        break;
+                    }
+                }
+            });
+        (
+            app,
+            Task::batch([
+                Task::run(rx, Message::Worker),
+                Task::run(ticks, Message::Tick),
+            ]),
+        )
     }
 
     /// The application over a new worker, with `model` as its first state,
@@ -864,6 +937,7 @@ impl App {
             }
             Message::Wallet(msg) => return self.on_wallet(msg),
             Message::Width(width) => m.width = width,
+            Message::Tick(ms) => m.clock_ms = ms,
         }
         Task::none()
     }
@@ -879,6 +953,32 @@ impl App {
                     sent: Instant::now(),
                 },
             );
+            self.read_blocks();
+        }
+    }
+
+    /// Read the newest blocks for the wallet's network card, in the
+    /// background, unless a read is already on its way or no store is open
+    /// to show them.
+    fn read_blocks(&mut self) {
+        if self.model.wallet.is_some()
+            && self.model.node.url.is_some()
+            && !self.model.blocks.reading
+            && self.send(Command::Blocks, Purpose::Blocks).is_some()
+        {
+            self.model.blocks.reading = true;
+        }
+    }
+
+    /// Read every account's transactions from the node's index, in the
+    /// background, unless a read is already on its way.
+    fn read_activity(&mut self) {
+        if self.model.wallet.is_some()
+            && self.model.node.url.is_some()
+            && !self.model.activity.reading
+            && self.send(Command::Activity, Purpose::Activity).is_some()
+        {
+            self.model.activity.reading = true;
         }
     }
 
@@ -923,6 +1023,8 @@ impl App {
                     .take()
                     .map(|w| w.dir.display().to_string());
                 self.model.busy = None;
+                // What the index holds for the store goes with it.
+                self.model.activity = Explored::default();
                 // With no store open, the lock dropped a recovery phrase
                 // waiting to be confirmed (wallet-core's `Event::Locked`):
                 // nothing was written, so the way on is to create again,
@@ -1024,6 +1126,11 @@ impl App {
         let m = &mut self.model;
         match (purpose, reply) {
             (Purpose::SetNode { form }, Reply::NodeSet { url, view }) => {
+                // Another node: another index and another chain's blocks.
+                if m.node.url.as_deref() != Some(url.as_str()) {
+                    m.activity = Explored::default();
+                    m.blocks = Explored::default();
+                }
                 m.node = NodeState {
                     url: Some(url.clone()),
                     ..NodeState::default()
@@ -1038,10 +1145,27 @@ impl App {
                 }
                 self.save_prefs();
                 self.ask_tip();
+                self.read_activity();
             }
+            // From the node screen, or from Settings' node card.
             (Purpose::SetNode { form: true }, Reply::Refused(r)) => {
                 if let Screen::Node(f) = &mut m.screen {
                     f.error = Some(r.text);
+                } else {
+                    self.refused(r);
+                }
+            }
+            // A refusal (no node, a cancel) leaves what was shown.
+            (Purpose::Blocks, reply) => {
+                m.blocks.reading = false;
+                if let Reply::Blocks(read) = reply {
+                    m.blocks.last = Some(read);
+                }
+            }
+            (Purpose::Activity, reply) => {
+                m.activity.reading = false;
+                if let Reply::Activity(read) = reply {
+                    m.activity.last = Some(read);
                 }
             }
             (Purpose::SetNode { form: false }, Reply::Refused(r)) => {
@@ -1057,6 +1181,8 @@ impl App {
             }
             (Purpose::ClearNode, Reply::NodeCleared { view }) => {
                 m.node = NodeState::default();
+                m.activity = Explored::default();
+                m.blocks = Explored::default();
                 m.prefs.node = None;
                 if let Some(v) = view {
                     m.wallet = Some(v);
@@ -1164,6 +1290,7 @@ impl App {
         m.wallet = Some(view);
         m.screen = Screen::Wallet(WalletPage::default());
         self.ask_tip();
+        self.read_activity();
     }
 
     /// Remember the store in `dir`, so the next start offers to unlock it
@@ -2323,6 +2450,252 @@ mod tests {
         // With none asked for, the first that can spend.
         wallet(&mut app, WalletMsg::Open(To::Send(None)));
         assert_eq!(from(&app), Some(able));
+    }
+
+    #[test]
+    fn the_index_and_the_blocks_are_kept_until_the_store_or_the_node_changes() {
+        use tawara_wallet_core::explorer::ExplorerRefusal;
+        let mut app = on_wallet(Page::Activity(ActivityPage::default()));
+        app.model.node.url = Some("https://node.example".to_owned());
+        app.model.activity.reading = true;
+        app.on_reply(
+            Purpose::Activity,
+            Reply::Activity(Ok(tawara_wallet_core::sample::activity())),
+        );
+        assert!(!app.model.activity.reading);
+        assert!(matches!(&app.model.activity.last, Some(Ok(h)) if h.len() == 3));
+        app.on_reply(
+            Purpose::Blocks,
+            Reply::Blocks(Ok(tawara_wallet_core::sample::blocks())),
+        );
+        assert!(matches!(&app.model.blocks.last, Some(Ok(b)) if b.tip == 871_173));
+
+        // A refusal that is not the node's answer (a cancel) leaves what
+        // was shown.
+        app.model.activity.reading = true;
+        app.on_reply(
+            Purpose::Activity,
+            Reply::Refused(Refusal {
+                kind: RefusalKind::Cancelled,
+                text: "cancelled".to_owned(),
+            }),
+        );
+        assert!(!app.model.activity.reading);
+        assert!(matches!(&app.model.activity.last, Some(Ok(_))));
+
+        // A node with no index says so, for every account.
+        app.on_reply(
+            Purpose::Activity,
+            Reply::Activity(Err(ExplorerRefusal {
+                no_index: true,
+                text: "no index".to_owned(),
+            })),
+        );
+        assert!(matches!(&app.model.activity.last, Some(Err(r)) if r.no_index));
+
+        // Another node: another index and another chain.
+        app.on_reply(
+            Purpose::SetNode { form: true },
+            Reply::NodeSet {
+                url: "https://other.example".to_owned(),
+                view: None,
+            },
+        );
+        assert!(app.model.activity.last.is_none() && app.model.blocks.last.is_none());
+
+        // The store locked: what the index held for it goes with it.
+        app.on_reply(
+            Purpose::Activity,
+            Reply::Activity(Ok(tawara_wallet_core::sample::activity())),
+        );
+        app.on_event(Event::Locked {
+            reason: LockReason::Asked,
+        });
+        assert!(app.model.activity.last.is_none());
+    }
+
+    #[test]
+    fn settings_change_the_unit_and_the_auto_lock_and_keep_them() {
+        use tawara_wallet_core::preferences::AmountUnit;
+        let mut app = on_wallet(Page::Settings(SettingsPage::default()));
+        wallet(&mut app, WalletMsg::Unit(AmountUnit::NanoMcm));
+        assert_eq!(app.model.prefs.unit, AmountUnit::NanoMcm);
+        wallet(&mut app, WalletMsg::AutoLock(10));
+        assert_eq!(app.model.prefs.idle_lock, Duration::from_secs(600));
+        wallet(&mut app, WalletMsg::AutoLock(7));
+        assert_eq!(
+            app.model.prefs.idle_lock,
+            Duration::from_secs(600),
+            "a period not offered is not taken"
+        );
+        wallet(&mut app, WalletMsg::SaveNode);
+        assert!(wallet_page(&app).error.is_some(), "no address typed");
+    }
+
+    #[test]
+    fn recovery_shows_every_report_whole_and_advances_only_as_typed_and_confirmed() {
+        let reports = tawara_wallet_core::sample::review();
+        let paused = reports[2].account;
+        let reconciled = reports[0].account;
+        let mut app = on_wallet(Page::Account(AccountPage {
+            account: paused,
+            report: None,
+        }));
+        wallet(&mut app, WalletMsg::Open(To::Recovery(Some(paused))));
+        assert!(matches!(&wallet_page(&app).page,
+            Page::Recovery(r) if r.target == Some(paused) && r.reports.is_none()));
+
+        app.on_reply(Purpose::Review, Reply::Reviewed(reports.clone()));
+        let p = wallet_page(&app);
+        assert!(matches!(&p.page, Page::Recovery(r) if r.reports.as_ref() == Some(&reports)));
+        for n in 0..3 {
+            assert_eq!(
+                p.open.get(&ReportKey::Review(n)),
+                Some(&Level::Summary),
+                "every account's report opens to its summary"
+            );
+        }
+        let unread = |app: &App| match &wallet_page(app).page {
+            Page::Recovery(r) => r.unread(),
+            _ => None,
+        };
+        assert_eq!(unread(&app), Some(3));
+        let row = |app: &App, id| {
+            app.model
+                .wallet
+                .as_ref()
+                .unwrap()
+                .accounts
+                .iter()
+                .find(|a| a.id == id)
+                .unwrap()
+                .state
+                .clone()
+        };
+        assert_eq!(
+            row(&app, paused),
+            reports[2].state,
+            "the view follows the review"
+        );
+
+        let error = |app: &App| wallet_page(app).error.clone().unwrap_or_default();
+        // Typed and confirmed, and not every full report opened: refused,
+        // whichever are open (D29).
+        wallet(&mut app, WalletMsg::RecoveryIndex("33".to_owned()));
+        wallet(&mut app, WalletMsg::Confirm(true));
+        wallet(&mut app, WalletMsg::Advance);
+        assert!(error(&app).starts_with("Open every"), "{}", error(&app));
+        wallet(
+            &mut app,
+            WalletMsg::Report(ReportKey::Review(2), Level::Full),
+        );
+        wallet(
+            &mut app,
+            WalletMsg::Report(ReportKey::Review(0), Level::Full),
+        );
+        // A summary opened is not the full output.
+        wallet(
+            &mut app,
+            WalletMsg::Report(ReportKey::Review(1), Level::Summary),
+        );
+        assert_eq!(unread(&app), Some(1));
+        wallet(&mut app, WalletMsg::Advance);
+        assert!(error(&app).starts_with("Open every"), "{}", error(&app));
+        wallet(
+            &mut app,
+            WalletMsg::Report(ReportKey::Review(1), Level::Full),
+        );
+        assert_eq!(unread(&app), Some(0));
+        // Closing a report read leaves it read.
+        wallet(
+            &mut app,
+            WalletMsg::Report(ReportKey::Review(1), Level::Closed),
+        );
+        assert_eq!(unread(&app), Some(0));
+        wallet(&mut app, WalletMsg::Confirm(false));
+        wallet(&mut app, WalletMsg::RecoveryIndex(String::new()));
+        // Nothing typed.
+        wallet(&mut app, WalletMsg::Advance);
+        assert!(error(&app).starts_with("Confirm"), "{}", error(&app));
+        // Typed and not confirmed.
+        wallet(&mut app, WalletMsg::RecoveryIndex("33".to_owned()));
+        wallet(&mut app, WalletMsg::Advance);
+        assert!(error(&app).starts_with("Confirm"), "{}", error(&app));
+        // Confirmed and not a number.
+        wallet(&mut app, WalletMsg::Confirm(true));
+        wallet(
+            &mut app,
+            WalletMsg::RecoveryIndex("thirty-three".to_owned()),
+        );
+        wallet(&mut app, WalletMsg::Advance);
+        assert!(
+            error(&app).starts_with("Type the key index"),
+            "{}",
+            error(&app)
+        );
+        // Typed and confirmed: sent, so the page holds no error.
+        wallet(&mut app, WalletMsg::RecoveryIndex("33".to_owned()));
+        wallet(&mut app, WalletMsg::Advance);
+        assert_eq!(wallet_page(&app).error, None);
+
+        // An account whose report names no index is never advanced.
+        wallet(&mut app, WalletMsg::Target(reconciled));
+        assert!(matches!(&wallet_page(&app).page,
+            Page::Recovery(r) if r.index.is_empty() && !r.confirmed));
+        wallet(&mut app, WalletMsg::Confirm(true));
+        wallet(&mut app, WalletMsg::RecoveryIndex("50".to_owned()));
+        wallet(&mut app, WalletMsg::Advance);
+        assert!(error(&app).contains("names no index"), "{}", error(&app));
+
+        // The advance answered: its page, the store as it is now, and the
+        // form cleared.
+        let mut after = tawara_wallet_core::sample::wallet_view();
+        after.accounts[2].state = tawara_wallet_core::view::AccountState::InSync { balance: 1 };
+        app.on_reply(
+            Purpose::Reconcile,
+            Reply::Reconciled {
+                ok: true,
+                advanced_to: Some(33),
+                text: "advanced".to_owned(),
+                opened: Ok(after.clone()),
+            },
+        );
+        assert_eq!(app.model.wallet.as_ref(), Some(&after));
+        assert!(matches!(&wallet_page(&app).page,
+            Page::Recovery(r) if r.result == Some((true, "advanced".to_owned()))
+                && r.index.is_empty() && !r.confirmed));
+
+        // A further search answers with that account's report, replacing it;
+        // a report that changed folds to its summary and is to be read
+        // again.
+        assert_eq!(unread(&app), Some(0));
+        app.on_reply(
+            Purpose::Status,
+            Reply::Status {
+                account: paused,
+                state: tawara_wallet_core::view::AccountState::InSync { balance: 1 },
+                spendable: false,
+                text: "found".to_owned(),
+            },
+        );
+        assert!(matches!(&wallet_page(&app).page,
+            Page::Recovery(r) if r.reports.as_ref().is_some_and(|all| all
+                .iter()
+                .any(|a| a.account == paused && a.text == "found"))));
+        assert_eq!(unread(&app), Some(1));
+        assert_eq!(
+            wallet_page(&app).open.get(&ReportKey::Review(2)),
+            Some(&Level::Summary)
+        );
+        assert_eq!(
+            wallet_page(&app).open.get(&ReportKey::Review(0)),
+            Some(&Level::Full),
+            "the other reports stay as they were"
+        );
+
+        // Read again: every report is to be opened again.
+        app.on_reply(Purpose::Review, Reply::Reviewed(reports.clone()));
+        assert_eq!(unread(&app), Some(3));
     }
 
     #[test]

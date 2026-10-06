@@ -1006,7 +1006,7 @@ to them.
     explorer's reads, which the worker does not make yet, and turning a
     tag's history into rows is Activity's own question (W10); both come
     with (c). The sidebar's network panel shows the node, the tip and the
-    latency meanwhile.
+    latency meanwhile. *Built in (c): D29.*
 
 ### D28. The library's pages: a banner, a summary, then the page
 
@@ -1064,3 +1064,108 @@ How it is kept honest:
   Every other banner starts closed.
 - A refusal that reads as a line stays a line; a longer one is a banner
   whose summary is its first paragraph.
+
+### D29. Phase 3 (c): activity, settings and account recovery
+
+**proposed; for the owner's review in the pull request that introduces
+it.** PR (c) builds docs/SCREENS.md W10 to W12 and the dashboard's two
+cards that D27 item 16 moved here. The choices it makes:
+
+1. **The explorer reads go on in the background** (the owner kept this,
+   on PR (c)'s first draft). The index's rows
+   (`Command::Activity`, one request per account) and the newest blocks
+   (`Command::Blocks`) are read when a store opens, on Refresh, and when
+   Activity opens, without the busy card: the screen shows the last answer
+   while the next comes, and a refusal that is not the node's answer (a
+   cancel, no node) leaves it. They are commands like any other, so they
+   do not keep the store open (D24), and a lock drops what the index held
+   for the store.
+2. **A row is what the transaction did to the account,** net of its
+   change, by the command line's own sums: the index debits a spend's
+   source gross and lists the change as a destination of its own
+   (`cli::render`, `recent_transactions`; the rule is private there and
+   repeated in `wallet-core::explorer`, naming it, as D19 does for the
+   others). A transfer between two of the store's accounts is in both
+   accounts' rows and is listed once, from the account it left. The words
+   (sent, received, between own accounts, mining reward) are Tawara's;
+   they say nothing a row does not.
+3. **References come from the index's rows** (the owner, on PR (c)'s
+   first draft). The first draft said the index carries none, after the
+   library's codec, which notes that `metadata` is absent on every
+   `/search` operation; that note generalises from the one transaction the
+   library captured live, which had no reference. At the pinned middleware
+   (`mochimo-mesh` at `ddc1ee5`) the indexer records each destination's
+   reference (`indexer/transactions.go:235`) and `/search` returns it as
+   `metadata.memo` when it is not empty (`indexer/search.go:143`), and the
+   library already reads it there (`Operation::memo`). A read of each
+   transaction's block, built on the wrong premise and taken out again,
+   would only repeat it. A row shows its own references: for a payment
+   received, those on the destinations that reached the account; for
+   anything else, those on the destinations it paid, the change left out.
+   Where a row carries none, the transaction's id is shown under it, and
+   no reference is inferred. Both endpoints send a reference as its whole
+   sixteen-byte field, padded with NUL bytes; the padding is left off, and
+   any other text the node sends is made safe to show by the command
+   line's rule for external text (`cli::terminal_text`, repeated
+   likewise).
+4. **Dates are shown in the system's time zone** (the owner, on PR (c)'s
+   first draft, which showed UTC). The library carries no calendar and
+   prints the raw count, so the application reads the zone with `chrono`,
+   its `clock` feature alone: chrono reads the zone itself (the TZ
+   variable or /etc/localtime on Unix, the system's API on Windows, the tz
+   data on Android) and never calls the C library's `localtime`, which is
+   unsound beside other threads; the `time` crate refuses a local offset
+   in a program with threads for that reason. It adds three crates
+   (`chrono`, `iana-time-zone` and its Haiku shim), all MIT or Apache-2.0;
+   the rest of what it needs was already in the graph. A transaction's
+   full time names its offset ("UTC+2"). The screenshots are drawn in UTC,
+   so they are the same on every machine. The age of the newest block is
+   measured by a clock that moves each second, on a thread of its own, as
+   the worker's events are (iced's thread-pool executor keeps no timer).
+5. **Account recovery shows every report's summary first, and the
+   advance waits until every full report has been opened** (the owner, on
+   the same draft, which opened every account's whole library page from
+   the start). D19 asks for the library's whole report for every account
+   before anything else; D28 puts each library page behind a banner, then
+   a summary with the common causes, then the library's own words. On
+   W12 each account opens to its summary, so the page reads as D28's
+   other pages do, and the advance is not offered until the person has
+   opened every account's full output at least once since the reports were
+   read: the evidence that one account's advance is wrong is most often in
+   another's report, so it is seen before anything moves. Each account
+   says whether its full report has been opened, and the advance says how
+   many of them have. A report that changes (a further search answers) is
+   folded back to its summary and is to be opened again; reading every
+   account again starts the count over. The page reads every account
+   afresh when it opens (`Command::Review`, which applies what it finds
+   only once all have answered) and again after an advance.
+6. **What account recovery offers.** The advance, only for an account
+   whose live report names the index, once every full report has been
+   opened (item 5), typed by the person and sent only once they confirm
+   no other wallet uses the recovery phrase; the library
+   advances only to exactly that index or refuses. For an account whose
+   chain address was not among the keys searched, a wider search to a key
+   index the person types (`Command::Status` with `scan_to`), which writes
+   nothing. Restore stays in W3, as D19 has it.
+7. **Settings takes effect at once.** The auto-lock period reaches the
+   running worker (`WorkerHandle::set_idle_lock`) and counts from the
+   person's last input, so a shorter period can lock straight away. About
+   names the wallet library's commit (`wallet-core::LIBRARY_REV`), which
+   the policy tests hold to the workspace's pin, since the library carries
+   no version of its own to read. The keystore card says how a new store's
+   key is derived (`keystore::Kdf::RECOMMENDED`); the library does not say
+   it for an open store, so the card does not claim it.
+8. **A derived account's number is shown** (the owner, on the same draft),
+   beside its kind: "derived · account 3", the command line's own name
+   for it (`restore --account N`). The library keeps the number in a
+   record it does not show (docs/LIBRARY-PROPOSALS.md, 9a), so the worker
+   finds it as the command line makes it: account N's tag is
+   `derive::derive_account_tag(master, N)`, a public call, so it derives
+   0, 1, 2 and on from the session's seed until every derived account is
+   found, or until the discovery sweep's ceiling (1,024), and remembers
+   what it found while it runs. Nothing is asked of the node or written,
+   and nothing is guessed: an account not found within the ceiling shows
+   "derived" alone. Proposal 9a stays, so the number can be read rather
+   than searched for. Accounts are still named by their shortened
+   destination (D27, item 3).
+

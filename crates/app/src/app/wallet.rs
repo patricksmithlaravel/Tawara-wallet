@@ -5,13 +5,16 @@
 //! signed spend's bytes are what the node is sent or what the store shows;
 //! the store's key never leaves the worker.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use iced::Task;
-use tawara_wallet_core::amount;
+use tawara_wallet_core::preferences::{AmountUnit, IDLE_LOCK_MINUTES};
 use tawara_wallet_core::spend::{Amount, DestinationInput, SpendRequest};
-use tawara_wallet_core::view::{AccountId, AccountState, WalletView};
+use tawara_wallet_core::view::{AccountId, AccountState, DivergenceKind, WalletView};
+use tawara_wallet_core::{AccountReport, amount};
+
+use crate::history::Filter;
 use tawara_wallet_core::{
     Command, Discovered, MAX_DESTINATIONS, PlanView, ReceiveView, Reply, SentView,
 };
@@ -36,6 +39,93 @@ pub enum Page {
     Resign(ResignPage),
     /// W9.
     Submit(SubmitPage),
+    /// W10.
+    Activity(ActivityPage),
+    /// W11.
+    Settings(SettingsPage),
+    /// W12.
+    Recovery(RecoveryPage),
+}
+
+/// W10: every account's transactions from the node's index.
+#[derive(Clone, Debug, Default)]
+pub struct ActivityPage {
+    pub filter: Filter,
+    /// What is typed in the search field.
+    pub search: String,
+    /// The transaction shown beside the list, by id; the newest when none
+    /// is chosen.
+    pub selected: Option<String>,
+}
+
+/// W11.
+#[derive(Clone, Debug, Default)]
+pub struct SettingsPage {
+    /// The node's address as typed, before it is saved.
+    pub node: String,
+}
+
+/// W12, account recovery: every account's report first, then the
+/// acknowledged advance on the owner's terms (docs/DECISIONS.md D19, D29).
+#[derive(Clone, Debug, Default)]
+pub struct RecoveryPage {
+    /// Every account's report, once the review answers. Each opens to its
+    /// summary; the advance waits until every one's full output has been
+    /// opened (`read`).
+    pub reports: Option<Vec<AccountReport>>,
+    /// The accounts whose full report has been opened since it was read.
+    pub read: BTreeSet<AccountId>,
+    /// The account to act on: advance it, or search further for it.
+    pub target: Option<AccountId>,
+    /// The key index typed for it. Nothing fills it in: the person types the
+    /// index the report names, as the command line makes them.
+    pub index: String,
+    /// The person confirmed no other wallet uses this recovery phrase.
+    pub confirmed: bool,
+    /// Whether the last advance is done, and the library's page for it.
+    pub result: Option<(bool, String)>,
+}
+
+impl RecoveryPage {
+    /// How many accounts' full reports are still to be opened before the
+    /// advance is offered; `None` before the reports have come.
+    #[must_use]
+    pub fn unread(&self) -> Option<usize> {
+        let reports = self.reports.as_ref()?;
+        Some(
+            reports
+                .iter()
+                .filter(|a| !self.read.contains(&a.account))
+                .count(),
+        )
+    }
+}
+
+/// What can be done for an account on the recovery page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Remedy {
+    /// The acknowledged advance to the index the report names.
+    Advance(u32),
+    /// Its chain address was not among the keys searched: search further.
+    SearchFurther,
+}
+
+/// What the recovery page offers for `state`, if anything: an advance only
+/// where the library's report names the index, a further search only where
+/// it found nothing in the keys searched.
+#[must_use]
+pub fn remedy(state: &AccountState) -> Option<Remedy> {
+    match state {
+        AccountState::Diverged {
+            advance_to: Some(to),
+            ..
+        } => Some(Remedy::Advance(*to)),
+        AccountState::Diverged {
+            kind: DivergenceKind::Unlocated,
+            ..
+        } => Some(Remedy::SearchFurther),
+        _ => None,
+    }
 }
 
 /// W2: one account's destination.
@@ -173,6 +263,14 @@ pub enum ReportKey {
     Submitted,
     /// The refusal the page's last command met.
     Refused,
+    /// The node's index for an account (W10).
+    History,
+    /// What the index or the newest blocks could not be read for (W1, W10).
+    Explorer,
+    /// The n-th account's report on the recovery page (W12).
+    Review(u16),
+    /// What the last advance did (W12).
+    Advanced,
 }
 
 /// How far a report is open.
@@ -214,6 +312,10 @@ pub enum To {
     Account(AccountId),
     Resign(AccountId),
     Submit,
+    Activity,
+    Settings,
+    /// W12, with this account to act on.
+    Recovery(Option<AccountId>),
 }
 
 /// What the wallet's pages react to.
@@ -260,6 +362,27 @@ pub enum WalletMsg {
     Submit,
     /// Open or close a report on the page.
     Report(ReportKey, Level),
+    /// W10.
+    Filter(Filter),
+    Search(String),
+    Select(String),
+    /// W10: read the node's index again.
+    ReadActivity,
+    /// W11.
+    Unit(AmountUnit),
+    /// W11: the auto-lock period, in minutes.
+    AutoLock(u64),
+    NodeTyped(String),
+    SaveNode,
+    /// W11: ask the node for its tip now.
+    CheckNode,
+    /// W12: reconcile every account again.
+    ReviewAll,
+    Target(AccountId),
+    RecoveryIndex(String),
+    Confirm(bool),
+    Advance,
+    SearchFurther,
 }
 
 impl From<WalletMsg> for Message {
@@ -275,6 +398,8 @@ impl Page {
         match self {
             Page::Send(_) | Page::Resign(_) | Page::Submit(_) => 1,
             Page::Receive(_) => 2,
+            Page::Activity(_) => 3,
+            Page::Settings(_) | Page::Recovery(_) => 5,
             Page::Dashboard | Page::AddAccount(_) | Page::Account(_) => 0,
         }
     }
@@ -592,6 +717,14 @@ impl App {
                 form: self.model.kept_form(account).unwrap_or_default(),
             }),
             To::Submit => Page::Submit(SubmitPage::default()),
+            To::Activity => Page::Activity(ActivityPage::default()),
+            To::Settings => Page::Settings(SettingsPage {
+                node: self.model.node.url.clone().unwrap_or_default(),
+            }),
+            To::Recovery(target) => Page::Recovery(RecoveryPage {
+                target,
+                ..RecoveryPage::default()
+            }),
         };
         self.model.screen = Screen::Wallet(WalletPage {
             page,
@@ -599,6 +732,36 @@ impl App {
         });
         if let Some(account) = receive {
             self.send(Command::Receive { account }, Purpose::Receive);
+        }
+        match to {
+            // Read afresh when the page opens, behind anything already
+            // asked.
+            To::Activity => self.read_activity(),
+            // Every account's report before anything else (D19).
+            To::Recovery(_) => {
+                self.send(Command::Review, Purpose::Review);
+            }
+            _ => {}
+        }
+    }
+
+    /// The recovery page shown.
+    fn recovery(&mut self) -> Option<&mut RecoveryPage> {
+        match &mut self.wallet_page()?.page {
+            Page::Recovery(r) => Some(r),
+            _ => None,
+        }
+    }
+
+    /// The report the recovery page holds for `account`, as the last
+    /// review or search left it.
+    fn reviewed(&self, account: AccountId) -> Option<&AccountReport> {
+        match &self.model.screen {
+            Screen::Wallet(WalletPage {
+                page: Page::Recovery(r),
+                ..
+            }) => r.reports.as_ref()?.iter().find(|a| a.account == account),
+            _ => None,
         }
     }
 
@@ -866,6 +1029,14 @@ impl App {
             WalletMsg::Report(key, level) => {
                 if let Some(p) = self.wallet_page() {
                     p.open.insert(key, level);
+                    // On the recovery page, opening an account's full report
+                    // counts towards the advance (D29).
+                    if let (Page::Recovery(r), ReportKey::Review(n), Level::Full) =
+                        (&mut p.page, key, level)
+                        && let Some(a) = r.reports.as_ref().and_then(|all| all.get(usize::from(n)))
+                    {
+                        r.read.insert(a.account);
+                    }
                 }
             }
             WalletMsg::ArtifactHex(hex) => {
@@ -895,6 +1066,167 @@ impl App {
                         Command::SubmitArtifact { artifact_hex },
                         Purpose::SubmitArtifact,
                     );
+                }
+            }
+            WalletMsg::Filter(filter) => {
+                if let Some(WalletPage {
+                    page: Page::Activity(a),
+                    ..
+                }) = self.wallet_page()
+                {
+                    a.filter = filter;
+                }
+            }
+            WalletMsg::Search(text) => {
+                if let Some(WalletPage {
+                    page: Page::Activity(a),
+                    ..
+                }) = self.wallet_page()
+                {
+                    a.search = text;
+                }
+            }
+            WalletMsg::Select(id) => {
+                if let Some(WalletPage {
+                    page: Page::Activity(a),
+                    ..
+                }) = self.wallet_page()
+                {
+                    a.selected = Some(id);
+                }
+            }
+            WalletMsg::ReadActivity => self.read_activity(),
+            WalletMsg::Unit(unit) => {
+                self.model.prefs.unit = unit;
+                self.save_prefs();
+            }
+            WalletMsg::AutoLock(minutes) => {
+                if IDLE_LOCK_MINUTES.contains(&minutes) {
+                    let period = std::time::Duration::from_secs(minutes * 60);
+                    self.model.prefs.idle_lock = period;
+                    if let Some(w) = &self.worker {
+                        w.handle.set_idle_lock(period);
+                    }
+                    self.save_prefs();
+                }
+            }
+            WalletMsg::NodeTyped(url) => {
+                if let Some(WalletPage {
+                    page: Page::Settings(s),
+                    ..
+                }) = self.wallet_page()
+                {
+                    s.node = url;
+                }
+            }
+            WalletMsg::SaveNode => {
+                let Some(WalletPage {
+                    page: Page::Settings(s),
+                    ..
+                }) = self.wallet_page()
+                else {
+                    return Task::none();
+                };
+                let url = s.node.trim().to_owned();
+                if url.is_empty() {
+                    self.page_error(Some(
+                        "Type the node's address, starting https://.".to_owned(),
+                    ));
+                } else {
+                    self.page_error(None);
+                    self.send(Command::SetNode { url }, Purpose::SetNode { form: true });
+                }
+            }
+            WalletMsg::CheckNode => self.ask_tip(),
+            WalletMsg::ReviewAll => {
+                if let Some(r) = self.recovery() {
+                    r.result = None;
+                }
+                self.page_error(None);
+                self.send(Command::Review, Purpose::Review);
+            }
+            WalletMsg::Target(account) => {
+                if let Some(r) = self.recovery() {
+                    r.target = Some(account);
+                    r.index.clear();
+                    r.confirmed = false;
+                }
+            }
+            WalletMsg::RecoveryIndex(text) => {
+                if let Some(r) = self.recovery() {
+                    r.index = text;
+                }
+            }
+            WalletMsg::Confirm(on) => {
+                if let Some(r) = self.recovery() {
+                    r.confirmed = on;
+                }
+            }
+            WalletMsg::Advance => {
+                let Some(r) = self.recovery() else {
+                    return Task::none();
+                };
+                let unread = r.unread();
+                let (target, typed, confirmed) = (r.target, r.index.trim().to_owned(), r.confirmed);
+                let Some(account) = target else {
+                    return Task::none();
+                };
+                // Offered only where the live report names an index; the
+                // library advances only to exactly that one.
+                let named = self
+                    .reviewed(account)
+                    .and_then(|a| remedy(&a.state))
+                    .is_some_and(|m| matches!(m, Remedy::Advance(_)));
+                let checked = if !named {
+                    Err("The report names no index to advance this account to.")
+                } else if unread != Some(0) {
+                    Err(
+                        "Open every account's full report first: the evidence that an advance \
+                         is wrong is most often in another account's report.",
+                    )
+                } else if !confirmed {
+                    Err("Confirm first that no other wallet uses this recovery phrase.")
+                } else {
+                    typed
+                        .parse::<u32>()
+                        .map_err(|_| "Type the key index the report names, in digits.")
+                };
+                match checked {
+                    Ok(advance_to) => {
+                        self.page_error(None);
+                        self.send(
+                            Command::Reconcile {
+                                account,
+                                advance_to,
+                            },
+                            Purpose::Reconcile,
+                        );
+                    }
+                    Err(e) => self.page_error(Some(e.to_owned())),
+                }
+            }
+            WalletMsg::SearchFurther => {
+                let Some(r) = self.recovery() else {
+                    return Task::none();
+                };
+                let (target, typed) = (r.target, r.index.trim().to_owned());
+                let Some(account) = target else {
+                    return Task::none();
+                };
+                match typed.parse::<u32>() {
+                    Ok(scan_to) if scan_to <= tawara_wallet_core::MAX_KEY_INDEX => {
+                        self.page_error(None);
+                        self.send(
+                            Command::Status {
+                                account,
+                                scan_to: Some(scan_to),
+                            },
+                            Purpose::Status,
+                        );
+                    }
+                    _ => self.page_error(Some(
+                        "Type how far to search, as a key index in digits.".to_owned(),
+                    )),
                 }
             }
         }
@@ -1020,15 +1352,96 @@ impl App {
                     && let Some(row) = w.accounts.iter_mut().find(|a| a.id == account)
                 {
                     row.spendable = spendable;
-                    row.state = state;
+                    row.state = state.clone();
                 }
-                if let Some(WalletPage {
-                    page: Page::Account(a),
-                    ..
-                }) = self.wallet_page()
-                    && a.account == account
+                let Some(p) = self.wallet_page() else {
+                    return;
+                };
+                match &mut p.page {
+                    Page::Account(a) if a.account == account => {
+                        a.report = Some((Done::Checked, text));
+                    }
+                    // A further search on the recovery page: the account's
+                    // report, as it stands now. A report that changed is to
+                    // be read again, so it folds back to its summary.
+                    Page::Recovery(r) => {
+                        r.read.remove(&account);
+                        if let Some((n, entry)) = r
+                            .reports
+                            .iter_mut()
+                            .flatten()
+                            .enumerate()
+                            .find(|(_, a)| a.account == account)
+                        {
+                            *entry = AccountReport {
+                                account,
+                                state,
+                                spendable,
+                                text,
+                            };
+                            p.open.insert(
+                                ReportKey::Review(u16::try_from(n).unwrap_or(u16::MAX)),
+                                Level::Summary,
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            (Purpose::Review, Reply::Reviewed(reports)) => {
+                // The worker applied what it found; the view follows.
+                if let Some(w) = &mut self.model.wallet {
+                    for found in &reports {
+                        if let Some(row) = w.accounts.iter_mut().find(|a| a.id == found.account) {
+                            row.state = found.state.clone();
+                            row.spendable = found.spendable;
+                        }
+                    }
+                }
+                if let Some(p) = self.wallet_page()
+                    && let Page::Recovery(r) = &mut p.page
                 {
-                    a.report = Some((Done::Checked, text));
+                    // Each opens to its summary; the advance waits until
+                    // every full report has been opened again (D19, D29).
+                    for n in 0..reports.len() {
+                        p.open.insert(
+                            ReportKey::Review(u16::try_from(n).unwrap_or(u16::MAX)),
+                            Level::Summary,
+                        );
+                    }
+                    r.read.clear();
+                    r.reports = Some(reports);
+                }
+            }
+            (
+                Purpose::Reconcile,
+                Reply::Reconciled {
+                    ok, text, opened, ..
+                },
+            ) => {
+                let reopened = match opened {
+                    Ok(view) => {
+                        self.model.wallet = Some(view);
+                        true
+                    }
+                    // The store could not be read back and is closed; the
+                    // lock that follows says so.
+                    Err(r) => {
+                        self.page_error(Some(r.text));
+                        false
+                    }
+                };
+                if let Some(p) = self.wallet_page()
+                    && let Page::Recovery(r) = &mut p.page
+                {
+                    r.result = Some((ok, text));
+                    r.index.clear();
+                    r.confirmed = false;
+                    p.open.insert(ReportKey::Advanced, Level::Summary);
+                }
+                // The reports above are from before it: read them again.
+                if reopened {
+                    self.send(Command::Review, Purpose::Review);
                 }
             }
             (Purpose::SubmitArtifact, Reply::Submitted { accepted, text }) => {

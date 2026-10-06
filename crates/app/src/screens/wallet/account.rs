@@ -51,7 +51,7 @@ pub fn view<'a>(
                 )
             ),
             figure("Next key", format!("#{}", account.index)),
-            figure("Kind", kind(account).to_owned()),
+            figure("Kind", kind(account)),
             row![
                 t("State", ty::BODY_SMALL, color::TEXT_SECONDARY).width(Length::Fill),
                 ui::dot(ink, 6.0),
@@ -207,29 +207,33 @@ fn panel<'a>(
             report: text,
             advance_to,
         } => {
-            let mut parts = column![report::show(
+            let parts = column![report::show(
                 page,
                 ReportKey::Diverged,
                 report::diverged(*kind, text)
             )]
             .spacing(sp::S12);
-            if advance_to.is_some() {
-                parts = parts.push(ui::helper(
-                    "Account recovery, which moves the store to the key the chain shows once you \
-                     confirm no other wallet uses this recovery phrase, is not built yet; until \
-                     it is, the command line's acknowledged path is the way.",
-                ));
-            }
+            // Account recovery is reached on purpose, from here or from
+            // Settings, and moves nothing until the person types the index
+            // and confirms (docs/DECISIONS.md D19).
+            let recover = || {
+                button(
+                    "Account recovery",
+                    theme::Button::WarningTonal,
+                    WalletMsg::Open(To::Recovery(Some(id))),
+                )
+            };
             (
                 parts.into(),
-                if *kind == DivergenceKind::NotFound {
-                    vec![button(
+                match kind {
+                    DivergenceKind::NotFound => vec![button(
                         "Receive to it again",
                         theme::Button::Secondary,
                         WalletMsg::Open(To::Receive(Some(id))),
-                    )]
-                } else {
-                    Vec::new()
+                    )],
+                    _ if advance_to.is_some() => vec![recover()],
+                    DivergenceKind::Unlocated => vec![recover()],
+                    _ => Vec::new(),
                 },
             )
         }
