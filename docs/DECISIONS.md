@@ -1283,3 +1283,77 @@ pages (E1, E2) stay PR (d)'s. The choices:
    (`Outcome::SearchFailed`), whose page says which of the two it was. The
    pin reached it at `7cdc2e9` (D7): the worker matches `SearchFailed`, and
    the library's page under each summary says which refusal it was.
+
+### D31. Phase 3 (d): the explorer
+
+**proposed; for the owner's review in the pull request that introduces
+it.** The fourth of D27 item 16's pull requests builds the explorer's
+pages, docs/SCREENS.md E1 to E4 (renderings 06, 07, 08 and 04's detail),
+on the library's reads at `7cdc2e9` (D7). The choices:
+
+1. **Every read is walked in the worker and stops between requests.**
+   None of the library's explorer calls takes a stop, and the worker that
+   answers them holds the open store, so each walk is the worker's own,
+   consulting the request's stop before every request, as the network
+   card's walk of the newest blocks does (D30): the chain (the tip, eleven
+   blocks and the block a hundred below the tip), the queue (its ids and
+   five transactions), a block (the block, the block below it and the
+   tip), a tag (the ledger's entry and a page of the index) and a hash (the
+   index, then the node). A walk cut short answers as cancelled and shows
+   nothing as a whole read. A block of the newest blocks' walk not served
+   refuses the whole, as the library's walk does; a figure only one extra
+   request gives (the average, a block's solve time, its confirmations) is
+   left out when that request is refused.
+2. **The figures the node does not send are worked out, and the page says
+   how.** A block's solve time is its time less the time of the block
+   below it, whose hash it names. The average solve is the tip's time less
+   the time of the block a hundred below it, over a hundred, so pseudo-
+   blocks count as blocks. The next neogenesis is the next block number
+   whose low byte is zero, the library's own test for one
+   (`MeshBlock::kind`). Confirmations are the tip less the block, plus
+   one. A block's fees are every fee operation in it, summed, and what it
+   moved every destination of its transactions other than the reward, as
+   the command line's block page sums them; its transactions are counted
+   besides the reward. A block's least fee is the node's figure, not its
+   fees.
+3. **The search field reads as the command line reads the same
+   arguments** (`cli::args`, private there and repeated in
+   `explorer::Query`). A number is a block, and block 0 is refused, since
+   the node serves 0 as its newest block. Sixty-four hex digits, with or
+   without `0x`, are a hash: the node's index is searched for a
+   transaction with that id first, then the node is asked for a block with
+   that hash, since a block is served by its hash only from the
+   deployment's archive and nothing in the digits says which they are. A
+   tag in hex needs its `0x`, since the second half of a ledger address
+   printed as eighty hex digits is forty hex digits too; an address goes
+   through its checksum; the all-zero tag is refused, as its checksum
+   cannot catch it. A hash that names nothing stays on E1 with what the
+   index and the node each answered, the index's "holds no transaction
+   with this id" said as not the same as there being none.
+4. **The haiku is the node's.** The middleware sends a block's haiku, and
+   the library shows it for a normal block only; it does not decode it from
+   the nonce itself. E2 shows it as the node sent it, made safe to show,
+   for a normal block only, and says so.
+5. **A tag is read from the ledger and the index, and the node's code 4 is
+   never read as an account that does not exist.** The middleware answers
+   *Account not found* for a tag the ledger holds no entry for, for one
+   held at zero, and for a lookup that failed (the library's `recon`, fact
+   3), so E3 says the node did not resolve it, and what that can mean.
+   "Current key on ledger" is shown only for an account in this store, as
+   W11 says it: a ledger address does not reveal its key's index. The
+   ledger address is shown as the tag and its key's half, said not to be
+   somewhere to send funds; "Send to this account" opens W4 with the
+   address (Base58, with its checksum) as the destination, and "Copy"
+   copies the address.
+6. **The explorer is read when asked, not on a timer.** Rendering 06's
+   "Live · updated 3s ago" would mean asking the node in the background
+   for as long as the page is open. The chain and the queue are read when
+   E1 opens and on "Read again", and the chip says how long ago they were
+   read.
+7. **What is not built.** "All blocks" and "View all pending" (a listing of
+   the whole chain or queue), and 06's line on when a pseudo-block is made,
+   which names a time the library does not.
+8. **The pages link to each other.** A block's number, an account, the
+   previous block and a transaction open their pages; a ledger address is
+   not an account and opens nothing. "Yours" on E2 and "Your account" on E3
+   say only that the account is one of the open store's.

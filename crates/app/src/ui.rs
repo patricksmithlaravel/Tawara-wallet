@@ -65,6 +65,7 @@ pub mod ty {
     pub const MONO_WORD: Type = Type::new(fonts::MONO_MEDIUM, 15.0);
     pub const TABLE_AMOUNT: Type = Type::new(fonts::DISPLAY_SEMIBOLD, 13.0);
     pub const STAT_VALUE: Type = Type::new(fonts::DISPLAY_BOLD, 20.0);
+    pub const HAIKU: Type = Type::new(fonts::DISPLAY_MEDIUM_ITALIC, 26.0);
     pub const BALANCE: Type = Type::new(fonts::DISPLAY_BOLD, 56.0);
     pub const BALANCE_DECIMALS: Type = Type::new(fonts::DISPLAY_BOLD, 26.0);
     pub const BALANCE_UNIT: Type = Type::new(fonts::DISPLAY_BOLD, 18.0);
@@ -178,7 +179,7 @@ impl Size {
 /// A button of `variant` and `size`, labelled `text`, with an optional
 /// leading icon. `on_press` of `None` draws it disabled.
 pub fn button_with<'a, M: Clone + 'a>(
-    content: &'a str,
+    content: impl text::IntoFragment<'a>,
     variant: theme::Button,
     size: Size,
     lead: Option<Icon>,

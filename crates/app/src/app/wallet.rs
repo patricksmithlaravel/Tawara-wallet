@@ -1,5 +1,6 @@
-//! The wallet's pages (docs/SCREENS.md W1 to W9): what each holds, the
-//! messages that change it, and what the worker's answers do to it.
+//! The wallet's pages (docs/SCREENS.md W1 to W12, and the explorer's, E1 to
+//! E4): what each holds, the messages that change it, and what the worker's
+//! answers do to it.
 //!
 //! Nothing here is secret. Destinations, amounts, the library's pages and a
 //! signed spend's bytes are what the node is sent or what the store shows;
@@ -9,6 +10,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use iced::Task;
+use tawara_wallet_core::explorer::{
+    BlockAt, BlockDetail, ExplorerRefusal, Found, Query, TagView, TransactionView,
+};
 use tawara_wallet_core::preferences::{AmountUnit, IDLE_LOCK_MINUTES};
 use tawara_wallet_core::spend::{Amount, DestinationInput, SpendRequest};
 use tawara_wallet_core::view::{AccountId, AccountState, DivergenceKind, WalletView};
@@ -45,6 +49,76 @@ pub enum Page {
     Settings(SettingsPage),
     /// W12.
     Recovery(RecoveryPage),
+    /// E1.
+    Explorer(ExplorerPage),
+    /// E2.
+    Block(BlockPage),
+    /// E3.
+    Tag(TagPage),
+    /// E4.
+    Transaction(TransactionPage),
+}
+
+/// E1: the chain, the node's queue, and the search field.
+#[derive(Clone, Debug, Default)]
+pub struct ExplorerPage {
+    /// What is typed in the search field.
+    pub search: String,
+    /// Why what was typed is none of the things the explorer finds.
+    pub invalid: Option<String>,
+    /// A hash is being looked for.
+    pub finding: bool,
+    /// What the last hash looked for named, when it was nothing.
+    pub missed: Option<Box<Missed>>,
+}
+
+/// A hash that named nothing: the index's answer for a transaction with
+/// that id, and the node's for a block with that hash.
+#[derive(Clone, Debug)]
+pub struct Missed {
+    /// The index answered, and holds no such transaction.
+    pub searched: bool,
+    pub transaction: ExplorerRefusal,
+    pub block: ExplorerRefusal,
+}
+
+/// How many of a block's transactions its page lists at a time.
+pub const BLOCK_ROWS: usize = 10;
+
+/// E2: one block.
+#[derive(Clone, Debug)]
+pub struct BlockPage {
+    pub at: BlockAt,
+    /// The node's answer, once it has come.
+    pub read: Option<Result<Box<BlockDetail>, ExplorerRefusal>>,
+    /// The first of its transactions the page lists, [`BLOCK_ROWS`] at a
+    /// time.
+    pub rows_from: usize,
+}
+
+/// E3: one account, by its tag.
+#[derive(Clone, Debug)]
+pub struct TagPage {
+    pub account: AccountId,
+    /// The node's answer, once it has come.
+    pub read: Option<Box<TagView>>,
+    /// An older page of its history is on its way.
+    pub reading_older: bool,
+}
+
+/// E4: one transaction, whole.
+#[derive(Clone, Debug)]
+pub struct TransactionPage {
+    pub transaction: TransactionView,
+    /// As the node's index lists it (its source at its gross amount, the
+    /// change a destination of its own), rather than as a block or the
+    /// queue lists it (its source at what left it net of the change, which
+    /// is not listed).
+    pub from_index: bool,
+    /// The library's page for it, when it was looked up in the index; a
+    /// transaction opened from its block's page or a tag's history is on
+    /// that page's.
+    pub text: Option<String>,
 }
 
 /// W10: every account's transactions from the node's index.
@@ -270,6 +344,10 @@ pub enum ReportKey {
     Review(u16),
     /// What the last advance did (W12).
     Advanced,
+    /// The library's page for what an explorer page shows (E1 to E4).
+    Read,
+    /// The node's answer for a block, when a hash named nothing (E1).
+    Missed,
 }
 
 /// How far a report is open.
@@ -315,6 +393,12 @@ pub enum To {
     Settings,
     /// W12, with this account to act on.
     Recovery(Option<AccountId>),
+    /// E1.
+    Explorer,
+    /// E2.
+    Block(BlockAt),
+    /// E3.
+    Tag(AccountId),
 }
 
 /// What the wallet's pages react to.
@@ -385,6 +469,24 @@ pub enum WalletMsg {
     Confirm(bool),
     Advance,
     SearchFurther,
+    /// E1: what is typed in the search field.
+    ExplorerTyped(String),
+    /// E1: find what is typed.
+    ExplorerFind,
+    /// E1: read the chain and the queue again.
+    ReadChain,
+    /// E2: list the block's transactions from this one on.
+    BlockRows(usize),
+    /// E4: the block page's `n`-th transaction, whole.
+    OpenSpend(usize),
+    /// E4: the tag page's `n`-th row, whole.
+    OpenTagRow(usize),
+    /// E4: the `n`-th of the queue's transactions read whole.
+    OpenPending(usize),
+    /// E3: read the next older page of the tag's transactions.
+    ReadOlderTag,
+    /// W4 from E3: the send form, with this account as its destination.
+    SendTo(AccountId),
 }
 
 impl From<WalletMsg> for Message {
@@ -401,6 +503,7 @@ impl Page {
             Page::Send(_) | Page::Resign(_) | Page::Submit(_) => 1,
             Page::Receive(_) => 2,
             Page::Activity(_) => 3,
+            Page::Explorer(_) | Page::Block(_) | Page::Tag(_) | Page::Transaction(_) => 4,
             Page::Settings(_) | Page::Recovery(_) => 5,
             Page::Dashboard | Page::AddAccount(_) | Page::Account(_) => 0,
         }
@@ -727,6 +830,17 @@ impl App {
                 target,
                 ..RecoveryPage::default()
             }),
+            To::Explorer => Page::Explorer(ExplorerPage::default()),
+            To::Block(at) => Page::Block(BlockPage {
+                at,
+                read: None,
+                rows_from: 0,
+            }),
+            To::Tag(account) => Page::Tag(TagPage {
+                account,
+                read: None,
+                reading_older: false,
+            }),
         };
         self.model.screen = Screen::Wallet(WalletPage {
             page,
@@ -743,8 +857,25 @@ impl App {
             To::Recovery(_) => {
                 self.send(Command::Review, Purpose::Review);
             }
+            To::Explorer => self.read_chain(),
+            To::Block(at) => {
+                self.send(Command::Block(at), Purpose::Block(at));
+            }
+            To::Tag(account) => {
+                self.send(Command::Tag(account), Purpose::Tag(account));
+            }
             _ => {}
         }
+    }
+
+    /// Show `page`, read already: a transaction from the page that held it,
+    /// or what a hash named.
+    fn show(&mut self, page: Page) {
+        self.leave_page();
+        self.model.screen = Screen::Wallet(WalletPage {
+            page,
+            ..WalletPage::default()
+        });
     }
 
     /// The recovery page shown.
@@ -1098,6 +1229,147 @@ impl App {
                 }
             }
             WalletMsg::ReadActivity => self.read_activity(),
+            WalletMsg::ExplorerTyped(text) => {
+                if let Some(WalletPage {
+                    page: Page::Explorer(e),
+                    ..
+                }) = self.wallet_page()
+                {
+                    e.search = text;
+                    e.invalid = None;
+                }
+            }
+            WalletMsg::ExplorerFind => {
+                let Some(WalletPage {
+                    page: Page::Explorer(e),
+                    ..
+                }) = self.wallet_page()
+                else {
+                    return Task::none();
+                };
+                if e.finding {
+                    return Task::none();
+                }
+                match Query::parse(&e.search) {
+                    Err(why) => e.invalid = Some(why),
+                    Ok(Query::Block(n)) => self.open(To::Block(BlockAt::Number(n))),
+                    Ok(Query::Tag(account)) => self.open(To::Tag(account)),
+                    Ok(Query::Hash(hash)) => {
+                        e.missed = None;
+                        if self.send(Command::Find(hash), Purpose::Find).is_some()
+                            && let Some(WalletPage {
+                                page: Page::Explorer(e),
+                                ..
+                            }) = self.wallet_page()
+                        {
+                            e.finding = true;
+                        }
+                    }
+                }
+            }
+            WalletMsg::ReadChain => self.read_chain(),
+            WalletMsg::BlockRows(from) => {
+                if let Some(WalletPage {
+                    page: Page::Block(b),
+                    ..
+                }) = self.wallet_page()
+                {
+                    b.rows_from = from;
+                }
+            }
+            WalletMsg::OpenSpend(n) => {
+                let spend = match self.wallet_page().map(|p| &p.page) {
+                    Some(Page::Block(BlockPage {
+                        read: Some(Ok(block)),
+                        ..
+                    })) => block.spends.get(n).cloned(),
+                    _ => None,
+                };
+                if let Some(transaction) = spend {
+                    self.show(Page::Transaction(TransactionPage {
+                        transaction,
+                        from_index: false,
+                        text: None,
+                    }));
+                }
+            }
+            WalletMsg::OpenPending(n) => {
+                let row = match &self.model.pending.last {
+                    Some(Ok(p)) => p.rows.get(n).and_then(|r| r.transaction.clone()),
+                    _ => None,
+                };
+                if let Some(transaction) = row {
+                    self.show(Page::Transaction(TransactionPage {
+                        transaction,
+                        from_index: false,
+                        text: None,
+                    }));
+                }
+            }
+            WalletMsg::OpenTagRow(n) => {
+                let row = match self.wallet_page().map(|p| &p.page) {
+                    Some(Page::Tag(TagPage {
+                        read: Some(view), ..
+                    })) => view
+                        .history
+                        .as_ref()
+                        .ok()
+                        .and_then(|h| h.transactions.get(n).cloned()),
+                    _ => None,
+                };
+                if let Some(transaction) = row {
+                    self.show(Page::Transaction(TransactionPage {
+                        transaction,
+                        from_index: true,
+                        text: None,
+                    }));
+                }
+            }
+            WalletMsg::ReadOlderTag => {
+                let older = match self.wallet_page().map(|p| &p.page) {
+                    Some(Page::Tag(TagPage {
+                        account,
+                        read: Some(view),
+                        reading_older: false,
+                    })) => view
+                        .history
+                        .as_ref()
+                        .ok()
+                        .filter(|h| h.more())
+                        .map(|h| (*account, h.next)),
+                    _ => None,
+                };
+                if let Some((account, from)) = older
+                    && self
+                        .send(
+                            Command::TagHistory { account, from },
+                            Purpose::TagHistory(account),
+                        )
+                        .is_some()
+                    && let Some(WalletPage {
+                        page: Page::Tag(t), ..
+                    }) = self.wallet_page()
+                {
+                    t.reading_older = true;
+                }
+            }
+            WalletMsg::SendTo(account) => {
+                if busy || self.model.wallet.is_none() {
+                    return Task::none();
+                }
+                self.open(To::Send(None));
+                if let Some(WalletPage {
+                    page: Page::Send(s),
+                    ..
+                }) = self.wallet_page()
+                    && let Some(to) = account.destination()
+                {
+                    s.form.rows = vec![DestinationRow {
+                        to,
+                        ..DestinationRow::default()
+                    }];
+                }
+            }
             WalletMsg::ReadOlderActivity => self.read_older_activity(),
             WalletMsg::Unit(unit) => {
                 self.model.prefs.unit = unit;
@@ -1241,6 +1513,116 @@ impl App {
     /// the page.
     pub(super) fn on_wallet_reply(&mut self, purpose: Purpose, reply: Reply) {
         match (purpose, reply) {
+            // An explorer page's answer goes to it while it shows what was
+            // asked for; another page has nothing to do with it.
+            (Purpose::Block(at), Reply::Block(read)) => {
+                if let Some(WalletPage {
+                    page: Page::Block(b),
+                    ..
+                }) = self.wallet_page()
+                    && b.at == at
+                {
+                    b.read = Some(read);
+                }
+            }
+            (Purpose::Tag(account), Reply::Tag(view)) => {
+                if let Some(WalletPage {
+                    page: Page::Tag(t), ..
+                }) = self.wallet_page()
+                    && t.account == account
+                {
+                    t.read = Some(view);
+                }
+            }
+            // A page is added below the rows already read; a refusal leaves
+            // them as they were, as Activity's does.
+            (Purpose::TagHistory(account), reply) => {
+                if let Some(WalletPage {
+                    page: Page::Tag(t), ..
+                }) = self.wallet_page()
+                    && t.account == account
+                {
+                    t.reading_older = false;
+                    if let Reply::TagHistory(Ok(older)) = reply
+                        && let Some(view) = &mut t.read
+                        && let Ok(history) = &mut view.history
+                    {
+                        history.extend(older);
+                    }
+                }
+            }
+            (Purpose::Find, Reply::Found(found)) => {
+                let Some(WalletPage {
+                    page: Page::Explorer(e),
+                    ..
+                }) = self.wallet_page()
+                else {
+                    return;
+                };
+                if !e.finding {
+                    return;
+                }
+                e.finding = false;
+                match *found {
+                    Found::Transaction { transaction, text } => {
+                        self.show(Page::Transaction(TransactionPage {
+                            transaction,
+                            from_index: true,
+                            text: Some(text),
+                        }));
+                    }
+                    Found::Block(block) => self.show(Page::Block(BlockPage {
+                        at: BlockAt::Number(block.summary.index),
+                        read: Some(Ok(block)),
+                        rows_from: 0,
+                    })),
+                    Found::Neither {
+                        searched,
+                        transaction,
+                        block,
+                    } => {
+                        e.missed = Some(Box::new(Missed {
+                            searched,
+                            transaction,
+                            block,
+                        }));
+                    }
+                }
+            }
+            (Purpose::Find, Reply::Refused(r)) => {
+                if let Some(WalletPage {
+                    page: Page::Explorer(e),
+                    error,
+                    ..
+                }) = self.wallet_page()
+                    && e.finding
+                {
+                    e.finding = false;
+                    *error = Some(r.text);
+                }
+            }
+            (Purpose::Block(at), Reply::Refused(r)) => {
+                if let Some(WalletPage {
+                    page: Page::Block(b),
+                    error,
+                    ..
+                }) = self.wallet_page()
+                    && b.at == at
+                {
+                    *error = Some(r.text);
+                }
+            }
+            (Purpose::Tag(account), Reply::Refused(r)) => {
+                if let Some(WalletPage {
+                    page: Page::Tag(t),
+                    error,
+                    ..
+                }) = self.wallet_page()
+                    && t.account == account
+                {
+                    *error = Some(r.text);
+                }
+            }
             (Purpose::Receive, Reply::Receive(view)) => {
                 if let Some(WalletPage {
                     page: Page::Receive(r),

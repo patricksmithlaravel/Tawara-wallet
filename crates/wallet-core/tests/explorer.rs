@@ -336,8 +336,13 @@ fn a_hash_finds_a_transaction_then_a_block() {
     }
     match h.call(Command::Find(id(0xee))) {
         Reply::Found(found) => match *found {
-            Found::Neither { transaction, block } => {
-                assert_eq!(transaction.index, None, "the index answered: none");
+            Found::Neither {
+                searched,
+                transaction,
+                block,
+            } => {
+                assert!(searched, "the index answered: none");
+                assert_eq!(transaction.index, None);
                 assert!(!transaction.text.is_empty());
                 assert!(!block.text.is_empty());
             }
@@ -354,7 +359,12 @@ fn a_hash_finds_a_transaction_then_a_block() {
     }
     match h.call(Command::Find(id(0xee))) {
         Reply::Found(found) => match *found {
-            Found::Neither { transaction, .. } => {
+            Found::Neither {
+                searched,
+                transaction,
+                ..
+            } => {
+                assert!(!searched, "the index was not read");
                 assert_eq!(transaction.index, Some(IndexState::Absent));
             }
             other => panic!("expected neither, got {other:?}"),

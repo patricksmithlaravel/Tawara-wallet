@@ -820,17 +820,27 @@ pub fn chain() -> ChainView {
 /// read whole.
 #[must_use]
 pub fn pending() -> PendingView {
-    let payees = |n: usize, each: i128| -> Vec<([u8; 20], i128, &'static str)> {
+    // Each payee an even share in thousandths of an MCM, the last what makes
+    // the total.
+    let payees = |n: i128, total: i128| -> Vec<([u8; 20], i128, &'static str)> {
+        let each = total / n / 1_000_000 * 1_000_000;
         (0..n)
-            .map(|i| (tag(120 + u8::try_from(i).unwrap_or(0)), each, ""))
+            .map(|i| {
+                let amount = if i + 1 == n {
+                    total - each * (n - 1)
+                } else {
+                    each
+                };
+                (tag(120 + u8::try_from(i).unwrap_or(0)), amount, "")
+            })
             .collect()
     };
     let rows: Vec<MempoolRow> = [
-        (txid(1), tag(60), payees(3, 32_133_333_333)),
+        (txid(1), tag(60), payees(3, 96_400_000_000)),
         (txid(2), tag(61), payees(1, 12 * MCM)),
-        (txid(3), tag(62), payees(18, 100_236_111_111)),
+        (txid(3), tag(62), payees(18, 1_804_250_000_000)),
         (txid(4), tag(63), payees(1, MCM / 2)),
-        (txid(5), tag(64), payees(2, 155 * MCM)),
+        (txid(5), tag(64), payees(2, 310 * MCM)),
     ]
     .into_iter()
     .map(|(id, from, to)| MempoolRow {
@@ -937,6 +947,31 @@ pub fn transaction() -> (TransactionView, String) {
         },
     );
     (view, text)
+}
+
+/// The sample node's answers for a hash that names nothing: its index holds
+/// no transaction with that id, and it serves no block with that hash.
+#[must_use]
+pub fn not_found(hash: [u8; 32]) -> (ExplorerRefusal, ExplorerRefusal) {
+    (
+        ExplorerRefusal {
+            index: None,
+            text: text::page(&[], Outcome::TransactionNotFound { hash }),
+        },
+        ExplorerRefusal {
+            index: None,
+            text: text::page(
+                &[],
+                Outcome::BlockNotServed {
+                    by_hash: true,
+                    cause: mochimo_crypto::Error::Mesh {
+                        code: 2,
+                        retriable: false,
+                    },
+                },
+            ),
+        },
+    )
 }
 
 /// Every account of the sample store reconciled now, as account recovery

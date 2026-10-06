@@ -2689,6 +2689,7 @@ impl<C: Connect> Worker<C> {
                 return None;
             }
             let outcome = cli::cmd_transaction(client, &hash);
+            let searched = matches!(outcome, Outcome::TransactionNotFound { .. });
             let index = match &outcome {
                 Outcome::LookedUpTransaction { page } => match page.transactions.first() {
                     Some(t) => {
@@ -2708,7 +2709,11 @@ impl<C: Connect> Worker<C> {
             };
             Some(match read_block(client, BlockAt::Hash(hash), &asked)? {
                 Ok(block) => Found::Block(Box::new(block)),
-                Err(block) => Found::Neither { transaction, block },
+                Err(block) => Found::Neither {
+                    searched,
+                    transaction,
+                    block,
+                },
             })
         });
         match read {

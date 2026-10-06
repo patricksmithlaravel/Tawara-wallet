@@ -600,6 +600,10 @@ pub enum Found {
     /// Neither: the index's answer for a transaction, and the node's for a
     /// block, each in the library's words.
     Neither {
+        /// The index answered, and holds no transaction with that id: which
+        /// is not the same as there being none (the library's
+        /// `Outcome::TransactionNotFound`). `false` when it was not read.
+        searched: bool,
         transaction: ExplorerRefusal,
         block: ExplorerRefusal,
     },

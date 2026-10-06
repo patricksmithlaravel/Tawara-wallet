@@ -16,7 +16,7 @@ use tawara_wallet_core::view::{AccountRow, AccountState, DivergenceKind, NoticeK
 use tawara_wallet_core::{AccountReport, Discovered, PlanView, SentView};
 
 use super::name;
-use crate::app::{Done, Level, Message, ReportKey, WalletMsg, WalletPage};
+use crate::app::{Done, Level, Message, Missed, ReportKey, WalletMsg, WalletPage};
 use crate::icon::{self, Icon};
 use crate::theme::{self, color, space as sp};
 use crate::ui::{self, t, ty};
@@ -588,9 +588,9 @@ pub fn history(h: &AccountHistory) -> Report<'_> {
     r.full(&h.text)
 }
 
-const NO_INDEX: &str = "Activity reads the node's transaction index, which a node runs only \
-                        when its operator sets one up. Nothing is wrong with the store or its \
-                        accounts.";
+const NO_INDEX: &str = "Transactions are read from the node's transaction index, which a node \
+                        runs only when its operator sets one up. Nothing is wrong with the store \
+                        or its accounts.";
 const OTHER_NODE: &str = "Another node may run one: Change node, in the sidebar or in Settings.";
 const INDEX_DOWN: &str = "The node answered, and runs a transaction index, but the index did not: \
                           its database is not connected yet, or not at all, or the search failed. \
@@ -625,6 +625,61 @@ pub fn explorer<'a>(refusal: &'a ExplorerRefusal, what: &str) -> Report<'a> {
             .causes(&[NODE_DOWN, OFFLINE, NODE_ADDRESS]),
     };
     r.full(&refusal.text)
+}
+
+/// What an explorer page read (E1 to E4), said in a line or two, and the
+/// library's page for it.
+pub fn read<'a>(title: impl Into<String>, says: &[&str], text: &'a str) -> Report<'a> {
+    let mut r = Report::new(Tone::Note, title);
+    for line in says {
+        r = r.says(*line);
+    }
+    r.full(text)
+}
+
+const ABOVE_TIP: &str = "The block is above the node's tip: the chain has not reached it yet.";
+const ARCHIVE: &str = "A node serves a block by its hash only from its archive of blocks, which \
+                       may not hold it. By its number, it serves any block up to its tip.";
+
+/// A block the node did not serve (E2), asked for by its hash or by its
+/// number.
+pub fn block_refused(refusal: &ExplorerRefusal, by_hash: bool) -> Report<'_> {
+    Report::new(Tone::Warning, "The node did not serve this block")
+        .says("Nothing was read, and nothing was written.")
+        .causes(&[if by_hash { ARCHIVE } else { ABOVE_TIP }])
+        .causes(&[NODE_DOWN, OFFLINE, NODE_ADDRESS])
+        .full(&refusal.text)
+}
+
+/// What the node's index said of a hash that named nothing (E1).
+pub fn missed_transaction(m: &Missed) -> Report<'_> {
+    if !m.searched {
+        return explorer(&m.transaction, "its transaction index");
+    }
+    let mut r = Report::new(
+        Tone::Note,
+        "The node's index holds no transaction with this id",
+    )
+    .says(
+        "The index answered, and holds no transaction with this id. That is not the same as \
+         there being none: an index holds what its node has read.",
+    )
+    .causes(&[
+        "The id is mistyped. An id has 64 hex digits.",
+        "The transaction is still waiting in a node's queue, or was never accepted.",
+        OTHER_INDEX,
+    ]);
+    r.causes_title = "What it can mean";
+    r.full(&m.transaction.text)
+}
+
+/// What the node said of a block with a hash that named nothing (E1).
+pub fn missed_block(m: &Missed) -> Report<'_> {
+    let mut r = Report::new(Tone::Note, "The node serves no block with this hash")
+        .says(ARCHIVE)
+        .causes(&[NODE_DOWN, OFFLINE]);
+    r.causes_title = "Or";
+    r.full(&m.block.text)
 }
 
 /// One account's report on the recovery page (W12): what the chain shows

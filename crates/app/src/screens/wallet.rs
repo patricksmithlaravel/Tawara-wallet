@@ -8,6 +8,7 @@ mod account;
 mod activity;
 mod add_account;
 mod dashboard;
+mod explorer;
 mod receive;
 mod recovery;
 mod report;
@@ -28,13 +29,13 @@ use crate::theme::{self, color, space as sp};
 use crate::ui::{self, Size, t, ty};
 
 /// The sidebar's items (5.3), in the renderings' order, and where each
-/// leads; the explorer comes with the next pull request.
+/// leads.
 const NAV: [(Icon, &str, Option<To>); 6] = [
     (Icon::Wallet, "Wallet", Some(To::Dashboard)),
     (Icon::Send, "Send", Some(To::Send(None))),
     (Icon::Receive, "Receive", Some(To::Receive(None))),
     (Icon::Activity, "Activity", Some(To::Activity)),
-    (Icon::Cube, "Explorer", None),
+    (Icon::Cube, "Explorer", Some(To::Explorer)),
     (Icon::Sliders, "Settings", Some(To::Settings)),
 ];
 
@@ -51,6 +52,10 @@ pub fn view<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> 
         Page::Activity(a) => activity::view(model, page, a),
         Page::Settings(s) => settings::view(model, page, s),
         Page::Recovery(r) => recovery::view(model, page, r),
+        Page::Explorer(e) => explorer::overview(model, page, e),
+        Page::Block(b) => explorer::block(model, page, b),
+        Page::Tag(t) => explorer::tag(model, page, t),
+        Page::Transaction(t) => explorer::transaction(model, page, t),
     };
     row![
         sidebar(model, page),
