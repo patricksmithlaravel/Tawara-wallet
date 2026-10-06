@@ -15,15 +15,13 @@ Tawara is not an official product of the Mochimo cryptocurrency.
 
 ## Status
 
-**Phase 2: `wallet-core`.** There is no interface yet. Phase 0 (the
-repository, its rules and CI) and phase 1 (the feasibility spikes, in
-`spikes/`, with the owner's decision to go ahead with iced on mobile) are
-done. `crates/wallet-core` holds the worker that owns the store and the
-wallet, its commands and events, locking, secret input, entropy and the
-store's location, tested end to end against a scripted node. The plan, its
-phases and what each is done when are in [docs/PLAN.md](docs/PLAN.md); the
-decisions made along the way, and the questions open for the owner, are in
-[docs/DECISIONS.md](docs/DECISIONS.md).
+**Phase 4: the mobile shells.** The desktop application is complete for
+Windows, macOS and Linux: every screen in [docs/SCREENS.md](docs/SCREENS.md)
+is built, and CI builds and tests it on all three. It is not yet packaged:
+installers and signed packages are phase 5. Phase 4 runs the same
+application on Android and iOS. The plan, its phases and what each is done
+when are in [docs/PLAN.md](docs/PLAN.md); the decisions made along the way
+are in [docs/DECISIONS.md](docs/DECISIONS.md).
 
 ## Layout
 
@@ -34,8 +32,8 @@ crates/
   desktop/       the Windows, macOS and Linux entry point
   mobile/        the Android and iOS entry points
 platform/
-  android/       manifest, backup rules and shims (phase 4)
-  ios/           Xcode project and Info.plist (phase 4)
+  android/       manifest, backup rules, build and check script
+  ios/           Info.plist, build and check script
 design/
   renderings/    the owner's reference renderings
   INDEX.md       what each rendering shows, and its size
@@ -45,12 +43,62 @@ docs/
   LIBRARY-PROPOSALS.md  changes to the library proposed for Rep-0
 ```
 
-## Building
+## Compiling the desktop application
 
-The compiler is pinned in `rust-toolchain.toml`; `rustup` installs it on
-first use. TLS uses `ring`, which compiles C, so a C compiler is needed
-(the platform's usual one: MSVC on Windows, Xcode's on macOS, `cc` on
-Linux).
+There is no installer yet (phase 5), so the desktop application is built
+from source. The same steps work on Windows, macOS and Linux.
+
+1. **Install Rust** with [rustup](https://rustup.rs). You do not need to
+   pick a version: the compiler this repository uses is pinned in
+   `rust-toolchain.toml`, and `rustup` installs it the first time you run
+   `cargo` here.
+2. **Install a C compiler.** TLS uses `ring`, which compiles C:
+   - Windows: the Visual Studio Build Tools, with the "Desktop development
+     with C++" workload (MSVC);
+   - macOS: Xcode's command-line tools, `xcode-select --install`;
+   - Linux: the system's compiler, for example `sudo apt install
+     build-essential` on Debian or Ubuntu.
+3. **Get the source:**
+
+   ```
+   git clone https://github.com/patricksmithlaravel/Tawara-wallet.git
+   cd Tawara-wallet
+   ```
+
+4. **Build it:**
+
+   ```
+   cargo build --release --locked -p tawara-desktop
+   ```
+
+   The first build downloads the dependencies, the wallet library among
+   them (from GitHub, at the commit `Cargo.toml` pins), so it needs the
+   network, and it takes several minutes. `--locked` builds exactly the
+   versions in `Cargo.lock`.
+5. **Run it:** the program is `target/release/tawara-desktop`
+   (`target\release\tawara-desktop.exe` on Windows). You can copy it
+   anywhere; it needs nothing beside it. `cargo run --release -p
+   tawara-desktop` builds and runs in one step.
+
+Build with `--release`: in a debug build, unlocking a store (Argon2id at
+64 MiB, three passes) takes many seconds.
+
+On Linux the application needs an X11 or Wayland desktop session, with
+`libxkbcommon` (present on most desktops). It draws with the GPU through
+wgpu and falls back to software rendering when there is none; to force
+software rendering, for example in a virtual machine, run it with
+`ICED_BACKEND=tiny-skia`.
+
+The store goes, by default, under `%LOCALAPPDATA%\Tawara` on Windows,
+`~/Library/Application Support/Tawara` on macOS and
+`$XDG_DATA_HOME/tawara` (or `~/.local/share/tawara`) on Linux
+(docs/DECISIONS.md D21). The application asks for a node the first time it
+starts; there is no default node.
+
+## Developing
+
+The checks CI runs (`.github/workflows/ci.yml`), on Windows, macOS and
+Linux:
 
 ```
 cargo build --workspace
@@ -58,10 +106,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo doc --workspace --no-deps
 cargo deny check            # needs cargo-deny 0.20.2 and the network
+cargo run -p tawara-app --example screenshots -- --check
 ```
 
-CI runs all of these on Windows, macOS and Linux
-(`.github/workflows/ci.yml`).
+The last one draws every screen and compares it with the images committed
+in `design/screenshots/` (run it without `--check` to draw them again). The
+Android and iOS builds and their checks are in `platform/android/` and
+`platform/ios/`, and run in `.github/workflows/mobile.yml`.
 
 ## Licence
 
