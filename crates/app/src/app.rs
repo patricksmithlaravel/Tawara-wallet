@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::host::{self, Host};
 use iced::futures::channel::mpsc;
 use iced::widget::operation;
 use iced::{Element, Event as IcedEvent, Subscription, Task, event, keyboard, mouse, touch};
@@ -324,6 +325,9 @@ pub enum Message {
     Input,
     /// Tab: the next field. Input too, as [`Message::Input`] is.
     FocusNext,
+    /// The system's Back (Android): the shell takes the application to the
+    /// background ([`Host::back`]).
+    SystemBack,
     /// Shift-Tab: the previous field. Input too.
     FocusPrevious,
     /// Go to a screen.
@@ -638,14 +642,45 @@ impl App {
     pub fn boot() -> (App, Task<Message>) {
         let env = Environment::from_process();
         let platform = Platform::current();
-        let prefs_path = preferences::default_file(platform, &env).ok();
+        App::begin(
+            preferences::default_file(platform, &env).ok(),
+            location::default_store_dir(platform, &env).ok(),
+            location::downloads_dir(platform, &env),
+        )
+    }
+
+    /// Start the application in a mobile shell: the store and the
+    /// preferences in the shell's private directory, its clipboard for
+    /// Copy, and its word when the application leaves the foreground
+    /// (docs/DECISIONS.md D32).
+    pub fn boot_in(host: &Host) -> (App, Task<Message>) {
+        host::set(host);
+        let (app, task) = App::begin(
+            Some(host.private_dir.join(preferences::FILE_NAME)),
+            Some(location::store_dir_in(&host.private_dir)),
+            None,
+        );
+        if let Some(worker) = &app.worker {
+            let handle = worker.handle.clone();
+            host::on_leaving(move || handle.background());
+        }
+        (app, task)
+    }
+
+    /// Read the preferences at `prefs_path`, start the worker, and show the
+    /// first screen, with `default_dir` the store's folder by default and
+    /// `downloads` where a signed spend is saved.
+    fn begin(
+        prefs_path: Option<PathBuf>,
+        default_dir: Option<PathBuf>,
+        downloads: Option<PathBuf>,
+    ) -> (App, Task<Message>) {
         let prefs = prefs_path
             .as_deref()
             .map(preferences::load)
             .unwrap_or_default();
-        let default_dir = location::default_store_dir(platform, &env).ok();
         let mut model = Model::new(prefs, default_dir);
-        model.downloads = location::downloads_dir(platform, &env);
+        model.downloads = downloads;
         let (mut app, events) = App::start(model, prefs_path);
         let Some(events) = events else {
             return (app, Task::none());
@@ -780,6 +815,7 @@ impl App {
                 }
             }
             Message::Input => self.touch(),
+            Message::SystemBack => host::back(),
             // iced's fields leave Tab to the application.
             Message::FocusNext => {
                 self.touch();
@@ -1508,6 +1544,11 @@ fn person_input(event: IcedEvent, status: event::Status, _: iced::window::Id) ->
         } else {
             Message::FocusNext
         }),
+        // Android delivers Back as this key (docs/spikes/P1-REPORT.md).
+        IcedEvent::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::BrowserBack),
+            ..
+        }) => Some(Message::SystemBack),
         IcedEvent::Keyboard(keyboard::Event::KeyPressed { .. })
         | IcedEvent::Mouse(mouse::Event::ButtonPressed(_) | mouse::Event::WheelScrolled { .. })
         | IcedEvent::Touch(touch::Event::FingerPressed { .. }) => Some(Message::Input),

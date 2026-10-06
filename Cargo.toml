@@ -94,6 +94,44 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 iced_runtime = "0.14.0"
 png = "0.18"
 
+# THE MOBILE SHELLS' GLUE (docs/DECISIONS.md D32), for `crates/mobile` only,
+# each on its own platform. Android: the patched shell's `set_android_app`
+# and lifecycle hook, winit's NativeActivity backend (exactly one
+# android-activity backend must be on, and iced_winit turns on none), and
+# JNI for the clipboard and Back. iOS: the versions winit 0.30.13 already
+# links, for the pasteboard, the app-switcher cover, the store's protection
+# class and its backup exclusion. No Java, Kotlin, Swift or Objective-C
+# source (D4).
+iced_winit = { version = "=0.14.1", default-features = false }
+winit = { version = "=0.30.13", default-features = false, features = ["android-native-activity"] }
+jni = "0.22.4"
+ndk-context = "0.1.1"
+objc2 = "0.5.2"
+block2 = "0.5.1"
+objc2-foundation = { version = "0.2.2", features = [
+    "NSArray",
+    "NSDictionary",
+    "NSError",
+    "NSFileManager",
+    "NSGeometry",
+    "NSNotification",
+    "NSOperation",
+    "NSPathUtilities",
+    "NSString",
+    "NSThread",
+    "NSURL",
+    "NSValue",
+    "block2",
+] }
+objc2-ui-kit = { version = "0.2.2", features = [
+    "UIApplication",
+    "UIColor",
+    "UIPasteboard",
+    "UIResponder",
+    "UIView",
+    "UIWindow",
+] }
+
 tawara-wallet-core = { path = "crates/wallet-core" }
 tawara-app = { path = "crates/app" }
 
