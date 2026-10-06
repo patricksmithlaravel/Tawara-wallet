@@ -370,11 +370,19 @@ impl BlockSummary {
         let mut out: Vec<BlockSummary> = blocks.iter().map(BlockSummary::of).collect();
         for i in 1..out.len() {
             if out[i].index.checked_add(1) == Some(out[i - 1].index) {
-                out[i - 1].solve_ms = Some(out[i - 1].time_ms - out[i].time_ms);
+                out[i - 1].solve_ms = between(out[i].time_ms, out[i - 1].time_ms);
             }
         }
         out
     }
+}
+
+/// How long from `earlier` to `later`, both a block's time as the node sent
+/// it. The node's times are any `i64` the Mesh parser accepts, so a
+/// difference that overflows, or a block older than the one below it, is
+/// no time at all rather than a panic or a negative one.
+pub(crate) fn between(earlier: i64, later: i64) -> Option<i64> {
+    later.checked_sub(earlier).filter(|ms| *ms >= 0)
 }
 
 /// How many of the newest blocks the explorer lists (docs/SCREENS.md E1).
@@ -494,7 +502,7 @@ impl BlockDetail {
         text: String,
     ) -> BlockDetail {
         let mut summary = BlockSummary::of(block);
-        summary.solve_ms = parent_ms.map(|p| block.timestamp_ms - p);
+        summary.solve_ms = parent_ms.and_then(|p| between(p, block.timestamp_ms));
         let normal = summary.kind == Some(BlockKind::Normal);
         let figures = block.metadata.as_ref().map(|m| BlockFigures {
             nonce: hex(&m.nonce),
@@ -560,8 +568,7 @@ impl BlockDetail {
     /// it.
     #[must_use]
     pub fn confirmations(&self) -> Option<u64> {
-        let tip = self.tip?;
-        (tip >= self.summary.index).then(|| tip - self.summary.index + 1)
+        self.tip?.checked_sub(self.summary.index)?.checked_add(1)
     }
 }
 
@@ -850,6 +857,32 @@ mod tests {
     use mochimo_crypto::mesh::codec;
 
     use super::*;
+
+    #[test]
+    fn a_time_or_a_tip_out_of_range_is_no_figure_rather_than_a_panic() {
+        assert_eq!(between(1_000, 61_000), Some(60_000));
+        assert_eq!(between(i64::MIN, 1), None, "overflows");
+        assert_eq!(between(i64::MIN, i64::MAX), None, "overflows");
+        assert_eq!(between(61_000, 1_000), None, "older than the block below");
+        let block = |index: u64| MeshBlock {
+            block: mochimo_crypto::mesh::ChainTip {
+                index,
+                hash: [0; 32],
+            },
+            parent: mochimo_crypto::mesh::ChainTip {
+                index: index.saturating_sub(1),
+                hash: [0; 32],
+            },
+            timestamp_ms: i64::MAX,
+            transactions: Vec::new(),
+            metadata: None,
+        };
+        let at = |index, tip| BlockDetail::of(&block(index), Some(i64::MIN), tip, String::new());
+        assert_eq!(at(5, None).summary.solve_ms, None);
+        assert_eq!(at(5, Some(7)).confirmations(), Some(3));
+        assert_eq!(at(5, Some(4)).confirmations(), None, "above the tip");
+        assert_eq!(at(0, Some(u64::MAX)).confirmations(), None, "overflows");
+    }
 
     fn op(kind: &str, address: &str, amount: i128, memo: &str) -> codec::Operation {
         codec::Operation {

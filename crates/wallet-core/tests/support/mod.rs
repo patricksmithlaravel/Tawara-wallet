@@ -143,6 +143,9 @@ struct State {
     pending: BTreeMap<[u8; 32], serde_json::Value>,
     /// The blocks `/block` does not serve, by number or by hash.
     unserved: Vec<u64>,
+    /// The times `/block` sends for blocks, in milliseconds, where not a
+    /// block a minute.
+    times: BTreeMap<u64, i64>,
 }
 
 /// The tag every reward of the scripted chain is paid to.
@@ -399,6 +402,12 @@ impl Chain {
         self.0.lock().expect("chain").unserved.push(index);
     }
 
+    /// `/block` sends `ms` as block `index`'s time: anything the Mesh
+    /// parser takes, however far from the blocks either side.
+    pub fn set_time(&self, index: u64, ms: i64) {
+        self.0.lock().expect("chain").times.insert(index, ms);
+    }
+
     pub fn set_no_index(&self, no_index: bool) {
         self.0.lock().expect("chain").no_index = no_index;
     }
@@ -554,7 +563,7 @@ impl Transport for Chain {
                 Ok(serde_json::json!({ "block": {
                     "block_identifier": { "index": index, "hash": format!("0x{index:064x}") },
                     "parent_block_identifier": { "index": index - 1, "hash": format!("0x{:064x}", index - 1) },
-                    "timestamp": index * 60_000,
+                    "timestamp": s.times.get(&index).copied().unwrap_or_else(|| i64::try_from(index * 60_000).unwrap_or(i64::MAX)),
                     "transactions": transactions,
                     "metadata": {
                         "block_size": 4_096,

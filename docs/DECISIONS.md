@@ -1287,8 +1287,7 @@ pages (E1, E2) stay PR (d)'s. The choices:
 
 ### D31. Phase 3 (d): the explorer
 
-**proposed; decided by the owner on 2026-10-06, item 5 apart, which is
-open (below).** The fourth of D27 item 16's pull requests builds the explorer's
+**proposed; decided by the owner on 2026-10-06.** The fourth of D27 item 16's pull requests builds the explorer's
 pages, docs/SCREENS.md E1 to E4 (renderings 06, 07, 08 and 04's detail),
 on the library's reads at `7cdc2e9` (D7). The choices:
 
@@ -1316,7 +1315,11 @@ on the library's reads at `7cdc2e9` (D7). The choices:
    moved every destination of its transactions other than the reward, as
    the command line's block page sums them; its transactions are counted
    besides the reward. A block's least fee is the node's figure, not its
-   fees.
+   fees. A time is any 64-bit number the Mesh parser takes, so a
+   difference that overflows, or a block older than the one below it, is
+   no solve time and no average, never a panic of the worker or a
+   negative time; a number at the end of the range has no block beyond it,
+   and no confirmations past it (PR #12's review).
 3. **The search field reads as the command line reads the same
    arguments** (`cli::args`, private there and repeated in
    `explorer::Query`). A number is a block, and block 0 is refused, since
@@ -1330,7 +1333,10 @@ on the library's reads at `7cdc2e9` (D7). The choices:
    through its checksum; the all-zero tag is refused, as its checksum
    cannot catch it. A hash that names nothing stays on E1 with what the
    index and the node each answered, the index's "holds no transaction
-   with this id" said as not the same as there being none.
+   with this id" said as not the same as there being none. E1 takes only
+   the answer for the hash it is still looking for: one for an earlier
+   search, asked before E1 was opened again, is dropped (PR #12's
+   review).
 4. **The haiku is the node's.** The middleware sends a block's haiku, and
    the library shows it for a normal block only; it does not decode it from
    the nonce itself. E2 shows it as the node sent it, made safe to show,
@@ -1338,20 +1344,25 @@ on the library's reads at `7cdc2e9` (D7). The choices:
    says that Tawara does not check it against the block's nonce (the
    owner: as the node sent it, with that note).
 5. **A tag is read from the ledger and the index, and the node's code 4 is
-   never read as an account that does not exist.** *Open: the owner asked
-   for this item to be explained further (2026-10-06); its three choices
-   (the wording for code 4, the ledger's key index only for the store's own
-   accounts, and "Send to this account" on any account) wait on the
-   answer.* The middleware answers
+   never read as an account that does not exist** (the owner, 2026-10-06,
+   after the item was explained further). The middleware answers
    *Account not found* for a tag the ledger holds no entry for, for one
    held at zero, and for a lookup that failed (the library's `recon`, fact
-   3), so E3 says the node did not resolve it, and what that can mean.
-   "Current key on ledger" is shown only for an account in this store, as
-   W11 says it: a ledger address does not reveal its key's index. The
-   ledger address is shown as the tag and its key's half, said not to be
-   somewhere to send funds; "Send to this account" opens W4 with the
-   address (Base58, with its checksum) as the destination, and "Copy"
-   copies the address.
+   3), so nothing tells them apart. E3 shows a banner, *Account not found
+   or lookup failed*, which opens into a summary of why it can be: not
+   paid yet, emptied or held at zero, or the lookup failed or the node
+   serves another network (the owner's wording). "Current key on ledger"
+   is shown only for an account in this store, as W11 says it, and its
+   tile is not drawn for anyone else's: a ledger address does not reveal
+   its key's index (the owner: hide the tile). The ledger address is
+   shown as the tag and its key's half, said not to be somewhere to send
+   funds. "Send to this account", which opens W4 with the address (Base58,
+   with its checksum) as the destination, is offered only for an account
+   whose address or tag the person typed into the search field: an
+   account reached through a link was named by the node's answers, and a
+   node could name its own account where the person expects another's
+   (the owner's choice of three). "Copy" copies the address, wherever the
+   account came from.
 6. **The explorer is read when asked, not on a timer.** Rendering 06's
    "Live · updated 3s ago" would mean asking the node in the background
    for as long as the page is open. The chain and the queue are read when

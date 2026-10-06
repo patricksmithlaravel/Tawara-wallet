@@ -318,11 +318,12 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         })),
         ..ExplorerPage::default()
     }));
-    let tag = |view: TagView| {
+    let tag = |view: TagView, typed| {
         on(Page::Tag(TagPage {
             account: view.account,
             read: Some(Box::new(view)),
             reading_older: false,
+            typed,
         }))
     };
     // The sample block's first payee: an account not the store's.
@@ -626,17 +627,26 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
                 rows_from: 0,
             })),
         ),
-        ("e3-tag", TAG, tag(sample::tag_view())),
-        // An account not the store's, which the node did not resolve, on a
-        // node that keeps no index.
+        // Typed into the search field, so it can be sent to.
+        ("e3-tag", TAG, tag(sample::tag_view(), true)),
+        // An account not the store's, reached through a link, which the
+        // node did not resolve, on a node that keeps no index: why it can
+        // be, opened.
         (
             "e3-tag-unresolved",
             TAG,
-            tag(TagView {
-                account: payee,
-                ledger: LedgerRead::Unresolved,
-                history: Err(sample::index_refusal(IndexState::Absent)),
-            }),
+            opened(
+                tag(
+                    TagView {
+                        account: payee,
+                        ledger: LedgerRead::Unresolved,
+                        history: Err(sample::index_refusal(IndexState::Absent)),
+                    },
+                    false,
+                ),
+                ReportKey::Ledger,
+                Level::Summary,
+            ),
         ),
         (
             "e4-transaction",

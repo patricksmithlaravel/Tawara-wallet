@@ -345,11 +345,15 @@ fn search(e: &ExplorerPage) -> Element<'_, Message> {
             icon::icon(Icon::Search, 18.0, 2.0, color::TEXT_MUTED),
             field,
             ui::button_with(
-                if e.finding { "Looking…" } else { "Search" },
+                if e.finding.is_some() {
+                    "Looking…"
+                } else {
+                    "Search"
+                },
                 theme::Button::Primary,
                 Size::Medium,
                 None,
-                (!e.finding).then(|| WalletMsg::ExplorerFind.into()),
+                e.finding.is_none().then(|| WalletMsg::ExplorerFind.into()),
             ),
         ]
         .spacing(sp::S12)
@@ -865,24 +869,30 @@ pub fn block<'a>(model: &'a Model, page: &'a WalletPage, b: &'a BlockPage) -> El
         Some(Ok(detail)) => {
             let index = detail.summary.index;
             actions.push(kind_pill(detail.summary.kind));
+            // The node's number for the block is any u64: the blocks either
+            // side are offered only where they can be numbered, and block 0
+            // is never asked for (the node serves its newest for it).
+            let older = index.checked_sub(1).filter(|n| *n > 0);
             actions.push(
                 ui::button_with(
-                    ui::group(&(index - 1).to_string()),
+                    ui::group(&index.saturating_sub(1).to_string()),
                     theme::Button::Secondary,
                     Size::Small,
                     Some(Icon::ChevronLeft),
-                    (index > 1).then(|| open(To::Block(BlockAt::Number(index - 1))).into()),
+                    older.map(|n| open(To::Block(BlockAt::Number(n))).into()),
                 )
                 .into(),
             );
-            let newer = detail.tip.or_else(|| tip(model)).is_none_or(|t| index < t);
+            let newer = index
+                .checked_add(1)
+                .filter(|_| detail.tip.or_else(|| tip(model)).is_none_or(|t| index < t));
             actions.push(
                 ui::button_with(
-                    ui::group(&(index + 1).to_string()),
+                    ui::group(&index.saturating_add(1).to_string()),
                     theme::Button::Secondary,
                     Size::Small,
                     Some(Icon::ChevronRight),
-                    newer.then(|| open(To::Block(BlockAt::Number(index + 1))).into()),
+                    newer.map(|n| open(To::Block(BlockAt::Number(n))).into()),
                 )
                 .into(),
             );
@@ -1269,25 +1279,29 @@ pub fn tag<'a>(model: &'a Model, page: &'a WalletPage, tp: &'a TagPage) -> Eleme
         ));
     }
     actions.push(copy(page, &base58, "Copy"));
-    actions.push(
-        ui::button_with(
-            "Send to this account",
-            theme::Button::Primary,
-            Size::Header,
-            Some(Icon::Send),
-            model
-                .busy
-                .is_none()
-                .then(|| WalletMsg::SendTo(account).into()),
-        )
-        .into(),
-    );
-    let mut body = vec![crumbs("Tags", name(account))];
+    // Only for an account the person typed: one reached through a link was
+    // named by the node (docs/DECISIONS.md D31, item 5).
+    if tp.typed {
+        actions.push(
+            ui::button_with(
+                "Send to this account",
+                theme::Button::Primary,
+                Size::Header,
+                Some(Icon::Send),
+                model
+                    .busy
+                    .is_none()
+                    .then(|| WalletMsg::SendTo(account).into()),
+            )
+            .into(),
+        );
+    }
+    let mut body = vec![crumbs("Accounts", name(account))];
     match &tp.read {
         Some(view) => body.extend(tag_body(model, page, tp, view, own)),
         None => body.push(ui::card(ui::helper("Reading the account…")).into()),
     }
-    frame(model, page, "Tag", base58, actions, body)
+    frame(model, page, "Account", base58, actions, body)
 }
 
 fn tag_body<'a>(
@@ -1303,44 +1317,42 @@ fn tag_body<'a>(
         LedgerRead::Held { balance, .. } => ui::amount(*balance, unit),
         _ => "—".to_owned(),
     };
-    let key = own
-        .and_then(settings::on_ledger)
-        .map_or_else(|| "—".to_owned(), |i| format!("#{i}"));
-    let mut body = vec![tiles(
-        model,
-        vec![
-            stat(
-                "Balance",
-                balance,
-                matches!(view.ledger, LedgerRead::Held { .. })
-                    .then(|| ui::unit_name(unit).to_owned()),
-                false,
-            ),
-            stat(
-                "Current key on ledger",
-                key,
-                own.is_none()
-                    .then(|| "known only for this store's accounts".to_owned()),
-                false,
-            ),
-            stat(
-                "Transactions",
-                history.map_or_else(|| "—".to_owned(), |h| ui::group(&h.total.to_string())),
-                history.map(|_| "in the node's index".to_owned()),
-                false,
-            ),
-            stat(
-                "Last active",
-                history
-                    .and_then(|h| h.transactions.first())
-                    .and_then(|t| t.block)
-                    .map_or_else(|| "—".to_owned(), |b| ui::group(&b.to_string())),
-                None,
-                false,
-            ),
-        ],
-        2,
+    let mut figures = vec![stat(
+        "Balance",
+        balance,
+        matches!(view.ledger, LedgerRead::Held { .. }).then(|| ui::unit_name(unit).to_owned()),
+        false,
     )];
+    // Known only for this store's accounts, so shown only for them.
+    if let Some(row) = own {
+        figures.push(stat(
+            "Current key on ledger",
+            settings::on_ledger(row).map_or_else(|| "—".to_owned(), |i| format!("#{i}")),
+            None,
+            false,
+        ));
+    }
+    figures.extend([
+        stat(
+            "Transactions",
+            history.map_or_else(|| "—".to_owned(), |h| ui::group(&h.total.to_string())),
+            history.map(|_| "in the node's index".to_owned()),
+            false,
+        ),
+        stat(
+            "Last active",
+            history
+                .and_then(|h| h.transactions.first())
+                .and_then(|t| t.block)
+                .map_or_else(|| "—".to_owned(), |b| ui::group(&b.to_string())),
+            None,
+            false,
+        ),
+    ]);
+    let mut body = vec![tiles(model, figures, 2)];
+    if view.ledger == LedgerRead::Unresolved {
+        body.push(report::show(page, ReportKey::Ledger, report::unresolved()));
+    }
     body.push(forms(view));
     match &view.history {
         Ok(h) => {
@@ -1394,9 +1406,7 @@ fn forms(view: &TagView) -> Element<'_, Message> {
             .into()
         }
         LedgerRead::Unresolved => t(
-            "The node did not resolve this tag. It answers the same for a tag the ledger holds no \
-             entry for, for one held at zero, and for a lookup that failed, so this says nothing \
-             about whether the account exists.",
+            "Not found, or the lookup failed: see above.",
             ty::BODY_SMALL,
             color::TEXT_SECONDARY,
         )
@@ -1619,8 +1629,10 @@ pub fn transaction<'a>(
             ]
             .spacing(sp::S8)
             .align_y(Alignment::Center);
-            if let Some(tip) = tip(model).filter(|tip| *tip >= b) {
-                let n = tip - b + 1;
+            if let Some(n) = tip(model)
+                .and_then(|tip| tip.checked_sub(b))
+                .and_then(|n| n.checked_add(1))
+            {
                 line = line.push(t(
                     format!(
                         "· {} {}",

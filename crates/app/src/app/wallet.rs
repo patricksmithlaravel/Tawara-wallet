@@ -76,8 +76,9 @@ pub struct ExplorerPage {
     pub search: String,
     /// Why what was typed is none of the things the explorer finds.
     pub invalid: Option<String>,
-    /// A hash is being looked for.
-    pub finding: bool,
+    /// The hash being looked for. Only its answer is taken: one for an
+    /// earlier search, asked before the explorer was opened again, is not.
+    pub finding: Option<[u8; 32]>,
     /// What the last hash looked for named, when it was nothing.
     pub missed: Option<Box<Missed>>,
 }
@@ -114,6 +115,12 @@ pub struct TagPage {
     pub read: Option<Box<TagView>>,
     /// An older page of its history is on its way.
     pub reading_older: bool,
+    /// The person typed this account's address or tag into the explorer's
+    /// search field. Only then is "Send to this account" offered: an
+    /// account reached through a link came from the node's answers, and a
+    /// node could name its own account where the person expects another's
+    /// (docs/DECISIONS.md D31, item 5).
+    pub typed: bool,
 }
 
 /// E4: one transaction, whole.
@@ -358,6 +365,8 @@ pub enum ReportKey {
     Read,
     /// The node's answer for a block, when a hash named nothing (E1).
     Missed,
+    /// An account the node did not resolve (E3).
+    Ledger,
 }
 
 /// How far a report is open.
@@ -856,6 +865,7 @@ impl App {
                 account,
                 read: None,
                 reading_older: false,
+                typed: false,
             }),
             To::Queue => Page::Queue(QueuePage::default()),
         };
@@ -1267,22 +1277,32 @@ impl App {
                 else {
                     return Task::none();
                 };
-                if e.finding {
+                if e.finding.is_some() {
                     return Task::none();
                 }
                 match Query::parse(&e.search) {
                     Err(why) => e.invalid = Some(why),
                     Ok(Query::Block(n)) => self.open(To::Block(BlockAt::Number(n))),
-                    Ok(Query::Tag(account)) => self.open(To::Tag(account)),
+                    Ok(Query::Tag(account)) => {
+                        self.open(To::Tag(account));
+                        if let Some(WalletPage {
+                            page: Page::Tag(t), ..
+                        }) = self.wallet_page()
+                        {
+                            t.typed = true;
+                        }
+                    }
                     Ok(Query::Hash(hash)) => {
                         e.missed = None;
-                        if self.send(Command::Find(hash), Purpose::Find).is_some()
+                        if self
+                            .send(Command::Find(hash), Purpose::Find(hash))
+                            .is_some()
                             && let Some(WalletPage {
                                 page: Page::Explorer(e),
                                 ..
                             }) = self.wallet_page()
                         {
-                            e.finding = true;
+                            e.finding = Some(hash);
                         }
                     }
                 }
@@ -1356,6 +1376,7 @@ impl App {
                         account,
                         read: Some(view),
                         reading_older: false,
+                        ..
                     })) => view
                         .history
                         .as_ref()
@@ -1379,7 +1400,12 @@ impl App {
                 }
             }
             WalletMsg::SendTo(account) => {
-                if busy || self.model.wallet.is_none() {
+                // Only from the page of an account the person typed.
+                let typed = matches!(
+                    self.wallet_page().map(|p| &p.page),
+                    Some(Page::Tag(t)) if t.typed && t.account == account
+                );
+                if busy || self.model.wallet.is_none() || !typed {
                     return Task::none();
                 }
                 self.open(To::Send(None));
@@ -1576,7 +1602,7 @@ impl App {
                     }
                 }
             }
-            (Purpose::Find, Reply::Found(found)) => {
+            (Purpose::Find(hash), Reply::Found(found)) => {
                 let Some(WalletPage {
                     page: Page::Explorer(e),
                     ..
@@ -1584,10 +1610,10 @@ impl App {
                 else {
                     return;
                 };
-                if !e.finding {
+                if e.finding != Some(hash) {
                     return;
                 }
-                e.finding = false;
+                e.finding = None;
                 match *found {
                     Found::Transaction { transaction, text } => {
                         self.show(Page::Transaction(TransactionPage {
@@ -1628,15 +1654,15 @@ impl App {
                     }
                 }
             }
-            (Purpose::Find, Reply::Refused(r)) => {
+            (Purpose::Find(hash), Reply::Refused(r)) => {
                 if let Some(WalletPage {
                     page: Page::Explorer(e),
                     error,
                     ..
                 }) = self.wallet_page()
-                    && e.finding
+                    && e.finding == Some(hash)
                 {
-                    e.finding = false;
+                    e.finding = None;
                     *error = Some(r.text);
                 }
             }

@@ -673,6 +673,26 @@ pub fn missed_transaction(m: &Missed) -> Report<'_> {
     r.full(&m.transaction.text)
 }
 
+/// A tag the node did not resolve (E3). The middleware answers the same
+/// for no ledger entry, an entry at zero and a lookup that failed (the
+/// library's `recon`, fact 3), so the page cannot say which.
+pub fn unresolved() -> Report<'static> {
+    let mut r = Report::new(Tone::Note, "Account not found or lookup failed")
+        .says(
+            "The node did not resolve this tag. It gives the same answer for a tag the ledger \
+             holds no entry for, for one held at zero, and for a lookup that failed, so this \
+             does not say whether the account exists.",
+        )
+        .causes(&[
+            NOT_PAID,
+            "It was emptied, or is held at zero: the node answers for a balance of zero as for \
+             no entry.",
+            LOOKUP,
+        ]);
+    r.causes_title = "Why it can be";
+    r
+}
+
 /// What the node said of a block with a hash that named nothing (E1).
 pub fn missed_block(m: &Missed) -> Report<'_> {
     let mut r = Report::new(Tone::Note, "The node serves no block with this hash")

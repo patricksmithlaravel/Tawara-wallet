@@ -422,7 +422,7 @@ enum Purpose {
     /// An older page of a tag's history.
     TagHistory(AccountId),
     /// What a hash typed in the explorer names.
-    Find,
+    Find([u8; 32]),
     /// The node's whole queue, for its own page.
     Queue,
 }
@@ -472,7 +472,7 @@ impl Purpose {
                 | Purpose::Block(_)
                 | Purpose::Tag(_)
                 | Purpose::TagHistory(_)
-                | Purpose::Find
+                | Purpose::Find(_)
                 | Purpose::Queue
         )
     }
@@ -3105,7 +3105,7 @@ mod tests {
         let mut app = explorer(ExplorerPage::default());
         search(&mut app, &payee().destination().expect("an address"));
         match &wallet_page(&app).page {
-            Page::Tag(t) => assert_eq!(t.account, payee()),
+            Page::Tag(t) => assert!(t.account == payee() && t.typed, "typed"),
             other => panic!("expected the account, got {other:?}"),
         }
     }
@@ -3114,16 +3114,18 @@ mod tests {
     fn what_a_hash_names_is_opened_and_a_miss_stays_on_the_explorer() {
         use tawara_wallet_core::explorer::{BlockAt, Found};
         use tawara_wallet_core::sample;
-        let finding = || {
+        const A: [u8; 32] = [1; 32];
+        const B: [u8; 32] = [2; 32];
+        let finding = |hash| {
             explorer(ExplorerPage {
-                finding: true,
+                finding: Some(hash),
                 ..ExplorerPage::default()
             })
         };
         let (tx, text) = sample::transaction();
-        let mut app = finding();
+        let mut app = finding(A);
         app.on_reply(
-            Purpose::Find,
+            Purpose::Find(A),
             Reply::Found(Box::new(Found::Transaction {
                 transaction: tx.clone(),
                 text,
@@ -3136,9 +3138,9 @@ mod tests {
             }
             other => panic!("expected the transaction, got {other:?}"),
         }
-        let mut app = finding();
+        let mut app = finding(A);
         app.on_reply(
-            Purpose::Find,
+            Purpose::Find(A),
             Reply::Found(Box::new(Found::Block(Box::new(sample::block())))),
         );
         match &wallet_page(&app).page {
@@ -3148,10 +3150,10 @@ mod tests {
             }
             other => panic!("expected the block, got {other:?}"),
         }
-        let mut app = finding();
+        let mut app = finding(A);
         let (transaction, block) = sample::not_found([1; 32]);
         app.on_reply(
-            Purpose::Find,
+            Purpose::Find(A),
             Reply::Found(Box::new(Found::Neither {
                 searched: true,
                 transaction,
@@ -3160,7 +3162,7 @@ mod tests {
         );
         match &wallet_page(&app).page {
             Page::Explorer(e) => {
-                assert!(!e.finding);
+                assert!(e.finding.is_none());
                 assert!(e.missed.as_ref().is_some_and(|m| m.searched));
             }
             other => panic!("expected the explorer, got {other:?}"),
@@ -3169,7 +3171,7 @@ mod tests {
         let mut app = explorer(ExplorerPage::default());
         let (tx, text) = sample::transaction();
         app.on_reply(
-            Purpose::Find,
+            Purpose::Find(A),
             Reply::Found(Box::new(Found::Transaction {
                 transaction: tx,
                 text,
@@ -3180,13 +3182,47 @@ mod tests {
         let mut app = on_wallet(Page::Dashboard);
         let (tx, text) = sample::transaction();
         app.on_reply(
-            Purpose::Find,
+            Purpose::Find(A),
             Reply::Found(Box::new(Found::Transaction {
                 transaction: tx,
                 text,
             })),
         );
         assert!(matches!(wallet_page(&app).page, Page::Dashboard));
+        // The explorer opened again while A was looked for, and B asked
+        // since: A's answer is not B's, and B's is still taken.
+        let mut app = finding(B);
+        let (tx, text) = sample::transaction();
+        app.on_reply(
+            Purpose::Find(A),
+            Reply::Found(Box::new(Found::Transaction {
+                transaction: tx.clone(),
+                text: text.clone(),
+            })),
+        );
+        match &wallet_page(&app).page {
+            Page::Explorer(e) => assert_eq!(e.finding, Some(B), "still waiting on B"),
+            other => panic!("expected the explorer, got {other:?}"),
+        }
+        app.on_reply(
+            Purpose::Find(A),
+            Reply::Refused(Refusal {
+                kind: RefusalKind::Library,
+                text: "A's refusal".to_owned(),
+            }),
+        );
+        assert!(wallet_page(&app).error.is_none(), "A's refusal is not B's");
+        app.on_reply(
+            Purpose::Find(B),
+            Reply::Found(Box::new(Found::Transaction {
+                transaction: tx.clone(),
+                text,
+            })),
+        );
+        match &wallet_page(&app).page {
+            Page::Transaction(t) => assert_eq!(t.transaction, tx),
+            other => panic!("expected B's transaction, got {other:?}"),
+        }
     }
 
     #[test]
@@ -3231,6 +3267,7 @@ mod tests {
             account,
             read: None,
             reading_older: false,
+            typed: false,
         }));
         app.on_reply(Purpose::Tag(payee()), Reply::Tag(Box::new(view.clone())));
         assert!(
@@ -3318,12 +3355,25 @@ mod tests {
     }
 
     #[test]
-    fn sending_to_an_account_opens_the_form_with_its_address() {
-        let mut app = on_wallet(Page::Tag(TagPage {
-            account: payee(),
-            read: None,
-            reading_older: false,
-        }));
+    fn sending_to_an_account_is_offered_only_for_one_the_person_typed() {
+        let tag = |typed| {
+            on_wallet(Page::Tag(TagPage {
+                account: payee(),
+                read: None,
+                reading_older: false,
+                typed,
+            }))
+        };
+        // Reached through a link: the node named it, so nothing opens.
+        let mut app = tag(false);
+        wallet(&mut app, WalletMsg::SendTo(payee()));
+        assert!(matches!(wallet_page(&app).page, Page::Tag(_)));
+        // Typed, but asked for another account than the page shows.
+        let mut app = tag(true);
+        let other = tawara_wallet_core::sample::wallet_view().accounts[0].id;
+        wallet(&mut app, WalletMsg::SendTo(other));
+        assert!(matches!(wallet_page(&app).page, Page::Tag(_)));
+        let mut app = tag(true);
         wallet(&mut app, WalletMsg::SendTo(payee()));
         match &wallet_page(&app).page {
             Page::Send(s) => {

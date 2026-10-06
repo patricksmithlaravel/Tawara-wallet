@@ -2535,7 +2535,7 @@ impl<C: Connect> Worker<C> {
                         return None;
                     }
                     client.block_by_index(below).ok().and_then(|b| {
-                        (newest.timestamp_ms - b.timestamp_ms)
+                        explorer::between(b.timestamp_ms, newest.timestamp_ms)?
                             .checked_div(i64::try_from(span).ok()?)
                     })
                 }

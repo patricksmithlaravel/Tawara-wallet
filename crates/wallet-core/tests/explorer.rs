@@ -103,6 +103,38 @@ fn the_chain_is_read_with_each_blocks_solve_time_and_the_average() {
 /// none of the library's calls looks for a stop: a cancel stops each walk
 /// between two requests.
 #[test]
+fn a_block_time_out_of_all_reason_is_no_solve_time_and_stops_nothing() {
+    // The Mesh parser takes any i64 for a block's time: the differences
+    // overflow, and the worker still answers.
+    let mut h = Harness::with_node();
+    h.chain.set_time(1_000, i64::MAX);
+    h.chain.set_time(999, i64::MIN);
+    h.chain.set_time(900, i64::MIN);
+    // Older than the block below it: no time either, not a negative one.
+    h.chain.set_time(995, 0);
+    match h.call(Command::Chain) {
+        Reply::Chain(Ok(view)) => {
+            assert_eq!(view.blocks[0].solve_ms, None, "MAX less MIN");
+            assert_eq!(view.blocks[1].solve_ms, None, "MIN less 998's");
+            assert_eq!(view.blocks[5].solve_ms, None, "older than 994");
+            assert_eq!(view.blocks[4].solve_ms, Some(996 * 60_000), "a long solve");
+            assert_eq!(view.blocks[2].solve_ms, Some(60_000), "the rest as before");
+            assert_eq!(view.average_ms, None, "MAX less MIN");
+        }
+        other => panic!("expected the chain, got {other:?}"),
+    }
+    match h.call(Command::Block(BlockAt::Number(1_000))) {
+        Reply::Block(Ok(block)) => assert_eq!(block.summary.solve_ms, None),
+        other => panic!("expected the block, got {other:?}"),
+    }
+    // The worker is still there for the next command.
+    assert!(matches!(
+        h.call(Command::Block(BlockAt::Number(998))),
+        Reply::Block(Ok(_))
+    ));
+}
+
+#[test]
 fn a_cancel_stops_each_explorer_read_between_requests() {
     let walks = [
         ("chain", Command::Chain),
