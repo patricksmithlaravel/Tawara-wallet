@@ -1386,3 +1386,75 @@ on the library's reads at `7cdc2e9` (D7). The choices:
    previous block and a transaction open their pages; a ledger address is
    not an account and opens nothing. "Yours" on E2 and "Your account" on E3
    say only that the account is one of the open store's.
+
+## Phase 4
+
+### D32. Phase 4: the mobile shells
+
+**owner, 2026-10-06 (items 1 to 4); proposed (items 5 to 8).** Phase 4
+runs the same `tawara-app` on Android and iOS (docs/PLAN.md section 7),
+on the three conditions D18 left open.
+
+1. **iced comes from the owner's fork, pinned by commit** (D17, D18
+   condition 2; the owner chose the fork). `patricksmithlaravel/iced`
+   carries iced's 0.14 release sources, at the versions D6 records, with
+   D17's patch as one commit on a branch of its own. Every iced crate
+   comes from that commit, the desktop's included, so the build holds one
+   copy of each; `deny.toml` admits that one git source beside the
+   library's, and D15's policy test checks the iced line as it checks the
+   library's (a full commit hash and nothing else to choose it). This
+   replaces D6's "no git revision of iced is used". The patch's fixes are
+   offered to iced upstream; when a release carries them, the pin returns
+   to crates.io.
+2. **Text entry is checked on real phones on phase 4's own builds**
+   (D18 condition 1; the owner's choice). Before the phase's last part
+   merges, the owner runs the device steps on its Android build (arm64)
+   and, with an Apple developer account, on an iPhone: accented and
+   non-Latin text, composition, the password field's keyboard
+   (suggestions and learning), and paste from another app. If composition
+   or secure entry fails, native text-input glue becomes a part of this
+   phase.
+3. **iOS: the store is protected with `NSFileProtectionComplete`** (plan
+   section 4.6; the owner's choice). The store cannot be read while the
+   phone is locked; the wallet locks when it leaves the foreground (item
+   6), so it never needs the store then. The store directory also carries
+   `NSURLIsExcludedFromBackupKey` (section 4.5).
+4. **Android: `FLAG_SECURE` on the whole app** (plan section 4.3; the
+   owner's choice, wider than the plan's "every screen that shows a
+   secret"). It is set once on the window: no screenshot or recording of
+   any screen, and the recent-apps thumbnail shows none of the balances,
+   addresses or history, as iOS hides everything from its app switcher
+   (item 6). Copy still copies an address.
+5. **The phase in three parts.** (a) The shells: the fork's pin;
+   `crates/mobile` running the application on Android (NativeActivity,
+   no Java, the APK built with aapt2, zipalign and apksigner as phase 1's
+   was) and on iOS (the binary as the bundle's executable); the store's
+   location, protection and backup exclusion; `FLAG_SECURE`; the iOS
+   privacy cover; the lock on leaving the foreground; the clipboard
+   through platform calls; and CI jobs on an emulator and a simulator
+   that start the application, draw its first screen, send it to the
+   background and back, and check that it locked. (b) The phone layout:
+   safe-area and keyboard insets, the compact layout of every screen
+   (there are no phone renderings, so it is proposed with screenshots for
+   the owner's approval, as D27 said), the keyboard shown again on a tap
+   of the focused field, and lists that act on release. (c) Text entry,
+   as item 2 finds.
+6. **Leaving the foreground locks the wallet on both platforms** (plan
+   section 4.1). On Android the patched shell passes `Suspended` to the
+   application; on iOS, where iced hears nothing of the switch (phase 1,
+   I6), the shell observes UIApplication's notifications. On either, the
+   application calls `WorkerHandle::background` (D24) and draws a cover
+   with no wallet content until it is back, so iOS's app-switcher
+   snapshot shows nothing (section 4.3).
+7. **Where the store lives.** Android: `no_backup/` (D21), with
+   `android:allowBackup="false"` and `dataExtractionRules` that exclude
+   every domain from cloud backup and device transfer, so the store
+   relies on neither guard alone. iOS: `Library/Application Support`, as
+   item 3 protects and excludes it.
+8. **What waits on winit.** An Android activity destroyed while its
+   process lives cannot start again (phase 1, A18), and winit has no
+   UIScene life cycle, which Apple's TN3187 says apps built with SDKs
+   after iOS 26 must adopt. Both are tracked upstream (winit 0.31 is in
+   beta at this writing). They are reviewed again at release readiness
+   (phase 5): if UIScene is still missing then, an iOS release built with
+   a newer SDK waits on it, and plan D3's fallback is put to the owner.
