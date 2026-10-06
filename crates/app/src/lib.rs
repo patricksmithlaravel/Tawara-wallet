@@ -10,6 +10,8 @@
 //! each case.
 //!
 //! - [`app`]: the model, the messages, the worker bridge and `update`.
+//! - [`host`]: what a mobile shell supplies, and its word when the
+//!   application leaves the foreground.
 //! - [`screens`]: every screen, a function of the model alone, so that the
 //!   screenshot example draws any screen from sample data.
 //! - [`theme`], [`fonts`], [`icon`], [`ui`]: the renderings' tokens, the
@@ -19,6 +21,7 @@
 pub mod app;
 pub mod fonts;
 pub mod history;
+pub mod host;
 pub mod icon;
 pub mod screens;
 pub mod theme;
@@ -32,6 +35,27 @@ pub const DISPLAY_NAME: &str = "Tawara";
 /// 9).
 pub const WINDOW: (f32, f32) = (1440.0, 900.0);
 pub const WINDOW_MIN: (f32, f32) = (1024.0, 700.0);
+
+pub use host::{Host, Leaving, left_foreground};
+
+/// Run the application in a mobile shell (`crates/mobile`): Android or iOS,
+/// in the window the system gives it, with what `host` supplies
+/// (docs/DECISIONS.md D32).
+pub fn run_in(host: Host) -> iced::Result {
+    let mut application = iced::application(
+        move || app::App::boot_in(&host),
+        app::App::update,
+        app::App::view,
+    )
+    .subscription(app::App::subscription)
+    .theme(|_: &app::App| theme::theme())
+    .default_font(fonts::BODY)
+    .title(DISPLAY_NAME);
+    for bytes in fonts::FILES {
+        application = application.font(bytes);
+    }
+    application.run()
+}
 
 /// Run the application on the desktop.
 pub fn run() -> iced::Result {

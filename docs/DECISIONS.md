@@ -76,6 +76,8 @@ defaults, written out so that what ships is a list in this repository.
 Features the renderings may need later (`svg`, and `qr_code` only with the
 owner's approval) are added by the change that needs them, with
 `cargo deny check` run against the result. No git revision of iced is used.
+*Since phase 4, iced comes from the owner's fork at a pinned commit whose
+sources are these releases plus the mobile change (D32, item 1).*
 
 ### D7. The library pin: Rep-1 at `7cdc2e9`
 
@@ -416,7 +418,8 @@ application's manifests stay free of `[patch]`, as D15 requires. How
 production carries the change (a fork of iced at a git revision, which
 needs `allow-git` in deny.toml; an upstream change; or a shell crate of
 Tawara's own) is for the owner to choose after the phase 1 go/no-go,
-with the findings of `docs/spikes/P1-REPORT.md`.
+with the findings of `docs/spikes/P1-REPORT.md`. The owner chose the
+fork: D32, item 1.
 
 ### D18. Phase 1 gate: iced goes ahead on mobile
 
@@ -1386,3 +1389,240 @@ on the library's reads at `7cdc2e9` (D7). The choices:
    previous block and a transaction open their pages; a ledger address is
    not an account and opens nothing. "Yours" on E2 and "Your account" on E3
    say only that the account is one of the open store's.
+
+## Phase 4
+
+### D32. Phase 4: the mobile shells
+
+**owner, 2026-10-06 (items 1 to 4, and item 8's UIScene half); proposed
+(items 5 to 7, and item 8's Android half).** Phase 4
+runs the same `tawara-app` on Android and iOS (docs/PLAN.md section 7),
+on the three conditions D18 left open.
+
+1. **iced comes from the owner's fork, pinned by commit** (D17, D18
+   condition 2; the owner chose the fork, and made it on 2026-10-06 as
+   `patricksmithlaravel/iced_mobile`). Its branch `tawara/0.14-mobile`
+   starts at iced's own `0.14` branch, `38237dd`, whose sources are, crate
+   for crate, the crates.io releases D6 records (compared file by file
+   for all twelve iced crates in the lockfile), and adds one commit,
+   `0b02176`: D17's patch, and `on_lifecycle`, a hook called when winit
+   reports the application suspended or resumed (item 6). Every iced
+   crate comes from that commit, the desktop's included, so the build
+   holds one copy of each, and every screenshot draws as before;
+   `deny.toml` admits that one git source beside the library's, and a
+   policy test holds the iced lines to it as D15's holds the library's (a
+   full commit hash and nothing else to choose it, the same commit on
+   every line, every crate taking the workspace's line, and the lockfile
+   resolved there). This replaces D6's "no git revision of iced is used".
+   The lockfile names the crates by the branch's own versions (0.14.1, and
+   0.14.2 for `iced_widget`). The fixes are offered to iced upstream;
+   when a release carries them, the pin returns to crates.io.
+2. **Text entry is checked on real phones on phase 4's own builds**
+   (D18 condition 1; the owner's choice). Before the phase's last part
+   merges, the owner runs the device steps on its Android build (arm64)
+   and, with an Apple developer account, on an iPhone: accented and
+   non-Latin text, composition, the password field's keyboard
+   (suggestions and learning), and paste from another app. If composition
+   or secure entry fails, native text-input glue becomes a part of this
+   phase.
+3. **iOS: the store is protected with `NSFileProtectionComplete`** (plan
+   section 4.6; the owner's choice). The store cannot be read while the
+   phone is locked; the wallet locks when it leaves the foreground (item
+   6), so it never needs the store then. The store directory also carries
+   `NSURLIsExcludedFromBackupKey` (section 4.5).
+4. **Android: `FLAG_SECURE` on the whole app** (plan section 4.3; the
+   owner's choice, wider than the plan's "every screen that shows a
+   secret"). It is set once on the window: no screenshot or recording of
+   any screen, and the recent-apps thumbnail shows none of the balances,
+   addresses or history, as iOS hides everything from its app switcher
+   (item 6). Copy still copies an address.
+5. **The phase in three parts.** (a) The shells: the fork's pin;
+   `crates/mobile` running the application on Android (NativeActivity,
+   no Java, the APK built with aapt2, zipalign and apksigner as phase 1's
+   was) and on iOS (the binary as the bundle's executable); the store's
+   location, protection and backup exclusion; `FLAG_SECURE`; the iOS
+   privacy cover; the lock on leaving the foreground; the clipboard
+   through platform calls; and CI jobs on an emulator and a simulator
+   that start the application, draw its first screen, send it to the
+   background and back, and check that it locked. (b) The phone layout:
+   safe-area and keyboard insets, the compact layout of every screen
+   (there are no phone renderings, so it is proposed with screenshots for
+   the owner's approval, as D27 said), the keyboard shown again on a tap
+   of the focused field, and lists that act on release. (c) Text entry,
+   as item 2 finds.
+6. **Leaving the foreground locks the wallet on both platforms** (plan
+   section 4.1). On Android the patched shell passes `Suspended` to the
+   application; on iOS, where iced hears nothing of the switch (phase 1,
+   I6), the shell observes UIApplication's notifications. On either, the
+   application calls `WorkerHandle::background` (D24) and draws a cover
+   with no wallet content until it is back, so iOS's app-switcher
+   snapshot shows nothing (section 4.3).
+
+   **And wipes what is typed (PR #13's review, [P2]).** Locking the
+   worker is not enough. A password typed on S7 and not yet submitted, or
+   a recovery phrase typed on S6, lives in the interface, and was wiped
+   only on `Event::Locked`; with the store already locked there is
+   nothing to lock and no `Locked`, so the password survived the switch
+   and Unlock opened the wallet after the return. The rule is now: every
+   move to the background is reported to the interface, whether or not
+   anything was open (`Event::Backgrounded`, after any `Locked`), and on
+   it the interface wipes every secret field of the screen showing, in
+   place: the passwords, the recovery phrase and the words typed to
+   confirm one. One function lists those fields (`wipe_typed`), for
+   leaving a screen and for leaving the foreground; it names every
+   screen, so a new screen with a secret has to be added to it.
+
+   **Before any further input, whatever the worker is doing (PR #13's
+   second review, [P2]).** `Backgrounded` comes through the worker's
+   queue, behind a command still running (a node read at start, for
+   one). Waiting for it let the person return and press Unlock first: the
+   password typed before leaving went into a new command, past the
+   background's cancellation, and opened the wallet after the lock. So
+   the shell's `left_foreground` now also counts the move, on its own
+   thread, before it asks the worker to lock; and the application, before
+   it looks at any message, wipes what is typed if the count has moved
+   since the last one. And a secret's text is taken only from a field
+   drawn after the latest such wipe (PR #13's third review): iced takes a
+   whole batch of messages against the fields as last drawn before it
+   draws them again, so every message from a field drawn before the move
+   carries what was typed then. Each secret's text carries the generation
+   of the field it came from (`Typed::drawn`, the moves the model had
+   acted on when it was drawn), and any whose generation is not the
+   current one is refused and wiped, however many come, until the field
+   is drawn again.
+   `Backgrounded` still wipes at once when the worker is free, so a typed
+   secret does not wait in memory for the person to come back.
+
+   **And is waited for on iOS (Tawara-mobile#1's review, [P1]; owner,
+   2026-10-06).** Asking the worker to lock is not the lock: it locks
+   after the command it is running, and a node request (up to the
+   transport's timeout) or a spend between its reservation and its
+   submission can hold it, while iOS may suspend the process as soon as
+   the notification returns, with the store's key in memory.
+   `WorkerHandle::background` therefore returns a `Locking`, which the
+   worker answers once the session and everything pending are dropped,
+   and `left_foreground` hands it to the shell as a `Leaving`. The iOS
+   shell asks UIKit for background time (`beginBackgroundTask`), waits on
+   it off the main thread, and ends the task when the lock is done. If
+   the time runs out first, the owner chose that the process ends itself
+   rather than be suspended holding the key: nothing persistent is lost,
+   since the move to the background cancelled what could be cancelled and
+   the library's key index only moves forward and is written before a
+   spend is signed, so a spend cut off between reservation and
+   submission is reconciled at the next unlock. Of the options put to the
+   owner, letting iOS suspend and locking on the return was declined, and
+   so, for now, was the same bound on Android.
+
+   The lock waited for includes the interface's own wipe
+   (Tawara-mobile#1's second review): a password or phrase typed, and a
+   recovery phrase shown, live in the interface, which clears them on its
+   next message, not when the worker is done. So the application counts
+   the moves it has wiped for, and `Leaving` is done only when the worker
+   has locked and the interface has wiped for that move. The clock's tick
+   each second is such a message, so it comes within a second even while
+   the worker is busy. A recovery phrase shown or being confirmed is
+   dropped by that wipe, back to S3 with the note the worker's `Locked`
+   would give; the folder chosen stays. With no background time at all,
+   the shell's only thread to wait on is the main one, which the
+   interface's wipe needs: the process ends there at once.
+7. **Where the store lives.** Android: `no_backup/` (D21), with
+   `android:allowBackup="false"` and `dataExtractionRules` that exclude
+   every domain from cloud backup and device transfer, so the store
+   relies on neither guard alone. iOS: `Library/Application Support`, as
+   item 3 protects and excludes it.
+8. **What waits on winit.** An Android activity destroyed while its
+   process lives cannot start again (phase 1, A18), and winit has no
+   UIScene life cycle, which Apple's TN3187 says apps built with SDKs
+   after iOS 26 must adopt. Both are tracked upstream (winit 0.31 is in
+   beta at this writing). They are reviewed again at release readiness
+   (phase 5): if UIScene is still missing then, an iOS release built with
+   a newer SDK waits on it, and plan D3's fallback is put to the owner.
+
+   **UIScene: owner, 2026-10-06.** What TN3187 warned of was measured on
+   phase 4's own build, on a Mac with Xcode 27. Linked with the iOS 27
+   SDK, the app is stopped by UIKit at launch on the iOS 27 simulator
+   (`EXC_BREAKPOINT` in `_UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption`,
+   as the scene is created), after the store's directory has been made
+   and protected. The same binary runs on iOS 18.3, and runs on iOS 27
+   when its load command says SDK 26: the check is on the SDK the app is
+   linked with, not on the phone's iOS. CI builds with Xcode 26.6, so it
+   stayed green, and would have turned red the day the runner's default
+   Xcode became 27; and Apple requires the newest SDK for App Store
+   uploads some months after each release.
+
+   Of four ways put to the owner (guard the build and fix later; guard
+   and defer to phase 5; record only; start the scene work now), the
+   owner chose to start now, with no guard. A first version did it in
+   Tawara's iOS shell; the owner then asked for it in the iced fork
+   instead, to build other apps on the fork later (owner,
+   2026-10-06). So:
+
+   - **The fork** (`patricksmithlaravel/iced_mobile`, branch
+     `tawara/0.14-mobile`) has a second commit on top of D32 item 1's:
+     `iced_winit`'s `scene` module, on iOS only. Before winit's
+     `UIApplicationMain` it observes `UISceneWillConnectNotification` and
+     `UIWindowDidBecomeVisibleNotification` and puts each window winit
+     shows into the application's window scene with `setWindowScene:`.
+     winit 0.30 makes its window with `initWithFrame:` and no scene, and
+     in the scene life cycle such a window is not shown. Both orders
+     occur: usually the scene connects first (winit sends `Resumed`, on
+     which iced makes its window, from
+     `UIApplicationDidBecomeActiveNotification`), but a run was seen
+     where the window was shown first; it is then held until the scene
+     connects. No Objective-C class is declared, and the crates it uses
+     (`objc2` 0.5, `objc2-foundation` and `objc2-ui-kit` 0.2, `block2`
+     0.5) are those winit already links. Any app on the fork gets it.
+   - **The app** declares the scene, which no library can do for it:
+     `Info.plist` carries a `UIApplicationSceneManifest` with one window
+     scene and no delegate class. This alone is what UIKit checks at
+     launch.
+   - winit's life cycle and the shell's lock keep working unchanged:
+     UIKit still posts `UIApplication`'s notifications in a scene-based
+     app, and the cover, the lock and the return pass on iOS 27 and 18.3.
+   - Tawara-mobile's `platform/ios/tawara.sh` (D33) checks that the bundle carries the manifest
+     (the simulator alone would not catch its loss on an older SDK) and,
+     when the cover goes on, that the key window is in a scene. The shell
+     reports that from UIKit as it covers the window, well after launch,
+     so the check does not race the order above.
+
+   When winit gains its own scene support, the fork's commit is dropped
+   and the manifest kept or replaced as winit's documentation says.
+
+### D33. The mobile wallet in its own repository
+
+**owner, 2026-10-06.** Until now the plan kept the Android and iOS entry
+points in this workspace (`crates/mobile`, `platform/`, the `mobile` CI
+workflow; D3, D32). The owner decided that the mobile wallet lives in a
+repository of its own from now on, and chose the following from the
+options put in detail.
+
+1. **`patricksmithlaravel/Tawara-mobile`, public.** It holds what is
+   mobile only: `crates/mobile` (the `tawara-mobile` crate and the iOS
+   `tawara` binary), `platform/android`, `platform/ios` and their CI. It
+   is public like this repository and the iced fork, so its CI keeps
+   D13's anonymous clone and `permissions: {}` (a private repository was
+   considered; its CI would have needed a read token).
+2. **It depends on this repository, never copies it.** `tawara-app`, and
+   through it `tawara-wallet-core` and the library, come from this
+   repository by git, pinned by full commit hash, under the same rule as
+   the library (docs/PLAN.md section 2, D1): no `[patch]`, `[replace]`,
+   vendored copy or path override. A change the phone needs in a screen,
+   in the wallet's logic or in text that protects the user is made here
+   and taken there by moving `rev`. So there is one copy of every screen
+   and every refusal, and the compact phone layout (phase 4 (b)) is work
+   in `tawara-app`, in this repository.
+3. **One iced.** Tawara-mobile takes `iced_winit` from the iced fork at
+   the commit this workspace pins (D32 item 1), so the build holds one
+   copy of each iced crate. A policy test there holds its pins to full
+   hashes and its lockfile to one iced commit.
+4. **The record stays here.** Decisions, the plan and the screens remain
+   in this repository's `docs/`; Tawara-mobile's README points to them.
+5. **The open pull requests.** #13 (phase 4 (a)) keeps its shared part
+   here: `tawara-app`'s `run_in(Host)` and `left_foreground`, the iced
+   fork's pin (moved to 71f00e8, D32 item 8) and the README; its mobile
+   part moves to Tawara-mobile as that repository's first pull request.
+   #14 (the scene work in the shell) is closed; the scene support is in
+   the iced fork, and the manifest and its checks are in Tawara-mobile.
+
+Tawara-mobile pins this repository at #13's head until #13 merges; the
+merge keeps that commit reachable, and the pin then moves to `main`.

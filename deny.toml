@@ -170,11 +170,6 @@ crate = "tawara-desktop"
 expression = "LicenseRef-Mochimo-Engine-1.0"
 license-files = [{ path = "../../LICENSE.md", hash = 0xaa8c1f8a }]
 
-[[licenses.clarify]]
-crate = "tawara-mobile"
-expression = "LicenseRef-Mochimo-Engine-1.0"
-license-files = [{ path = "../../LICENSE.md", hash = 0xaa8c1f8a }]
-
 [[licenses.exceptions]]
 crate = "mochimo-crypto"
 allow = ["LicenseRef-Mochimo-Engine-1.0"]
@@ -189,10 +184,6 @@ allow = ["LicenseRef-Mochimo-Engine-1.0"]
 
 [[licenses.exceptions]]
 crate = "tawara-desktop"
-allow = ["LicenseRef-Mochimo-Engine-1.0"]
-
-[[licenses.exceptions]]
-crate = "tawara-mobile"
 allow = ["LicenseRef-Mochimo-Engine-1.0"]
 
 [bans]
@@ -271,10 +262,14 @@ crate = "serde_json"
 deny = ["preserve_order"]
 
 [sources]
-# Every dependency is a crates.io release pinned by `Cargo.lock`, except one:
-# the wallet library, from Rep-1 by full commit hash (docs/PLAN.md D1). Any
-# other git source, or any other registry, is refused.
+# Every dependency is a crates.io release pinned by `Cargo.lock`, except two:
+# the wallet library, from Rep-1 by full commit hash (docs/PLAN.md D1), and
+# iced, from the owner's fork by full commit hash (docs/DECISIONS.md D32,
+# item 1). Any other git source, or any other registry, is refused.
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = ["https://github.com/patricksmithlaravel/mcm-rust-cli-windows"]
+allow-git = [
+    "https://github.com/patricksmithlaravel/mcm-rust-cli-windows",
+    "https://github.com/patricksmithlaravel/iced_mobile",
+]

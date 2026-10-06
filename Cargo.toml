@@ -4,7 +4,6 @@ members = [
     "crates/wallet-core",
     "crates/app",
     "crates/desktop",
-    "crates/mobile",
 ]
 
 [workspace.package]
@@ -48,13 +47,26 @@ repository = "https://github.com/patricksmithlaravel/Tawara-wallet"
 # `Keystore::sign_spend` behind an `AdvanceReceipt` (the library's I1).
 mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-windows", rev = "7cdc2e986319d508e4c197a4ba44220dd49a5b1d", default-features = false, features = ["native", "mesh-https"] }
 
-# THE TOOLKIT (docs/PLAN.md D2): iced, at its latest release when the work
-# began. Recorded in docs/DECISIONS.md (D6). `=0.14.0` fixes the `iced` crate
-# itself; its subcrates (iced_core, iced_widget, iced_winit, iced_renderer,
-# iced_wgpu, iced_tiny_skia and the rest) are required by it at `^0.14.0`, so
-# the committed Cargo.lock is what holds them, and CI builds with `--locked`.
-# A `cargo update` can move them within 0.14.x; that is a deliberate change,
-# reviewed with `cargo deny check` like any other.
+# THE TOOLKIT (docs/PLAN.md D2): iced 0.14, FROM THE OWNER'S FORK, PINNED BY
+# FULL COMMIT HASH (docs/DECISIONS.md D6, D32 item 1).
+#
+# `patricksmithlaravel/iced_mobile`, branch `tawara/0.14-mobile`, at 71f00e8:
+# iced's own `0.14` branch at 38237dd, whose sources are, crate for crate,
+# the crates.io releases this workspace was built on until now (iced 0.14.0,
+# iced_widget 0.14.2, iced_winit and iced_tiny_skia 0.14.1, the rest
+# 0.14.0; the lockfile names them by the branch's own versions, 0.14.1 and
+# iced_widget 0.14.2), and two commits on top: iced_winit compiling and
+# running on Android and iOS, with `on_lifecycle`, the hook the mobile
+# shells lock the wallet from (0b02176; D17, D32); and iOS windows put in
+# UIKit's window scene, which an app linked with the iOS 27 SDK needs
+# (71f00e8; D32 item 8). Every iced crate comes from that one commit, the
+# desktop's included, so the build holds one copy of each. The mobile
+# shells live in `patricksmithlaravel/Tawara-mobile` (D33), which takes
+# `tawara-app` from this repository and iced from the same commit. Moving
+# iced is a change to `rev` here, on both lines below, and to nothing
+# else; `crates/wallet-core/tests/policy.rs` holds them to it, and deny.toml
+# admits this one git source beside the library's. When an iced release
+# carries the change, these lines return to crates.io.
 #
 # The features are iced 0.14.0's own defaults, written out so that what
 # ships is a list in this file rather than whatever iced's default becomes:
@@ -66,7 +78,7 @@ mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-wi
 # `advanced`, which adds no crate and opens the renderer's headless
 # screenshot (`Headless`) to the screenshot example. `qr_code` comes only
 # with the owner's approval, with deny.toml run against the result.
-iced = { version = "=0.14.0", default-features = false, features = [
+iced = { git = "https://github.com/patricksmithlaravel/iced_mobile", rev = "71f00e8475815532b25e7e07083abb73bd845cde", default-features = false, features = [
     "wgpu",
     "tiny-skia",
     "canvas",
@@ -88,10 +100,10 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 
 # The screenshot example only (docs/DECISIONS.md D27, item 1), as
 # dev-dependencies of `tawara-app`; neither reaches a shipped build.
-# `iced_runtime` is iced's own (already in every build at this version, and
-# held there by the lockfile) and gives the example `UserInterface`, which
-# iced does not re-export; `png` writes and reads the images.
-iced_runtime = "0.14.0"
+# `iced_runtime` is iced's own (already in every build, from the same commit)
+# and gives the example `UserInterface`, which iced does not re-export;
+# `png` writes and reads the images.
+iced_runtime = { git = "https://github.com/patricksmithlaravel/iced_mobile", rev = "71f00e8475815532b25e7e07083abb73bd845cde" }
 png = "0.18"
 
 tawara-wallet-core = { path = "crates/wallet-core" }

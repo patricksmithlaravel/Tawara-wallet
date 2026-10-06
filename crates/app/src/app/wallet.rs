@@ -984,6 +984,10 @@ impl App {
                         }
                     }
                 }
+                // A mobile shell's clipboard, where iced's reaches nothing.
+                if crate::host::copy(&text) {
+                    return Task::none();
+                }
                 return iced::clipboard::write(text);
             }
             WalletMsg::DiscoverTo(to) => {
