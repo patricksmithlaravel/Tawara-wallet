@@ -1541,7 +1541,14 @@ on the three conditions D18 left open.
    `Locking` the worker answered separately is gone. The fields' own wipe
    on the next message stays, for the race with input above. A worker that
    has stopped sends no more, and its `Stopped` comes after it dropped
-   everything, so taking `Stopped` lets every move go. With no worker at
+   everything, so taking `Stopped` lets every move go. Everything includes
+   the commands still queued when it ended, a password to unlock with or a
+   recovery phrase to restore from among them (Tawara-wallet#15's review):
+   the queue was held by the worker's thread itself and dropped only after
+   `Stopped` had gone out, so it is now owned by the guard that sends
+   `Stopped`, which drops it first, on a panic too. A dropped queue drops
+   what is in it at once, though the application's handles still hold
+   senders, and refuses what they send after. With no worker at
    all, the fields' wipe is what is waited for.
 7. **Where the store lives.** Android: `no_backup/` (D21), with
    `android:allowBackup="false"` and `dataExtractionRules` that exclude

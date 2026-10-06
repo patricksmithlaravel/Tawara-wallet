@@ -2229,7 +2229,21 @@ mod tests {
         let _ = app.update(Message::Password(typed(PASSWORD)));
         let _ = app.update(Message::Again(typed(PASSWORD)));
         let _ = app.update(Message::CreateWallet);
-        // CreateBegin is sent; the move is queued behind it.
+        // The phrase is made, and its answer is on its way to the interface,
+        // not yet taken, when the app leaves: held here until then. (Leaving
+        // before the worker starts on it would cancel it, and no phrase
+        // would come at all.)
+        let mut held = Vec::new();
+        loop {
+            let event = events
+                .recv_timeout(Duration::from_secs(30))
+                .expect("the phrase's answer");
+            let answered = matches!(event, Event::Done { .. });
+            held.push(event);
+            if answered {
+                break;
+            }
+        }
         let leaving = (app.leaving_hook())();
         let _ = app.update(Message::Tick(now_ms()));
         assert!(
@@ -2239,19 +2253,28 @@ mod tests {
         // Taken in turn: the phrase is shown, the lock drops it, and only
         // then is the move done.
         let mut shown = false;
-        loop {
-            let event = events
-                .recv_timeout(Duration::from_secs(30))
-                .expect("events from the worker");
+        let mut take = |app: &mut App, event: Event| {
             let last = matches!(event, Event::Backgrounded { .. });
             let _ = app.update(Message::Worker(WorkerEvent::new(event)));
             shown |= matches!(app.model.screen, Screen::Phrase(_));
-            if last {
-                break;
+            if !last {
+                assert!(!leaving.wait(Duration::ZERO), "done before Backgrounded");
             }
-            assert!(!leaving.wait(Duration::ZERO), "done before Backgrounded");
+            last
+        };
+        for event in held {
+            assert!(!take(&mut app, event));
         }
-        assert!(shown, "the phrase came after the move, as in the review");
+        while !take(
+            &mut app,
+            events
+                .recv_timeout(Duration::from_secs(30))
+                .expect("events from the worker"),
+        ) {}
+        assert!(
+            shown,
+            "the phrase was shown after the move, as in the review"
+        );
         assert!(leaving.wait(Duration::ZERO));
         assert!(
             matches!(&app.model.screen, Screen::NewWallet(f)

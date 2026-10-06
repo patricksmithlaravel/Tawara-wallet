@@ -954,6 +954,42 @@ fn a_move_to_the_background_is_answered_in_turn_with_its_number() {
 }
 
 #[test]
+fn once_stopped_is_said_no_command_is_left_in_the_queue() {
+    // Tawara-wallet#15's review: a command still queued when the worker
+    // ends (here an unlock, with its password, sent behind the shutdown) is
+    // dropped before `Stopped`, so a shell that lets the process be
+    // suspended on `Stopped` leaves no secret behind. After it, the queue
+    // takes nothing more.
+    let scratch = Scratch::new("stopped-queue");
+    let dir = scratch.store();
+    let h = Harness::new();
+    h.handle.shutdown();
+    let _ = h.handle.send(Command::Unlock {
+        dir: dir.clone(),
+        password: secret(PASSWORD),
+    });
+    loop {
+        if let Event::Stopped { panicked } = h
+            .events
+            .recv_timeout(Duration::from_secs(10))
+            .expect("Stopped")
+        {
+            assert!(!panicked);
+            break;
+        }
+    }
+    assert!(
+        h.handle
+            .send(Command::Unlock {
+                dir,
+                password: secret(PASSWORD),
+            })
+            .is_err(),
+        "the queue still took a command after Stopped"
+    );
+}
+
+#[test]
 fn every_move_to_the_background_is_reported_after_any_lock() {
     // With nothing open there is nothing to lock and no `Locked`, but the
     // interface still hears of it: what is typed and unsubmitted is its own
