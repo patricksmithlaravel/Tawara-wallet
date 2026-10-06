@@ -56,6 +56,7 @@ pub fn view<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> 
         Page::Block(b) => explorer::block(model, page, b),
         Page::Tag(t) => explorer::tag(model, page, t),
         Page::Transaction(t) => explorer::transaction(model, page, t),
+        Page::Queue(q) => explorer::queue_page(model, page, q),
     };
     row![
         sidebar(model, page),

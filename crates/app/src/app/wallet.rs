@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 
 use iced::Task;
 use tawara_wallet_core::explorer::{
-    BlockAt, BlockDetail, ExplorerRefusal, Found, Query, TagView, TransactionView,
+    BlockAt, BlockDetail, ExplorerRefusal, Found, PendingView, QUEUE_ROWS, Query, TagView,
+    TransactionView,
 };
 use tawara_wallet_core::preferences::{AmountUnit, IDLE_LOCK_MINUTES};
 use tawara_wallet_core::spend::{Amount, DestinationInput, SpendRequest};
@@ -57,6 +58,15 @@ pub enum Page {
     Tag(TagPage),
     /// E4.
     Transaction(TransactionPage),
+    /// E1's "View all pending": the node's whole queue.
+    Queue(QueuePage),
+}
+
+/// The node's whole queue, read whole up to the command line's most.
+#[derive(Clone, Debug, Default)]
+pub struct QueuePage {
+    /// The node's answer, once it has come.
+    pub read: Option<Result<PendingView, ExplorerRefusal>>,
 }
 
 /// E1: the chain, the node's queue, and the search field.
@@ -399,6 +409,8 @@ pub enum To {
     Block(BlockAt),
     /// E3.
     Tag(AccountId),
+    /// E1's "View all pending".
+    Queue,
 }
 
 /// What the wallet's pages react to.
@@ -503,7 +515,11 @@ impl Page {
             Page::Send(_) | Page::Resign(_) | Page::Submit(_) => 1,
             Page::Receive(_) => 2,
             Page::Activity(_) => 3,
-            Page::Explorer(_) | Page::Block(_) | Page::Tag(_) | Page::Transaction(_) => 4,
+            Page::Explorer(_)
+            | Page::Block(_)
+            | Page::Tag(_)
+            | Page::Transaction(_)
+            | Page::Queue(_) => 4,
             Page::Settings(_) | Page::Recovery(_) => 5,
             Page::Dashboard | Page::AddAccount(_) | Page::Account(_) => 0,
         }
@@ -841,6 +857,7 @@ impl App {
                 read: None,
                 reading_older: false,
             }),
+            To::Queue => Page::Queue(QueuePage::default()),
         };
         self.model.screen = Screen::Wallet(WalletPage {
             page,
@@ -863,6 +880,9 @@ impl App {
             }
             To::Tag(account) => {
                 self.send(Command::Tag(account), Purpose::Tag(account));
+            }
+            To::Queue => {
+                self.send(Command::Pending { count: QUEUE_ROWS }, Purpose::Queue);
             }
             _ => {}
         }
@@ -1294,7 +1314,12 @@ impl App {
                 }
             }
             WalletMsg::OpenPending(n) => {
-                let row = match &self.model.pending.last {
+                // From the queue's own page, or from the overview's card.
+                let read = match self.wallet_page().map(|p| &p.page) {
+                    Some(Page::Queue(q)) => q.read.as_ref(),
+                    _ => self.model.pending.last.as_ref(),
+                };
+                let row = match read {
                     Some(Ok(p)) => p.rows.get(n).and_then(|r| r.transaction.clone()),
                     _ => None,
                 };
@@ -1586,6 +1611,20 @@ impl App {
                             transaction,
                             block,
                         }));
+                    }
+                }
+            }
+            (Purpose::Queue, reply) => {
+                if let Some(WalletPage {
+                    page: Page::Queue(q),
+                    error,
+                    ..
+                }) = self.wallet_page()
+                {
+                    match reply {
+                        Reply::Pending(read) => q.read = Some(read),
+                        Reply::Refused(r) => *error = Some(r.text),
+                        _ => {}
                     }
                 }
             }

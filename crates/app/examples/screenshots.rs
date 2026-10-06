@@ -27,9 +27,9 @@ use iced_runtime::user_interface::{Cache, UserInterface};
 use tawara_app::app::{
     AccountPage, ActivityPage, AddAccountPage, Back, BlockPage, Busy, DestinationRow, Explored,
     ExplorerPage, Level, Missed, Model, NodeForm, NodeState, Page, PasswordForm, PhraseState,
-    ReceivePage, RecoveryPage, ReportKey, ResignPage, RestoreForm, Screen, SendPage, SendStage,
-    SentPage, SettingsPage, Signed, SpendForm, StartChoice, SubmitPage, TagPage, TransactionPage,
-    UnlockForm, WalletPage,
+    QueuePage, ReceivePage, RecoveryPage, ReportKey, ResignPage, RestoreForm, Screen, SendPage,
+    SendStage, SentPage, SettingsPage, Signed, SpendForm, StartChoice, SubmitPage, TagPage,
+    TransactionPage, UnlockForm, WalletPage,
 };
 use tawara_app::history::Filter;
 use tawara_app::{fonts, screens, theme};
@@ -609,6 +609,14 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         ),
         ("e1-explorer", EXPLORER, explorer()),
         ("e1-explorer-missed", EXPLORER, missed),
+        // "View all pending": the whole queue, read whole.
+        (
+            "e1-explorer-queue",
+            BLOCK,
+            on(Page::Queue(QueuePage {
+                read: Some(Ok(sample::queue())),
+            })),
+        ),
         (
             "e2-block",
             BLOCK,

@@ -1089,8 +1089,9 @@ How it is kept honest:
 
 ### D29. Phase 3 (c): activity, settings and account recovery
 
-**proposed; for the owner's review in the pull request that introduces
-it.** PR (c) builds docs/SCREENS.md W10 to W12 and the dashboard's two
+**proposed; items 1, 3, 4, 5 and 8 decided by the owner on PR (c)'s
+reviews, and items 2, 6 and 7 accepted by the owner on 2026-10-06.** PR (c)
+builds docs/SCREENS.md W10 to W12 and the dashboard's two
 cards that D27 item 16 moved here. The choices it makes:
 
 1. **The explorer reads go on in the background** (the owner kept this,
@@ -1214,8 +1215,8 @@ cards that D27 item 16 moved here. The choices it makes:
 
 ### D30. Phase 3 (c): the library's explorer reads on the wallet's pages
 
-**proposed; for the owner's review in the pull request that introduces
-it.** With the pin at `e41f8c1` (D7), the library serves
+**proposed; accepted by the owner on 2026-10-06.** With the pin at
+`e41f8c1` (D7), the library serves
 docs/LIBRARY-PROPOSALS.md items 5 to 8, and the controls D27 item 4 left
 out of W1, W10 and W11 for want of them are built. The explorer's own
 pages (E1, E2) stay PR (d)'s. The choices:
@@ -1286,8 +1287,8 @@ pages (E1, E2) stay PR (d)'s. The choices:
 
 ### D31. Phase 3 (d): the explorer
 
-**proposed; for the owner's review in the pull request that introduces
-it.** The fourth of D27 item 16's pull requests builds the explorer's
+**proposed; decided by the owner on 2026-10-06, item 5 apart, which is
+open (below).** The fourth of D27 item 16's pull requests builds the explorer's
 pages, docs/SCREENS.md E1 to E4 (renderings 06, 07, 08 and 04's detail),
 on the library's reads at `7cdc2e9` (D7). The choices:
 
@@ -1333,9 +1334,15 @@ on the library's reads at `7cdc2e9` (D7). The choices:
 4. **The haiku is the node's.** The middleware sends a block's haiku, and
    the library shows it for a normal block only; it does not decode it from
    the nonce itself. E2 shows it as the node sent it, made safe to show,
-   for a normal block only, and says so.
+   for a normal block only, and says so; under it, for correctness, it
+   says that Tawara does not check it against the block's nonce (the
+   owner: as the node sent it, with that note).
 5. **A tag is read from the ledger and the index, and the node's code 4 is
-   never read as an account that does not exist.** The middleware answers
+   never read as an account that does not exist.** *Open: the owner asked
+   for this item to be explained further (2026-10-06); its three choices
+   (the wording for code 4, the ledger's key index only for the store's own
+   accounts, and "Send to this account" on any account) wait on the
+   answer.* The middleware answers
    *Account not found* for a tag the ledger holds no entry for, for one
    held at zero, and for a lookup that failed (the library's `recon`, fact
    3), so E3 says the node did not resolve it, and what that can mean.
@@ -1350,9 +1357,14 @@ on the library's reads at `7cdc2e9` (D7). The choices:
    for as long as the page is open. The chain and the queue are read when
    E1 opens and on "Read again", and the chip says how long ago they were
    read.
-7. **What is not built.** "All blocks" and "View all pending" (a listing of
-   the whole chain or queue), and 06's line on when a pseudo-block is made,
-   which names a time the library does not.
+7. **"View all pending" is built; "All blocks" is not** (the owner). E1's
+   queue card leads to a page of the node's whole queue: every transaction
+   waiting, read whole up to the command line's most for one read (100,
+   `mempool --count`), the rest counted, each opening whole (E4). A block
+   that is not among the newest is found by searching for its number or
+   hash, so there is no listing of the whole chain. 06's line on when a
+   pseudo-block is made is not shown: it names a time the library does
+   not.
 8. **The pages link to each other.** A block's number, an account, the
    previous block and a transaction open their pages; a ledger address is
    not an account and opens nothing. "Yours" on E2 and "Your account" on E3

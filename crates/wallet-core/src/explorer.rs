@@ -383,8 +383,13 @@ pub const LATEST_BLOCKS: u64 = 10;
 /// How many blocks the explorer's average solve time is taken over.
 pub const SOLVE_SPAN: u64 = 100;
 
-/// How many transactions of the node's queue the explorer reads whole.
+/// How many transactions of the node's queue the explorer's overview reads
+/// whole.
 pub const PENDING_ROWS: u64 = 5;
+
+/// The most of the node's queue one read takes whole: the command line's
+/// most for `mempool --count` (`cli::args::MAX_COUNT`). The rest are counted.
+pub const QUEUE_ROWS: u64 = mochimo_crypto::cli::args::MAX_COUNT;
 
 /// A neogenesis block comes at every block number whose low byte is zero
 /// (the library's `MeshBlock::kind`, the C reference's own test): every
@@ -431,7 +436,8 @@ pub struct PendingRow {
 pub struct PendingView {
     /// How many transactions wait.
     pub waiting: usize,
-    /// The first [`PENDING_ROWS`] of them, in the queue's order.
+    /// The first of them read whole, in the queue's order: as many as were
+    /// asked for, at most [`QUEUE_ROWS`].
     pub rows: Vec<PendingRow>,
     /// The library's page, word for word.
     pub text: String,

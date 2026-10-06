@@ -22,8 +22,8 @@ use tawara_wallet_core::view::AccountId;
 use super::activity::party;
 use super::{copy, frame, name, pair, report, settings, short};
 use crate::app::{
-    BLOCK_ROWS, BlockPage, ExplorerPage, Message, Model, ReportKey, TagPage, To, TransactionPage,
-    WalletMsg, WalletPage,
+    BLOCK_ROWS, BlockPage, ExplorerPage, Message, Model, QueuePage, ReportKey, TagPage, To,
+    TransactionPage, WalletMsg, WalletPage,
 };
 use crate::icon::{self, Icon};
 use crate::theme::{self, color, space as sp};
@@ -541,6 +541,13 @@ fn queue(model: &Model) -> Element<'_, Message> {
                     .padding(Padding::from([sp::S8, 0.0])),
                 );
             }
+            if p.waiting > 0 {
+                card = card.push(link(
+                    "View all pending".to_owned(),
+                    ty::LINK,
+                    open(To::Queue),
+                ));
+            }
         }
         Some(Err(_)) => {
             card = card.push(ui::section_label("Mempool")).push(t(
@@ -652,6 +659,192 @@ fn kinds<'a>() -> Element<'a, Message> {
     .into()
 }
 
+/// E1's "View all pending": every transaction waiting in the node's queue,
+/// read whole up to the command line's most for one read.
+pub fn queue_page<'a>(
+    model: &'a Model,
+    page: &'a WalletPage,
+    q: &'a QueuePage,
+) -> Element<'a, Message> {
+    let unit = model.prefs.unit;
+    let mut body = vec![crumbs("Mempool", "All pending".to_owned())];
+    let subtitle = match &q.read {
+        Some(Ok(p)) => {
+            let mut list = column![
+                table_row(vec![
+                    head("Transaction id".to_owned(), 6, false),
+                    head("From".to_owned(), 4, false),
+                    head("Destinations".to_owned(), 3, true),
+                    head(format!("Amount ({})", ui::unit_name(unit)), 4, true),
+                    head("Fee".to_owned(), 3, true),
+                ]),
+                ui::divider(),
+            ]
+            .spacing(sp::S4);
+            if p.waiting == 0 {
+                list = list.push(
+                    container(ui::helper("This node's queue is empty."))
+                        .padding(Padding::from([sp::S12, 0.0])),
+                );
+            }
+            for (n, r) in p.rows.iter().enumerate() {
+                list = list.push(queued(model, r, n)).push(ui::divider());
+            }
+            let unread = p.waiting.saturating_sub(p.rows.len());
+            if unread > 0 {
+                list = list.push(
+                    container(ui::helper(format!(
+                        "{} more waiting, not read: one read takes at most {} whole, as the \
+                         command line's does.",
+                        ui::group(&unread.to_string()),
+                        explorer::QUEUE_ROWS
+                    )))
+                    .padding(Padding::from([sp::S12, 0.0])),
+                );
+            }
+            body.push(
+                ui::card(list)
+                    .padding(Padding::from([sp::S20, sp::S24]))
+                    .into(),
+            );
+            body.push(report::show(
+                page,
+                ReportKey::Read,
+                report::read(
+                    "The node's page for its queue",
+                    &[
+                        "Each transaction as the node's queue holds it: its source at what left \
+                         it, net of its change, which is not listed. The queue is this node's \
+                         own; another node's may differ.",
+                    ],
+                    &p.text,
+                ),
+            ));
+            format!(
+                "{} {} waiting in this node's queue",
+                ui::group(&p.waiting.to_string()),
+                if p.waiting == 1 {
+                    "transaction"
+                } else {
+                    "transactions"
+                }
+            )
+        }
+        Some(Err(refusal)) => {
+            body.push(report::show(
+                page,
+                ReportKey::Explorer,
+                report::explorer(refusal, "its queue"),
+            ));
+            "Not served".to_owned()
+        }
+        None => {
+            body.push(ui::card(ui::helper("Reading the queue…")).into());
+            "Reading…".to_owned()
+        }
+    };
+    frame(
+        model,
+        page,
+        "Mempool",
+        subtitle,
+        vec![
+            ui::button_with(
+                if q.read.is_none() {
+                    "Reading…"
+                } else {
+                    "Read again"
+                },
+                theme::Button::Secondary,
+                Size::Header,
+                Some(Icon::Refresh),
+                q.read.is_some().then(|| open(To::Queue).into()),
+            )
+            .into(),
+        ],
+        body,
+    )
+}
+
+/// One transaction of the queue's page, opening whole (E4); one that left
+/// the queue before it was read says so.
+fn queued<'a>(model: &'a Model, r: &'a explorer::PendingRow, n: usize) -> Element<'a, Message> {
+    let unit = model.prefs.unit;
+    let Some(tx) = &r.transaction else {
+        return table_row(vec![
+            cell(
+                t(short(&r.id), ty::MONO_SMALL, color::TEXT_SECONDARY),
+                6,
+                false,
+            ),
+            cell(
+                t(
+                    "Left the queue before it was read: mined since, or dropped.",
+                    ty::TINY,
+                    color::TEXT_MUTED,
+                ),
+                14,
+                false,
+            ),
+        ]);
+    };
+    let mut id = row![link(
+        short(&r.id),
+        ty::MONO_SMALL,
+        WalletMsg::OpenPending(n)
+    )]
+    .spacing(sp::S8)
+    .align_y(Alignment::Center);
+    if ours(model, tx.source()) {
+        id = id.push(ui::pill(
+            "Yours",
+            ty::BADGE,
+            color::ACCENT,
+            color::TEXT_ON_ACCENT,
+            20.0,
+        ));
+    }
+    let source: Element<'a, Message> = match tx
+        .operations
+        .iter()
+        .find(|o| o.kind == OperationKind::Source)
+    {
+        Some(op) => party_link(op, ty::MONO_SMALL),
+        None => t("—", ty::MONO_SMALL, color::TEXT_MUTED).into(),
+    };
+    table_row(vec![
+        cell(id, 6, false),
+        cell(source, 4, false),
+        cell(
+            t(
+                tx.destinations().count().to_string(),
+                ty::TABLE_BODY,
+                color::TEXT_PRIMARY,
+            ),
+            3,
+            true,
+        ),
+        cell(
+            t(
+                ui::amount(tx.sent(), unit),
+                ty::TABLE_AMOUNT,
+                color::TEXT_PRIMARY,
+            ),
+            4,
+            true,
+        ),
+        cell(
+            t(
+                ui::amount(tx.fee(), unit),
+                ty::TABLE_BODY,
+                color::TEXT_SECONDARY,
+            ),
+            3,
+            true,
+        ),
+    ])
+}
+
 // ---- E2 --------------------------------------------------------------------
 
 /// E2: one block, whole.
@@ -761,6 +954,13 @@ fn block_body<'a>(
                 col = col
                     .push(t(line.clone(), ty::HAIKU, color::TEXT_PRIMARY).wrapping(Wrapping::Word));
             }
+            // For correctness: the text is the node's, and nothing here
+            // checks it against the nonce it is made from.
+            col = col.push(t(
+                "The node sends this haiku; Tawara does not check it against the block's nonce.",
+                ty::TINY,
+                color::TEXT_MUTED,
+            ));
         }
         container(col.spacing(sp::S10))
             .padding(sp::S32)

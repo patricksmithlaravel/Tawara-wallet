@@ -186,11 +186,12 @@ pub enum Command {
     /// cancel, a lock or the idle period stops it between two requests, and
     /// it then reports nothing.
     Chain,
-    /// The node's queue: how many transactions wait, and the first
-    /// [`crate::explorer::PENDING_ROWS`] read whole, as the command line's
-    /// `mempool --count` reads them. No store is needed; stopped between two
-    /// requests as [`Command::Chain`] is.
-    Pending,
+    /// The node's queue: how many transactions wait, and the first `count`
+    /// read whole, as the command line's `mempool --count` reads them; at
+    /// most [`crate::explorer::QUEUE_ROWS`], and a larger count reads that
+    /// many. No store is needed; stopped between two requests as
+    /// [`Command::Chain`] is.
+    Pending { count: u64 },
     /// One block, whole: the command line's `block`. The block below it is
     /// read too, for its solve time, and the tip, for how many blocks stand
     /// on it. No store is needed; stopped between two requests as

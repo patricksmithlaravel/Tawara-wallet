@@ -30,9 +30,9 @@ use tawara_wallet_core::{
 
 pub use wallet::{
     AccountPage, ActivityPage, AddAccountPage, BLOCK_ROWS, BlockPage, DestinationRow, Done,
-    ExplorerPage, Level, Missed, Page, ReceivePage, RecoveryPage, Remedy, ReportKey, ResignPage,
-    SendPage, SendStage, SentPage, SettingsPage, Signed, SpendForm, SubmitPage, TagPage, To,
-    TransactionPage, WalletMsg, remedy, spend_request,
+    ExplorerPage, Level, Missed, Page, QueuePage, ReceivePage, RecoveryPage, Remedy, ReportKey,
+    ResignPage, SendPage, SendStage, SentPage, SettingsPage, Signed, SpendForm, SubmitPage,
+    TagPage, To, TransactionPage, WalletMsg, remedy, spend_request,
 };
 
 /// What the application shows and holds. Plain data, apart from the
@@ -423,6 +423,8 @@ enum Purpose {
     TagHistory(AccountId),
     /// What a hash typed in the explorer names.
     Find,
+    /// The node's whole queue, for its own page.
+    Queue,
 }
 
 impl Purpose {
@@ -471,6 +473,7 @@ impl Purpose {
                 | Purpose::Tag(_)
                 | Purpose::TagHistory(_)
                 | Purpose::Find
+                | Purpose::Queue
         )
     }
 }
@@ -1039,7 +1042,16 @@ impl App {
         if !self.model.chain.reading && self.send(Command::Chain, Purpose::Chain).is_some() {
             self.model.chain.reading = true;
         }
-        if !self.model.pending.reading && self.send(Command::Pending, Purpose::Pending).is_some() {
+        if !self.model.pending.reading
+            && self
+                .send(
+                    Command::Pending {
+                        count: tawara_wallet_core::explorer::PENDING_ROWS,
+                    },
+                    Purpose::Pending,
+                )
+                .is_some()
+        {
             self.model.pending.reading = true;
         }
     }
@@ -3274,6 +3286,35 @@ mod tests {
             }
             other => panic!("expected the transaction, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_whole_queue_is_read_onto_its_page_and_opens_each_transaction() {
+        use tawara_wallet_core::sample;
+        let mut app = explorer(ExplorerPage::default());
+        wallet(&mut app, WalletMsg::Open(To::Queue));
+        assert!(matches!(&wallet_page(&app).page, Page::Queue(q) if q.read.is_none()));
+        app.on_reply(Purpose::Queue, Reply::Pending(Ok(sample::queue())));
+        match &wallet_page(&app).page {
+            Page::Queue(QueuePage { read: Some(Ok(p)) }) => {
+                assert_eq!(p.rows.len(), p.waiting, "every one read whole");
+            }
+            other => panic!("expected the queue, got {other:?}"),
+        }
+        // A row opens from the page's own read, not the overview's.
+        wallet(&mut app, WalletMsg::OpenPending(13));
+        match &wallet_page(&app).page {
+            Page::Transaction(t) => {
+                let last = sample::queue().rows[13].transaction.clone();
+                assert_eq!(Some(t.transaction.clone()), last);
+                assert!(!t.from_index, "as the queue lists it");
+            }
+            other => panic!("expected the transaction, got {other:?}"),
+        }
+        // The queue's answer goes nowhere once its page is left.
+        let mut app = on_wallet(Page::Dashboard);
+        app.on_reply(Purpose::Queue, Reply::Pending(Ok(sample::queue())));
+        assert!(matches!(wallet_page(&app).page, Page::Dashboard));
     }
 
     #[test]

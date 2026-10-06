@@ -1276,7 +1276,7 @@ impl<C: Connect> Worker<C> {
             Command::Blocks => self.blocks(id),
             Command::Mempool => self.mempool(id),
             Command::Chain => self.chain(id),
-            Command::Pending => self.pending(id),
+            Command::Pending { count } => self.pending(id, count),
             Command::Block(at) => self.block(id, at),
             Command::Tag(account) => self.tag(id, account),
             Command::TagHistory { account, from } => self.tag_history(id, account, from),
@@ -2577,13 +2577,15 @@ impl<C: Connect> Worker<C> {
         }
     }
 
-    /// The node's queue with its first [`explorer::PENDING_ROWS`] read whole
-    /// ([`walk_mempool`]), for the explorer.
-    fn pending(&self, id: RequestId) -> Reply {
+    /// The node's queue with its first `count` read whole
+    /// ([`walk_mempool`]), at most [`explorer::QUEUE_ROWS`], for the
+    /// explorer.
+    fn pending(&self, id: RequestId, count: u64) -> Reply {
+        let count = count.min(explorer::QUEUE_ROWS);
         let asked = self.stop_asked(id);
         let outcome = match self.ask_node(|client| {
             self.busy(id, Activity::AskingNode);
-            walk_mempool(client, explorer::PENDING_ROWS, &asked)
+            walk_mempool(client, count, &asked)
         }) {
             Ok(Some(outcome)) => outcome,
             Ok(None) => return Reply::Refused(library(Error::Cancelled)),

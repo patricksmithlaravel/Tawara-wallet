@@ -6,7 +6,8 @@ mod support;
 
 use support::*;
 use tawara_wallet_core::explorer::{
-    BlockAt, BlockKind, Found, IndexState, LATEST_BLOCKS, LedgerRead, OperationKind, Party, Query,
+    BlockAt, BlockKind, Found, IndexState, LATEST_BLOCKS, LedgerRead, OperationKind, Party,
+    QUEUE_ROWS, Query,
 };
 use tawara_wallet_core::view::AccountId;
 use tawara_wallet_core::{Activity, Command, Refusal, RefusalKind, Reply};
@@ -105,7 +106,7 @@ fn the_chain_is_read_with_each_blocks_solve_time_and_the_average() {
 fn a_cancel_stops_each_explorer_read_between_requests() {
     let walks = [
         ("chain", Command::Chain),
-        ("pending", Command::Pending),
+        ("pending", Command::Pending { count: 5 }),
         ("block", Command::Block(BlockAt::Number(995))),
         ("tag", Command::Tag(account(5))),
         ("find", Command::Find([9; 32])),
@@ -146,7 +147,7 @@ fn the_queue_is_read_with_its_first_transactions_whole() {
         h.chain.pending(id(n), tag(9), &[(tag(5), 1)]);
     }
     let calls = h.chain.calls();
-    match h.call(Command::Pending) {
+    match h.call(Command::Pending { count: 5 }) {
         Reply::Pending(Ok(view)) => {
             assert_eq!(view.waiting, 7);
             assert_eq!(view.rows.len(), 5, "the first five read whole");
@@ -164,6 +165,22 @@ fn the_queue_is_read_with_its_first_transactions_whole() {
         h.chain.calls() - calls,
         6,
         "the ids, then five transactions"
+    );
+    // All of it, as "View all pending" asks: up to the command line's most.
+    let calls = h.chain.calls();
+    match h.call(Command::Pending {
+        count: QUEUE_ROWS + 1,
+    }) {
+        Reply::Pending(Ok(view)) => {
+            assert_eq!((view.waiting, view.rows.len()), (7, 7));
+            assert!(view.rows[6].transaction.is_some());
+        }
+        other => panic!("expected the queue, got {other:?}"),
+    }
+    assert_eq!(
+        h.chain.calls() - calls,
+        8,
+        "the ids, then every transaction"
     );
 }
 

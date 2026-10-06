@@ -817,9 +817,21 @@ pub fn chain() -> ChainView {
 }
 
 /// The sample node's queue: fourteen transactions waiting, the first five
-/// read whole.
+/// read whole, as the explorer's overview reads them.
 #[must_use]
 pub fn pending() -> PendingView {
+    queue_read(crate::explorer::PENDING_ROWS)
+}
+
+/// The sample node's whole queue, every one of its fourteen transactions
+/// read whole, as "View all pending" reads them.
+#[must_use]
+pub fn queue() -> PendingView {
+    queue_read(crate::explorer::QUEUE_ROWS)
+}
+
+/// The sample node's queue with its first `count` transactions read whole.
+fn queue_read(count: u64) -> PendingView {
     // Each payee an even share in thousandths of an MCM, the last what makes
     // the total.
     let payees = |n: i128, total: i128| -> Vec<([u8; 20], i128, &'static str)> {
@@ -835,21 +847,33 @@ pub fn pending() -> PendingView {
             })
             .collect()
     };
-    let rows: Vec<MempoolRow> = [
+    let waiting = [
         (txid(1), tag(60), payees(3, 96_400_000_000)),
         (txid(2), tag(61), payees(1, 12 * MCM)),
         (txid(3), tag(62), payees(18, 1_804_250_000_000)),
         (txid(4), tag(63), payees(1, MCM / 2)),
         (txid(5), tag(64), payees(2, 310 * MCM)),
-    ]
-    .into_iter()
-    .map(|(id, from, to)| MempoolRow {
-        id,
-        transaction: Some(Box::new(listed(id, from, &to))),
-    })
-    .collect();
+        (txid(6), tag(65), payees(1, 75 * MCM)),
+        (txid(7), tag(66), payees(4, 2_000 * MCM)),
+        (txid(8), tag(67), payees(1, 1_250_500_000)),
+        (txid(9), tag(2), payees(1, 40 * MCM)),
+        (txid(10), tag(68), payees(2, 18 * MCM)),
+        (txid(11), tag(69), payees(1, 640 * MCM)),
+        (txid(12), tag(70), payees(6, 3_600 * MCM)),
+        (txid(13), tag(71), payees(1, 9 * MCM)),
+        (txid(14), tag(72), payees(1, 220 * MCM)),
+    ];
+    let total = waiting.len();
+    let rows: Vec<MempoolRow> = waiting
+        .into_iter()
+        .take(usize::try_from(count).unwrap_or(usize::MAX))
+        .map(|(id, from, to)| MempoolRow {
+            id,
+            transaction: Some(Box::new(listed(id, from, &to))),
+        })
+        .collect();
     PendingView {
-        waiting: 14,
+        waiting: total,
         rows: rows
             .iter()
             .map(|r| PendingRow {
@@ -857,14 +881,7 @@ pub fn pending() -> PendingView {
                 transaction: r.transaction.as_deref().map(TransactionView::of),
             })
             .collect(),
-        text: text::page(
-            &[],
-            Outcome::Mempool {
-                count: crate::explorer::PENDING_ROWS,
-                total: 14,
-                rows,
-            },
-        ),
+        text: text::page(&[], Outcome::Mempool { count, total, rows }),
     }
 }
 
