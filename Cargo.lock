@@ -1391,7 +1391,7 @@ dependencies = [
 [[package]]
 name = "iced"
 version = "0.14.1"
-source = "git+https://github.com/patricksmithlaravel/iced_mobile?rev=0b02176eedbc0eac901754fd9f95008df2b3c601#0b02176eedbc0eac901754fd9f95008df2b3c601"
+source = "git+https://github.com/patricksmithlaravel/iced_mobile?rev=71f00e8475815532b25e7e07083abb73bd845cde#71f00e8475815532b25e7e07083abb73bd845cde"
 dependencies = [
  "iced_core",
  "iced_debug",
@@ -1406,7 +1406,7 @@ dependencies = [
 [[package]]
 name = "iced_core"
 version = "0.14.1"
-source = "git+https://github.com/patricksmithlaravel/iced_mobile?rev=0b02176eedbc0eac901754fd9f95008df2b3c601#0b02176eedbc0eac901754fd9f95008df2b3c601"
+source = "git+https://github.com/patricksmithlaravel/iced_mobile?rev=71f00e8475815532b25e7e07083abb73bd845cde#71f00e8475815532b25e7e07083abb73bd845cde"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
@@ -1423,7 +1423,7 @@ dependencies = [
 [[package]]
 name = "iced_debug"
 version = "0.14.1"
-source = "git+https://github.com/patricksmithlaravel/iced_mobile?rev=0b02176eedbc0eac901754fd9f95008df2b3c601#0b02176eedbc0eac901754fd9f95008df2b3c601"
+source = "git+https://github.com/patricksmithlaravel/iced_mobile?rev=71f00e8475815532b25e7e07083abb73bd845cde#71f00e8475815532b25e7e07083abb73bd845cde"
 dependencies = [
  "iced_core",
  "iced_futures",
@@ -1433,7 +1433,7 @@ dependencies = [
 [[package]]
 name = "iced_futures"
 version = "0.14.1"
-source = "git+https://github.com/patricksmithlaravel/iced_mobile?rev=0b02176eedbc0eac901754fd9f95008df2b3c601#0b02176eedbc0eac901754fd9f95008df2b3c601"
+source = "git+https://github.com/patricksmithlaravel/iced_mobile?rev=71f00e8475815532b25e7e07083abb73bd845cde#71f00e8475815532b25e7e07083abb73bd845cde"
 dependencies = [
  "futures",
  "iced_core",
@@ -1446,7 +1446,7 @@ dependencies = [
 [[package]]
 name = "iced_graphics"
 version = "0.14.1"
-source = "git+https://github.com/patricksmithlaravel/iced_mobile?rev=0b02176eedbc0eac901754fd9f95008df2b3c601#0b02176eedbc0eac901754fd9f95008df2b3c601"
+source = "git+https://github.com/patricksmithlaravel/iced_mobile?rev=71f00e8475815532b25e7e07083abb73bd845cde#71f00e8475815532b25e7e07083abb73bd845cde"
 dependencies = [
  "bitflags 2.13.2",
  "bytemuck",
@@ -1465,7 +1465,7 @@ dependencies = [
 [[package]]
 name = "iced_program"
 version = "0.14.1"
-source = "git+https://github.com/patricksmithlaravel/iced_mobile?rev=0b02176eedbc0eac901754fd9f95008df2b3c601#0b02176eedbc0eac901754fd9f95008df2b3c601"
+source = "git+https://github.com/patricksmithlaravel/iced_mobile?rev=71f00e8475815532b25e7e07083abb73bd845cde#71f00e8475815532b25e7e07083abb73bd845cde"
 dependencies = [
  "iced_graphics",
  "iced_runtime",
@@ -1474,7 +1474,7 @@ dependencies = [
 [[package]]
 name = "iced_renderer"
 version = "0.14.1"
-source = "git+https://github.com/patricksmithlaravel/iced_mobile?rev=0b02176eedbc0eac901754fd9f95008df2b3c601#0b02176eedbc0eac901754fd9f95008df2b3c601"
+source = "git+https://github.com/patricksmithlaravel/iced_mobile?rev=71f00e8475815532b25e7e07083abb73bd845cde#71f00e8475815532b25e7e07083abb73bd845cde"
 dependencies = [
  "iced_graphics",
  "iced_tiny_skia",
@@ -1486,7 +1486,7 @@ dependencies = [
 [[package]]
 name = "iced_runtime"
 version = "0.14.1"
-source = "git+https://github.com/patricksmithlaravel/iced_mobile?rev=0b02176eedbc0eac901754fd9f95008df2b3c601#0b02176eedbc0eac901754fd9f95008df2b3c601"
+source = "git+https://github.com/patricksmithlaravel/iced_mobile?rev=71f00e8475815532b25e7e07083abb73bd845cde#71f00e8475815532b25e7e07083abb73bd845cde"
 dependencies = [
  "bytes",
  "iced_core",
@@ -1498,7 +1498,7 @@ dependencies = [
 [[package]]
 name = "iced_tiny_skia"
 version = "0.14.1"
-source = "git+https://github.com/patricksmithlaravel/iced_mobile?rev=0b02176eedbc0eac901754fd9f95008df2b3c601#0b02176eedbc0eac901754fd9f95008df2b3c601"
+source = "git+https://github.com/patricksmithlaravel/iced_mobile?rev=71f00e8475815532b25e7e07083abb73bd845cde#71f00e8475815532b25e7e07083abb73bd845cde"
 dependencies = [
  "bytemuck",
  "cosmic-text",
@@ -1514,7 +1514,7 @@ dependencies = [
 [[package]]
 name = "iced_wgpu"
 version = "0.14.1"
-source = "git+https://github.com/patricksmithlaravel/iced_mobile?rev=0b02176eedbc0eac901754fd9f95008df2b3c601#0b02176eedbc0eac901754fd9f95008df2b3c601"
+source = "git+https://github.com/patricksmithlaravel/iced_mobile?rev=71f00e8475815532b25e7e07083abb73bd845cde#71f00e8475815532b25e7e07083abb73bd845cde"
 dependencies = [
  "bitflags 2.13.2",
  "bytemuck",
@@ -1534,7 +1534,7 @@ dependencies = [
 [[package]]
 name = "iced_widget"
 version = "0.14.2"
-source = "git+https://github.com/patricksmithlaravel/iced_mobile?rev=0b02176eedbc0eac901754fd9f95008df2b3c601#0b02176eedbc0eac901754fd9f95008df2b3c601"
+source = "git+https://github.com/patricksmithlaravel/iced_mobile?rev=71f00e8475815532b25e7e07083abb73bd845cde#71f00e8475815532b25e7e07083abb73bd845cde"
 dependencies = [
  "iced_renderer",
  "log",
@@ -1547,12 +1547,16 @@ dependencies = [
 [[package]]
 name = "iced_winit"
 version = "0.14.1"
-source = "git+https://github.com/patricksmithlaravel/iced_mobile?rev=0b02176eedbc0eac901754fd9f95008df2b3c601#0b02176eedbc0eac901754fd9f95008df2b3c601"
+source = "git+https://github.com/patricksmithlaravel/iced_mobile?rev=71f00e8475815532b25e7e07083abb73bd845cde#71f00e8475815532b25e7e07083abb73bd845cde"
 dependencies = [
+ "block2 0.5.1",
  "iced_debug",
  "iced_program",
  "log",
  "mundy",
+ "objc2 0.5.2",
+ "objc2-foundation 0.2.2",
+ "objc2-ui-kit",
  "rustc-hash 2.1.3",
  "thiserror 2.0.21",
  "tracing",
@@ -3263,21 +3267,6 @@ name = "tawara-desktop"
 version = "0.1.0"
 dependencies = [
  "tawara-app",
-]
-
-[[package]]
-name = "tawara-mobile"
-version = "0.1.0"
-dependencies = [
- "block2 0.5.1",
- "iced_winit",
- "jni",
- "ndk-context",
- "objc2 0.5.2",
- "objc2-foundation 0.2.2",
- "objc2-ui-kit",
- "tawara-app",
- "winit",
 ]
 
 [[package]]

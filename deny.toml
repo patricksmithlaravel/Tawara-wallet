@@ -170,11 +170,6 @@ crate = "tawara-desktop"
 expression = "LicenseRef-Mochimo-Engine-1.0"
 license-files = [{ path = "../../LICENSE.md", hash = 0xaa8c1f8a }]
 
-[[licenses.clarify]]
-crate = "tawara-mobile"
-expression = "LicenseRef-Mochimo-Engine-1.0"
-license-files = [{ path = "../../LICENSE.md", hash = 0xaa8c1f8a }]
-
 [[licenses.exceptions]]
 crate = "mochimo-crypto"
 allow = ["LicenseRef-Mochimo-Engine-1.0"]
@@ -189,10 +184,6 @@ allow = ["LicenseRef-Mochimo-Engine-1.0"]
 
 [[licenses.exceptions]]
 crate = "tawara-desktop"
-allow = ["LicenseRef-Mochimo-Engine-1.0"]
-
-[[licenses.exceptions]]
-crate = "tawara-mobile"
 allow = ["LicenseRef-Mochimo-Engine-1.0"]
 
 [bans]

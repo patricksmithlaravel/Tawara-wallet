@@ -45,7 +45,7 @@ const CHEAP_KDF: &str = "CHEAP_FOR_TESTS";
 
 /// The crates that make up the interface. They talk to `wallet-core` and never
 /// to the library.
-const INTERFACE_CRATES: [&str; 3] = ["app", "desktop", "mobile"];
+const INTERFACE_CRATES: [&str; 2] = ["app", "desktop"];
 
 /// Package names that would put an interface toolkit, a windowing layer, a
 /// renderer or the interface itself into `wallet-core`'s dependency closure.
@@ -1265,7 +1265,6 @@ fn cheap_kdf_appears_only_in_test_code() {
         "wallet-core/src/lib.rs",
         "app/src/lib.rs",
         "desktop/src/main.rs",
-        "mobile/src/lib.rs",
     ] {
         let root = normalise(&crates_dir.join(root));
         assert!(

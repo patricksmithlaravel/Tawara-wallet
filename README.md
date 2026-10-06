@@ -19,7 +19,9 @@ Tawara is not an official product of the Mochimo cryptocurrency.
 Windows, macOS and Linux: every screen in [docs/SCREENS.md](docs/SCREENS.md)
 is built, and CI builds and tests it on all three. It is not yet packaged:
 installers and signed packages are phase 5. Phase 4 runs the same
-application on Android and iOS. The plan, its phases and what each is done
+application on Android and iOS, from its own repository,
+[Tawara-mobile](https://github.com/patricksmithlaravel/Tawara-mobile), which
+takes `tawara-app` from this one (docs/DECISIONS.md D33). The plan, its phases and what each is done
 when are in [docs/PLAN.md](docs/PLAN.md); the decisions made along the way
 are in [docs/DECISIONS.md](docs/DECISIONS.md).
 
@@ -30,10 +32,6 @@ crates/
   wallet-core/   everything that touches the library; no interface dependency
   app/           the iced application: state, messages, screens, theme
   desktop/       the Windows, macOS and Linux entry point
-  mobile/        the Android and iOS entry points
-platform/
-  android/       manifest, backup rules, build and check script
-  ios/           Info.plist, build and check script
 design/
   renderings/    the owner's reference renderings
   INDEX.md       what each rendering shows, and its size
@@ -111,8 +109,8 @@ cargo run -p tawara-app --example screenshots -- --check
 
 The last one draws every screen and compares it with the images committed
 in `design/screenshots/` (run it without `--check` to draw them again). The
-Android and iOS builds and their checks are in `platform/android/` and
-`platform/ios/`, and run in `.github/workflows/mobile.yml`.
+Android and iOS builds and their checks are in
+[Tawara-mobile](https://github.com/patricksmithlaravel/Tawara-mobile).
 
 ## Licence
 

@@ -1394,7 +1394,8 @@ on the library's reads at `7cdc2e9` (D7). The choices:
 
 ### D32. Phase 4: the mobile shells
 
-**owner, 2026-10-06 (items 1 to 4); proposed (items 5 to 8).** Phase 4
+**owner, 2026-10-06 (items 1 to 4, and item 8's UIScene half); proposed
+(items 5 to 7, and item 8's Android half).** Phase 4
 runs the same `tawara-app` on Android and iOS (docs/PLAN.md section 7),
 on the three conditions D18 left open.
 
@@ -1468,3 +1469,92 @@ on the three conditions D18 left open.
    beta at this writing). They are reviewed again at release readiness
    (phase 5): if UIScene is still missing then, an iOS release built with
    a newer SDK waits on it, and plan D3's fallback is put to the owner.
+
+   **UIScene: owner, 2026-10-06.** What TN3187 warned of was measured on
+   phase 4's own build, on a Mac with Xcode 27. Linked with the iOS 27
+   SDK, the app is stopped by UIKit at launch on the iOS 27 simulator
+   (`EXC_BREAKPOINT` in `_UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption`,
+   as the scene is created), after the store's directory has been made
+   and protected. The same binary runs on iOS 18.3, and runs on iOS 27
+   when its load command says SDK 26: the check is on the SDK the app is
+   linked with, not on the phone's iOS. CI builds with Xcode 26.6, so it
+   stayed green, and would have turned red the day the runner's default
+   Xcode became 27; and Apple requires the newest SDK for App Store
+   uploads some months after each release.
+
+   Of four ways put to the owner (guard the build and fix later; guard
+   and defer to phase 5; record only; start the scene work now), the
+   owner chose to start now, with no guard. A first version did it in
+   Tawara's iOS shell; the owner then asked for it in the iced fork
+   instead, to build other apps on the fork later (owner,
+   2026-10-06). So:
+
+   - **The fork** (`patricksmithlaravel/iced_mobile`, branch
+     `tawara/0.14-mobile`) has a second commit on top of D32 item 1's:
+     `iced_winit`'s `scene` module, on iOS only. Before winit's
+     `UIApplicationMain` it observes `UISceneWillConnectNotification` and
+     `UIWindowDidBecomeVisibleNotification` and puts each window winit
+     shows into the application's window scene with `setWindowScene:`.
+     winit 0.30 makes its window with `initWithFrame:` and no scene, and
+     in the scene life cycle such a window is not shown. Both orders
+     occur: usually the scene connects first (winit sends `Resumed`, on
+     which iced makes its window, from
+     `UIApplicationDidBecomeActiveNotification`), but a run was seen
+     where the window was shown first; it is then held until the scene
+     connects. No Objective-C class is declared, and the crates it uses
+     (`objc2` 0.5, `objc2-foundation` and `objc2-ui-kit` 0.2, `block2`
+     0.5) are those winit already links. Any app on the fork gets it.
+   - **The app** declares the scene, which no library can do for it:
+     `Info.plist` carries a `UIApplicationSceneManifest` with one window
+     scene and no delegate class. This alone is what UIKit checks at
+     launch.
+   - winit's life cycle and the shell's lock keep working unchanged:
+     UIKit still posts `UIApplication`'s notifications in a scene-based
+     app, and the cover, the lock and the return pass on iOS 27 and 18.3.
+   - Tawara-mobile's `platform/ios/tawara.sh` (D33) checks that the bundle carries the manifest
+     (the simulator alone would not catch its loss on an older SDK) and,
+     when the cover goes on, that the key window is in a scene. The shell
+     reports that from UIKit as it covers the window, well after launch,
+     so the check does not race the order above.
+
+   When winit gains its own scene support, the fork's commit is dropped
+   and the manifest kept or replaced as winit's documentation says.
+
+### D33. The mobile wallet in its own repository
+
+**owner, 2026-10-06.** Until now the plan kept the Android and iOS entry
+points in this workspace (`crates/mobile`, `platform/`, the `mobile` CI
+workflow; D3, D32). The owner decided that the mobile wallet lives in a
+repository of its own from now on, and chose the following from the
+options put in detail.
+
+1. **`patricksmithlaravel/Tawara-mobile`, public.** It holds what is
+   mobile only: `crates/mobile` (the `tawara-mobile` crate and the iOS
+   `tawara` binary), `platform/android`, `platform/ios` and their CI. It
+   is public like this repository and the iced fork, so its CI keeps
+   D13's anonymous clone and `permissions: {}` (a private repository was
+   considered; its CI would have needed a read token).
+2. **It depends on this repository, never copies it.** `tawara-app`, and
+   through it `tawara-wallet-core` and the library, come from this
+   repository by git, pinned by full commit hash, under the same rule as
+   the library (docs/PLAN.md section 2, D1): no `[patch]`, `[replace]`,
+   vendored copy or path override. A change the phone needs in a screen,
+   in the wallet's logic or in text that protects the user is made here
+   and taken there by moving `rev`. So there is one copy of every screen
+   and every refusal, and the compact phone layout (phase 4 (b)) is work
+   in `tawara-app`, in this repository.
+3. **One iced.** Tawara-mobile takes `iced_winit` from the iced fork at
+   the commit this workspace pins (D32 item 1), so the build holds one
+   copy of each iced crate. A policy test there holds its pins to full
+   hashes and its lockfile to one iced commit.
+4. **The record stays here.** Decisions, the plan and the screens remain
+   in this repository's `docs/`; Tawara-mobile's README points to them.
+5. **The open pull requests.** #13 (phase 4 (a)) keeps its shared part
+   here: `tawara-app`'s `run_in(Host)` and `left_foreground`, the iced
+   fork's pin (moved to 71f00e8, D32 item 8) and the README; its mobile
+   part moves to Tawara-mobile as that repository's first pull request.
+   #14 (the scene work in the shell) is closed; the scene support is in
+   the iced fork, and the manifest and its checks are in Tawara-mobile.
+
+Tawara-mobile pins this repository at #13's head until #13 merges; the
+merge keeps that commit reachable, and the pin then moves to `main`.
