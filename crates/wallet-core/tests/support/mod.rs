@@ -777,6 +777,26 @@ impl Harness {
         }
     }
 
+    /// Wait for `Backgrounded`, and return every event that came before it,
+    /// in order, those already set aside included.
+    pub fn wait_backgrounded(&mut self, within: Duration) -> Vec<Event> {
+        let mut before = std::mem::take(&mut self.seen);
+        if let Some(i) = before.iter().position(|e| matches!(e, Event::Backgrounded)) {
+            self.seen = before.split_off(i + 1);
+            let _ = before.pop();
+            return before;
+        }
+        let deadline = Instant::now() + within;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.events.recv_timeout(left) {
+                Ok(Event::Backgrounded) => return before,
+                Ok(other) => before.push(other),
+                Err(e) => panic!("no Backgrounded event: {e}"),
+            }
+        }
+    }
+
     /// Make a store from the test phrase in `dir` and open it.
     pub fn create_from_phrase(&mut self, dir: &Path) -> Reply {
         self.call(Command::CreateFromPhrase {

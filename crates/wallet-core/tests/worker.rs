@@ -922,6 +922,36 @@ fn touching_keeps_the_store_open_and_polling_does_not() {
 }
 
 #[test]
+fn every_move_to_the_background_is_reported_after_any_lock() {
+    // With nothing open there is nothing to lock and no `Locked`, but the
+    // interface still hears of it: what is typed and unsubmitted is its own
+    // to wipe (PR #13's review; docs/DECISIONS.md D32 item 6).
+    let scratch = Scratch::new("backgrounded");
+    let dir = scratch.store();
+    let mut h = Harness::new();
+    h.handle.background();
+    let before = h.wait_backgrounded(Duration::from_secs(10));
+    assert!(
+        !before.iter().any(|e| matches!(e, Event::Locked { .. })),
+        "nothing was open: {before:?}"
+    );
+
+    // With a store open, `Locked` comes first.
+    let _ = opened(h.create_from_phrase(&dir));
+    h.handle.background();
+    let before = h.wait_backgrounded(Duration::from_secs(10));
+    assert!(
+        matches!(
+            before.last(),
+            Some(Event::Locked {
+                reason: LockReason::Background
+            })
+        ),
+        "{before:?}"
+    );
+}
+
+#[test]
 fn the_background_and_an_explicit_lock_close_the_store() {
     let scratch = Scratch::new("background");
     let dir = scratch.store();
@@ -1668,7 +1698,7 @@ fn dropping_the_last_handle_stops_a_queued_spend_before_it_signs() {
                 assert!(!panicked);
                 break;
             }
-            Event::Busy { .. } | Event::Progress { .. } => {}
+            Event::Busy { .. } | Event::Progress { .. } | Event::Backgrounded => {}
         }
     }
     assert!(chain.submits().is_empty(), "nothing was signed or sent");

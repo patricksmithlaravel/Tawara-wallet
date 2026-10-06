@@ -335,7 +335,8 @@ impl WorkerHandle {
 
     /// The app moved to the background: stop what can be stopped, then lock
     /// (docs/PLAN.md section 4.1). Answered by [`Event::Locked`] with
-    /// [`LockReason::Background`] when a store was open.
+    /// [`LockReason::Background`] when a store was open or a recovery
+    /// phrase was waiting, and then, every time, by [`Event::Backgrounded`].
     pub fn background(&self) {
         self.cancel();
         let _ = self.tx.send(Envelope::Background);
@@ -1138,7 +1139,12 @@ impl<C: Connect> Worker<C> {
                     }
                     self.emit(Event::Done { id, reply });
                 }
-                Envelope::Background => self.lock(LockReason::Background),
+                Envelope::Background => {
+                    self.lock(LockReason::Background);
+                    // Every time, not only when something was open: what is
+                    // typed and not yet submitted lives in the interface.
+                    self.emit(Event::Backgrounded);
+                }
                 Envelope::Wake => {}
                 Envelope::Shutdown => {
                     self.lock(LockReason::Shutdown);

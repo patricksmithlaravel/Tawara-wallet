@@ -502,6 +502,30 @@ pub fn wipe(field: &mut String) {
     drop(SecretText::take(field));
 }
 
+/// Wipe every secret typed on `screen`: the passwords, the recovery phrase
+/// and the words typed to confirm one. The one list of the fields that hold
+/// them, for leaving a screen and for leaving the foreground.
+fn wipe_typed(screen: &mut Screen) {
+    match screen {
+        Screen::NewWallet(f) => {
+            wipe(&mut f.password);
+            wipe(&mut f.again);
+        }
+        Screen::Restore(r) => {
+            wipe(&mut r.form.password);
+            wipe(&mut r.form.again);
+            wipe(&mut r.phrase);
+        }
+        Screen::Unlock(u) => wipe(&mut u.password),
+        Screen::Phrase(p) | Screen::Confirm(p) => {
+            for w in &mut p.words {
+                wipe(w);
+            }
+        }
+        Screen::Start { .. } | Screen::Node(_) | Screen::Wallet(_) => {}
+    }
+}
+
 /// Replace a secret field's text, zeroizing the old.
 fn replace(field: &mut String, typed: Typed) {
     wipe(field);
@@ -576,36 +600,23 @@ impl Model {
     /// keeping a signed spend's page (see [`Model::signed`]).
     fn leave(&mut self) -> Screen {
         self.keep_signed(false);
-        let old = core::mem::replace(
+        let mut old = core::mem::replace(
             &mut self.screen,
             Screen::Start {
                 choice: StartChoice::Create,
             },
         );
-        match old {
-            Screen::NewWallet(mut f) => {
-                wipe(&mut f.password);
-                wipe(&mut f.again);
-                Screen::NewWallet(f)
-            }
-            Screen::Restore(mut r) => {
-                wipe(&mut r.form.password);
-                wipe(&mut r.form.again);
-                wipe(&mut r.phrase);
-                Screen::Restore(r)
-            }
-            Screen::Unlock(mut u) => {
-                wipe(&mut u.password);
-                Screen::Unlock(u)
-            }
-            Screen::Confirm(mut p) => {
-                for w in &mut p.words {
-                    wipe(w);
-                }
-                Screen::Confirm(p)
-            }
-            other => other,
-        }
+        wipe_typed(&mut old);
+        old
+    }
+
+    /// The application left the foreground: whatever secret is typed on
+    /// the screen and not yet submitted is wiped where it is. The worker
+    /// locks what it holds, but a password typed on S7 or a phrase typed on
+    /// S6 is the interface's alone, and with no store open there is no
+    /// `Locked` to clear it (docs/DECISIONS.md D32 item 6).
+    fn backgrounded(&mut self) {
+        wipe_typed(&mut self.screen);
     }
 
     /// Back to S3, in the folder the pending phrase was for (the default
@@ -1236,6 +1247,7 @@ impl App {
                     }
                 }
             }
+            Event::Backgrounded => self.model.backgrounded(),
             Event::Stopped { panicked } => self.stop(panicked),
         }
     }
@@ -1779,6 +1791,83 @@ mod tests {
             matches!(a.model.screen, Screen::Wallet(_))
         });
         assert_eq!(app.model.wallet.as_ref().map(|w| w.accounts.len()), Some(1));
+    }
+
+    /// Apply the worker's events up to and including `Backgrounded`.
+    fn through_backgrounded(app: &mut App, events: &Receiver<Event>) {
+        loop {
+            let event = events
+                .recv_timeout(Duration::from_secs(30))
+                .expect("Backgrounded from the worker");
+            let last = matches!(event, Event::Backgrounded);
+            let _ = app.update(Message::Worker(WorkerEvent::new(event)));
+            if last {
+                return;
+            }
+        }
+    }
+
+    #[test]
+    fn leaving_the_foreground_wipes_what_is_typed_even_with_nothing_open() {
+        // PR #13's review: with the store already locked, the worker has
+        // nothing to lock and sends no `Locked`, so a password typed on S7
+        // was kept, and Unlock opened the wallet after the return.
+        let scratch = Scratch::new("background-typed");
+        let (mut app, events) = app(&scratch);
+        let dir = scratch.0.join("keystore");
+        let _ = app.update(Message::Choose(StartChoice::Restore));
+        let _ = app.update(Message::Continue);
+        let _ = app.update(Message::Dir(dir.display().to_string()));
+        let _ = app.update(Message::Password(typed(PASSWORD)));
+        let _ = app.update(Message::Again(typed(PASSWORD)));
+        let _ = app.update(Message::PhraseText(typed(PHRASE)));
+        let _ = app.update(Message::RestoreWallet);
+        pump(&mut app, &events, |a| {
+            matches!(a.model.screen, Screen::Wallet(_))
+        });
+        let _ = app.update(Message::Lock);
+        pump(&mut app, &events, |a| {
+            matches!(a.model.screen, Screen::Unlock(_))
+        });
+
+        // S7: the right password typed, not submitted.
+        let _ = app.update(Message::Password(typed(PASSWORD)));
+        app.worker.as_ref().expect("a worker").handle.background();
+        through_backgrounded(&mut app, &events);
+        match &app.model.screen {
+            Screen::Unlock(u) => assert!(u.password.is_empty(), "the password was kept"),
+            other => panic!("expected the unlock screen, got {other:?}"),
+        }
+        // Unlock now asks for the password again rather than opening.
+        let _ = app.update(Message::UnlockWallet);
+        pump(
+            &mut app,
+            &events,
+            |a| !matches!(&a.model.screen, Screen::Unlock(u) if u.error.is_none()),
+        );
+        assert!(
+            matches!(&app.model.screen, Screen::Unlock(u) if u.error.is_some()),
+            "{:?}",
+            app.model.screen
+        );
+
+        // S6: a phrase and passwords typed, not submitted, are wiped where
+        // they are; the screen stays.
+        let _ = app.update(Message::Go(Go::Start));
+        let _ = app.update(Message::Choose(StartChoice::Restore));
+        let _ = app.update(Message::Continue);
+        let _ = app.update(Message::Password(typed(PASSWORD)));
+        let _ = app.update(Message::Again(typed(PASSWORD)));
+        let _ = app.update(Message::PhraseText(typed(PHRASE)));
+        app.worker.as_ref().expect("a worker").handle.background();
+        through_backgrounded(&mut app, &events);
+        match &app.model.screen {
+            Screen::Restore(r) => {
+                assert!(r.phrase.is_empty(), "the recovery phrase was kept");
+                assert!(r.form.password.is_empty() && r.form.again.is_empty());
+            }
+            other => panic!("expected the restore screen, got {other:?}"),
+        }
     }
 
     #[test]

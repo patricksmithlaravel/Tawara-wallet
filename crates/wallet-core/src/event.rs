@@ -35,6 +35,12 @@ pub enum Event {
     /// answer to [`crate::Command::Lock`], and whenever a recovery phrase
     /// waiting for its confirmation is dropped by locking.
     Locked { reason: LockReason },
+    /// The app moved to the background ([`crate::WorkerHandle::background`]).
+    /// Sent on every such move, after `Locked` when one is due, and also
+    /// when nothing was open: a password or a recovery phrase typed but not
+    /// yet submitted is the interface's alone, and it clears it on this
+    /// (docs/DECISIONS.md D32 item 6).
+    Backgrounded,
     /// The worker has stopped and will answer nothing more. `panicked` is
     /// true when it stopped because of a fault rather than a shutdown; the
     /// release profile unwinds, so every secret it held was zeroized on the

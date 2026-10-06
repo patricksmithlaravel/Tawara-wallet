@@ -1457,6 +1457,20 @@ on the three conditions D18 left open.
    application calls `WorkerHandle::background` (D24) and draws a cover
    with no wallet content until it is back, so iOS's app-switcher
    snapshot shows nothing (section 4.3).
+
+   **And wipes what is typed (PR #13's review, [P2]).** Locking the
+   worker is not enough. A password typed on S7 and not yet submitted, or
+   a recovery phrase typed on S6, lives in the interface, and was wiped
+   only on `Event::Locked`; with the store already locked there is
+   nothing to lock and no `Locked`, so the password survived the switch
+   and Unlock opened the wallet after the return. The rule is now: every
+   move to the background is reported to the interface, whether or not
+   anything was open (`Event::Backgrounded`, after any `Locked`), and on
+   it the interface wipes every secret field of the screen showing, in
+   place: the passwords, the recovery phrase and the words typed to
+   confirm one. One function lists those fields (`wipe_typed`), for
+   leaving a screen and for leaving the foreground; it names every
+   screen, so a new screen with a secret has to be added to it.
 7. **Where the store lives.** Android: `no_backup/` (D21), with
    `android:allowBackup="false"` and `dataExtractionRules` that exclude
    every domain from cloud backup and device transfer, so the store
