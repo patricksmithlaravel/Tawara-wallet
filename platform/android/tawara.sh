@@ -244,7 +244,9 @@ summary() {
   } >>"${GITHUB_STEP_SUMMARY:-/dev/null}"
 }
 
-emulator() {
+# Not `emulator`: a function of that name would shadow the SDK's emulator
+# program, which emulator_up runs.
+on_emulator() {
   emulator_up
   trap 'summary; emulator_down' EXIT
 
@@ -322,6 +324,6 @@ emulator() {
 case ${1:-} in
   build) build ;;
   apk) apk ;;
-  emulator) emulator ;;
+  emulator) on_emulator ;;
   *) die "usage: $0 build|apk|emulator" ;;
 esac
