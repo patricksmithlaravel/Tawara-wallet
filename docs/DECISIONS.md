@@ -1512,6 +1512,19 @@ on the three conditions D18 left open.
    submission is reconciled at the next unlock. Of the options put to the
    owner, letting iOS suspend and locking on the return was declined, and
    so, for now, was the same bound on Android.
+
+   The lock waited for includes the interface's own wipe
+   (Tawara-mobile#1's second review): a password or phrase typed, and a
+   recovery phrase shown, live in the interface, which clears them on its
+   next message, not when the worker is done. So the application counts
+   the moves it has wiped for, and `Leaving` is done only when the worker
+   has locked and the interface has wiped for that move. The clock's tick
+   each second is such a message, so it comes within a second even while
+   the worker is busy. A recovery phrase shown or being confirmed is
+   dropped by that wipe, back to S3 with the note the worker's `Locked`
+   would give; the folder chosen stays. With no background time at all,
+   the shell's only thread to wait on is the main one, which the
+   interface's wipe needs: the process ends there at once.
 7. **Where the store lives.** Android: `no_backup/` (D21), with
    `android:allowBackup="false"` and `dataExtractionRules` that exclude
    every domain from cloud backup and device transfer, so the store

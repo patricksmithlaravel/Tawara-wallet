@@ -8,8 +8,8 @@
 //! application off the screen.
 
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock, PoisonError};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
 
 use tawara_wallet_core::Locking;
 
@@ -42,18 +42,57 @@ type Lock = Box<dyn Fn() -> Leaving + Send>;
 /// suspend keeps it running until [`Leaving::wait`] says the lock is done.
 #[derive(Debug)]
 #[must_use = "a shell that may be suspended waits on it"]
-pub struct Leaving(Option<Locking>);
+pub struct Leaving {
+    locking: Option<Locking>,
+    /// The interface's wipe, and the move it must have acted on.
+    wiped: Option<(Arc<Wiped>, u64)>,
+}
 
 impl Leaving {
-    /// Wait up to `within` for the lock. `true` once it is done, or when
-    /// there was no worker to lock; `false` when it is still running a
-    /// command after `within`.
+    /// Wait up to `within`, in all, for the lock and for the interface's
+    /// wipe of what it holds (Tawara-mobile#1's second review). `true` once
+    /// both are done, or when there was nothing to do; `false` when either
+    /// is still waited on after `within`.
     pub fn wait(&self, within: Duration) -> bool {
-        self.0.as_ref().is_none_or(|locking| locking.wait(within))
+        let deadline = Instant::now() + within;
+        self.locking
+            .as_ref()
+            .is_none_or(|locking| locking.wait(within))
+            && self.wiped.as_ref().is_none_or(|(wiped, wanted)| {
+                wiped.wait_for(*wanted, deadline.saturating_duration_since(Instant::now()))
+            })
     }
 
-    pub(crate) fn of(locking: Option<Locking>) -> Leaving {
-        Leaving(locking)
+    pub(crate) fn of(locking: Option<Locking>, wiped: Option<(Arc<Wiped>, u64)>) -> Leaving {
+        Leaving { locking, wiped }
+    }
+}
+
+/// How many moves to the background the interface has wiped for: the
+/// password, phrase and words typed, and a recovery phrase shown. The
+/// application's thread raises it, and a shell's thread waits on it.
+#[derive(Debug, Default)]
+pub(crate) struct Wiped {
+    moves: Mutex<u64>,
+    raised: Condvar,
+}
+
+impl Wiped {
+    /// The interface has wiped for `moves` moves.
+    pub(crate) fn set(&self, moves: u64) {
+        let mut done = self.moves.lock().unwrap_or_else(PoisonError::into_inner);
+        *done = (*done).max(moves);
+        self.raised.notify_all();
+    }
+
+    /// Wait up to `within` for the wipe of move `wanted`.
+    fn wait_for(&self, wanted: u64, within: Duration) -> bool {
+        let done = self.moves.lock().unwrap_or_else(PoisonError::into_inner);
+        let (done, _) = self
+            .raised
+            .wait_timeout_while(done, within, |done| *done < wanted)
+            .unwrap_or_else(PoisonError::into_inner);
+        *done >= wanted
     }
 }
 
@@ -67,7 +106,7 @@ static LOCK: Mutex<Option<Lock>> = Mutex::new(None);
 pub fn left_foreground() -> Leaving {
     match LOCK.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
         Some(lock) => lock(),
-        None => Leaving(None),
+        None => Leaving::of(None, None),
     }
 }
 
@@ -110,13 +149,13 @@ mod tests {
         let counter = Arc::clone(&first);
         on_leaving(move || {
             counter.fetch_add(1, Ordering::SeqCst);
-            Leaving(None)
+            Leaving::of(None, None)
         });
         let _ = left_foreground();
         let counter = Arc::clone(&second);
         on_leaving(move || {
             counter.fetch_add(1, Ordering::SeqCst);
-            Leaving(None)
+            Leaving::of(None, None)
         });
         let _ = left_foreground();
         let _ = left_foreground();

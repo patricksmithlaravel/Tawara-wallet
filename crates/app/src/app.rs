@@ -92,6 +92,9 @@ pub struct Model {
     /// those this model has acted on (docs/DECISIONS.md D32 item 6).
     pub(crate) left: Arc<AtomicU64>,
     left_seen: u64,
+    /// The moves this model has wiped for, which a shell waits on before it
+    /// lets the system suspend the process (docs/DECISIONS.md D32 item 6).
+    pub(crate) wiped: Arc<host::Wiped>,
 }
 
 /// What an explorer read last answered, and whether another is on its way.
@@ -517,6 +520,15 @@ pub fn wipe(field: &mut String) {
     drop(SecretText::take(field));
 }
 
+/// S3's note when a recovery phrase was dropped before it was confirmed,
+/// `why` saying when.
+fn phrase_discarded(why: &str) -> String {
+    format!(
+        "The recovery phrase was discarded {why}, before it was confirmed, and no store was \
+         written. Choose the password again and continue to get a new phrase."
+    )
+}
+
 /// Wipe every secret typed on `screen`: the passwords, the recovery phrase
 /// and the words typed to confirm one. The one list of the fields that hold
 /// them, for leaving a screen and for leaving the foreground.
@@ -577,6 +589,7 @@ impl Model {
             stopped: None,
             left: Arc::new(AtomicU64::new(0)),
             left_seen: 0,
+            wiped: Arc::default(),
             width: crate::WINDOW.0,
             clock_ms: now_ms(),
             zone: crate::ui::Zone::System,
@@ -638,7 +651,18 @@ impl Model {
     /// locks what it holds, but a password typed on S7 or a phrase typed on
     /// S6 is the interface's alone, and with no store open there is no
     /// `Locked` to clear it (docs/DECISIONS.md D32 item 6).
+    ///
+    /// A recovery phrase shown or being confirmed goes too, as the worker's
+    /// lock drops its own copy, and the screen goes back to S3 saying so:
+    /// it is the interface's to drop, and the shell does not let the
+    /// process be suspended before it has (Tawara-mobile#1's second review).
     fn backgrounded(&mut self) {
+        if matches!(self.screen, Screen::Phrase(_) | Screen::Confirm(_)) {
+            self.back_to_new_wallet(Some(phrase_discarded(
+                "when the application left the screen",
+            )));
+            return;
+        }
         wipe_typed(&mut self.screen);
     }
 
@@ -647,6 +671,9 @@ impl Model {
     fn back_to_new_wallet(&mut self, note: Option<String>) {
         let dir = match self.leave() {
             Screen::Phrase(p) | Screen::Confirm(p) => p.dir,
+            // Already back here, when the interface dropped the phrase
+            // before the worker's `Locked` came: the folder stays.
+            Screen::NewWallet(f) => f.dir,
             _ => self.default_dir_text(),
         };
         self.screen = Screen::NewWallet(PasswordForm {
@@ -703,10 +730,14 @@ impl App {
     /// application takes already finds it; then the worker's lock.
     fn leaving_hook(&self) -> impl Fn() -> host::Leaving + Send + 'static {
         let left = Arc::clone(&self.model.left);
+        let wiped = Arc::clone(&self.model.wiped);
         let worker = self.worker.as_ref().map(|w| w.handle.clone());
         move || {
-            left.fetch_add(1, Ordering::SeqCst);
-            host::Leaving::of(worker.as_ref().map(WorkerHandle::background))
+            let this_move = left.fetch_add(1, Ordering::SeqCst) + 1;
+            host::Leaving::of(
+                worker.as_ref().map(WorkerHandle::background),
+                Some((Arc::clone(&wiped), this_move)),
+            )
         }
     }
 
@@ -859,9 +890,14 @@ impl App {
         // drawn, before the wipe, so it is dropped: the field is drawn
         // empty and typed again.
         let left = self.model.left.load(Ordering::SeqCst);
+        // The clock's tick each second is such a message, so this runs
+        // within a second of the move even while the worker is busy, and
+        // the shell waiting to let the system suspend the process hears of
+        // it.
         if left != self.model.left_seen {
             self.model.left_seen = left;
             self.model.backgrounded();
+            self.model.wiped.set(left);
         }
         // iced takes a whole batch of messages against the fields as drawn
         // before it draws them again, so every one of them from a field
@@ -1259,11 +1295,7 @@ impl App {
                         LockReason::Background => "when the application left the screen".to_owned(),
                         _ => "when the wallet locked".to_owned(),
                     };
-                    self.model.back_to_new_wallet(Some(format!(
-                        "The recovery phrase was discarded {why}, before it was confirmed, and \
-                         no store was written. Choose the password again and continue to get a \
-                         new phrase."
-                    )));
+                    self.model.back_to_new_wallet(Some(phrase_discarded(&why)));
                     return;
                 }
                 let mut note = match reason {
@@ -2026,6 +2058,52 @@ mod tests {
         // Typed into the fields as drawn again: taken as usual.
         let _ = app.update(Message::Password(typed_now(&app, PASSWORD)));
         assert!(matches!(&app.model.screen, Screen::Unlock(u) if u.password == PASSWORD));
+    }
+
+    #[test]
+    fn a_shell_hears_the_move_done_only_once_the_interface_has_wiped() {
+        // Tawara-mobile#1's second review: the worker's lock is not all a
+        // shell must wait for before the system may suspend the process. A
+        // recovery phrase shown, or a password typed, is the interface's.
+        let scratch = Scratch::new("background-ack");
+        let (mut app, events) = app(&scratch);
+        let chosen = scratch.0.join("chosen").display().to_string();
+        let _ = app.update(Message::Continue);
+        let _ = app.update(Message::Dir(chosen.clone()));
+        let _ = app.update(Message::Password(typed(PASSWORD)));
+        let _ = app.update(Message::Again(typed(PASSWORD)));
+        let _ = app.update(Message::CreateWallet);
+        pump(&mut app, &events, |a| {
+            matches!(a.model.screen, Screen::Phrase(_))
+        });
+
+        let leaving = (app.leaving_hook())();
+        // The worker locks on its own; the interface has taken nothing yet.
+        assert!(
+            !leaving.wait(Duration::from_millis(500)),
+            "reported done while the interface still showed the phrase"
+        );
+        // The clock's next tick is enough.
+        let _ = app.update(Message::Tick(now_ms()));
+        assert!(leaving.wait(Duration::from_secs(10)));
+        let s3 = |app: &App| match &app.model.screen {
+            Screen::NewWallet(f) => {
+                assert_eq!(f.dir, chosen, "the folder chosen stays");
+                assert!(
+                    f.note
+                        .as_deref()
+                        .is_some_and(|n| n.contains("left the screen")),
+                    "{:?}",
+                    f.note
+                );
+            }
+            other => panic!("expected S3, the phrase gone, got {other:?}"),
+        };
+        s3(&app);
+        // The worker's own `Locked`, for the phrase it dropped, changes
+        // nothing more.
+        through_backgrounded(&mut app, &events);
+        s3(&app);
     }
 
     #[test]
