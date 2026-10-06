@@ -1394,7 +1394,8 @@ on the library's reads at `7cdc2e9` (D7). The choices:
 
 ### D32. Phase 4: the mobile shells
 
-**owner, 2026-10-06 (items 1 to 4); proposed (items 5 to 8).** Phase 4
+**owner, 2026-10-06 (items 1 to 4, and item 8's UIScene half); proposed
+(items 5 to 7, and item 8's Android half).** Phase 4
 runs the same `tawara-app` on Android and iOS (docs/PLAN.md section 7),
 on the three conditions D18 left open.
 
@@ -1468,3 +1469,44 @@ on the three conditions D18 left open.
    beta at this writing). They are reviewed again at release readiness
    (phase 5): if UIScene is still missing then, an iOS release built with
    a newer SDK waits on it, and plan D3's fallback is put to the owner.
+
+   **UIScene: owner, 2026-10-06.** What TN3187 warned of was measured on
+   phase 4's own build, on a Mac with Xcode 27. Linked with the iOS 27
+   SDK, the app is stopped by UIKit at launch on the iOS 27 simulator
+   (`EXC_BREAKPOINT` in `_UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption`,
+   as the scene is created), after the store's directory has been made
+   and protected. The same binary runs on iOS 18.3, and runs on iOS 27
+   when its load command says SDK 26: the check is on the SDK the app is
+   linked with, not on the phone's iOS. CI builds with Xcode 26.6, so it
+   stayed green, and would have turned red the day the runner's default
+   Xcode became 27; and Apple requires the newest SDK for App Store
+   uploads some months after each release.
+
+   Of four ways put to the owner (guard the build and fix later; guard
+   and defer to phase 5; record only; start the scene work now), the
+   owner chose to start now, with no guard. It is done in the iOS shell,
+   with no fork of winit or a second commit on the iced fork:
+
+   - `Info.plist` carries a `UIApplicationSceneManifest`: one window
+     scene, no multiple scenes, no delegate class. This alone is what
+     UIKit checks at launch.
+   - In the scene life cycle a window is shown only in a scene, and winit
+     0.30 makes its window with `initWithFrame:` and none. The shell
+     observes `UISceneWillConnectNotification` and
+     `UIWindowDidBecomeVisibleNotification` (notifications, as for the
+     lock, so no Objective-C class is declared, D4) and puts the window
+     in the scene with `setWindowScene:`. Both orders occur: usually the
+     scene connects first (winit sends `Resumed`, on which iced makes its
+     window, from `UIApplicationDidBecomeActiveNotification`), but a run
+     was seen where the window was shown first; it is then held until
+     the scene connects.
+   - winit's life cycle and the shell's lock keep working unchanged:
+     UIKit still posts `UIApplication`'s notifications in a scene-based
+     app, and the cover, the lock and the return all pass on iOS 27 and
+     18.3.
+   - `platform/ios/tawara.sh` checks that the bundle carries the manifest
+     (the simulator alone would not catch its loss on an older SDK), that
+     the scene connected, and that UIKit reports the window in it.
+
+   When winit gains its own scene support, the shell's part is removed
+   and the manifest kept or replaced as winit's documentation says.

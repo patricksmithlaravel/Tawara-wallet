@@ -91,6 +91,11 @@ simulator() {
   sed -e 's/@PLATFORM@/iPhoneSimulator/' -e "s/@MINOS@/$IPHONEOS_DEPLOYMENT_TARGET/" \
     -e "s/@VERSION@/$(version)/" platform/ios/Info.plist.in >"$app/Info.plist"
   plutil -lint "$app/Info.plist"
+  # Without the scene manifest, an app linked with the iOS 27 SDK is
+  # stopped by UIKit at launch (D32 item 8); older SDKs still run it, so the
+  # simulator alone would not catch its loss.
+  check bundle.scene_manifest "UIApplicationSceneManifest in Info.plist" \
+    plutil -extract UIApplicationSceneManifest.UISceneConfigurations xml1 -o /dev/null "$app/Info.plist"
   codesign --force --sign - --timestamp=none "$app"
   codesign --verify --verbose=2 "$app"
   endgroup
@@ -125,6 +130,12 @@ PY
   line=$(wait_after "$err" 0 '^TAWARA store: ' 5 || true)
   check store.protected "${line:-no store line}" grep -q 'protected=true' <<<"$line"
   check store.excluded "${line:-no store line}" grep -q 'excluded_from_backup=true' <<<"$line"
+  # The scene life cycle (D32 item 8): UIKit connects the manifest's scene,
+  # and the shell puts winit's window in it, or nothing is shown.
+  line=$(wait_after "$err" 0 '^TAWARA scene: connected$' 20 || true)
+  check scene.connected "${line:-no scene line}" test -n "$line"
+  line=$(wait_after "$err" 0 '^TAWARA scene: window in scene=' 20 || true)
+  check scene.window "${line:-no window line}" grep -q 'scene=true$' <<<"$line"
   sleep 8
   shot 01-start
   endgroup

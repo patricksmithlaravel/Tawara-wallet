@@ -1,5 +1,5 @@
 //! iOS: the store's directory, its protection and backup exclusion, the
-//! pasteboard, the app-switcher cover and the lock, through the
+//! pasteboard, the app-switcher cover, the lock and the window scene, through the
 //! Objective-C runtime with no Swift or Objective-C source
 //! (docs/DECISIONS.md D4, D32).
 //!
@@ -13,7 +13,7 @@ use std::ptr::NonNull;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
+use objc2::runtime::{AnyObject, NSObjectProtocol};
 use objc2_foundation::{
     MainThreadMarker, NSCopying, NSDictionary, NSFileManager, NSFileProtectionComplete,
     NSFileProtectionKey, NSHomeDirectory, NSNotification, NSNotificationCenter, NSNotificationName,
@@ -22,13 +22,18 @@ use objc2_foundation::{
 use objc2_ui_kit::{
     UIApplication, UIApplicationDidBecomeActiveNotification,
     UIApplicationDidEnterBackgroundNotification, UIApplicationWillResignActiveNotification,
-    UIColor, UIPasteboard, UIView, UIViewAutoresizing,
+    UIColor, UIPasteboard, UIScene, UISceneWillConnectNotification, UIView, UIViewAutoresizing,
+    UIWindow, UIWindowDidBecomeVisibleNotification, UIWindowScene,
 };
 use tawara_app::Host;
 
 thread_local! {
     /// The cover over the window while the application is not active.
     static COVER: RefCell<Option<Retained<UIView>>> = const { RefCell::new(None) };
+    /// The application's one window scene, once UIKit has connected it.
+    static SCENE: RefCell<Option<Retained<UIWindowScene>>> = const { RefCell::new(None) };
+    /// Windows shown before the scene connected, to go into it when it does.
+    static PENDING: RefCell<Vec<Retained<UIWindow>>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Start the application. Never returns: winit's `UIApplicationMain` ends
@@ -142,10 +147,15 @@ fn copy(text: &str) {
 /// iced passes none of them to the application (docs/spikes/P1-REPORT.md,
 /// I6). The observers live as long as the process.
 fn observe(mtm: MainThreadMarker) {
-    type Notice = (&'static NSNotificationName, fn(MainThreadMarker));
+    type Notice = (
+        &'static NSNotificationName,
+        fn(MainThreadMarker, &NSNotification),
+    );
     // SAFETY: the notification names are UIKit's own constants.
-    let notices: [Notice; 3] = unsafe {
+    let notices: [Notice; 5] = unsafe {
         [
+            (UISceneWillConnectNotification, scene_connected),
+            (UIWindowDidBecomeVisibleNotification, window_visible),
             (UIApplicationWillResignActiveNotification, cover),
             (
                 UIApplicationDidEnterBackgroundNotification,
@@ -162,7 +172,9 @@ fn observe(mtm: MainThreadMarker) {
         )
     };
     for (name, act) in notices {
-        let block = RcBlock::new(move |_: NonNull<NSNotification>| act(mtm));
+        // SAFETY: the center passes a valid notification for the call.
+        let block =
+            RcBlock::new(move |note: NonNull<NSNotification>| act(mtm, unsafe { note.as_ref() }));
         // SAFETY: the block is called on the main queue, as `act` needs.
         let observer = unsafe {
             center.addObserverForName_object_queue_usingBlock(
@@ -176,10 +188,65 @@ fn observe(mtm: MainThreadMarker) {
     }
 }
 
+/// UIKit has connected the application's scene (Info.plist's
+/// `UIApplicationSceneManifest`, D32 item 8). Apps linked with the iOS 27
+/// SDK must use the scene life cycle or UIKit stops them at launch, and in
+/// that life cycle a window is shown only in a scene. winit 0.30 makes its
+/// window with `initWithFrame:` and no scene, so the shell puts it in the
+/// scene: here, if it was shown first, or in [`window_visible`] if the
+/// scene came first. Both orders happen.
+fn scene_connected(_: MainThreadMarker, note: &NSNotification) {
+    // SAFETY: this notification's object is the UIScene that connects.
+    let Some(scene) = (unsafe { note.object() }).map(|o| unsafe { Retained::cast::<UIScene>(o) })
+    else {
+        return;
+    };
+    if !scene.is_kind_of::<UIWindowScene>() {
+        return;
+    }
+    // SAFETY: checked just above.
+    let scene = unsafe { Retained::cast::<UIWindowScene>(scene) };
+    eprintln!("TAWARA scene: connected");
+    for window in PENDING.take() {
+        place(&window, &scene);
+    }
+    SCENE.set(Some(scene));
+}
+
+/// A window became visible: into the scene if it has none, or held until
+/// the scene connects.
+fn window_visible(_: MainThreadMarker, note: &NSNotification) {
+    // SAFETY: this notification's object is the UIWindow.
+    let Some(window) = (unsafe { note.object() }).map(|o| unsafe { Retained::cast::<UIWindow>(o) })
+    else {
+        return;
+    };
+    // SAFETY: a UIKit call on the main thread with a valid window.
+    if unsafe { window.windowScene() }.is_some() {
+        return;
+    }
+    let scene = SCENE.with_borrow(Clone::clone);
+    match scene {
+        Some(scene) => place(&window, &scene),
+        None => PENDING.with_borrow_mut(|pending| pending.push(window)),
+    }
+}
+
+fn place(window: &UIWindow, scene: &UIWindowScene) {
+    // SAFETY: UIKit calls on the main thread with valid objects.
+    let placed = unsafe {
+        window.setWindowScene(Some(scene));
+        window.makeKeyAndVisible();
+        window.windowScene().is_some()
+    };
+    // Read back from UIKit, for platform/ios/tawara.sh's check.
+    eprintln!("TAWARA scene: window in scene={placed}");
+}
+
 /// The application is about to stop being active (the app switcher, a
 /// call, Control Center): cover the window, so the snapshot iOS takes for
 /// the app switcher shows nothing of the wallet (docs/PLAN.md section 4.3).
-fn cover(mtm: MainThreadMarker) {
+fn cover(mtm: MainThreadMarker, _: &NSNotification) {
     COVER.with_borrow_mut(|cover| {
         if cover.is_some() {
             return;
@@ -206,7 +273,7 @@ fn cover(mtm: MainThreadMarker) {
 
 /// Active again: the cover goes. The wallet is locked if the application
 /// was in the background meanwhile.
-fn uncover(_: MainThreadMarker) {
+fn uncover(_: MainThreadMarker, _: &NSNotification) {
     if let Some(view) = COVER.with_borrow_mut(Option::take) {
         // SAFETY: UIKit call on the main thread with a valid view.
         unsafe { view.removeFromSuperview() };
@@ -215,7 +282,7 @@ fn uncover(_: MainThreadMarker) {
 }
 
 /// In the background: the wallet locks there and then (D32 item 6).
-fn entered_background(_: MainThreadMarker) {
+fn entered_background(_: MainThreadMarker, _: &NSNotification) {
     eprintln!("TAWARA lifecycle: background; locking");
     tawara_app::left_foreground();
 }

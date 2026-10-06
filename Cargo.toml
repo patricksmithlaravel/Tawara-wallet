@@ -137,8 +137,10 @@ objc2-ui-kit = { version = "0.2.2", features = [
     "UIColor",
     "UIPasteboard",
     "UIResponder",
+    "UIScene",
     "UIView",
     "UIWindow",
+    "UIWindowScene",
 ] }
 
 tawara-wallet-core = { path = "crates/wallet-core" }
