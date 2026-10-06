@@ -22,8 +22,8 @@ pub fn view(model: &Model) -> Element<'_, Message> {
         (None, Screen::Node(f)) => node(model, f),
         (None, Screen::NewWallet(f)) => new_wallet(model, f),
         (None, Screen::Phrase(p)) => phrase(p),
-        (None, Screen::Confirm(p)) => confirm(p),
-        (None, Screen::Restore(r)) => restore(r),
+        (None, Screen::Confirm(p)) => confirm(p, model.drawn()),
+        (None, Screen::Restore(r)) => restore(r, model.drawn()),
         (None, Screen::Unlock(u)) => unlock(model, u),
         (None, Screen::Wallet(_)) => column![].into(),
     };
@@ -298,8 +298,13 @@ fn node<'a>(model: &'a Model, form: &'a NodeForm) -> Element<'a, Message> {
     .into()
 }
 
-/// The folder and the two passwords, shared by S3 and S6.
-fn password_fields(form: &PasswordForm, submit: Option<Message>) -> Element<'_, Message> {
+/// The folder and the two passwords, shared by S3 and S6. `drawn` is the
+/// fields' generation (`Typed`).
+fn password_fields(
+    form: &PasswordForm,
+    drawn: u64,
+    submit: Option<Message>,
+) -> Element<'_, Message> {
     let mut fields = column![ui::field(
         "Folder",
         "",
@@ -322,7 +327,7 @@ fn password_fields(form: &PasswordForm, submit: Option<Message>) -> Element<'_, 
                     &form.password,
                     ty::FIELD,
                     true,
-                    |s| Message::Password(Typed(s)),
+                    move |text| Message::Password(Typed { text, drawn }),
                     None,
                 ),
                 ui::helper(format!("At least {MIN_PASSWORD_LEN} characters.")),
@@ -335,7 +340,7 @@ fn password_fields(form: &PasswordForm, submit: Option<Message>) -> Element<'_, 
             &form.again,
             ty::FIELD,
             true,
-            |s| Message::Again(Typed(s)),
+            move |text| Message::Again(Typed { text, drawn }),
             submit,
         ))
         .into()
@@ -359,6 +364,7 @@ fn new_wallet<'a>(model: &'a Model, form: &'a PasswordForm) -> Element<'a, Messa
     }
     body = body.push(password_fields(
         form,
+        model.drawn(),
         ready.then_some(Message::CreateWallet),
     ));
     if let Some(e) = &form.error {
@@ -439,7 +445,7 @@ fn phrase(p: &PhraseState) -> Element<'_, Message> {
 }
 
 /// S5: three words, to show the phrase was written down.
-fn confirm(p: &PhraseState) -> Element<'_, Message> {
+fn confirm(p: &PhraseState, drawn: u64) -> Element<'_, Message> {
     let [a, b, c] = p.positions;
     let ready = p.words.iter().all(|w| !w.trim().is_empty());
     let mut fields = column![].spacing(sp::S16);
@@ -451,7 +457,7 @@ fn confirm(p: &PhraseState) -> Element<'_, Message> {
             &p.words[i],
             ty::FIELD,
             true,
-            move |s| Message::Word(i, Typed(s)),
+            move |text| Message::Word(i, Typed { text, drawn }),
             (last && ready).then_some(Message::ConfirmWords),
         ));
     }
@@ -503,7 +509,7 @@ fn scheme_warning<'a>() -> Element<'a, Message> {
 }
 
 /// S6: a store from a phrase the person already has.
-fn restore(r: &RestoreForm) -> Element<'_, Message> {
+fn restore(r: &RestoreForm, drawn: u64) -> Element<'_, Message> {
     let ready = !r.form.password.is_empty()
         && !r.form.again.is_empty()
         && !r.phrase.trim().is_empty()
@@ -515,14 +521,14 @@ fn restore(r: &RestoreForm) -> Element<'_, Message> {
             color::TEXT_PRIMARY,
         ),
         scheme_warning(),
-        password_fields(&r.form, None),
+        password_fields(&r.form, drawn, None),
         ui::field(
             "Recovery phrase",
             "",
             &r.phrase,
             ty::FIELD,
             true,
-            |s| Message::PhraseText(Typed(s)),
+            move |text| Message::PhraseText(Typed { text, drawn }),
             ready.then_some(Message::RestoreWallet),
         ),
     ]
@@ -544,6 +550,7 @@ fn restore(r: &RestoreForm) -> Element<'_, Message> {
 /// S7: unlock the store on this computer.
 fn unlock<'a>(model: &'a Model, form: &'a UnlockForm) -> Element<'a, Message> {
     let ready = !form.password.is_empty() && !form.dir.trim().is_empty();
+    let drawn = model.drawn();
     let mut body = column![heading(
         "Unlock",
         "Open the store on this computer with its password. It stays open until you lock \
@@ -573,7 +580,7 @@ fn unlock<'a>(model: &'a Model, form: &'a UnlockForm) -> Element<'a, Message> {
             &form.password,
             ty::FIELD,
             true,
-            |s| Message::Password(Typed(s)),
+            move |text| Message::Password(Typed { text, drawn }),
             ready.then_some(Message::UnlockWallet),
         ));
     if let Some(e) = &form.error {

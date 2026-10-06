@@ -291,8 +291,17 @@ pub struct WalletPage {
 
 /// Text typed into a secret field, on its way into the model. Its `Debug`
 /// prints nothing of it, so no message log can show it.
+///
+/// `drawn` is the generation of the field it came from: the number of moves
+/// to the background the model had acted on when the field was drawn (see
+/// `Model::drawn`). A field drawn before the application left holds what
+/// was typed then, and so does every message it makes, until it is drawn
+/// again; such text is never taken (docs/DECISIONS.md D32 item 6).
 #[derive(Clone)]
-pub struct Typed(pub String);
+pub struct Typed {
+    pub text: String,
+    pub drawn: u64,
+}
 
 impl core::fmt::Debug for Typed {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -535,7 +544,7 @@ fn wipe_typed(screen: &mut Screen) {
 /// Replace a secret field's text, zeroizing the old.
 fn replace(field: &mut String, typed: Typed) {
     wipe(field);
-    *field = typed.0;
+    *field = typed.text;
 }
 
 impl Model {
@@ -544,6 +553,12 @@ impl Model {
     /// wherever it is, or else the one in the default folder) it is the
     /// unlock screen for it; otherwise it is the start.
     #[must_use]
+    /// The generation a secret field drawn now belongs to: the moves to
+    /// the background acted on so far (see [`Typed`]).
+    pub(crate) fn drawn(&self) -> u64 {
+        self.left_seen
+    }
+
     pub fn new(prefs: Preferences, default_dir: Option<PathBuf>) -> Model {
         let mut model = Model {
             screen: Screen::Start {
@@ -847,15 +862,25 @@ impl App {
         if left != self.model.left_seen {
             self.model.left_seen = left;
             self.model.backgrounded();
-            if matches!(
-                message,
-                Message::Password(_)
-                    | Message::Again(_)
-                    | Message::PhraseText(_)
-                    | Message::Word(..)
-            ) {
-                return Task::none();
+        }
+        // iced takes a whole batch of messages against the fields as drawn
+        // before it draws them again, so every one of them from a field
+        // drawn before the latest move is refused, not only the first, and
+        // its text wiped (PR #13's third review).
+        if let Message::Password(typed)
+        | Message::Again(typed)
+        | Message::PhraseText(typed)
+        | Message::Word(_, typed) = &message
+            && typed.drawn != self.model.left_seen
+        {
+            if let Message::Password(mut typed)
+            | Message::Again(mut typed)
+            | Message::PhraseText(mut typed)
+            | Message::Word(_, mut typed) = message
+            {
+                wipe(&mut typed.text);
             }
+            return Task::none();
         }
         let m = &mut self.model;
         match message {
@@ -1661,8 +1686,29 @@ mod tests {
         }
     }
 
+    /// Typed into a field drawn before any move to the background.
     fn typed(s: &str) -> Typed {
-        Typed(s.to_owned())
+        Typed {
+            text: s.to_owned(),
+            drawn: 0,
+        }
+    }
+
+    /// Typed into a field drawn before the latest move to the background
+    /// that `app` has acted on: one generation behind.
+    fn typed_now_before(app: &App, s: &str) -> Typed {
+        Typed {
+            text: s.to_owned(),
+            drawn: app.model.drawn() - 1,
+        }
+    }
+
+    /// Typed into a field as `app` draws it now.
+    fn typed_now(app: &App, s: &str) -> Typed {
+        Typed {
+            text: s.to_owned(),
+            drawn: app.model.drawn(),
+        }
     }
 
     #[test]
@@ -1949,16 +1995,36 @@ mod tests {
             app.model.screen
         );
 
-        // The first key after a return carries the field's text as last
-        // drawn, the old password with it: it is dropped, not kept.
-        app.model.left.fetch_add(1, Ordering::SeqCst);
-        let _ = app.update(Message::Password(typed(&format!("{PASSWORD}x"))));
+        // PR #13's third review: iced takes a batch of messages against the
+        // fields as drawn before it draws them again. The first message of
+        // the batch wipes; every secret's text after it, from the fields
+        // drawn before leaving, is refused, however many there are, and an
+        // Unlock in the same batch finds the field empty.
+        let _ = app.update(Message::Password(typed_now(&app, PASSWORD)));
+        let _ = (app.leaving_hook())();
+        let _ = app.update(Message::Input);
+        let _ = app.update(Message::Password(typed_now_before(
+            &app,
+            &format!("{PASSWORD}x"),
+        )));
+        let _ = app.update(Message::Password(typed_now_before(&app, PASSWORD)));
         match &app.model.screen {
-            Screen::Unlock(u) => assert!(u.password.is_empty(), "the stale text was kept"),
+            Screen::Unlock(u) => assert!(u.password.is_empty(), "stale text was taken"),
             other => panic!("expected the unlock screen, got {other:?}"),
         }
-        // And typing goes on as usual after that.
-        let _ = app.update(Message::Password(typed(PASSWORD)));
+        let _ = app.update(Message::UnlockWallet);
+        pump(&mut app, &events, |a| {
+            matches!(&a.model.screen, Screen::Unlock(u) if u.error.is_some())
+                || matches!(a.model.screen, Screen::Wallet(_))
+        });
+        assert!(
+            matches!(&app.model.screen, Screen::Unlock(u) if u.error.is_some()),
+            "{:?}",
+            app.model.screen
+        );
+
+        // Typed into the fields as drawn again: taken as usual.
+        let _ = app.update(Message::Password(typed_now(&app, PASSWORD)));
         assert!(matches!(&app.model.screen, Screen::Unlock(u) if u.password == PASSWORD));
     }
 

@@ -1481,8 +1481,15 @@ on the three conditions D18 left open.
    the shell's `left_foreground` now also counts the move, on its own
    thread, before it asks the worker to lock; and the application, before
    it looks at any message, wipes what is typed if the count has moved
-   since the last one. A secret's text arriving in that same message was
-   taken from the field as last drawn, before the wipe, and is dropped.
+   since the last one. And a secret's text is taken only from a field
+   drawn after the latest such wipe (PR #13's third review): iced takes a
+   whole batch of messages against the fields as last drawn before it
+   draws them again, so every message from a field drawn before the move
+   carries what was typed then. Each secret's text carries the generation
+   of the field it came from (`Typed::drawn`, the moves the model had
+   acted on when it was drawn), and any whose generation is not the
+   current one is refused and wiped, however many come, until the field
+   is drawn again.
    `Backgrounded` still wipes at once when the worker is free, so a typed
    secret does not wait in memory for the person to come back.
 
