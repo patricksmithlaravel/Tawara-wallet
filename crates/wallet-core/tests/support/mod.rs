@@ -11,9 +11,13 @@
 //! `result.{address,amount}` or the middleware's code 4 "Account not found",
 //! `/network/status` with `current_block_identifier`, the tip's timestamp,
 //! the genesis block and `sync_status`, `/network/list` with the one
-//! network the middleware serves, `/block` with the eight keys of
-//! `block.metadata`, `/mempool` with its ids (Go's `null` for none), and
-//! `/construction/submit` with `transaction_identifier.hash` in bare hex.
+//! network the middleware serves, `/block` by number or by hash with the
+//! eight keys of `block.metadata` and, for a normal block, its reward and
+//! the spends scripted for it, `/mempool` with its ids (Go's `null` for
+//! none), `/mempool/transaction` with a scripted spend or code 3 for one that
+//! left the queue, `/search/transactions` by account or by a transaction's
+//! id, and `/construction/submit` with `transaction_identifier.hash` in bare
+//! hex.
 //!
 //! The submit echo is computed the way the library's own `submit` verb
 //! computes the id it expects, `tx::wire::Transaction::from_wire(..).id_digest()`:
@@ -131,6 +135,65 @@ struct State {
     mempool: Vec<[u8; 32]>,
     /// The middleware's sync state: its stage and whether it finished.
     sync: (String, bool),
+    /// The spends each block carries besides its reward, as `/block` spells
+    /// them.
+    spends: BTreeMap<u64, Vec<serde_json::Value>>,
+    /// The transactions `/mempool/transaction` answers for, by id; an id in
+    /// the queue that is not here has left it.
+    pending: BTreeMap<[u8; 32], serde_json::Value>,
+    /// The blocks `/block` does not serve, by number or by hash.
+    unserved: Vec<u64>,
+    /// The times `/block` sends for blocks, in milliseconds, where not a
+    /// block a minute.
+    times: BTreeMap<u64, i64>,
+    /// The blocks `/block` serves from another branch: each names a parent
+    /// that is not the block below it as served.
+    forked: Vec<u64>,
+}
+
+/// The tag every reward of the scripted chain is paid to.
+pub const MINER: u32 = 77;
+
+/// The reward the scripted chain pays for a normal block, in nanoMCM.
+pub const REWARD: u64 = 5_000_000_000;
+
+/// The fee the scripted chain's transactions pay, in nanoMCM.
+pub const FEE: u64 = 500;
+
+/// One operation, as the endpoints spell it.
+fn operation(i: u64, kind: &str, tag: Option<&Tag>, value: i128) -> serde_json::Value {
+    serde_json::json!({
+        "operation_identifier": { "index": i },
+        "type": kind,
+        "account": { "address": tag.map(|t| format!("0x{}", hex_of(t))).unwrap_or_default() },
+        "amount": { "value": value.to_string() },
+    })
+}
+
+/// A spend as `/block` and `/mempool/transaction` spell one: the source
+/// debited what left it net of its change, each payee, and the fee; the
+/// change is not an operation.
+pub fn spend_json(id: &[u8; 32], from: Tag, to: &[(Tag, u64)]) -> serde_json::Value {
+    let sent: u64 = to.iter().map(|(_, a)| a).sum();
+    let mut ops = vec![operation(
+        0,
+        "SOURCE_TRANSFER",
+        Some(&from),
+        -i128::from(sent + FEE),
+    )];
+    for (i, (tag, amount)) in to.iter().enumerate() {
+        ops.push(operation(
+            i as u64 + 1,
+            "DESTINATION_TRANSFER",
+            Some(tag),
+            i128::from(*amount),
+        ));
+    }
+    ops.push(operation(to.len() as u64 + 1, "FEE", None, i128::from(FEE)));
+    serde_json::json!({
+        "transaction_identifier": { "hash": format!("0x{}", hex_of(id)) },
+        "operations": ops,
+    })
 }
 
 /// Holds every request at the chain until it is opened, so a test can act
@@ -315,6 +378,46 @@ impl Chain {
         }
     }
 
+    /// Block `block` carries a spend `id` from `from` to `to`, besides its
+    /// reward.
+    pub fn block_spend(&self, block: u64, id: [u8; 32], from: Tag, to: &[(Tag, u64)]) {
+        self.0
+            .lock()
+            .expect("chain")
+            .spends
+            .entry(block)
+            .or_default()
+            .push(spend_json(&id, from, to));
+    }
+
+    /// `/mempool/transaction` answers for `id` with a spend from `from` to
+    /// `to`. The queue's order is [`Chain::queue`]'s.
+    pub fn pending(&self, id: [u8; 32], from: Tag, to: &[(Tag, u64)]) {
+        self.0
+            .lock()
+            .expect("chain")
+            .pending
+            .insert(id, spend_json(&id, from, to));
+    }
+
+    /// `/block` does not serve block `index`, by number or by hash.
+    pub fn unserve(&self, index: u64) {
+        self.0.lock().expect("chain").unserved.push(index);
+    }
+
+    /// `/block` sends `ms` as block `index`'s time: anything the Mesh
+    /// parser takes, however far from the blocks either side.
+    pub fn set_time(&self, index: u64, ms: i64) {
+        self.0.lock().expect("chain").times.insert(index, ms);
+    }
+
+    /// `/block` serves block `index` from another branch, as a node does
+    /// when the chain reorganizes between two reads: its parent's hash is
+    /// not the hash of the block below it as served.
+    pub fn fork(&self, index: u64) {
+        self.0.lock().expect("chain").forked.push(index);
+    }
+
     pub fn set_no_index(&self, no_index: bool) {
         self.0.lock().expect("chain").no_index = no_index;
     }
@@ -410,6 +513,20 @@ impl Transport for Chain {
                 if s.index_down {
                     return Ok(br#"{"code":2,"message":"Internal general error","retriable":true}"#.to_vec());
                 }
+                // One transaction, by its id.
+                if let Some(id) = req["transaction_identifier"]["hash"].as_str() {
+                    let found: Vec<_> = s
+                        .history
+                        .values()
+                        .flatten()
+                        .find(|row| row["transaction_identifier"]["hash"].as_str() == Some(id))
+                        .cloned()
+                        .into_iter()
+                        .collect();
+                    return Ok(serde_json::json!({ "transactions": found, "total_count": found.len() })
+                        .to_string()
+                        .into_bytes());
+                }
                 let asked = req["account_identifier"]["address"].as_str().ok_or(mesh("test: account_identifier"))?;
                 let limit = req["limit"].as_u64().filter(|l| (1..=100).contains(l)).unwrap_or(10);
                 let raw = asked.strip_prefix("0x").and_then(unhex).ok_or(mesh("test: tag hex"))?;
@@ -425,23 +542,47 @@ impl Transport for Chain {
                 Ok(serde_json::json!({ "transactions": page, "total_count": total }).to_string().into_bytes())
             }
             "/block" => {
-                let index = req["block_identifier"]["index"].as_u64().ok_or(mesh("test: block index"))?;
+                // By number, or by hash: the scripted chain's hashes are their
+                // numbers, in hex.
+                let index = match req["block_identifier"]["hash"].as_str() {
+                    Some(hash) => {
+                        let digits = hash.strip_prefix("0x").ok_or(mesh("test: block hash"))?;
+                        u64::from_str_radix(digits, 16).unwrap_or(u64::MAX)
+                    }
+                    None => req["block_identifier"]["index"].as_u64().ok_or(mesh("test: block index"))?,
+                };
                 // Index 0 is the tip to this endpoint, as the library notes.
                 let index = if index == 0 { s.tip } else { index };
-                if index > s.tip {
+                if index > s.tip || s.unserved.contains(&index) {
                     return Ok(br#"{"code":2,"message":"Block not found","retriable":false}"#.to_vec());
                 }
-                let tx_count = u32::from(!s.pseudo.contains(&index));
+                let pseudo = s.pseudo.contains(&index);
+                let neogenesis = index & 0xff == 0;
+                let spends = s.spends.get(&index).cloned().unwrap_or_default();
+                let tx_count = if pseudo { 0 } else { u32::try_from(spends.len()).unwrap_or(0).max(1) };
+                // A normal block pays its miner; a pseudo-block and a
+                // neogenesis block carry no reward.
+                let mut transactions = Vec::new();
+                if !pseudo && !neogenesis {
+                    transactions.push(serde_json::json!({
+                        "transaction_identifier": { "hash": format!("0x{:064x}", u128::from(index) << 64) },
+                        "operations": [operation(0, "REWARD", Some(&tag(MINER)), i128::from(REWARD))],
+                    }));
+                    transactions.extend(spends);
+                }
                 Ok(serde_json::json!({ "block": {
                     "block_identifier": { "index": index, "hash": format!("0x{index:064x}") },
-                    "parent_block_identifier": { "index": index - 1, "hash": format!("0x{:064x}", index - 1) },
-                    "timestamp": index * 60_000,
-                    "transactions": [],
+                    "parent_block_identifier": {
+                        "index": index - 1,
+                        "hash": format!("0x{:064x}", u128::from(index - 1) | u128::from(s.forked.contains(&index)) << 120),
+                    },
+                    "timestamp": s.times.get(&index).copied().unwrap_or_else(|| i64::try_from(index * 60_000).unwrap_or(i64::MAX)),
+                    "transactions": transactions,
                     "metadata": {
                         "block_size": 4_096,
                         "difficulty": 30 + index % 5,
                         "fee": 500,
-                        "haiku": "",
+                        "haiku": "winter frost settles\nthe node keeps its quiet count\nblock after block",
                         "nonce": format!("0x{:064x}", index + 1),
                         "root": format!("0x{:064x}", index + 2),
                         "stime": index * 60_000,
@@ -450,6 +591,18 @@ impl Transport for Chain {
                 }})
                 .to_string()
                 .into_bytes())
+            }
+            "/mempool/transaction" => {
+                let asked = req["transaction_identifier"]["hash"].as_str().ok_or(mesh("test: transaction id"))?;
+                let found = s
+                    .pending
+                    .iter()
+                    .find(|(id, _)| format!("0x{}", hex_of(*id)) == asked)
+                    .map(|(_, t)| t.clone());
+                match found {
+                    Some(t) => Ok(serde_json::json!({ "transaction": t }).to_string().into_bytes()),
+                    None => Ok(br#"{"code":3,"message":"Transaction not found","retriable":false}"#.to_vec()),
+                }
             }
             "/construction/submit" => {
                 let text = req["signed_transaction"].as_str().ok_or(mesh("test: signed_transaction"))?;

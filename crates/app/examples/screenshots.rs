@@ -25,14 +25,15 @@ use iced::theme::Base;
 use iced::{Event, Size, window};
 use iced_runtime::user_interface::{Cache, UserInterface};
 use tawara_app::app::{
-    AccountPage, ActivityPage, AddAccountPage, Back, Busy, DestinationRow, Explored, Level, Model,
-    NodeForm, NodeState, Page, PasswordForm, PhraseState, ReceivePage, RecoveryPage, ReportKey,
-    ResignPage, RestoreForm, Screen, SendPage, SendStage, SentPage, SettingsPage, Signed,
-    SpendForm, StartChoice, SubmitPage, UnlockForm, WalletPage,
+    AccountPage, ActivityPage, AddAccountPage, Back, BlockPage, Busy, DestinationRow, Explored,
+    ExplorerPage, Level, Missed, Model, NodeForm, NodeState, Page, PasswordForm, PhraseState,
+    QueuePage, ReceivePage, RecoveryPage, ReportKey, ResignPage, RestoreForm, Screen, SendPage,
+    SendStage, SentPage, SettingsPage, Signed, SpendForm, StartChoice, SubmitPage, TagPage,
+    TransactionPage, UnlockForm, WalletPage,
 };
 use tawara_app::history::Filter;
 use tawara_app::{fonts, screens, theme};
-use tawara_wallet_core::explorer::IndexState;
+use tawara_wallet_core::explorer::{BlockAt, IndexState, LedgerRead, Party, TagView};
 use tawara_wallet_core::location::SyncWarning;
 use tawara_wallet_core::preferences::Preferences;
 use tawara_wallet_core::sample;
@@ -47,6 +48,10 @@ const FIRST_RUN: (u32, u32) = (1440, 900);
 const DASHBOARD: (u32, u32) = (1440, 1160);
 const SMALLEST: (u32, u32) = (1024, 700);
 const DASHBOARD_NARROW: (u32, u32) = (1024, 1160);
+const EXPLORER: (u32, u32) = (1440, 980);
+const BLOCK: (u32, u32) = (1440, 1200);
+const TAG: (u32, u32) = (1440, 1000);
+const TRANSACTION: (u32, u32) = (1440, 860);
 
 const NODE: &str = "https://node.example";
 const DIR: &str = "/home/you/.local/share/tawara/keystore";
@@ -105,13 +110,17 @@ fn on(page: Page) -> Model {
     m.activity = read(sample::activity());
     m.blocks = read(sample::blocks());
     m.mempool = read(sample::mempool());
+    m.chain = read(sample::chain());
+    m.pending = read(sample::pending());
+    // Read three seconds before the clock stands.
+    m.chain.read_ms = Some(m.clock_ms - 3_000);
     m
 }
 
 fn read<T>(value: T) -> Explored<T> {
     Explored {
         last: Some(Ok(value)),
-        reading: false,
+        ..Explored::default()
     }
 }
 
@@ -235,7 +244,7 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         let mut m = on(Page::Activity(ActivityPage::default()));
         m.activity = Explored {
             last: Some(Err(sample::index_refusal(state))),
-            reading: false,
+            ..Explored::default()
         };
         m
     };
@@ -292,6 +301,40 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
             ceiling: 0,
         }),
     ));
+    let explorer = || on(Page::Explorer(ExplorerPage::default()));
+    // A hash typed that names nothing: the index's answer, and the node's.
+    let hash_typed = "7c3e9a1f05b84d62e1a9c7f30d58b2e46a1f9c03e7d5b28a4f6e1c90d02b5e84";
+    let mut hash = [0u8; 32];
+    for (i, b) in hash.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&hash_typed[i * 2..i * 2 + 2], 16).unwrap_or(0);
+    }
+    let (transaction, block) = sample::not_found(hash);
+    let missed = on(Page::Explorer(ExplorerPage {
+        search: hash_typed.to_owned(),
+        missed: Some(Box::new(Missed {
+            searched: true,
+            transaction,
+            block,
+        })),
+        ..ExplorerPage::default()
+    }));
+    let tag = |view: TagView, typed| {
+        on(Page::Tag(TagPage {
+            account: view.account,
+            read: Some(Box::new(view)),
+            reading_older: false,
+            typed,
+        }))
+    };
+    // The sample block's first payee: an account not the store's.
+    let payee = sample::block().spends[0]
+        .destinations()
+        .find_map(|o| match o.party {
+            Party::Account(id) => Some(id),
+            _ => None,
+        })
+        .expect("the sample block's spend has a payee");
+    let found = sample::transaction();
     vec![
         ("s1-get-started", FIRST_RUN, base()),
         (
@@ -565,10 +608,61 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
             DASHBOARD,
             recovery(Level::Closed, Level::Summary, 3),
         ),
+        ("e1-explorer", EXPLORER, explorer()),
+        ("e1-explorer-missed", EXPLORER, missed),
+        // "View all pending": the whole queue, read whole.
+        (
+            "e1-explorer-queue",
+            BLOCK,
+            on(Page::Queue(QueuePage {
+                read: Some(Ok(sample::queue())),
+            })),
+        ),
+        (
+            "e2-block",
+            BLOCK,
+            on(Page::Block(BlockPage {
+                at: BlockAt::Number(871_172),
+                read: Some(Ok(Box::new(sample::block()))),
+                rows_from: 0,
+            })),
+        ),
+        // Typed into the search field, so it can be sent to.
+        ("e3-tag", TAG, tag(sample::tag_view(), true)),
+        // An account not the store's, reached through a link, which the
+        // node did not resolve, on a node that keeps no index: why it can
+        // be, opened.
+        (
+            "e3-tag-unresolved",
+            TAG,
+            opened(
+                tag(
+                    TagView {
+                        account: payee,
+                        ledger: LedgerRead::Unresolved,
+                        history: Err(sample::index_refusal(IndexState::Absent)),
+                    },
+                    false,
+                ),
+                ReportKey::Ledger,
+                Level::Summary,
+            ),
+        ),
+        (
+            "e4-transaction",
+            TRANSACTION,
+            on(Page::Transaction(TransactionPage {
+                transaction: found.0,
+                from_index: true,
+                text: Some(found.1),
+                tip: None,
+            })),
+        ),
         ("stopped-spends", FIRST_RUN, stopped),
         ("narrow-s1-get-started", SMALLEST, base()),
         ("narrow-w1-wallet", DASHBOARD_NARROW, wallet()),
         ("narrow-w4-send", DASHBOARD_NARROW, compose()),
+        ("narrow-e1-explorer", DASHBOARD_NARROW, explorer()),
     ]
 }
 

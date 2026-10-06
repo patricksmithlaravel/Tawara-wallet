@@ -12,6 +12,7 @@
 
 use std::path::PathBuf;
 
+use crate::explorer::BlockAt;
 use crate::secret::SecretText;
 use crate::spend::SpendRequest;
 use crate::view::AccountId;
@@ -176,6 +177,41 @@ pub enum Command {
     /// `recent-transactions --from`. An account the store does not hold is
     /// not read. Cancelled as [`Command::Activity`] is.
     OlderActivity(Vec<(AccountId, u64)>),
+    /// The explorer's chain (docs/SCREENS.md E1): the tip, the
+    /// [`crate::explorer::LATEST_BLOCKS`] newest blocks with each one's
+    /// solve time, and the average solve over
+    /// [`crate::explorer::SOLVE_SPAN`] blocks. The command line's `blocks`
+    /// walk, one block further down so the last one shown has its solve
+    /// time, then the block that span below the tip. No store is needed. A
+    /// cancel, a lock or the idle period stops it between two requests, and
+    /// it then reports nothing.
+    Chain,
+    /// The node's queue: how many transactions wait, and the first `count`
+    /// read whole, as the command line's `mempool --count` reads them; at
+    /// most [`crate::explorer::QUEUE_ROWS`], and a larger count reads that
+    /// many. No store is needed; stopped between two requests as
+    /// [`Command::Chain`] is.
+    Pending { count: u64 },
+    /// One block, whole: the command line's `block`. The block below it is
+    /// read too, for its solve time, and the tip, for how many blocks stand
+    /// on it. No store is needed; stopped between two requests as
+    /// [`Command::Chain`] is.
+    Block(BlockAt),
+    /// What the ledger holds for a tag, and the newest
+    /// [`crate::explorer::HISTORY_ROWS`] of its transactions from the
+    /// node's index: the command line's `recent-transactions`. No store is
+    /// needed; stopped between the two requests.
+    Tag(AccountId),
+    /// An older page of a tag's transactions, from the offset given (its
+    /// [`crate::explorer::AccountHistory::next`]): the command line's
+    /// `recent-transactions --from`. No store is needed.
+    TagHistory { account: AccountId, from: u64 },
+    /// What a hash names. The node's index is searched for a transaction
+    /// with that id (the command line's `transaction`), and when it holds
+    /// none, or cannot be searched, the node is asked for a block with that
+    /// hash (`block <hash>`). No store is needed; stopped between two
+    /// requests as [`Command::Chain`] is.
+    Find([u8; 32]),
     /// Reconcile every account in the store now and report each, whatever
     /// its state: what account recovery shows before anything else
     /// (docs/DECISIONS.md D19). As [`Command::Status`] for each account, in

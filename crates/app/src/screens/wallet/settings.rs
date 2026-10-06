@@ -48,7 +48,7 @@ pub fn view<'a>(
 /// the same as the store's when they agree, the key that signed while a
 /// spend is outstanding, the change key once it landed, and where a
 /// divergence found it.
-fn on_ledger(account: &AccountRow) -> Option<u32> {
+pub(super) fn on_ledger(account: &AccountRow) -> Option<u32> {
     match &account.state {
         AccountState::InSync { .. } => Some(account.index),
         AccountState::SpendOutstanding { spent_index, .. } => Some(*spent_index),

@@ -17,19 +17,22 @@ use std::time::{Duration, Instant};
 use iced::futures::channel::mpsc;
 use iced::widget::operation;
 use iced::{Element, Event as IcedEvent, Subscription, Task, event, keyboard, mouse, touch};
-use tawara_wallet_core::explorer::{AccountHistory, BlocksView, ExplorerRefusal, MempoolView};
+use tawara_wallet_core::explorer::{
+    AccountHistory, BlockAt, BlocksView, ChainView, ExplorerRefusal, MempoolView, PendingView,
+};
 use tawara_wallet_core::location::{self, Environment, Platform};
 use tawara_wallet_core::preferences::{self, Preferences};
-use tawara_wallet_core::view::WalletView;
+use tawara_wallet_core::view::{AccountId, WalletView};
 use tawara_wallet_core::{
     Activity, Command, Config, Event, HttpsNode, LockReason, NetworkName, PhraseForDisplay,
     Progress, Refusal, RefusalKind, Reply, RequestId, SecretText, SyncState, WorkerHandle,
 };
 
 pub use wallet::{
-    AccountPage, ActivityPage, AddAccountPage, DestinationRow, Done, Level, Page, ReceivePage,
-    RecoveryPage, Remedy, ReportKey, ResignPage, SendPage, SendStage, SentPage, SettingsPage,
-    Signed, SpendForm, SubmitPage, To, WalletMsg, remedy, spend_request,
+    AccountPage, ActivityPage, AddAccountPage, BLOCK_ROWS, BlockPage, DestinationRow, Done,
+    ExplorerPage, Level, Missed, Page, QueuePage, ReceivePage, RecoveryPage, Remedy, ReportKey,
+    ResignPage, SendPage, SendStage, SentPage, SettingsPage, Signed, SpendForm, SubmitPage,
+    TagPage, To, TransactionPage, WalletMsg, remedy, spend_request,
 };
 
 /// What the application shows and holds. Plain data, apart from the
@@ -78,6 +81,10 @@ pub struct Model {
     pub blocks: Explored<BlocksView>,
     /// How many transactions wait in the node's queue (W1's network card).
     pub mempool: Explored<MempoolView>,
+    /// The chain as the explorer shows it (E1).
+    pub chain: Explored<ChainView>,
+    /// The node's queue with its first transactions read whole (E1).
+    pub pending: Explored<PendingView>,
 }
 
 /// What an explorer read last answered, and whether another is on its way.
@@ -87,6 +94,8 @@ pub struct Model {
 pub struct Explored<T> {
     pub last: Option<Result<T, ExplorerRefusal>>,
     pub reading: bool,
+    /// When the last answer came, by the wall clock ([`Model::clock_ms`]).
+    pub read_ms: Option<i64>,
 }
 
 impl<T> Default for Explored<T> {
@@ -94,6 +103,7 @@ impl<T> Default for Explored<T> {
         Explored {
             last: None,
             reading: false,
+            read_ms: None,
         }
     }
 }
@@ -401,6 +411,20 @@ enum Purpose {
     Review,
     /// The acknowledged advance.
     Reconcile,
+    /// The explorer's chain, in the background.
+    Chain,
+    /// The explorer's queue, in the background.
+    Pending,
+    /// A block's page.
+    Block(BlockAt),
+    /// A tag's page.
+    Tag(AccountId),
+    /// An older page of a tag's history.
+    TagHistory(AccountId),
+    /// What a hash typed in the explorer names.
+    Find([u8; 32]),
+    /// The node's whole queue, for its own page.
+    Queue,
 }
 
 impl Purpose {
@@ -445,6 +469,11 @@ impl Purpose {
                 | Purpose::Status
                 | Purpose::Review
                 | Purpose::Reconcile
+                | Purpose::Block(_)
+                | Purpose::Tag(_)
+                | Purpose::TagHistory(_)
+                | Purpose::Find(_)
+                | Purpose::Queue
         )
     }
 }
@@ -503,6 +532,8 @@ impl Model {
             activity: Explored::default(),
             blocks: Explored::default(),
             mempool: Explored::default(),
+            chain: Explored::default(),
+            pending: Explored::default(),
         };
         if let Some(dir) = model.store_to_open() {
             model.screen = Screen::Unlock(UnlockForm {
@@ -1001,6 +1032,30 @@ impl App {
         }
     }
 
+    /// Read the explorer's chain and queue, in the background, each unless
+    /// a read of it is already on its way. No store is needed, but the
+    /// explorer is one of the wallet's pages.
+    pub(crate) fn read_chain(&mut self) {
+        if self.model.node.url.is_none() {
+            return;
+        }
+        if !self.model.chain.reading && self.send(Command::Chain, Purpose::Chain).is_some() {
+            self.model.chain.reading = true;
+        }
+        if !self.model.pending.reading
+            && self
+                .send(
+                    Command::Pending {
+                        count: tawara_wallet_core::explorer::PENDING_ROWS,
+                    },
+                    Purpose::Pending,
+                )
+                .is_some()
+        {
+            self.model.pending.reading = true;
+        }
+    }
+
     /// Read every account's transactions from the node's index, in the
     /// background, unless a read is already on its way.
     fn read_activity(&mut self) {
@@ -1184,6 +1239,8 @@ impl App {
                     m.activity = Explored::default();
                     m.blocks = Explored::default();
                     m.mempool = Explored::default();
+                    m.chain = Explored::default();
+                    m.pending = Explored::default();
                 }
                 m.node = NodeState {
                     url: Some(url.clone()),
@@ -1220,6 +1277,20 @@ impl App {
                 m.mempool.reading = false;
                 if let Reply::Mempool(read) = reply {
                     m.mempool.last = Some(read);
+                }
+            }
+            (Purpose::Chain, reply) => {
+                m.chain.reading = false;
+                if let Reply::Chain(read) = reply {
+                    m.chain.last = Some(read);
+                    m.chain.read_ms = Some(m.clock_ms);
+                }
+            }
+            (Purpose::Pending, reply) => {
+                m.pending.reading = false;
+                if let Reply::Pending(read) = reply {
+                    m.pending.last = Some(read);
+                    m.pending.read_ms = Some(m.clock_ms);
                 }
             }
             (Purpose::Activity, reply) => {
@@ -1260,6 +1331,8 @@ impl App {
                 m.activity = Explored::default();
                 m.blocks = Explored::default();
                 m.mempool = Explored::default();
+                m.chain = Explored::default();
+                m.pending = Explored::default();
                 m.prefs.node = None;
                 if let Some(v) = view {
                     m.wallet = Some(v);
@@ -2982,5 +3055,356 @@ mod tests {
     fn a_secret_typed_is_never_in_a_message_log() {
         let message = Message::Password(typed("hunter2-hunter2"));
         assert!(!format!("{message:?}").contains("hunter2"));
+    }
+
+    fn explorer(e: ExplorerPage) -> App {
+        on_wallet(Page::Explorer(e))
+    }
+
+    fn search(app: &mut App, text: &str) {
+        wallet(app, WalletMsg::ExplorerTyped(text.to_owned()));
+        wallet(app, WalletMsg::ExplorerFind);
+    }
+
+    /// An account in no sample store: the sample block's first payee.
+    fn payee() -> AccountId {
+        tawara_wallet_core::sample::block().spends[0]
+            .destinations()
+            .find_map(|o| match o.party {
+                tawara_wallet_core::explorer::Party::Account(id) => Some(id),
+                _ => None,
+            })
+            .expect("a payee")
+    }
+
+    #[test]
+    fn the_explorers_search_opens_a_block_or_an_account_or_says_why_not() {
+        use tawara_wallet_core::explorer::BlockAt;
+        let mut app = explorer(ExplorerPage::default());
+        search(&mut app, "0");
+        match &wallet_page(&app).page {
+            Page::Explorer(e) => {
+                assert!(e.invalid.as_deref().is_some_and(|w| w.contains("block 0")));
+            }
+            other => panic!("expected the explorer, got {other:?}"),
+        }
+        // Typing again puts the refusal away.
+        wallet(&mut app, WalletMsg::ExplorerTyped("871172".to_owned()));
+        match &wallet_page(&app).page {
+            Page::Explorer(e) => assert_eq!(e.invalid, None),
+            other => panic!("expected the explorer, got {other:?}"),
+        }
+        wallet(&mut app, WalletMsg::ExplorerFind);
+        match &wallet_page(&app).page {
+            Page::Block(b) => {
+                assert_eq!(b.at, BlockAt::Number(871_172));
+                assert!(b.read.is_none(), "read when it comes");
+            }
+            other => panic!("expected the block, got {other:?}"),
+        }
+        let mut app = explorer(ExplorerPage::default());
+        search(&mut app, &payee().destination().expect("an address"));
+        match &wallet_page(&app).page {
+            Page::Tag(t) => assert!(t.account == payee() && t.typed, "typed"),
+            other => panic!("expected the account, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn what_a_hash_names_is_opened_and_a_miss_stays_on_the_explorer() {
+        use tawara_wallet_core::explorer::{BlockAt, Found};
+        use tawara_wallet_core::sample;
+        const A: [u8; 32] = [1; 32];
+        const B: [u8; 32] = [2; 32];
+        let finding = |hash| {
+            explorer(ExplorerPage {
+                finding: Some(hash),
+                ..ExplorerPage::default()
+            })
+        };
+        let (tx, text) = sample::transaction();
+        let mut app = finding(A);
+        app.on_reply(
+            Purpose::Find(A),
+            Reply::Found(Box::new(Found::Transaction {
+                transaction: tx.clone(),
+                text,
+            })),
+        );
+        match &wallet_page(&app).page {
+            Page::Transaction(t) => {
+                assert_eq!(t.transaction, tx);
+                assert!(t.from_index && t.text.is_some());
+            }
+            other => panic!("expected the transaction, got {other:?}"),
+        }
+        let mut app = finding(A);
+        app.on_reply(
+            Purpose::Find(A),
+            Reply::Found(Box::new(Found::Block(Box::new(sample::block())))),
+        );
+        match &wallet_page(&app).page {
+            Page::Block(b) => {
+                assert_eq!(b.at, BlockAt::Number(871_172), "read again by its number");
+                assert!(matches!(b.read, Some(Ok(_))));
+            }
+            other => panic!("expected the block, got {other:?}"),
+        }
+        let mut app = finding(A);
+        let (transaction, block) = sample::not_found([1; 32]);
+        app.on_reply(
+            Purpose::Find(A),
+            Reply::Found(Box::new(Found::Neither {
+                searched: true,
+                transaction,
+                block,
+            })),
+        );
+        match &wallet_page(&app).page {
+            Page::Explorer(e) => {
+                assert!(e.finding.is_none());
+                assert!(e.missed.as_ref().is_some_and(|m| m.searched));
+            }
+            other => panic!("expected the explorer, got {other:?}"),
+        }
+        // The explorer opened afresh since it asked: nothing waits there.
+        let mut app = explorer(ExplorerPage::default());
+        let (tx, text) = sample::transaction();
+        app.on_reply(
+            Purpose::Find(A),
+            Reply::Found(Box::new(Found::Transaction {
+                transaction: tx,
+                text,
+            })),
+        );
+        assert!(matches!(wallet_page(&app).page, Page::Explorer(_)));
+        // Another page opened since: the answer has nowhere to go.
+        let mut app = on_wallet(Page::Dashboard);
+        let (tx, text) = sample::transaction();
+        app.on_reply(
+            Purpose::Find(A),
+            Reply::Found(Box::new(Found::Transaction {
+                transaction: tx,
+                text,
+            })),
+        );
+        assert!(matches!(wallet_page(&app).page, Page::Dashboard));
+        // The explorer opened again while A was looked for, and B asked
+        // since: A's answer is not B's, and B's is still taken.
+        let mut app = finding(B);
+        let (tx, text) = sample::transaction();
+        app.on_reply(
+            Purpose::Find(A),
+            Reply::Found(Box::new(Found::Transaction {
+                transaction: tx.clone(),
+                text: text.clone(),
+            })),
+        );
+        match &wallet_page(&app).page {
+            Page::Explorer(e) => assert_eq!(e.finding, Some(B), "still waiting on B"),
+            other => panic!("expected the explorer, got {other:?}"),
+        }
+        app.on_reply(
+            Purpose::Find(A),
+            Reply::Refused(Refusal {
+                kind: RefusalKind::Library,
+                text: "A's refusal".to_owned(),
+            }),
+        );
+        assert!(wallet_page(&app).error.is_none(), "A's refusal is not B's");
+        app.on_reply(
+            Purpose::Find(B),
+            Reply::Found(Box::new(Found::Transaction {
+                transaction: tx.clone(),
+                text,
+            })),
+        );
+        match &wallet_page(&app).page {
+            Page::Transaction(t) => assert_eq!(t.transaction, tx),
+            other => panic!("expected B's transaction, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_block_or_an_account_is_read_onto_the_page_that_asked_for_it() {
+        use tawara_wallet_core::explorer::{AccountHistory, BlockAt, TransactionView};
+        use tawara_wallet_core::sample;
+        let mut app = on_wallet(Page::Block(BlockPage {
+            at: BlockAt::Number(871_172),
+            read: None,
+            rows_from: 0,
+        }));
+        app.on_reply(
+            Purpose::Block(BlockAt::Number(871_171)),
+            Reply::Block(Ok(Box::new(sample::block()))),
+        );
+        assert!(
+            matches!(&wallet_page(&app).page, Page::Block(b) if b.read.is_none()),
+            "another block's answer"
+        );
+        app.on_reply(
+            Purpose::Block(BlockAt::Number(871_172)),
+            Reply::Block(Ok(Box::new(sample::block()))),
+        );
+        assert!(matches!(&wallet_page(&app).page, Page::Block(b) if b.read.is_some()));
+        wallet(&mut app, WalletMsg::BlockRows(BLOCK_ROWS));
+        assert!(matches!(&wallet_page(&app).page, Page::Block(b) if b.rows_from == BLOCK_ROWS));
+        wallet(&mut app, WalletMsg::OpenSpend(0));
+        match &wallet_page(&app).page {
+            Page::Transaction(t) => {
+                assert_eq!(t.transaction, sample::block().spends[0]);
+                assert!(!t.from_index, "as its block lists it");
+                assert!(t.tip.is_some(), "the tip read with its block");
+                assert_eq!(t.tip, sample::block().tip);
+            }
+            other => panic!("expected the transaction, got {other:?}"),
+        }
+
+        let mut view = sample::tag_view();
+        let account = view.account;
+        if let Ok(h) = &mut view.history {
+            h.total = h.transactions.len() as u64 + 1;
+        }
+        let mut app = on_wallet(Page::Tag(TagPage {
+            account,
+            read: None,
+            reading_older: false,
+            typed: false,
+        }));
+        app.on_reply(Purpose::Tag(payee()), Reply::Tag(Box::new(view.clone())));
+        assert!(
+            matches!(&wallet_page(&app).page, Page::Tag(t) if t.read.is_none()),
+            "another account's answer"
+        );
+        app.on_reply(Purpose::Tag(account), Reply::Tag(Box::new(view)));
+        // An older page goes below the rows read; a refusal leaves them.
+        if let Screen::Wallet(WalletPage {
+            page: Page::Tag(t), ..
+        }) = &mut app.model.screen
+        {
+            t.reading_older = true;
+        }
+        let rows = |app: &App| match &wallet_page(app).page {
+            Page::Tag(TagPage {
+                read: Some(v),
+                reading_older,
+                ..
+            }) => (
+                v.history.as_ref().map_or(0, |h| h.transactions.len()),
+                *reading_older,
+            ),
+            other => panic!("expected the account, got {other:?}"),
+        };
+        let before = rows(&app).0;
+        app.on_reply(
+            Purpose::TagHistory(account),
+            Reply::TagHistory(Err(sample::index_refusal(
+                tawara_wallet_core::explorer::IndexState::Unavailable,
+            ))),
+        );
+        assert_eq!(rows(&app), (before, false));
+        let older = AccountHistory {
+            account,
+            transactions: vec![TransactionView {
+                id: "older".to_owned(),
+                block: Some(1),
+                time_ms: None,
+                operations: Vec::new(),
+            }],
+            total: before as u64 + 1,
+            next: before as u64 + 1,
+            text: String::new(),
+        };
+        app.on_reply(Purpose::TagHistory(account), Reply::TagHistory(Ok(older)));
+        assert_eq!(rows(&app), (before + 1, false));
+        wallet(&mut app, WalletMsg::OpenTagRow(before));
+        match &wallet_page(&app).page {
+            Page::Transaction(t) => {
+                assert_eq!(t.transaction.id, "older");
+                assert!(t.from_index);
+            }
+            other => panic!("expected the transaction, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_whole_queue_is_read_onto_its_page_and_opens_each_transaction() {
+        use tawara_wallet_core::sample;
+        let mut app = explorer(ExplorerPage::default());
+        wallet(&mut app, WalletMsg::Open(To::Queue));
+        assert!(matches!(&wallet_page(&app).page, Page::Queue(q) if q.read.is_none()));
+        app.on_reply(Purpose::Queue, Reply::Pending(Ok(sample::queue())));
+        match &wallet_page(&app).page {
+            Page::Queue(QueuePage { read: Some(Ok(p)) }) => {
+                assert_eq!(p.rows.len(), p.waiting, "every one read whole");
+            }
+            other => panic!("expected the queue, got {other:?}"),
+        }
+        // A row opens from the page's own read, not the overview's.
+        wallet(&mut app, WalletMsg::OpenPending(13));
+        match &wallet_page(&app).page {
+            Page::Transaction(t) => {
+                let last = sample::queue().rows[13].transaction.clone();
+                assert_eq!(Some(t.transaction.clone()), last);
+                assert!(!t.from_index, "as the queue lists it");
+            }
+            other => panic!("expected the transaction, got {other:?}"),
+        }
+        // The queue's answer goes nowhere once its page is left.
+        let mut app = on_wallet(Page::Dashboard);
+        app.on_reply(Purpose::Queue, Reply::Pending(Ok(sample::queue())));
+        assert!(matches!(wallet_page(&app).page, Page::Dashboard));
+    }
+
+    #[test]
+    fn sending_to_an_account_is_offered_only_for_one_the_person_typed() {
+        let tag = |typed| {
+            on_wallet(Page::Tag(TagPage {
+                account: payee(),
+                read: None,
+                reading_older: false,
+                typed,
+            }))
+        };
+        // Reached through a link: the node named it, so nothing opens.
+        let mut app = tag(false);
+        wallet(&mut app, WalletMsg::SendTo(payee()));
+        assert!(matches!(wallet_page(&app).page, Page::Tag(_)));
+        // Typed, but asked for another account than the page shows.
+        let mut app = tag(true);
+        let other = tawara_wallet_core::sample::wallet_view().accounts[0].id;
+        wallet(&mut app, WalletMsg::SendTo(other));
+        assert!(matches!(wallet_page(&app).page, Page::Tag(_)));
+        let mut app = tag(true);
+        wallet(&mut app, WalletMsg::SendTo(payee()));
+        match &wallet_page(&app).page {
+            Page::Send(s) => {
+                assert_eq!(s.form.rows.len(), 1);
+                assert_eq!(Some(s.form.rows[0].to.clone()), payee().destination());
+            }
+            other => panic!("expected the send form, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_explorers_chain_is_kept_until_the_node_changes() {
+        use tawara_wallet_core::sample;
+        let mut app = alone();
+        app.model.clock_ms = 1_234;
+        app.model.chain.reading = true;
+        app.on_reply(Purpose::Chain, Reply::Chain(Ok(sample::chain())));
+        assert!(!app.model.chain.reading);
+        assert_eq!(app.model.chain.read_ms, Some(1_234));
+        assert!(matches!(app.model.chain.last, Some(Ok(_))));
+        app.on_reply(Purpose::Pending, Reply::Pending(Ok(sample::pending())));
+        assert!(matches!(app.model.pending.last, Some(Ok(_))));
+        app.on_reply(
+            Purpose::SetNode { form: false },
+            Reply::NodeSet {
+                url: "https://another.example".to_owned(),
+                view: None,
+            },
+        );
+        assert!(app.model.chain.last.is_none() && app.model.pending.last.is_none());
     }
 }
