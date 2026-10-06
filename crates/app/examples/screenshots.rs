@@ -655,6 +655,7 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
                 transaction: found.0,
                 from_index: true,
                 text: Some(found.1),
+                tip: None,
             })),
         ),
         ("stopped-spends", FIRST_RUN, stopped),

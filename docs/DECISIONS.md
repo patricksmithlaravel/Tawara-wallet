@@ -1315,7 +1315,9 @@ on the library's reads at `7cdc2e9` (D7). The choices:
    blocks count as blocks. The next neogenesis is the next block number
    whose low byte is zero, the library's own test for one
    (`MeshBlock::kind`). Confirmations are the tip less the block, plus
-   one. A block's fees are every fee operation in it, summed, and what it
+   one; a transaction opened from its block's page counts them from the
+   tip read with the block or the explorer's, whichever is higher, so
+   opening it never counts fewer (PR #12's third review). A block's fees are every fee operation in it, summed, and what it
    moved every destination of its transactions other than the reward, as
    the command line's block page sums them; its transactions are counted
    besides the reward. A block's least fee is the node's figure, not its

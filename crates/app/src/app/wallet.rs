@@ -136,6 +136,11 @@ pub struct TransactionPage {
     /// transaction opened from its block's page or a tag's history is on
     /// that page's.
     pub text: Option<String>,
+    /// The chain's tip read with the page it was opened from, when that page
+    /// read one (a block's, E2). Its confirmations are counted from this or
+    /// the explorer's tip, whichever is higher, so opening a transaction
+    /// never counts fewer than its block's page did.
+    pub tip: Option<u64>,
 }
 
 /// W10: every account's transactions from the node's index.
@@ -1322,14 +1327,15 @@ impl App {
                     Some(Page::Block(BlockPage {
                         read: Some(Ok(block)),
                         ..
-                    })) => block.spends.get(n).cloned(),
+                    })) => block.spends.get(n).cloned().map(|t| (t, block.tip)),
                     _ => None,
                 };
-                if let Some(transaction) = spend {
+                if let Some((transaction, tip)) = spend {
                     self.show(Page::Transaction(TransactionPage {
                         transaction,
                         from_index: false,
                         text: None,
+                        tip,
                     }));
                 }
             }
@@ -1348,6 +1354,7 @@ impl App {
                         transaction,
                         from_index: false,
                         text: None,
+                        tip: None,
                     }));
                 }
             }
@@ -1367,6 +1374,7 @@ impl App {
                         transaction,
                         from_index: true,
                         text: None,
+                        tip: None,
                     }));
                 }
             }
@@ -1620,6 +1628,7 @@ impl App {
                             transaction,
                             from_index: true,
                             text: Some(text),
+                            tip: None,
                         }));
                     }
                     Found::Block(block) => self.show(Page::Block(BlockPage {

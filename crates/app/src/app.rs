@@ -3254,6 +3254,8 @@ mod tests {
             Page::Transaction(t) => {
                 assert_eq!(t.transaction, sample::block().spends[0]);
                 assert!(!t.from_index, "as its block lists it");
+                assert!(t.tip.is_some(), "the tip read with its block");
+                assert_eq!(t.tip, sample::block().tip);
             }
             other => panic!("expected the transaction, got {other:?}"),
         }

@@ -226,6 +226,13 @@ fn tip(model: &Model) -> Option<u64> {
     }
 }
 
+/// How many blocks stand on `block`, itself among them, at the higher of
+/// the tip read with the page a transaction was opened from and the
+/// explorer's own, which can be older (E4).
+fn confirmations(block: u64, read: Option<u64>, explorer: Option<u64>) -> Option<u64> {
+    read.max(explorer)?.checked_sub(block)?.checked_add(1)
+}
+
 // ---- E1 --------------------------------------------------------------------
 
 /// E1: the chain, the node's queue, and the search field.
@@ -1629,10 +1636,7 @@ pub fn transaction<'a>(
             ]
             .spacing(sp::S8)
             .align_y(Alignment::Center);
-            if let Some(n) = tip(model)
-                .and_then(|tip| tip.checked_sub(b))
-                .and_then(|n| n.checked_add(1))
-            {
+            if let Some(n) = confirmations(b, tp.tip, tip(model)) {
                 line = line.push(t(
                     format!(
                         "· {} {}",
@@ -1769,5 +1773,17 @@ mod tests {
         assert_eq!(duration(949_000), "15m 49s");
         assert_eq!(duration(3_720_000), "1h 02m");
         assert_eq!(duration(-5), "0s", "a clock behind its parent's");
+    }
+
+    #[test]
+    fn a_transactions_confirmations_are_counted_from_the_newer_tip() {
+        // Its block read at 1,001, the explorer's chain at 1,000.
+        assert_eq!(confirmations(1_001, Some(1_001), Some(1_000)), Some(1));
+        assert_eq!(confirmations(995, Some(1_001), Some(1_000)), Some(7));
+        // The explorer read since, further on.
+        assert_eq!(confirmations(995, Some(1_001), Some(1_003)), Some(9));
+        assert_eq!(confirmations(1_001, None, Some(1_000)), None, "above it");
+        assert_eq!(confirmations(5, None, None), None, "no tip read");
+        assert_eq!(confirmations(0, Some(u64::MAX), None), None, "overflows");
     }
 }
