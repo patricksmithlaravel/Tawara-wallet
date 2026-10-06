@@ -933,6 +933,11 @@ fn a_move_to_the_background_is_answered_in_turn_with_its_number() {
     let gate = h.chain.close_gate();
     let refresh = h.handle.send(Command::Refresh).expect("worker running");
     assert_eq!(h.wait_busy(refresh), Activity::AskingNode);
+    // `Busy` comes before the request is made: wait until the worker is at
+    // the gate, so the move cannot cancel the refresh before it asks (it
+    // would then lock at once, as it should, and this test would not be
+    // about a held command).
+    gate.wait_reached(1);
     let first = h.handle.background();
     h.no_backgrounded(Duration::from_millis(300));
     gate.open();
