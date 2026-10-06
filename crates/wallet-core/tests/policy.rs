@@ -33,6 +33,10 @@ const LIBRARY_GIT: &str = "https://github.com/patricksmithlaravel/mcm-rust-cli-w
 /// The library's package name.
 const LIBRARY: &str = "mochimo-crypto";
 
+/// The owner's fork of iced, the one source iced may come from
+/// (docs/DECISIONS.md D32, item 1).
+const ICED_GIT: &str = "https://github.com/patricksmithlaravel/iced_mobile";
+
 /// The library's crate name, as source code names it.
 const LIBRARY_IDENT: &str = "mochimo_crypto";
 
@@ -1861,6 +1865,102 @@ fn library_is_pinned_by_full_commit_hash_and_never_patched() {
         format!("git+{LIBRARY_GIT}?rev={rev}#{rev}"),
         "Cargo.lock resolved mochimo-crypto from somewhere other than the pinned commit"
     );
+}
+
+/// Whether `name` is one of iced's own packages.
+fn is_iced(name: &str) -> bool {
+    name == "iced" || name.starts_with("iced_")
+}
+
+/// iced comes from the owner's fork, every crate of it from one commit named
+/// by its full hash, as the library comes from Rep-1 (docs/DECISIONS.md D32,
+/// item 1): in the workspace's lines, in every crate's, and in the lockfile.
+#[test]
+fn iced_comes_from_the_fork_pinned_by_full_commit_hash() {
+    let root = workspace_root();
+    let manifest = read_toml(&root.join("Cargo.toml"));
+    let workspace_deps = manifest["workspace"]["dependencies"]
+        .as_table()
+        .expect("[workspace.dependencies] exists");
+    let mut revs = BTreeSet::new();
+    let mut lines = 0;
+    for (key, dep) in workspace_deps
+        .iter()
+        .filter(|(k, v)| is_iced(package_name(k, v)))
+    {
+        lines += 1;
+        let dep = dep
+            .as_table()
+            .unwrap_or_else(|| panic!("`{key}` must be a table naming the fork and its commit"));
+        assert_eq!(
+            dep.get("git").and_then(|v| v.as_str()),
+            Some(ICED_GIT),
+            "`{key}` must come from the owner's fork of iced"
+        );
+        let rev = dep.get("rev").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(
+            rev.len() == 40
+                && rev
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "`{key}` must be pinned by a full 40-character lowercase commit hash, not {rev:?}"
+        );
+        revs.insert(rev.to_owned());
+        let allowed = BTreeSet::from(["git", "rev", "default-features", "features"]);
+        for k in dep.keys() {
+            assert!(
+                allowed.contains(k.as_str()),
+                "`{key}` is chosen by its commit alone; it also names `{k}`"
+            );
+        }
+    }
+    assert!(lines >= 1, "[workspace.dependencies] names no iced crate");
+    assert_eq!(
+        revs.len(),
+        1,
+        "every iced line names the same commit, so one copy of each crate is built: {revs:?}"
+    );
+    let rev = revs.pop_first().unwrap_or_default();
+
+    // Every crate takes iced from the workspace's lines.
+    for dir in crate_dirs() {
+        let manifest_path = dir.join("Cargo.toml");
+        let crate_manifest = read_toml(&manifest_path);
+        for (section, deps) in dependency_tables(&crate_manifest) {
+            for (key, d) in deps.iter().filter(|(k, v)| is_iced(package_name(k, v))) {
+                let keys: Vec<&String> =
+                    d.as_table().map(|t| t.keys().collect()).unwrap_or_default();
+                assert!(
+                    keys == vec!["workspace"]
+                        && d.get("workspace").and_then(|v| v.as_bool()) == Some(true),
+                    "{} names `{key}` in [{section}] with a line of its own ({keys:?}); it must \
+                     be `{key}.workspace = true`",
+                    manifest_path.display()
+                );
+            }
+        }
+    }
+
+    // And the lockfile resolved every iced crate at that commit.
+    let lock = read_toml(&root.join("Cargo.lock"));
+    let iced: Vec<(&str, &str)> = lock["package"]
+        .as_array()
+        .expect("Cargo.lock lists packages")
+        .iter()
+        .filter_map(|p| p.as_table())
+        .filter_map(|p| {
+            let name = p.get("name")?.as_str()?;
+            is_iced(name).then(|| (name, p.get("source").and_then(|v| v.as_str()).unwrap_or("")))
+        })
+        .collect();
+    assert!(!iced.is_empty(), "Cargo.lock holds no iced crate");
+    let expected = format!("git+{ICED_GIT}?rev={rev}#{rev}");
+    for (name, source) in iced {
+        assert_eq!(
+            source, expected,
+            "Cargo.lock resolved {name} from somewhere other than the pinned commit"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

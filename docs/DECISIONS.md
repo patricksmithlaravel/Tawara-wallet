@@ -76,6 +76,8 @@ defaults, written out so that what ships is a list in this repository.
 Features the renderings may need later (`svg`, and `qr_code` only with the
 owner's approval) are added by the change that needs them, with
 `cargo deny check` run against the result. No git revision of iced is used.
+*Since phase 4, iced comes from the owner's fork at a pinned commit whose
+sources are these releases plus the mobile change (D32, item 1).*
 
 ### D7. The library pin: Rep-1 at `7cdc2e9`
 
@@ -416,7 +418,8 @@ application's manifests stay free of `[patch]`, as D15 requires. How
 production carries the change (a fork of iced at a git revision, which
 needs `allow-git` in deny.toml; an upstream change; or a shell crate of
 Tawara's own) is for the owner to choose after the phase 1 go/no-go,
-with the findings of `docs/spikes/P1-REPORT.md`.
+with the findings of `docs/spikes/P1-REPORT.md`. The owner chose the
+fork: D32, item 1.
 
 ### D18. Phase 1 gate: iced goes ahead on mobile
 
@@ -1396,16 +1399,23 @@ runs the same `tawara-app` on Android and iOS (docs/PLAN.md section 7),
 on the three conditions D18 left open.
 
 1. **iced comes from the owner's fork, pinned by commit** (D17, D18
-   condition 2; the owner chose the fork). `patricksmithlaravel/iced`
-   carries iced's 0.14 release sources, at the versions D6 records, with
-   D17's patch as one commit on a branch of its own. Every iced crate
-   comes from that commit, the desktop's included, so the build holds one
-   copy of each; `deny.toml` admits that one git source beside the
-   library's, and D15's policy test checks the iced line as it checks the
-   library's (a full commit hash and nothing else to choose it). This
-   replaces D6's "no git revision of iced is used". The patch's fixes are
-   offered to iced upstream; when a release carries them, the pin returns
-   to crates.io.
+   condition 2; the owner chose the fork, and made it on 2026-10-06 as
+   `patricksmithlaravel/iced_mobile`). Its branch `tawara/0.14-mobile`
+   starts at iced's own `0.14` branch, `38237dd`, whose sources are, crate
+   for crate, the crates.io releases D6 records (compared file by file
+   for all twelve iced crates in the lockfile), and adds one commit,
+   `0b02176`: D17's patch, and `on_lifecycle`, a hook called when winit
+   reports the application suspended or resumed (item 6). Every iced
+   crate comes from that commit, the desktop's included, so the build
+   holds one copy of each, and every screenshot draws as before;
+   `deny.toml` admits that one git source beside the library's, and a
+   policy test holds the iced lines to it as D15's holds the library's (a
+   full commit hash and nothing else to choose it, the same commit on
+   every line, every crate taking the workspace's line, and the lockfile
+   resolved there). This replaces D6's "no git revision of iced is used".
+   The lockfile names the crates by the branch's own versions (0.14.1, and
+   0.14.2 for `iced_widget`). The fixes are offered to iced upstream;
+   when a release carries them, the pin returns to crates.io.
 2. **Text entry is checked on real phones on phase 4's own builds**
    (D18 condition 1; the owner's choice). Before the phase's last part
    merges, the owner runs the device steps on its Android build (arm64)
