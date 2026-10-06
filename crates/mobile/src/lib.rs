@@ -7,11 +7,11 @@
 //! platform needs is done before the application starts or from the
 //! platform's own notices:
 //!
-//! - **Android** ([`android`]): `FLAG_SECURE` on the whole window (D32 item
+//! - **Android** (`src/android.rs`): `FLAG_SECURE` on the whole window (D32 item
 //!   4); the store in `no_backup/` (D21), which the manifest's backup rules
 //!   also exclude (platform/android); the lock when the system suspends the
 //!   application, from iced's patched shell (D32 item 6).
-//! - **iOS** ([`ios`]): the store in Application Support, protected with
+//! - **iOS** (`src/ios.rs`): the store in Application Support, protected with
 //!   `NSFileProtectionComplete` and excluded from backups (D32 item 3); a
 //!   cover over the window whenever the application is not active, so the
 //!   app switcher's snapshot shows nothing; the lock when it enters the
