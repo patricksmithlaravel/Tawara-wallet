@@ -1472,6 +1472,20 @@ on the three conditions D18 left open.
    leaving a screen and for leaving the foreground; it names every
    screen, so a new screen with a secret has to be added to it.
 
+   **Before any further input, whatever the worker is doing (PR #13's
+   second review, [P2]).** `Backgrounded` comes through the worker's
+   queue, behind a command still running (a node read at start, for
+   one). Waiting for it let the person return and press Unlock first: the
+   password typed before leaving went into a new command, past the
+   background's cancellation, and opened the wallet after the lock. So
+   the shell's `left_foreground` now also counts the move, on its own
+   thread, before it asks the worker to lock; and the application, before
+   it looks at any message, wipes what is typed if the count has moved
+   since the last one. A secret's text arriving in that same message was
+   taken from the field as last drawn, before the wipe, and is dropped.
+   `Backgrounded` still wipes at once when the worker is free, so a typed
+   secret does not wait in memory for the person to come back.
+
    **And is waited for on iOS (Tawara-mobile#1's review, [P1]; owner,
    2026-10-06).** Asking the worker to lock is not the lock: it locks
    after the command it is running, and a node request (up to the

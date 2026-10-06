@@ -52,8 +52,8 @@ impl Leaving {
         self.0.as_ref().is_none_or(|locking| locking.wait(within))
     }
 
-    pub(crate) fn of(locking: Locking) -> Leaving {
-        Leaving(Some(locking))
+    pub(crate) fn of(locking: Option<Locking>) -> Leaving {
+        Leaving(locking)
     }
 }
 

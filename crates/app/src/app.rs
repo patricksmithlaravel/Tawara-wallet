@@ -11,6 +11,7 @@
 mod wallet;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -86,6 +87,11 @@ pub struct Model {
     pub chain: Explored<ChainView>,
     /// The node's queue with its first transactions read whole (E1).
     pub pending: Explored<PendingView>,
+    /// How many times a mobile shell has said the application left the
+    /// foreground, counted on the shell's own thread, and how many of
+    /// those this model has acted on (docs/DECISIONS.md D32 item 6).
+    pub(crate) left: Arc<AtomicU64>,
+    left_seen: u64,
 }
 
 /// What an explorer read last answered, and whether another is on its way.
@@ -554,6 +560,8 @@ impl Model {
             wallet: None,
             signed: Vec::new(),
             stopped: None,
+            left: Arc::new(AtomicU64::new(0)),
+            left_seen: 0,
             width: crate::WINDOW.0,
             clock_ms: now_ms(),
             zone: crate::ui::Zone::System,
@@ -671,11 +679,20 @@ impl App {
             Some(location::store_dir_in(&host.private_dir)),
             None,
         );
-        if let Some(worker) = &app.worker {
-            let handle = worker.handle.clone();
-            host::on_leaving(move || host::Leaving::of(handle.background()));
-        }
+        host::on_leaving(app.leaving_hook());
         (app, task)
+    }
+
+    /// What [`host::left_foreground`] does for this application: count the
+    /// move first, on the shell's thread, so the next message the
+    /// application takes already finds it; then the worker's lock.
+    fn leaving_hook(&self) -> impl Fn() -> host::Leaving + Send + 'static {
+        let left = Arc::clone(&self.model.left);
+        let worker = self.worker.as_ref().map(|w| w.handle.clone());
+        move || {
+            left.fetch_add(1, Ordering::SeqCst);
+            host::Leaving::of(worker.as_ref().map(WorkerHandle::background))
+        }
     }
 
     /// Read the preferences at `prefs_path`, start the worker, and show the
@@ -818,6 +835,28 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        // The application left the foreground since the last message: what
+        // is typed and not submitted is wiped here, before this message is
+        // looked at, and not when the worker's `Backgrounded` comes, which
+        // a command still running can hold back while the person returns
+        // and presses Unlock (PR #13's review; docs/DECISIONS.md D32 item
+        // 6). A secret's text sent now was taken from the field as last
+        // drawn, before the wipe, so it is dropped: the field is drawn
+        // empty and typed again.
+        let left = self.model.left.load(Ordering::SeqCst);
+        if left != self.model.left_seen {
+            self.model.left_seen = left;
+            self.model.backgrounded();
+            if matches!(
+                message,
+                Message::Password(_)
+                    | Message::Again(_)
+                    | Message::PhraseText(_)
+                    | Message::Word(..)
+            ) {
+                return Task::none();
+            }
+        }
         let m = &mut self.model;
         match message {
             Message::Worker(event) => {
@@ -1868,6 +1907,59 @@ mod tests {
             }
             other => panic!("expected the restore screen, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn what_is_typed_is_wiped_before_the_next_input_whatever_the_worker_is_doing() {
+        // PR #13's review: the worker's `Backgrounded` can come late, behind
+        // a command still running. If the person returns and presses
+        // Unlock first, the password typed before must not reach the worker.
+        let scratch = Scratch::new("background-race");
+        let (mut app, events) = app(&scratch);
+        let dir = scratch.0.join("keystore");
+        let _ = app.update(Message::Choose(StartChoice::Restore));
+        let _ = app.update(Message::Continue);
+        let _ = app.update(Message::Dir(dir.display().to_string()));
+        let _ = app.update(Message::Password(typed(PASSWORD)));
+        let _ = app.update(Message::Again(typed(PASSWORD)));
+        let _ = app.update(Message::PhraseText(typed(PHRASE)));
+        let _ = app.update(Message::RestoreWallet);
+        pump(&mut app, &events, |a| {
+            matches!(a.model.screen, Screen::Wallet(_))
+        });
+        let _ = app.update(Message::Lock);
+        pump(&mut app, &events, |a| {
+            matches!(a.model.screen, Screen::Unlock(_))
+        });
+        let _ = app.update(Message::Password(typed(PASSWORD)));
+
+        // The shell says the application left, through what `boot_in`
+        // registers; the worker's answer is not taken (it is held up), and
+        // Unlock is pressed on the return.
+        let _ = (app.leaving_hook())();
+        let _ = app.update(Message::UnlockWallet);
+        pump(
+            &mut app,
+            &events,
+            |a| !matches!(&a.model.screen, Screen::Unlock(u) if u.error.is_none()),
+        );
+        assert!(
+            matches!(&app.model.screen, Screen::Unlock(u) if u.error.is_some()),
+            "the wallet opened with the password typed before leaving: {:?}",
+            app.model.screen
+        );
+
+        // The first key after a return carries the field's text as last
+        // drawn, the old password with it: it is dropped, not kept.
+        app.model.left.fetch_add(1, Ordering::SeqCst);
+        let _ = app.update(Message::Password(typed(&format!("{PASSWORD}x"))));
+        match &app.model.screen {
+            Screen::Unlock(u) => assert!(u.password.is_empty(), "the stale text was kept"),
+            other => panic!("expected the unlock screen, got {other:?}"),
+        }
+        // And typing goes on as usual after that.
+        let _ = app.update(Message::Password(typed(PASSWORD)));
+        assert!(matches!(&app.model.screen, Screen::Unlock(u) if u.password == PASSWORD));
     }
 
     #[test]
