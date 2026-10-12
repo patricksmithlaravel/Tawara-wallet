@@ -3,8 +3,9 @@
 mod first_run;
 mod wallet;
 
+use iced::mobile::SafeArea;
 use iced::widget::{column, container, progress_bar, scrollable};
-use iced::{Element, Length};
+use iced::{Element, Length, Padding};
 use tawara_wallet_core::Activity;
 
 use crate::app::{Busy, Message, Model, Screen};
@@ -16,6 +17,36 @@ use crate::ui::{self, t, ty};
 /// scrolls to its end (docs/DECISIONS.md D32 item 10 (b)).
 pub fn page_id() -> iced::widget::Id {
     iced::widget::Id::from("page")
+}
+
+/// Whether this build is the iPhone's: the one whose shell can report no safe
+/// area at all (docs/DECISIONS.md D32 item 10 (b)). An expression rather than
+/// a `cfg` attribute, so that both branches are compiled on every target.
+const IPHONE: bool = cfg!(target_os = "ios");
+
+/// What pads an iPhone's root while its shell reports no inset at all: the
+/// fork's template keeps the same, 64 above and 48 below, until the safe area
+/// arrives (the fork's `docs/icm/DESIGN.md`, F6).
+const UNREPORTED: Padding = Padding {
+    top: 64.0,
+    right: 0.0,
+    bottom: 48.0,
+    left: 0.0,
+};
+
+/// What pads the root for `area`. On an iPhone (`iphone`), an area with no
+/// inset at all is not one the screen can have upright, where the status bar
+/// alone takes 20 points, and on the simulator an iPhone SE was drawn with no
+/// top inset on every launch: the root is then padded by [`UNREPORTED`], the bottom
+/// raised to the keyboard's top while it shows (docs/DECISIONS.md D32 item 10
+/// (b)). An iPhone held sideways with neither notch nor status bar loses that
+/// much room and nothing else.
+fn root_padding(area: SafeArea, iphone: bool) -> Padding {
+    if iphone && area.insets == Padding::ZERO {
+        UNREPORTED.bottom(UNREPORTED.bottom.max(area.keyboard))
+    } else {
+        area.padding(0.0)
+    }
 }
 
 /// The whole window for `model`. The safe area pads the root in every layout:
@@ -52,7 +83,7 @@ pub fn view(model: &Model) -> Element<'_, Message> {
     container(page)
         .width(Length::Fill)
         .height(Length::Fill)
-        .padding(model.safe_area.padding(0.0))
+        .padding(root_padding(model.safe_area, model.phone() && IPHONE))
         .style(style)
         .into()
 }
@@ -271,6 +302,39 @@ mod tests {
             boxes(&phone_wallet(336.0)).len() < boxes(&phone_wallet(0.0)).len(),
             "the tab bar's nodes are not laid out while the keyboard shows"
         );
+    }
+
+    #[test]
+    fn an_iphone_that_reports_no_inset_is_padded_by_the_forks_fallback() {
+        let none = SafeArea::ZERO;
+        assert_eq!(
+            root_padding(none, true),
+            UNREPORTED,
+            "an iPhone that reports nothing"
+        );
+        assert_eq!(
+            root_padding(none.with_keyboard(260.0), true),
+            UNREPORTED.bottom(260.0),
+            "and its keyboard still raises the bottom"
+        );
+        assert_eq!(
+            root_padding(none, false),
+            Padding::ZERO,
+            "the desktop and Android: nothing"
+        );
+        // What an iPhone reports is used as it is, the notch held sideways
+        // included.
+        assert_eq!(
+            root_padding(phone_area(0.0), true),
+            phone_area(0.0).padding(0.0)
+        );
+        let sideways = SafeArea::new(Padding {
+            top: 0.0,
+            right: 47.0,
+            bottom: 21.0,
+            left: 47.0,
+        });
+        assert_eq!(root_padding(sideways, true), sideways.padding(0.0));
     }
 
     #[test]
