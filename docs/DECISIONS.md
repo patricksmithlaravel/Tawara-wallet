@@ -1611,6 +1611,15 @@ on the three conditions D18 left open.
    (phase 5): if UIScene is still missing then, an iOS release built with
    a newer SDK waits on it, and plan D3's fallback is put to the owner.
 
+   *Amended (decided under the owner's delegation, 2026-10-12): the sentence
+   above that says an Android activity destroyed while its process lives
+   cannot start again no longer holds at the new pin, `v0.14.1-mobile.2`. The
+   fork's winit patch (`android-exit-on-destroy`) lets the event loop be
+   created again in the same process: the loop ends on `Destroy`, and
+   dropping it allows a new one, so a new activity can run its own
+   `android_main`. Tawara still ends the process after `Destroy`, since a
+   same-process restart would need the rebuilding that item 9 (d) declines.*
+
    **UIScene: owner, 2026-10-06.** What TN3187 warned of was measured on
    phase 4's own build, on a Mac with Xcode 27. Linked with the iOS 27
    SDK, the app is stopped by UIKit at launch on the iOS 27 simulator
