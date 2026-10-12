@@ -10,9 +10,14 @@
 //! rollback that reuses a key (docs/PLAN.md sections 4.3, 4.5); "Password:
 //! Change", the network's name and "Transaction search" need the library
 //! first (D27, item 4); "Theme" is not built, since there is one (item 8).
+//!
+//! On a phone (docs/SCREENS.md, "Compact layout") the accounts are stacked
+//! items rather than a table, each control sits under its label, the units
+//! share the width, and the auto-lock periods wrap onto a second line
+//! (`auto_lock` says why).
 
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, row, space, text_input};
+use iced::widget::{Row, column, container, row, space, text_input};
 use iced::{Alignment, Element, Length, Padding};
 use tawara_wallet_core::preferences::{AmountUnit, IDLE_LOCK_MINUTES};
 use tawara_wallet_core::view::{AccountRow, AccountState, DivergenceKind};
@@ -33,7 +38,7 @@ pub fn view<'a>(
         body.push(accounts(model, &wallet.accounts));
     }
     body.push(pair(model, keystore(model), node(model, s), 1, 1));
-    body.push(pair(model, display(model), about(), 1, 1));
+    body.push(pair(model, display(model), about(model), 1, 1));
     frame(
         model,
         page,
@@ -68,6 +73,50 @@ pub(super) fn on_ledger(account: &AccountRow) -> Option<u32> {
 /// Accounts and one-time keys (05): each account's key on this device and
 /// on the ledger, compared at every unlock and refresh.
 fn accounts<'a>(model: &'a Model, rows: &'a [AccountRow]) -> Element<'a, Message> {
+    let compact = model.compact();
+    let list: Element<'a, Message> = if compact {
+        stacked_accounts(model, rows).into()
+    } else {
+        table(model, rows).into()
+    };
+    let words = column![
+        t(
+            "Accounts & one-time keys",
+            ty::CARD_TITLE,
+            color::TEXT_PRIMARY
+        ),
+        t(
+            "Each stored key index is compared with the ledger at every unlock and \
+             refresh. A paused account is never moved from here: Review opens \
+             account recovery, which shows every account's report first.",
+            ty::NOTE,
+            color::TEXT_MUTED
+        ),
+    ]
+    .spacing(sp::S4)
+    .width(Length::Fill);
+    let check = action(
+        model,
+        "Check again",
+        theme::Button::Secondary,
+        Size::Small,
+        Some(Icon::Refresh),
+        Message::Refresh,
+    );
+    // On a phone the note has the full width, and the button comes beneath it.
+    let head: Element<'a, Message> = if compact {
+        column![words, check].spacing(sp::S12).into()
+    } else {
+        row![words, check]
+            .spacing(sp::S16)
+            .align_y(Alignment::Center)
+            .into()
+    };
+    ui::card_for(compact, column![head, list].spacing(sp::S12)).into()
+}
+
+/// The accounts as a table with its column heads, on the desktop.
+fn table<'a>(model: &'a Model, rows: &'a [AccountRow]) -> iced::widget::Column<'a, Message> {
     let head = |label: &'static str, portion: u16| {
         t(label, ty::TABLE_HEADER, color::TEXT_MUTED).width(Length::FillPortion(portion))
     };
@@ -141,41 +190,85 @@ fn accounts<'a>(model: &'a Model, rows: &'a [AccountRow]) -> Element<'a, Message
             boxed
         });
     }
-    ui::card(
-        column![
-            row![
-                column![
-                    t(
-                        "Accounts & one-time keys",
-                        ty::CARD_TITLE,
-                        color::TEXT_PRIMARY
-                    ),
-                    t(
-                        "Each stored key index is compared with the ledger at every unlock and \
-                         refresh. A paused account is never moved from here: Review opens \
-                         account recovery, which shows every account's report first.",
-                        ty::NOTE,
-                        color::TEXT_MUTED
-                    ),
-                ]
-                .spacing(sp::S4)
-                .width(Length::Fill),
-                action(
-                    model,
-                    "Check again",
-                    theme::Button::Secondary,
-                    Size::Small,
-                    Some(Icon::Refresh),
-                    Message::Refresh,
-                ),
+    table
+}
+
+/// The accounts on a phone: one stacked item each, with a divider between
+/// each pair (docs/SCREENS.md, W11).
+fn stacked_accounts<'a>(
+    model: &'a Model,
+    rows: &'a [AccountRow],
+) -> iced::widget::Column<'a, Message> {
+    let mut list = column![];
+    for (n, account) in rows.iter().enumerate() {
+        if n > 0 {
+            list = list.push(ui::divider());
+        }
+        list = list.push(account_item(model, account));
+    }
+    list
+}
+
+/// One account on a phone: its name and kind with its status, its tag, the
+/// key index on this device and the one on the ledger, and Review where the
+/// account is paused.
+fn account_item<'a>(model: &'a Model, account: &'a AccountRow) -> Element<'a, Message> {
+    let (word, ink) = status(&account.state);
+    let paused = matches!(account.state, AccountState::Diverged { .. });
+    let ledger = on_ledger(account).map_or_else(|| "—".to_owned(), |i| format!("#{i}"));
+    let hex = account.id.hex();
+    let tag = format!("{}…{}", &hex[..10], &hex[hex.len() - 8..]);
+    let ledger_ink = if paused {
+        color::WARNING
+    } else {
+        color::TEXT_SECONDARY
+    };
+    let mut item = column![
+        row![
+            column![
+                t(name(account.id), ty::TABLE_NAME, color::TEXT_PRIMARY),
+                t(kind(account), ty::TINY, color::TEXT_MUTED),
             ]
-            .spacing(sp::S16)
-            .align_y(Alignment::Center),
-            table,
+            .spacing(sp::S2)
+            .width(Length::Fill),
+            t(word, ty::TABLE_BODY, ink),
         ]
-        .spacing(sp::S12),
-    )
-    .into()
+        .spacing(sp::S12)
+        .align_y(Alignment::Center),
+        t(tag, ty::MONO_SMALL, color::TEXT_SECONDARY).wrapping(Wrapping::WordOrGlyph),
+        row![
+            t(
+                format!("On this device #{}", account.index),
+                ty::NOTE,
+                color::TEXT_MUTED
+            ),
+            t(format!("· On ledger {ledger}"), ty::NOTE, ledger_ink),
+        ]
+        .spacing(sp::S6),
+    ]
+    .spacing(sp::S8);
+    if paused {
+        item = item.push(
+            container(action(
+                model,
+                "Review",
+                theme::Button::WarningTonal,
+                Size::Small,
+                None,
+                WalletMsg::Open(To::Recovery(Some(account.id))),
+            ))
+            .width(Length::Fill)
+            .align_x(Alignment::End),
+        );
+    }
+    let boxed = container(item)
+        .padding(Padding::from([sp::S12, sp::S12]))
+        .width(Length::Fill);
+    if paused {
+        boxed.style(theme::row_warning).into()
+    } else {
+        boxed.into()
+    }
 }
 
 fn card_head<'a>(lead: Icon, title: &'a str, subtitle: String) -> Element<'a, Message> {
@@ -194,57 +287,85 @@ fn card_head<'a>(lead: Icon, title: &'a str, subtitle: String) -> Element<'a, Me
     .into()
 }
 
-/// A labelled line of a settings card, its control or value on the right.
+/// A labelled line of a settings card, its control or value beside it. On a
+/// phone the control sits under the label, and a line without a control is
+/// only its label and note.
 fn setting<'a>(
+    compact: bool,
     label: &'a str,
     note: Option<String>,
-    control: Element<'a, Message>,
+    control: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
     let mut words = column![t(label, ty::BODY, color::TEXT_PRIMARY)].spacing(sp::S2);
     if let Some(note) = note {
         words = words.push(t(note, ty::NOTE, color::TEXT_MUTED).wrapping(Wrapping::WordOrGlyph));
     }
-    row![words.width(Length::Fill), control]
-        .spacing(sp::S16)
-        .align_y(Alignment::Center)
-        .into()
+    if compact {
+        let mut line = column![words.width(Length::Fill)].spacing(sp::S10);
+        if let Some(control) = control {
+            line = line.push(control);
+        }
+        return line.into();
+    }
+    row![
+        words.width(Length::Fill),
+        control.unwrap_or_else(|| space().width(Length::Shrink).into()),
+    ]
+    .spacing(sp::S16)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// The auto-lock periods, one segment each, hugging their labels. On a phone
+/// they wrap onto a second line rather than share the width: a segment keeps
+/// 14 pixels of padding either side, and five of them with their labels need
+/// more than a phone's width, so a segment that shares it breaks its label
+/// across two lines (docs/SCREENS.md, W11; docs/DECISIONS.md D32 item 10 (b)).
+fn auto_lock(model: &Model) -> Element<'_, Message> {
+    let compact = model.compact();
+    let mut periods = row![].spacing(if compact { sp::S6 } else { sp::S4 });
+    for m in IDLE_LOCK_MINUTES {
+        let label = match m {
+            1 => "1 min",
+            2 => "2 min",
+            5 => "5 min",
+            10 => "10 min",
+            _ => "15 min",
+        };
+        let on_tap: Option<Message> = Some(WalletMsg::AutoLock(m).into());
+        periods = periods.push(ui::segment(
+            label,
+            model.prefs.idle_lock.as_secs() == m * 60,
+            Length::Shrink,
+            on_tap,
+        ));
+    }
+    if compact {
+        return periods.wrap().vertical_spacing(sp::S6).into();
+    }
+    periods.into()
 }
 
 /// The keystore (05): where it is, how its key is made, and the auto-lock.
 fn keystore(model: &Model) -> Element<'_, Message> {
+    let compact = model.compact();
     let kdf = tawara_wallet_core::NEW_STORE_KDF;
-    let mut periods = row![].spacing(sp::S4);
-    for m in IDLE_LOCK_MINUTES {
-        periods = periods.push(ui::button_with(
-            match m {
-                1 => "1 min",
-                2 => "2 min",
-                5 => "5 min",
-                10 => "10 min",
-                _ => "15 min",
-            },
-            theme::Button::Segment {
-                selected: model.prefs.idle_lock.as_secs() == m * 60,
-            },
-            Size::Small,
-            None,
-            Some(WalletMsg::AutoLock(m).into()),
-        ));
-    }
     let dir = model
         .wallet
         .as_ref()
         .map_or_else(String::new, |w| w.dir.display().to_string());
-    ui::card(
+    ui::card_for(
+        compact,
         column![
             card_head(
                 Icon::Lock,
                 "Keystore",
                 "Argon2id and ChaCha20-Poly1305 · on this device only".to_owned()
             ),
-            setting("Folder", Some(dir), space().width(Length::Shrink).into()),
+            setting(compact, "Folder", Some(dir), None),
             ui::divider(),
             setting(
+                compact,
                 "Key derivation",
                 Some(format!(
                     "Argon2id at {} MiB over {} passes and {} lane, for a new store; a store \
@@ -253,13 +374,14 @@ fn keystore(model: &Model) -> Element<'_, Message> {
                     kdf.passes,
                     kdf.lanes
                 )),
-                space().width(Length::Shrink).into()
+                None,
             ),
             ui::divider(),
             setting(
+                compact,
                 "Auto-lock",
                 Some("After this long with nothing done".to_owned()),
-                periods.into()
+                Some(auto_lock(model)),
             ),
             ui::divider(),
             ui::helper(
@@ -337,7 +459,8 @@ fn node<'a>(model: &'a Model, s: &'a SettingsPage) -> Element<'a, Message> {
             .width(Length::Fill)
             .style(theme::field_box)
     };
-    ui::card(
+    ui::card_for(
+        model.compact(),
         column![
             card_head(
                 Icon::Server,
@@ -358,7 +481,13 @@ fn node<'a>(model: &'a Model, s: &'a SettingsPage) -> Element<'a, Message> {
             ]
             .spacing(sp::S10)
             .align_y(Alignment::Center),
-            ui::helper("https:// only, or http:// to this computer. There is no default node."),
+            ui::helper(if model.phone() {
+                // The same rule in a phone's words (docs/DECISIONS.md D32 item
+                // 10 (a)).
+                "https:// only, or http:// to this phone. There is no default node."
+            } else {
+                "https:// only, or http:// to this computer. There is no default node."
+            }),
             row![
                 tile("Network", network, color::TEXT_PRIMARY, None),
                 tile("Status", state, ink, None),
@@ -388,31 +517,38 @@ fn node<'a>(model: &'a Model, s: &'a SettingsPage) -> Element<'a, Message> {
     .into()
 }
 
+/// The units amounts are shown in, one segment each. On the desktop they hug
+/// their labels; on a phone they share the width (docs/SCREENS.md, W11).
+fn units(model: &Model) -> Row<'_, Message> {
+    let compact = model.compact();
+    let (width, gap) = if compact {
+        (Length::Fill, sp::S6)
+    } else {
+        (Length::Shrink, sp::S4)
+    };
+    let unit = |label: &'static str, u: AmountUnit| {
+        let on_tap: Option<Message> = Some(WalletMsg::Unit(u).into());
+        ui::segment(label, model.prefs.unit == u, width, on_tap)
+    };
+    row![
+        unit("MCM", AmountUnit::Mcm),
+        unit("nanoMCM", AmountUnit::NanoMcm)
+    ]
+    .spacing(gap)
+}
+
 /// Display (05): the unit amounts are shown in.
 fn display(model: &Model) -> Element<'_, Message> {
-    let unit = |label: &'static str, u: AmountUnit| {
-        ui::button_with(
-            label,
-            theme::Button::Segment {
-                selected: model.prefs.unit == u,
-            },
-            Size::Small,
-            None,
-            Some(WalletMsg::Unit(u).into()),
-        )
-    };
-    ui::card(
+    let compact = model.compact();
+    ui::card_for(
+        compact,
         column![
             t("Display", ty::CARD_TITLE, color::TEXT_PRIMARY),
             setting(
+                compact,
                 "Amounts",
                 Some("Typed amounts are MCM whichever is shown.".to_owned()),
-                row![
-                    unit("MCM", AmountUnit::Mcm),
-                    unit("nanoMCM", AmountUnit::NanoMcm)
-                ]
-                .spacing(sp::S4)
-                .into(),
+                Some(units(model).into()),
             ),
         ]
         .spacing(sp::S16),
@@ -421,17 +557,25 @@ fn display(model: &Model) -> Element<'_, Message> {
 }
 
 /// About (05): what this build is.
-fn about<'a>() -> Element<'a, Message> {
-    let fact = |label: &'static str, value: String| {
+fn about<'a>(model: &'a Model) -> Element<'a, Message> {
+    let compact = model.compact();
+    let fact = |label: &'static str, value: String| -> Element<'a, Message> {
+        let words = t(label, ty::BODY_SMALL, color::TEXT_MUTED);
+        let value = t(value, ty::BODY_SMALL, color::TEXT_PRIMARY).wrapping(Wrapping::WordOrGlyph);
+        if compact {
+            return column![words, value.width(Length::Fill)]
+                .spacing(sp::S2)
+                .into();
+        }
         row![
-            t(label, ty::BODY_SMALL, color::TEXT_MUTED).width(Length::FillPortion(2)),
-            t(value, ty::BODY_SMALL, color::TEXT_PRIMARY)
-                .wrapping(Wrapping::WordOrGlyph)
-                .width(Length::FillPortion(3)),
+            words.width(Length::FillPortion(2)),
+            value.width(Length::FillPortion(3)),
         ]
         .spacing(sp::S12)
+        .into()
     };
-    ui::card(
+    ui::card_for(
+        compact,
         column![
             t("About", ty::CARD_TITLE, color::TEXT_PRIMARY),
             fact("Signatures", "WOTS+ one-time keys".to_owned()),
@@ -448,4 +592,176 @@ fn about<'a>() -> Element<'a, Message> {
         .spacing(sp::S12),
     )
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use tawara_wallet_core::preferences::Preferences;
+    use tawara_wallet_core::sample;
+    use tawara_wallet_core::{NetworkName, SyncState};
+
+    use super::*;
+    use crate::app::{NARROWEST, NodeState, Page, Screen, WalletPage};
+    use crate::harness::{Driver, fits};
+    use crate::screens;
+    use crate::ui::Zone;
+
+    /// The node and the folder the sample store is kept in, as the screenshot
+    /// example names them.
+    const NODE: &str = "https://node.example";
+    const DIR: &str = "/home/you/.local/share/tawara/keystore";
+
+    /// The sample store on the settings page, drawn `width` logical pixels
+    /// across, built as the screenshot example builds it.
+    fn sample_model(width: f32) -> Model {
+        let mut model = Model::new(Preferences::default(), Some(PathBuf::from(DIR)));
+        model.node = NodeState {
+            url: Some(NODE.to_owned()),
+            tip: Some((871_173, Duration::from_millis(42))),
+            solved_ms: Some(sample::TIP_MS),
+            sync: Some(SyncState {
+                stage: "synchronized".to_owned(),
+                synced: true,
+            }),
+            network: Some(NetworkName {
+                blockchain: "mochimo".to_owned(),
+                network: "mainnet".to_owned(),
+            }),
+            error: None,
+        };
+        model.clock_ms = sample::TIP_MS + 48_000;
+        model.zone = Zone::Fixed(0);
+        model.width = width;
+        model.wallet = Some(sample::wallet_view());
+        model.screen = Screen::Wallet(WalletPage {
+            page: Page::Settings(SettingsPage {
+                node: NODE.to_owned(),
+            }),
+            ..WalletPage::default()
+        });
+        model
+    }
+
+    /// The auto-lock periods as the desktop drew them before they were
+    /// segments: buttons, in a row.
+    fn old_auto_lock(model: &Model) -> Element<'_, Message> {
+        let mut periods = row![].spacing(sp::S4);
+        for m in IDLE_LOCK_MINUTES {
+            let label = match m {
+                1 => "1 min",
+                2 => "2 min",
+                5 => "5 min",
+                10 => "10 min",
+                _ => "15 min",
+            };
+            let on_press: Option<Message> = Some(WalletMsg::AutoLock(m).into());
+            periods = periods.push(ui::button_with(
+                label,
+                theme::Button::Segment {
+                    selected: model.prefs.idle_lock.as_secs() == m * 60,
+                },
+                ui::Size::Small,
+                None,
+                on_press,
+            ));
+        }
+        periods.into()
+    }
+
+    /// The units as the desktop drew them before they were segments.
+    fn old_units(model: &Model) -> Element<'_, Message> {
+        let unit = |label: &'static str, u: AmountUnit| {
+            let on_press: Option<Message> = Some(WalletMsg::Unit(u).into());
+            ui::button_with(
+                label,
+                theme::Button::Segment {
+                    selected: model.prefs.unit == u,
+                },
+                ui::Size::Small,
+                None,
+                on_press,
+            )
+        };
+        row![
+            unit("MCM", AmountUnit::Mcm),
+            unit("nanoMCM", AmountUnit::NanoMcm)
+        ]
+        .spacing(sp::S4)
+        .into()
+    }
+
+    #[test]
+    fn the_settings_fit_a_phone_of_the_narrowest_width() {
+        let model = sample_model(NARROWEST);
+        assert_eq!(fits(screens::view(&model), NARROWEST), Ok(()));
+    }
+
+    #[test]
+    fn the_desktop_periods_and_units_draw_the_pixels_of_the_buttons_they_replace() {
+        let model = sample_model(1440.0);
+        let segments: Element<'_, Message> = auto_lock(&model);
+        let drawn = Driver::new(segments, (420, 40)).draw();
+        let buttons = Driver::new(old_auto_lock(&model), (420, 40)).draw();
+        assert!(drawn == buttons, "the auto-lock periods' pixels differ");
+
+        let segments: Element<'_, Message> = units(&model).into();
+        let drawn = Driver::new(segments, (300, 40)).draw();
+        let buttons = Driver::new(old_units(&model), (300, 40)).draw();
+        assert!(drawn == buttons, "the units' pixels differ");
+    }
+
+    /// What a window draws as text, and where each text lies.
+    #[derive(Default)]
+    struct Texts(Vec<(String, iced::Rectangle)>);
+
+    impl iced::advanced::widget::Operation for Texts {
+        fn traverse(
+            &mut self,
+            operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation),
+        ) {
+            operate(self);
+        }
+
+        fn text(
+            &mut self,
+            _: Option<&iced::advanced::widget::Id>,
+            bounds: iced::Rectangle,
+            text: &str,
+        ) {
+            self.0.push((text.to_owned(), bounds));
+        }
+    }
+
+    #[test]
+    fn on_a_phone_each_auto_lock_label_lies_on_one_line() {
+        // A label that wraps is two lines, about 34 pixels tall, and one line
+        // is about 17, so the height tells them apart.
+        let model = sample_model(NARROWEST);
+        let mut renderer = crate::harness::renderer();
+        let root = screens::view(&model);
+        let mut ui = iced_runtime::user_interface::UserInterface::build(
+            root,
+            iced::Size::new(NARROWEST, 844.0),
+            iced_runtime::user_interface::Cache::default(),
+            &mut renderer,
+        );
+        let mut texts = Texts::default();
+        ui.operate(&renderer, &mut texts);
+        for label in ["1 min", "2 min", "5 min", "10 min", "15 min"] {
+            let lines: Vec<f32> = texts
+                .0
+                .iter()
+                .filter(|(drawn, _)| drawn == label)
+                .map(|(_, at)| at.height)
+                .collect();
+            assert_eq!(lines.len(), 1, "`{label}` is drawn {} times", lines.len());
+            assert!(
+                lines[0] < 20.0,
+                "`{label}` is drawn over two lines: {lines:?}"
+            );
+        }
+    }
 }
