@@ -2027,6 +2027,78 @@ on the three conditions D18 left open.
    the fork's, it is recorded here and left for a change to the fork, which
    needs the owner's say-so.
 
+   *Found 2026-10-12:* on the iOS simulator, no first gesture after a cold
+   launch or after a return from the background was lost, on either build: the
+   baseline at PR #6's pin (tawara-app f095432), and the foundation at 7821307,
+   with logging probes that were not committed. On the foundation, taps on the
+   Restore card were processed 0.13 s, 0.23 s and 14.6 s after the first frame,
+   and a tap 0.04 s after the return to the foreground and one about 16 s after
+   it. On the baseline, a tap a few tenths of a second after the first frame and
+   one a few seconds after it were processed, and so was one after a return. A
+   drag that starts on text scrolled the first screen at the first try on both
+   builds, and a two-second press across two of the application's one-second
+   ticks was delivered. The first tap on a password field showed the soft
+   keyboard on both builds (the fork's `safe_area` line reports a keyboard of
+   301 points), and the first key reached the field. The system's sheet, "Speed
+   up your typing by sliding your finger", came up over the keyboard when it was
+   first shown on the simulator; a key typed through the simulator's keyboard
+   reached the field, and taps on the soft keys under the sheet were not tested.
+   Against the hypotheses: H1 is not reproduced for the first focus; H2 does not
+   run on a cold start, as the cover is set only on the move to inactive, which
+   a cold launch does not make; H3 is not reproduced, since every visible change
+   followed its tap (the screenshot tool takes about 1.5 s a capture, so finer
+   frame timing was not measured); H4 does not apply, with no move before the
+   first gesture and no secret field on the first screen; H5 is not reproduced:
+   with a node that does not answer, only the footer changes, and nothing above
+   it moved in the first three seconds; the window's size and the safe area
+   settle within about 0.1 s of the first view (the foundation starts at 360
+   wide and then reads 402), with no tap in that time; H6 can drop only touches
+   that arrive before the window exists, when nothing is drawn; H7 does not
+   apply. No Tawara cause was found, so `app.rs` does not change, and no fork
+   change is asked for. Not settled: device timing, since the simulator's
+   `active` state arrives with the first frame and a device's may not; and the
+   soft keyboard under the sheet. A separate fault, not the first gesture: on
+   both builds the node footer's "Choose a node" link (and "Change node") did
+   not respond to six taps on its text, three on each build, on the first screen
+   after a drag and on the unlock screen, while the links and buttons above it
+   responded (Continue, "Open a wallet already on this computer", "Back"). With
+   a node that does not answer, the link leaves the visible area, its label
+   wrapping to four lines. A scratch change that put the URL below the link's
+   row hid the link in that state; a scratch change that gave the footer row the
+   column's width left the drawing and the taps as they were. The cause was
+   not found on those builds; one idea, not confirmed, was that the scroll
+   area took the press before the link's own hit test. On those two builds
+   the node screen was out of reach by touch. The footer is in
+   `screens/first_run.rs`, and the phone layout (item 10 (b)) moves that
+   footer, so it must be checked with the same taps before it is merged.
+
+   *Found 2026-10-12, with the phone layout:* the footer's fault is the
+   desktop frame drawn at a phone's width. A headless test taps the right end
+   of the footer's row on S1, S3 and S7 at 360, with the node answering and
+   not answering: with the phone frame each tap reaches the link and opens the
+   node screen, and with the desktop frame put back on a phone none does,
+   even with the node answering. In that frame the form's pane is about half
+   the window, and the link's words are drawn where no tap reaches its
+   button. The phone frame gives the footer the page's width and the link
+   its own room. This is shown headlessly; the same taps on the simulator
+   are still to be made on the phone layout's build.
+
+   *Found 2026-10-12, on the phone layout's build:* this branch, built into
+   Tawara-mobile PR #6's shell with a scratch `Host::share` that does
+   nothing, passed the 12 checks of `platform/ios/tawara.sh simulator` on an
+   iPhone 17 (iOS 27.0). On an iPhone SE (3rd generation, iOS 18.3) the
+   shell published a safe area with no inset at all (with `ICM_EVENTS=1`:
+   insets 0, 0, 0, 0) on each cold launch, so before item (b)'s fallback
+   the wordmark was drawn under the 20-point status bar; with the fallback
+   it stands clear of it. Why no inset is read there is not isolated: the
+   fork reads winit's safe-area frame against the window's bounds on every
+   turn of the event loop, so the zero is winit's answer on that device, and
+   a change there is the fork's, which needs the owner's say-so. The
+   simulator's input tool was not granted, so no tap was made on this
+   build: the first gesture after launch, the footer link by touch, a drag
+   that starts on a row, Paste, and the keyboard shown again are still to
+   be checked by hand.
+
    **(g) Paste buttons (decided under the owner's delegation, 2026-10-12).**
    In the compact layout a Paste button stands beside each destination field
    (W4, W8), the signed-bytes field (W9) and the recovery-phrase field (S6).
