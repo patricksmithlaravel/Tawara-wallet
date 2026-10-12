@@ -179,6 +179,34 @@ impl iced::advanced::widget::Operation for Focusables {
     }
 }
 
+/// What a window draws as text, and where each text lies: the layout's own
+/// answer, so that a test finds a row or a button by what it says.
+#[derive(Default)]
+struct Texts(Vec<(String, Rectangle)>);
+
+impl Operation for Texts {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+        operate(self);
+    }
+
+    fn text(&mut self, _: Option<&iced::advanced::widget::Id>, bounds: Rectangle, text: &str) {
+        self.0.push((text.to_owned(), bounds));
+    }
+}
+
+/// Every text `root` draws in a window of `size`, unscrolled.
+pub(crate) fn texts<'a, M: 'a>(
+    root: impl Into<Element<'a, M>>,
+    size: (f32, f32),
+) -> Vec<(String, Rectangle)> {
+    let mut renderer = renderer();
+    let bounds = Size::new(size.0, size.1);
+    let mut ui = UserInterface::build(root, bounds, Cache::default(), &mut renderer);
+    let mut found = Texts::default();
+    ui.operate(&renderer, &mut found);
+    found.0
+}
+
 /// The window position an event carries, if it carries one.
 fn position_of(event: &Event) -> Option<Point> {
     match event {
