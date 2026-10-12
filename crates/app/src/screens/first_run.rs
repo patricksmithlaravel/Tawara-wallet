@@ -694,7 +694,9 @@ fn restore<'a>(model: &Model, r: &'a RestoreForm, drawn: u64) -> Element<'a, Mes
 
 /// S6's recovery-phrase field, drawn as `ui::field` draws a field, with what
 /// keyboard paste brings cleaned as a phrase (docs/DECISIONS.md D32 item 10
-/// (h)), and in the compact layout a Paste button beside it (item 10 (g)).
+/// (h)), and in the compact layout a Paste button beside it (item 10 (g)). The
+/// button's read carries the generation the field is drawn at, as the field's
+/// own text does.
 fn phrase_field<'a>(
     model: &Model,
     r: &'a RestoreForm,
@@ -712,14 +714,14 @@ fn phrase_field<'a>(
         .on_submit_maybe(ready.then_some(Message::RestoreWallet));
     let entry = if model.compact() {
         row![
-            paste::cleaned(field),
-            paste::button(Some(Message::Paste(PasteInto::Phrase))),
+            paste::phrase_paste(field),
+            paste::button(Some(Message::Paste(PasteInto::Phrase { drawn }))),
         ]
         .spacing(sp::S8)
         .align_y(Alignment::Center)
         .into()
     } else {
-        paste::cleaned(field)
+        paste::phrase_paste(field)
     };
     column![
         t("Recovery phrase", ty::FORM_LABEL, color::TEXT_SECONDARY),
@@ -812,6 +814,7 @@ mod tests {
 
     use iced::advanced::layout;
     use iced::advanced::widget::Tree;
+    use iced::advanced::widget::operation::focusable;
     use iced::{Point, Rectangle, Size};
     use tawara_wallet_core::preferences::Preferences;
     use tawara_wallet_core::{Activity, CONFIRM_POSITIONS, PhraseForDisplay, Progress, RequestId};
@@ -822,6 +825,7 @@ mod tests {
         Driver, finger_lift, finger_move, finger_press, fits, mouse_move, mouse_press,
         mouse_release, texts,
     };
+    use crate::paste::support::{Holding, paste_keys};
 
     /// The phone's own folder, as the shells report it (docs/DECISIONS.md D32
     /// item 7). The store is kept in a `keystore` folder inside it.
@@ -1210,7 +1214,10 @@ mod tests {
             mouse_release(),
         ]);
         assert!(
-            matches!(messages.as_slice(), [Message::Paste(PasteInto::Phrase)]),
+            matches!(
+                messages.as_slice(),
+                [Message::Paste(PasteInto::Phrase { drawn })] if *drawn == model.drawn()
+            ),
             "{messages:?}"
         );
 
@@ -1221,5 +1228,27 @@ mod tests {
                 .iter()
                 .any(|(text, _)| text == "Paste")
         );
+    }
+
+    #[test]
+    fn a_keyboard_paste_into_the_phrase_field_keeps_the_words_apart() {
+        // docs/DECISIONS.md D32 item 10 (h), on S6 itself: a phrase copied one
+        // word to a line arrives as the words, separated, on the phone and on
+        // the desktop alike, and as the one field's text.
+        let phone = phone_model(Screen::Restore(RestoreForm::default()));
+        let mut desktop = Model::new(Preferences::default(), None);
+        desktop.screen = Screen::Restore(RestoreForm::default());
+        for (model, size) in [(&phone, (360, 844)), (&desktop, (1440, 900))] {
+            let mut driver = Driver::new(view(model), size);
+            driver.operate(Box::new(focusable::focus(crate::screens::phrase_id())));
+            let messages = driver.send_with(&paste_keys(), &mut Holding("one\ntwo\n\nthree"));
+            assert!(
+                matches!(
+                    messages.as_slice(),
+                    [Message::PhraseText(typed)] if typed.text == "one two three"
+                ),
+                "{messages:?}"
+            );
+        }
     }
 }

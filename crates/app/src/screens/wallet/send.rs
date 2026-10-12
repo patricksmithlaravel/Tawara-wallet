@@ -158,6 +158,10 @@ fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> 
         .spacing(sp::S10)
     };
     let several = f.rows.len() > 1;
+    // Each Paste button records the form it was drawn on and its rows, so
+    // that a read which comes back late goes nowhere else (docs/DECISIONS.md
+    // D32 item 10 (g)).
+    let shown = model.form_of().filter(|_| idle);
     for (i, r) in f.rows.iter().enumerate() {
         let mut to = field(&r.to, "Base58 destination", true).id(crate::screens::destination_id(i));
         let mut reference = field(&r.reference, "none", true);
@@ -210,7 +214,9 @@ fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> 
                     // 10 (g)).
                     row![
                         to.width(Length::Fill),
-                        paste::button(idle.then_some(Message::Paste(PasteInto::Destination(i)))),
+                        paste::button(shown.map(|(form, rows)| {
+                            Message::Paste(PasteInto::Destination { form, row: i, rows })
+                        })),
                     ]
                     .spacing(sp::S8)
                     .align_y(Alignment::Center)
@@ -851,7 +857,7 @@ fn submit_form<'a>(
         model
             .busy
             .is_none()
-            .then_some(Message::Paste(PasteInto::Artifact)),
+            .then_some(Message::Paste(PasteInto::SignedBytes)),
     );
     let entry: Element<'a, Message> = if compact {
         column![
@@ -1299,7 +1305,9 @@ mod tests {
 
     #[test]
     fn a_tap_on_a_paste_button_asks_for_its_own_fields_paste() {
-        let model = phone(compose(typed()), None);
+        let form = typed();
+        let rows = form.rows.len();
+        let model = phone(compose(form), None);
         let second = pastes(&model)[1];
         let mut driver = Driver::new(screens::view(&model), (360, 844));
         let (messages, _, _) = driver.send(&[
@@ -1310,7 +1318,11 @@ mod tests {
         assert!(
             matches!(
                 messages.as_slice(),
-                [Message::Paste(PasteInto::Destination(1))]
+                [Message::Paste(PasteInto::Destination {
+                    form: crate::app::FormOf::Send(Some(from)),
+                    row: 1,
+                    rows: r,
+                })] if *from == accounts()[0] && *r == rows
             ),
             "{messages:?}"
         );
@@ -1324,7 +1336,10 @@ mod tests {
             mouse_release(),
         ]);
         assert!(
-            matches!(messages.as_slice(), [Message::Paste(PasteInto::Artifact)]),
+            matches!(
+                messages.as_slice(),
+                [Message::Paste(PasteInto::SignedBytes)]
+            ),
             "{messages:?}"
         );
     }

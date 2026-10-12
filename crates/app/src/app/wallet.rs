@@ -288,6 +288,17 @@ impl Default for SpendForm {
     }
 }
 
+/// Which spend form a destination's Paste button was drawn on, so that a
+/// read which comes back once another form is shown is dropped rather than
+/// put in it (docs/DECISIONS.md D32 item 10 (g)).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FormOf {
+    /// W4, spending from this account.
+    Send(Option<AccountId>),
+    /// W8, re-signing this account's spend.
+    Resign(AccountId),
+}
+
 /// W4 to W6: composing a spend, reviewing the library's page for it, and
 /// what happened once it was signed.
 #[derive(Clone, Debug, Default)]
@@ -660,6 +671,30 @@ impl Signed {
 }
 
 impl Model {
+    /// The spend form shown, if one is, and how many destination rows it
+    /// has: what a destination's Paste button records when it is pressed,
+    /// and what its read is checked against when it comes back
+    /// (docs/DECISIONS.md D32 item 10 (g)).
+    #[must_use]
+    pub fn form_of(&self) -> Option<(FormOf, usize)> {
+        match &self.screen {
+            Screen::Wallet(WalletPage {
+                page:
+                    Page::Send(SendPage {
+                        from,
+                        form,
+                        stage: SendStage::Compose,
+                    }),
+                ..
+            }) => Some((FormOf::Send(*from), form.rows.len())),
+            Screen::Wallet(WalletPage {
+                page: Page::Resign(ResignPage { account, form }),
+                ..
+            }) => Some((FormOf::Resign(*account), form.rows.len())),
+            _ => None,
+        }
+    }
+
     /// Before the screen changes: keep the signed spend's page it shows, if
     /// it shows one (see [`Model::signed`]), with `resume` when a lock
     /// closes it. Whether it did.

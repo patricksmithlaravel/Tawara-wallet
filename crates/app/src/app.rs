@@ -32,9 +32,9 @@ use tawara_wallet_core::{
 
 pub use wallet::{
     AccountPage, ActivityPage, AddAccountPage, BLOCK_ROWS, BlockPage, DestinationRow, Done,
-    ExplorerPage, Level, Missed, Page, QueuePage, ReceivePage, RecoveryPage, Remedy, ReportKey,
-    ResignPage, SendPage, SendStage, SentPage, SettingsPage, Signed, SpendForm, SubmitPage,
-    TagPage, To, TransactionPage, WalletMsg, remedy, spend_request,
+    ExplorerPage, FormOf, Level, Missed, Page, QueuePage, ReceivePage, RecoveryPage, Remedy,
+    ReportKey, ResignPage, SendPage, SendStage, SentPage, SettingsPage, Signed, SpendForm,
+    SubmitPage, TagPage, To, TransactionPage, WalletMsg, remedy, spend_request,
 };
 
 /// What the application shows and holds. Plain data, apart from the
@@ -427,9 +427,12 @@ pub enum Message {
     Refresh,
     /// A wallet page (W1 to W9).
     Wallet(WalletMsg),
-    /// A Paste button was tapped: read the platform's clipboard into the
+    /// A Paste button was tapped: the platform's clipboard is read for the
     /// field beside it (docs/DECISIONS.md D32 item 10 (g)).
     Paste(PasteInto),
+    /// What the clipboard held when a Paste button was tapped, for the field
+    /// that button was drawn beside. `None` when the read was refused.
+    Pasted(PasteInto, Option<Clip>),
     /// The window opened or changed size: its width.
     Width(f32),
     /// The safe area changed: what the system covers at each edge, and the
@@ -444,32 +447,84 @@ pub enum Message {
 /// The field a Paste button fills (docs/DECISIONS.md D32 item 10 (g)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PasteInto {
-    /// The destination of row `n` of the spend form (W4, W8).
-    Destination(usize),
+    /// The destination of row `row` of the spend form (W4, W8), drawn on
+    /// `form` when it had `rows` rows, so that a read which comes back once
+    /// another form is shown, or once a row was added or removed, is
+    /// dropped rather than put in another field.
+    Destination {
+        form: FormOf,
+        row: usize,
+        rows: usize,
+    },
     /// The signed bytes (W9).
-    Artifact,
-    /// The recovery phrase (S6).
-    Phrase,
+    SignedBytes,
+    /// The recovery phrase (S6), as its field was drawn at the generation
+    /// `drawn` (see [`Typed`]), so that a read which comes back after the
+    /// application has left the foreground is refused.
+    Phrase { drawn: u64 },
 }
 
-/// The message that gives `into` the text a Paste button read, `drawn` being
-/// the generation of the field the button was drawn with (see [`Typed`]), or
-/// `None` when the read holds nothing to paste and the field stays as it is.
-/// The text read is wiped once it has been taken.
-fn pasted(into: PasteInto, mut read: String, drawn: u64) -> Option<Message> {
+/// The text a Paste button's read took from the clipboard, on its way into
+/// the model. Its `Debug` prints nothing of it, as [`Typed`]'s does: a copied
+/// recovery phrase is a secret, and no message log may show one
+/// (docs/DECISIONS.md D32 item 6).
+#[derive(Clone)]
+pub struct Clip(String);
+
+impl core::fmt::Debug for Clip {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Clip(..)")
+    }
+}
+
+/// The message that gives `into` what a Paste button's read took, or `None`
+/// when the read was refused or holds nothing once it is cleaned, so that the
+/// field stays as it is (docs/DECISIONS.md D32 item 10 (g) and (h)). The text
+/// read is wiped once it has been cleaned.
+fn pasted(into: PasteInto, read: Option<Clip>) -> Option<Message> {
+    let mut read = read?.0;
     let message = match into {
-        PasteInto::Phrase => {
+        PasteInto::Destination { row, .. } => {
+            let to = crate::paste::token(&read);
+            (!to.is_empty()).then_some(Message::Wallet(WalletMsg::DestinationTo(row, to)))
+        }
+        PasteInto::SignedBytes => {
+            let hex = crate::paste::hex(&read);
+            (!hex.is_empty()).then_some(Message::Wallet(WalletMsg::ArtifactHex(hex)))
+        }
+        PasteInto::Phrase { drawn } => {
             let text = crate::paste::phrase(&read);
             (!text.is_empty()).then_some(Message::PhraseText(Typed { text, drawn }))
-        }
-        PasteInto::Destination(i) => crate::paste::plain(&read)
-            .map(|text| Message::Wallet(WalletMsg::DestinationTo(i, text))),
-        PasteInto::Artifact => {
-            crate::paste::plain(&read).map(|text| Message::Wallet(WalletMsg::ArtifactHex(text)))
         }
     };
     wipe(&mut read);
     message
+}
+
+/// Whether a Paste read for `into` may still be put in its field
+/// (docs/DECISIONS.md D32 item 10 (g)). The read can come back late, for
+/// instance while iOS asks whether to allow the paste. A destination's is
+/// taken only while nothing is being done for the page, as the field itself
+/// is, and only by the form and row it was asked for; the signed bytes' only
+/// on W9 while nothing is being done there. A phrase's read is checked by its
+/// generation, as a typed phrase is (item 6).
+fn takes(model: &Model, into: PasteInto) -> bool {
+    let idle = model.busy.is_none();
+    match into {
+        PasteInto::Destination { form, row, rows } => {
+            idle && row < rows && model.form_of() == Some((form, rows))
+        }
+        PasteInto::SignedBytes => {
+            idle && matches!(
+                &model.screen,
+                Screen::Wallet(WalletPage {
+                    page: Page::Submit(_),
+                    ..
+                })
+            )
+        }
+        PasteInto::Phrase { .. } => true,
+    }
 }
 
 /// The screens a message can go to.
@@ -651,6 +706,21 @@ fn wipe_typed(screen: &mut Screen) {
 fn replace(field: &mut String, typed: Typed) {
     wipe(field);
     *field = typed.text;
+}
+
+/// Text typed or pasted for a field that is no longer shown, wiped as the
+/// field's own text would be (docs/PLAN.md section 4.2).
+fn discard(mut typed: Typed) {
+    wipe(&mut typed.text);
+}
+
+/// The recovery phrase as RestoreWallet sends it: the field's text cleaned as
+/// a paste into it is (docs/DECISIONS.md D32 item 10 (h)), and the field
+/// wiped, so that the text as it was typed is not kept.
+fn cleaned_phrase(field: &mut String) -> String {
+    let phrase = crate::paste::phrase(field);
+    wipe(field);
+    phrase
 }
 
 impl Model {
@@ -1201,29 +1271,28 @@ impl App {
                 Screen::Unlock(u) => u.dir = dir,
                 _ => {}
             },
+            // Text for a field no longer shown, a Paste read that came back
+            // after Back among it, is wiped rather than dropped as it is
+            // (docs/PLAN.md section 4.2).
             Message::Password(typed) => match &mut m.screen {
                 Screen::NewWallet(f) => replace(&mut f.password, typed),
                 Screen::Restore(r) => replace(&mut r.form.password, typed),
                 Screen::Unlock(u) => replace(&mut u.password, typed),
-                _ => {}
+                _ => discard(typed),
             },
             Message::Again(typed) => match &mut m.screen {
                 Screen::NewWallet(f) => replace(&mut f.again, typed),
                 Screen::Restore(r) => replace(&mut r.form.again, typed),
-                _ => {}
+                _ => discard(typed),
             },
-            Message::PhraseText(typed) => {
-                if let Screen::Restore(r) = &mut m.screen {
-                    replace(&mut r.phrase, typed);
-                }
-            }
-            Message::Word(i, typed) => {
-                if let Screen::Confirm(p) = &mut m.screen
-                    && let Some(w) = p.words.get_mut(i)
-                {
-                    replace(w, typed);
-                }
-            }
+            Message::PhraseText(typed) => match &mut m.screen {
+                Screen::Restore(r) => replace(&mut r.phrase, typed),
+                _ => discard(typed),
+            },
+            Message::Word(i, typed) => match &mut m.screen {
+                Screen::Confirm(p) if i < p.words.len() => replace(&mut p.words[i], typed),
+                _ => discard(typed),
+            },
             Message::CreateWallet => {
                 let outside = m.outside();
                 if let (Screen::NewWallet(f), Some(why)) = (&mut m.screen, outside) {
@@ -1283,11 +1352,10 @@ impl App {
                     r.form.error = Some(why);
                 } else if let Screen::Restore(r) = &mut m.screen {
                     r.form.error = None;
-                    // The whole phrase is cleaned as a paste into it is, so
-                    // a phrase typed or pasted one word to a line is read
-                    // word by word (docs/DECISIONS.md D32 item 10 (h)).
-                    let mut phrase = crate::paste::phrase(&r.phrase);
-                    wipe(&mut r.phrase);
+                    // The whole phrase is cleaned as a paste into it is, so a
+                    // phrase typed or pasted one word to a line is read word by
+                    // word (docs/DECISIONS.md D32 item 10 (h)).
+                    let mut phrase = cleaned_phrase(&mut r.phrase);
                     let command = Command::CreateFromPhrase {
                         dir: store_dir(&r.form.dir),
                         password: SecretText::take(&mut r.form.password),
@@ -1340,14 +1408,28 @@ impl App {
                 self.send(Command::Refresh, Purpose::Refresh);
             }
             Message::Wallet(msg) => return self.on_wallet(msg),
-            // The clipboard is read only on the tap, and what it holds
-            // replaces the field's text; an empty or refused read changes
-            // nothing (docs/DECISIONS.md D32 item 10 (g)).
+            // The clipboard is read only on the tap, and the read comes back as
+            // a message for the field the button was drawn beside
+            // (docs/DECISIONS.md D32 item 10 (g)).
             Message::Paste(into) => {
-                let drawn = m.drawn();
-                return iced::clipboard::read().and_then(move |read| {
-                    pasted(into, read, drawn).map_or_else(Task::none, Task::done)
-                });
+                return iced::clipboard::read()
+                    .map(move |read| Message::Pasted(into, read.map(Clip)));
+            }
+            // What the read held is handed on as the message it makes, so the
+            // field's own rules apply to it, a phrase's generation among them
+            // (docs/DECISIONS.md D32 item 6). A read that holds nothing changes
+            // nothing.
+            Message::Pasted(into, read) => {
+                if !takes(m, into) {
+                    if let Some(Clip(mut text)) = read {
+                        wipe(&mut text);
+                    }
+                    return Task::none();
+                }
+                return match pasted(into, read) {
+                    Some(message) => self.update(message),
+                    None => Task::none(),
+                };
             }
             Message::Width(width) => m.width = width,
             // Not the person's input: the idle period is not restarted here.
@@ -2557,51 +2639,230 @@ mod tests {
         );
     }
 
-    #[test]
-    fn what_a_paste_button_reads_goes_to_its_field_and_a_blank_read_changes_nothing() {
-        // docs/DECISIONS.md D32 item 10 (g) and (h): the phrase is cleaned, the
-        // other fields take what iced's paste would insert, and a read with
-        // nothing in it sends nothing.
-        match pasted(PasteInto::Phrase, "abandon\nability\n\table\n".into(), 3) {
-            Some(Message::PhraseText(typed)) => {
-                assert_eq!(typed.text, "abandon ability able");
-                assert_eq!(typed.drawn, 3, "drawn with the field the button was");
-            }
-            other => panic!("{other:?}"),
-        }
-        assert!(matches!(
-            pasted(PasteInto::Destination(1), "3vQB7B6MrGQZaxCuFg4oh\n".into(), 0),
-            Some(Message::Wallet(WalletMsg::DestinationTo(1, to))) if to == "3vQB7B6MrGQZaxCuFg4oh"
-        ));
-        assert!(matches!(
-            pasted(PasteInto::Artifact, "4f2a\n".into(), 0),
-            Some(Message::Wallet(WalletMsg::ArtifactHex(hex))) if hex == "4f2a"
-        ));
-        for into in [
-            PasteInto::Phrase,
-            PasteInto::Destination(0),
-            PasteInto::Artifact,
-        ] {
-            assert!(pasted(into, " \n\t".into(), 0).is_none(), "{into:?}");
-        }
+    /// W4 from the sample wallet's first account, with nothing typed yet.
+    fn composing() -> Page {
+        Page::Send(SendPage {
+            from: Some(tawara_wallet_core::sample::wallet_view().accounts[0].id),
+            form: SpendForm::default(),
+            stage: SendStage::Compose,
+        })
+    }
+
+    /// What W4's Paste button beside row `row` asks for, as `app` shows it.
+    fn destination(app: &App, row: usize) -> PasteInto {
+        let (form, rows) = app.model.form_of().expect("a spend form is shown");
+        PasteInto::Destination { form, row, rows }
     }
 
     #[test]
-    fn a_pasted_phrase_replaces_the_field_and_is_dropped_after_a_move_away() {
+    fn a_pasted_destination_is_trimmed_into_its_row() {
+        // docs/DECISIONS.md D32 item 10 (g): the line break a copy brings is not
+        // part of the destination.
+        let mut app = on_wallet(composing());
+        let into = destination(&app, 0);
+        let _ = app.update(Message::Pasted(
+            into,
+            Some(Clip("  3vQB7B6MrGQZaxCuFg4oh\n".to_owned())),
+        ));
+        assert!(
+            matches!(
+                &wallet_page(&app).page,
+                Page::Send(s) if s.form.rows[0].to == "3vQB7B6MrGQZaxCuFg4oh"
+            ),
+            "{:?}",
+            wallet_page(&app).page
+        );
+    }
+
+    #[test]
+    fn pasted_signed_bytes_keep_their_hex_and_lose_their_whitespace() {
+        // docs/DECISIONS.md D32 item 10 (g): hex copied in groups, or from a list
+        // with line breaks, is the one run of bytes it is.
+        let mut app = on_wallet(Page::Submit(SubmitPage::default()));
+        let _ = app.update(Message::Pasted(
+            PasteInto::SignedBytes,
+            Some(Clip("4f2a 00ab\r\n\t11cd\n".to_owned())),
+        ));
+        assert!(
+            matches!(&wallet_page(&app).page, Page::Submit(s) if s.hex == "4f2a00ab11cd"),
+            "{:?}",
+            wallet_page(&app).page
+        );
+    }
+
+    #[test]
+    fn a_refused_or_blank_read_changes_nothing() {
+        // docs/DECISIONS.md D32 item 10 (g): an empty or refused read, or one of
+        // whitespace alone, leaves its field as it is.
+        let mut app = on_wallet(composing());
+        let into = destination(&app, 0);
+        for read in [None, Some(" \n ".to_owned())] {
+            let _ = app.update(Message::Pasted(into, read.map(Clip)));
+        }
+        assert!(
+            matches!(&wallet_page(&app).page, Page::Send(s) if s.form.rows[0].to.is_empty()),
+            "{:?}",
+            wallet_page(&app).page
+        );
+
+        let mut app = on_wallet(Page::Submit(SubmitPage::default()));
+        for read in [None, Some(" \n\t".to_owned())] {
+            let _ = app.update(Message::Pasted(PasteInto::SignedBytes, read.map(Clip)));
+        }
+        assert!(
+            matches!(&wallet_page(&app).page, Page::Submit(s) if s.hex.is_empty()),
+            "{:?}",
+            wallet_page(&app).page
+        );
+
+        let mut app = alone();
+        app.model.screen = Screen::Restore(RestoreForm {
+            phrase: PHRASE.to_owned(),
+            ..RestoreForm::default()
+        });
+        let drawn = app.model.drawn();
+        for read in [None, Some(" \n\t ".to_owned())] {
+            let _ = app.update(Message::Pasted(PasteInto::Phrase { drawn }, read.map(Clip)));
+        }
+        assert!(matches!(&app.model.screen, Screen::Restore(r) if r.phrase == PHRASE));
+    }
+
+    #[test]
+    fn a_late_destination_read_goes_only_to_the_form_and_row_it_was_asked_for() {
+        // docs/DECISIONS.md D32 item 10 (g): the read can come back after the
+        // page has changed, for instance while iOS asks whether to allow the
+        // paste. It is dropped then, not put in whatever form is shown.
+        let read = || Some(Clip("3vQB7B6MrGQZaxCuFg4oh".to_owned()));
+        let accounts = tawara_wallet_core::sample::wallet_view().accounts;
+        let empty = |app: &App| match &wallet_page(app).page {
+            Page::Send(s) => s.form.rows.iter().all(|r| r.to.is_empty()),
+            Page::Resign(r) => r.form.rows.iter().all(|r| r.to.is_empty()),
+            other => panic!("expected a spend form, got {other:?}"),
+        };
+
+        // Another account's form.
+        let mut app = on_wallet(composing());
+        let into = destination(&app, 0);
+        if let Screen::Wallet(WalletPage {
+            page: Page::Send(s),
+            ..
+        }) = &mut app.model.screen
+        {
+            s.from = Some(accounts[1].id);
+        }
+        let _ = app.update(Message::Pasted(into, read()));
+        assert!(empty(&app), "another account's form");
+
+        // W8's form, for the same account.
+        let mut app = on_wallet(composing());
+        let into = destination(&app, 0);
+        app.model.screen = Screen::Wallet(WalletPage {
+            page: Page::Resign(ResignPage {
+                account: accounts[0].id,
+                form: SpendForm::default(),
+            }),
+            ..WalletPage::default()
+        });
+        let _ = app.update(Message::Pasted(into, read()));
+        assert!(empty(&app), "the re-sign form");
+
+        // The same form, a row added or removed since.
+        let mut app = on_wallet(composing());
+        wallet(&mut app, WalletMsg::AddDestination);
+        let into = destination(&app, 1);
+        wallet(&mut app, WalletMsg::RemoveDestination(0));
+        let _ = app.update(Message::Pasted(into, read()));
+        assert!(empty(&app), "a row removed");
+
+        // The page busy with the worker, as its fields are then.
+        let mut app = on_wallet(composing());
+        let into = destination(&app, 0);
+        app.model.busy = Some(Busy {
+            id: RequestId::example(),
+            activity: None,
+            progress: None,
+        });
+        let _ = app.update(Message::Pasted(into, read()));
+        assert!(empty(&app), "the page busy");
+        app.model.busy = None;
+        let _ = app.update(Message::Pasted(into, read()));
+        assert!(!empty(&app), "the form and row it was asked for take it");
+    }
+
+    #[test]
+    fn a_late_signed_bytes_read_is_dropped_while_w9_is_busy() {
+        let mut app = on_wallet(Page::Submit(SubmitPage::default()));
+        app.model.busy = Some(Busy {
+            id: RequestId::example(),
+            activity: None,
+            progress: None,
+        });
+        let _ = app.update(Message::Pasted(
+            PasteInto::SignedBytes,
+            Some(Clip("4f2a".to_owned())),
+        ));
+        assert!(
+            matches!(&wallet_page(&app).page, Page::Submit(s) if s.hex.is_empty()),
+            "{:?}",
+            wallet_page(&app).page
+        );
+    }
+
+    #[test]
+    fn a_pasted_phrase_replaces_the_field_cleaned_of_its_line_breaks() {
         let mut app = alone();
         app.model.screen = Screen::Restore(RestoreForm::default());
-        let _ = app.update(Message::PhraseText(typed("abandon")));
-        let Some(message) = pasted(PasteInto::Phrase, PHRASE.replace(' ', "\n"), 0) else {
-            panic!("a phrase was read");
-        };
-        let _ = app.update(message);
+        let drawn = app.model.drawn();
+        let _ = app.update(Message::Pasted(
+            PasteInto::Phrase { drawn },
+            Some(Clip(PHRASE.replace(' ', "\n"))),
+        ));
         assert!(matches!(&app.model.screen, Screen::Restore(r) if r.phrase == PHRASE));
-        // A paste read for the field as drawn before the application left the
-        // foreground is not taken.
-        let stale = pasted(PasteInto::Phrase, "abandon".into(), 0).expect("read");
+    }
+
+    #[test]
+    fn a_pasted_phrase_read_after_a_move_away_is_refused() {
+        // docs/DECISIONS.md D32 item 6: the read was asked for the field as it
+        // was drawn, and the application left the foreground before it came
+        // back. Once the field is drawn again, a paste into it is taken. The
+        // refused text is wiped as well, which a test cannot observe.
+        let mut app = alone();
+        app.model.screen = Screen::Restore(RestoreForm::default());
+        let drawn = app.model.drawn();
         app.model.left.fetch_add(1, Ordering::SeqCst);
-        let _ = app.update(stale);
-        assert!(matches!(&app.model.screen, Screen::Restore(r) if r.phrase.is_empty()));
+        let _ = app.update(Message::Pasted(
+            PasteInto::Phrase { drawn },
+            Some(Clip(PHRASE.replace(' ', "\n"))),
+        ));
+        assert!(
+            matches!(&app.model.screen, Screen::Restore(r) if r.phrase.is_empty()),
+            "a read for the field as it was before the move is refused"
+        );
+        let drawn = app.model.drawn();
+        let _ = app.update(Message::Pasted(
+            PasteInto::Phrase { drawn },
+            Some(Clip(PHRASE.replace(' ', "\n"))),
+        ));
+        assert!(matches!(&app.model.screen, Screen::Restore(r) if r.phrase == PHRASE));
+    }
+
+    #[test]
+    fn the_phrase_sent_is_cleaned_as_a_paste_into_it_would_be_and_the_field_wiped() {
+        // docs/DECISIONS.md D32 item 10 (h): RestoreWallet sends the phrase as a
+        // paste into the field would have left it.
+        let mut field = "abandon\nability\table  about \r\n".to_owned();
+        assert_eq!(cleaned_phrase(&mut field), "abandon ability able about");
+        assert!(field.is_empty());
+    }
+
+    #[test]
+    fn a_pasted_read_is_never_in_a_message_log() {
+        // docs/DECISIONS.md D32 item 6: a copied recovery phrase is a secret.
+        let message = Message::Pasted(
+            PasteInto::Phrase { drawn: 0 },
+            Some(Clip("hunter2-hunter2".to_owned())),
+        );
+        assert!(!format!("{message:?}").contains("hunter2"));
     }
 
     #[test]

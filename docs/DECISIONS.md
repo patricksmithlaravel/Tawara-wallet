@@ -2099,30 +2099,50 @@ on the three conditions D18 left open.
    that starts on a row, Paste, and the keyboard shown again are still to
    be checked by hand.
 
-   **(g) Paste buttons (decided under the owner's delegation, 2026-10-12).**
-   In the compact layout a Paste button stands beside each destination field
-   (W4, W8), the signed-bytes field (W9) and the recovery-phrase field (S6).
-   It reads the platform's clipboard with `iced::clipboard::read`, only on that
-   tap, and what it read replaces what the field held: for a destination or
-   the signed bytes, with the control characters left out, as iced's own
-   paste leaves them out; for the phrase, cleaned as (h) says. An empty or
-   refused read, or one of whitespace alone, changes nothing, and nothing is
-   submitted. The desktop keeps keyboard paste and shows no button
-   (`tawara_app::paste`). Reasons: on a phone iced's fields have no edit
-   menu and paste is reachable only from a hardware keyboard (item 9 (g)),
-   while a destination or a saved transaction is pasted far more often than
-   typed.
+   **(g) Paste buttons (decided under the owner's delegation, 2026-10-12).** In
+   the compact layout a Paste button stands beside each destination field (W4,
+   W8), the signed-bytes field (W9) and the recovery-phrase field (S6). It reads
+   the platform's clipboard with `iced::clipboard::read`, only on that tap, and
+   what it read replaces what the field held: a destination trimmed of the line
+   break and spaces a copy brings at its ends; the signed bytes with every
+   whitespace character removed, so that hex copied in groups or across lines
+   reads as the one run it is; the phrase cleaned as (h) says. The read comes
+   back as a message for the field it was asked for (`Message::Pasted`), so that
+   field's own rules apply to it: a phrase's read carries the generation its
+   field was drawn at, and one that returns after the application has left the
+   foreground is refused and wiped (item 6). A destination's read carries the
+   form it was asked for (W4 from which account, or W8 for which) and how many
+   rows that form had, and is dropped if another form is shown when it comes
+   back, a row was added or removed meanwhile, or the page is waiting on the
+   worker; the signed bytes' read is dropped unless W9 is shown and not waiting.
+   A read can come back late, for instance while iOS asks whether to allow the
+   paste. The read's `Debug` prints nothing of its text. An empty or refused
+   read, or one of whitespace alone, changes nothing, and nothing is submitted.
+   The desktop keeps keyboard paste and shows no button (`tawara_app::paste`).
+   Reasons: on a phone iced's fields have no edit menu and paste is reachable
+   only from a hardware keyboard (item 9 (g)), while a destination or a saved
+   transaction is pasted far more often than typed.
+
+   *Changed (decided under the owner's delegation, 2026-10-12):* as first
+   decided, a destination and the signed bytes kept iced's own paste, with the
+   control characters left out. That joins hex copied across lines, but keeps
+   the spaces of hex copied in groups, which are not hex, and the spaces around
+   a destination. A destination has no whitespace of its own, and the signed
+   bytes are hex, so each is cleaned for what it is.
 
    **(h) Pasted recovery phrases (decided under the owner's delegation,
    2026-10-12).** In the restore field, line breaks, tabs and runs of spaces
    become single spaces and the text is trimmed, before validation, for the
    Paste button and keyboard paste alike. iced's `text_input` drops every
-   control character before any hook sees the paste (item 9 (g)), so the
-   restore field alone is wrapped: the wrapper hands the field a clipboard
-   whose read returns the cleaned text, and iced inserts that at the caret as
-   it would anything pasted. The whole phrase is cleaned the same way before
-   it is sent. Typed text is not changed. Reason: a phrase is usually copied
-   from a list, one word per line, and iced would join the words into one.
+   control character before any hook sees the paste (item 9 (g)), so the restore
+   field alone is wrapped: the wrapper hands the field a clipboard whose read
+   returns the cleaned text, and iced inserts that at the caret as it would
+   anything pasted. A keyboard paste keeps one space for a run at either end
+   rather than trimming it, because it may land between words already typed, and
+   the space it brings is what keeps them apart; the Paste button replaces the
+   field and trims. The whole phrase is cleaned and trimmed before it is sent.
+   Typed text is not changed. Reason: a phrase is usually copied from a list,
+   one word per line, and iced would join the words into one.
 
    **(i) Saving a signed transaction on a phone (decided under the owner's
    delegation, 2026-10-12).** `tawara-app` asks its `Host` to share the signed
