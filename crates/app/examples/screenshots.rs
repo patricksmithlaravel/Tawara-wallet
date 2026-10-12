@@ -64,9 +64,9 @@ use tawara_app::app::NARROWEST;
 use tawara_app::app::{
     AccountPage, ActivityPage, AddAccountPage, Back, BlockPage, Busy, DestinationRow, Explored,
     ExplorerPage, Level, Missed, Model, NodeForm, NodeState, Page, PasswordForm, PhraseState,
-    QueuePage, ReceivePage, RecoveryPage, ReportKey, ResignPage, RestoreForm, Screen, SendPage,
-    SendStage, SentPage, SettingsPage, Signed, SpendForm, StartChoice, SubmitPage, TagPage,
-    TransactionPage, UnlockForm, WalletPage,
+    QueuePage, ReceivePage, RecoveryPage, ReportKey, ResignPage, RestoreForm, SHARED, Screen,
+    SendPage, SendStage, SentPage, SettingsPage, Signed, SpendForm, StartChoice, SubmitPage,
+    TagPage, TransactionPage, UnlockForm, WalletPage,
 };
 use tawara_app::history::Filter;
 use tawara_app::{fonts, screens, theme};
@@ -248,7 +248,6 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
             saved: Some(Ok(PathBuf::from(
                 "/home/you/Downloads/tawara-spend-5e5e5e5e5e5e5e5e.hex",
             ))),
-            shared: false,
         })),
     })));
     sent.wallet = Some(sample::sent_view().view);
@@ -258,7 +257,6 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
             sent: sample::sent_view(),
             resigned: false,
             saved: None,
-            shared: false,
         },
         form: typed.clone(),
         open: Default::default(),
@@ -769,8 +767,7 @@ fn phone(mut model: Model, keyboard: f32) -> Model {
                 }),
             ..
         }) if sent.saved.is_some() => {
-            sent.saved = None;
-            sent.shared = true;
+            sent.saved = Some(Err(SHARED.to_owned()));
         }
         _ => {}
     }

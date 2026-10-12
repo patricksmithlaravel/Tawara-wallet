@@ -326,12 +326,24 @@ pub struct SentPage {
     pub sent: SentView,
     /// Re-signed (W8) rather than signed for the first time.
     pub resigned: bool,
-    /// Where "Save artifact" wrote the bytes, or why it could not.
+    /// Where "Save artifact" wrote the bytes. An `Err` holds why they are not
+    /// known to be saved: a refusal, or on a phone that they were offered to
+    /// the share sheet, which cannot say whether they were kept there
+    /// (docs/DECISIONS.md D32 item 10 (i)). Only an `Ok` is a save.
     pub saved: Option<Result<PathBuf, String>>,
-    /// On a phone, "Save artifact" opened the share sheet with the bytes.
-    /// What was done there is not known, so the spend still counts as not
-    /// saved (docs/DECISIONS.md D32 item 10 (i)).
-    pub shared: bool,
+}
+
+impl SentPage {
+    /// On a phone, "Save artifact" opened the share sheet with the bytes:
+    /// `saved` holds [`SHARED`]. What was done there is not known, so the
+    /// spend still counts as not saved, but nothing was refused, and the page
+    /// says so as a note, not as a refusal (docs/DECISIONS.md D32 item 10
+    /// (i)). It is read from `saved` rather than kept beside it, so that the
+    /// two cannot disagree.
+    #[must_use]
+    pub fn shared(&self) -> bool {
+        matches!(&self.saved, Some(Err(e)) if e == SHARED)
+    }
 }
 
 /// W7: one account, its state, and what that state allows.
@@ -787,35 +799,56 @@ impl Model {
     }
 }
 
-/// "Save artifact": with a shell's share sheet (`share`), the sheet is opened
-/// with the bytes as the desktop's file holds them, the hex and a line break,
-/// under the file's name (docs/DECISIONS.md D32 item 10 (i)); without one,
-/// the bytes are written to the Downloads folder, as D27 item 5 has it.
-fn keep_bytes(share: Option<fn(&str, &str)>, downloads: Option<&Path>, page: &mut SentPage) {
-    match share {
-        Some(share) => {
-            let name = format!("{}.hex", artifact_stem(&page.sent));
-            let text = format!("{}\n", page.sent.artifact_hex);
-            share(&name, &text);
-            page.shared = true;
-        }
-        None => page.saved = Some(save(downloads, &page.sent)),
-    }
+/// What a phone's "Save artifact" says once the share sheet has opened.
+/// Tawara cannot tell what was done with the bytes there, so they still count
+/// as not saved (docs/DECISIONS.md D32 item 10 (i)). The note stays after the
+/// sheet is closed, so it says the sheet was opened, not that it is open.
+pub const SHARED: &str = "The share sheet was opened. Tawara cannot tell whether the bytes were \
+                          saved there, so keep them until you have them somewhere safe.";
+
+/// "Save artifact" for a spend's page: the bytes go where [`save`] puts them,
+/// `share` being the shell's share sheet, and the page keeps what came of it,
+/// [`SentPage::shared`] among it (docs/DECISIONS.md D32 item 10 (i)).
+fn keep_bytes(
+    downloads: Option<&Path>,
+    share: fn(&str, &str) -> Option<Result<(), String>>,
+    page: &mut SentPage,
+) {
+    page.saved = Some(save(downloads, share, &page.sent));
 }
 
 /// Write a signed spend's bytes to the Downloads folder under a name of
-/// their own, or say why they were not.
-fn save(downloads: Option<&Path>, sent: &SentView) -> Result<PathBuf, String> {
+/// their own, or say why they were not. With no Downloads folder, a shell's
+/// share sheet takes them where the shell has one, under the desktop file's
+/// name and with its exact text: the hex and a line break (docs/DECISIONS.md
+/// D32 item 10 (i), and D27 item 5 for the file). An opened sheet is not a
+/// save, because the application cannot learn what was done with it, so it is
+/// an `Err` too.
+fn save(
+    downloads: Option<&Path>,
+    share: fn(&str, &str) -> Option<Result<(), String>>,
+    sent: &SentView,
+) -> Result<PathBuf, String> {
     match downloads {
         Some(dir) => {
             tawara_wallet_core::save_artifact_in(dir, &artifact_stem(sent), &sent.artifact_hex)
                 .map_err(|e| format!("The bytes could not be saved in {}: {e}.", dir.display()))
         }
-        None => Err(
-            "This system names no Downloads folder, so the bytes were not saved. \
-                     Copy the hex instead and keep it somewhere safe."
-                .to_owned(),
-        ),
+        None => match share(
+            &format!("{}.hex", artifact_stem(sent)),
+            &format!("{}\n", sent.artifact_hex),
+        ) {
+            Some(Ok(())) => Err(SHARED.to_owned()),
+            Some(Err(e)) => Err(format!(
+                "The bytes could not be shared: {e}. Copy the hex instead and keep \
+                 it somewhere safe."
+            )),
+            None => Err(
+                "This system names no Downloads folder, so the bytes were not saved. \
+                 Copy the hex instead and keep it somewhere safe."
+                    .to_owned(),
+            ),
+        },
     }
 }
 
@@ -1209,7 +1242,7 @@ impl App {
                     ..
                 }) = self.wallet_page()
                 {
-                    keep_bytes(host::sharer(), downloads.as_deref(), sent);
+                    keep_bytes(downloads.as_deref(), host::share, sent);
                 }
             }
             WalletMsg::ShowSigned(hex) => {
@@ -1225,7 +1258,7 @@ impl App {
                     .iter_mut()
                     .find(|s| s.sent.sent.artifact_hex == hex)
                 {
-                    keep_bytes(host::sharer(), downloads.as_deref(), &mut s.sent);
+                    keep_bytes(downloads.as_deref(), host::share, &mut s.sent);
                 }
             }
             WalletMsg::Settle(account) => {
@@ -1827,7 +1860,6 @@ impl App {
                             sent,
                             resigned: matches!(purpose, Purpose::Resign),
                             saved: None,
-                            shared: false,
                         })),
                     }),
                     // The three facts are the page's point (docs/PLAN.md
@@ -2078,26 +2110,43 @@ mod tests {
         assert!(spend_request(account(), &bad_btl).is_err());
     }
 
-    /// What the test share sheet was last opened with: the name and the text.
-    static SHEET: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
-
-    fn sheet(name: &str, text: &str) {
-        *SHEET.lock().expect("not poisoned") = Some((name.to_owned(), text.to_owned()));
+    /// A share sheet that must not open: with a Downloads folder the bytes
+    /// are written there, and the sheet is not consulted at all.
+    fn sheet_not_wanted(_: &str, _: &str) -> Option<Result<(), String>> {
+        panic!("the share sheet was consulted with a Downloads folder")
     }
 
     #[test]
-    fn save_artifact_shares_on_a_phone_and_writes_the_file_on_the_desktop() {
+    fn save_artifact_writes_the_file_when_there_is_a_downloads_folder() {
         let sent = tawara_wallet_core::sample::sent_view();
-        let page = || SentPage {
-            sent: tawara_wallet_core::sample::sent_view(),
-            resigned: false,
-            saved: None,
-            shared: false,
-        };
-        // A phone: the sheet has the desktop file's name and content, and the
-        // spend still counts as not saved (docs/DECISIONS.md D32 item 10 (i)).
-        let mut phone = page();
-        keep_bytes(Some(sheet), None, &mut phone);
+        let downloads = std::env::temp_dir().join(format!(
+            "tawara-test-{}-save-artifact-downloads",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&downloads);
+        let path = save(Some(&downloads), sheet_not_wanted, &sent).expect("the bytes are saved");
+        let name = format!("{}.hex", artifact_stem(&sent));
+        assert_eq!(
+            path.file_name().and_then(|n| n.to_str()),
+            Some(name.as_str())
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).ok(),
+            Some(format!("{}\n", sent.artifact_hex))
+        );
+        let _ = std::fs::remove_dir_all(&downloads);
+    }
+
+    #[test]
+    fn save_artifact_opens_the_share_sheet_without_a_downloads_folder() {
+        // What the sheet was last opened with: the file's name and its text.
+        static SHEET: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
+        fn sheet(name: &str, text: &str) -> Option<Result<(), String>> {
+            *SHEET.lock().expect("not poisoned") = Some((name.to_owned(), text.to_owned()));
+            Some(Ok(()))
+        }
+        let sent = tawara_wallet_core::sample::sent_view();
+        let saved = save(None, sheet, &sent);
         let (name, text) = SHEET
             .lock()
             .expect("not poisoned")
@@ -2105,20 +2154,107 @@ mod tests {
             .expect("the sheet was opened");
         assert_eq!(name, format!("{}.hex", artifact_stem(&sent)));
         assert_eq!(text, format!("{}\n", sent.artifact_hex));
-        assert!(phone.shared && phone.saved.is_none());
-
-        // The desktop: the file in the Downloads folder, as before, and the
-        // same bytes in it.
-        let downloads =
-            std::env::temp_dir().join(format!("tawara-test-{}-keep-bytes", std::process::id()));
-        let mut desktop = page();
-        keep_bytes(None, Some(&downloads), &mut desktop);
-        let path = match &desktop.saved {
-            Some(Ok(path)) => path.clone(),
-            other => panic!("{other:?}"),
+        // The sheet's Ok is not a save, so the spend still counts as not
+        // saved and its banner stays (docs/DECISIONS.md D32 item 10 (i)).
+        assert_eq!(saved, Err(SHARED.to_owned()));
+        let signed = Signed {
+            sent: SentPage {
+                sent,
+                resigned: false,
+                saved: Some(saved),
+            },
+            form: SpendForm::default(),
+            open: BTreeMap::new(),
+            resume: false,
+            copied: false,
         };
-        assert_eq!(std::fs::read_to_string(&path).ok(), Some(text));
-        assert!(!desktop.shared);
+        assert!(signed.unsaved());
+    }
+
+    #[test]
+    fn save_artifact_says_why_the_share_sheet_did_not_open() {
+        fn refused(_: &str, _: &str) -> Option<Result<(), String>> {
+            Some(Err("no window".to_owned()))
+        }
+        let sent = tawara_wallet_core::sample::sent_view();
+        let why = save(None, refused, &sent).expect_err("nothing is saved");
+        assert!(why.contains("no window"), "{why}");
+        assert_eq!(
+            why,
+            "The bytes could not be shared: no window. Copy the hex instead and keep \
+             it somewhere safe."
+        );
+    }
+
+    #[test]
+    fn save_artifact_without_a_shell_says_there_is_no_downloads_folder() {
+        fn no_shell(_: &str, _: &str) -> Option<Result<(), String>> {
+            None
+        }
+        let sent = tawara_wallet_core::sample::sent_view();
+        assert_eq!(
+            save(None, no_shell, &sent),
+            Err(
+                "This system names no Downloads folder, so the bytes were not saved. \
+                 Copy the hex instead and keep it somewhere safe."
+                    .to_owned()
+            )
+        );
+    }
+
+    /// A spend's page as the sent page first shows it: nothing saved.
+    fn sent_page() -> SentPage {
+        SentPage {
+            sent: tawara_wallet_core::sample::sent_view(),
+            resigned: false,
+            saved: None,
+        }
+    }
+
+    #[test]
+    fn save_artifact_on_a_phone_keeps_the_opened_sheet_as_shared_and_not_saved() {
+        // docs/DECISIONS.md D32 item 10 (i): what the page keeps when the
+        // sheet opened is SHARED, which it shows as a note, and the spend
+        // still counts as not saved.
+        fn opened(_: &str, _: &str) -> Option<Result<(), String>> {
+            Some(Ok(()))
+        }
+        let mut page = sent_page();
+        keep_bytes(None, opened, &mut page);
+        assert_eq!(page.saved, Some(Err(SHARED.to_owned())));
+        assert!(page.shared(), "the opened sheet is shown as a note");
+    }
+
+    #[test]
+    fn save_artifact_on_a_phone_keeps_a_sheet_that_did_not_open_as_a_refusal() {
+        fn refused(_: &str, _: &str) -> Option<Result<(), String>> {
+            Some(Err("no window".to_owned()))
+        }
+        let mut page = sent_page();
+        keep_bytes(None, refused, &mut page);
+        assert_eq!(
+            page.saved,
+            Some(Err(
+                "The bytes could not be shared: no window. Copy the hex instead \
+                      and keep it somewhere safe."
+                    .to_owned()
+            ))
+        );
+        assert!(!page.shared(), "a sheet that did not open is a refusal");
+    }
+
+    #[test]
+    fn save_artifact_on_the_desktop_keeps_the_file_written_and_never_asks_the_sheet() {
+        let downloads = std::env::temp_dir().join(format!(
+            "tawara-test-{}-keep-bytes-downloads",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&downloads);
+        let mut page = sent_page();
+        keep_bytes(Some(&downloads), sheet_not_wanted, &mut page);
+        let name = format!("{}.hex", artifact_stem(&page.sent));
+        assert_eq!(page.saved, Some(Ok(downloads.join(name))));
+        assert!(!page.shared());
         let _ = std::fs::remove_dir_all(&downloads);
     }
 }

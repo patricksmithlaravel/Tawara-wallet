@@ -535,15 +535,11 @@ pub fn kept_after_stop(model: &Model) -> Option<Element<'_, Message>> {
     Some(ui::card_for(compact, list).into())
 }
 
-/// What a signed spend's page says once Save artifact has opened a phone's
-/// share sheet: the sheet's outcome is not known, so the spend is still not
-/// saved (docs/DECISIONS.md D32 item 10 (i)).
-const SHARED: &str = "The share sheet was opened with the signed bytes. Tawara cannot tell \
-                      what was done with them there, so this spend still counts as not saved \
-                      until it settles.";
-
 /// What became of Save artifact for a signed spend's page: where the bytes
-/// were written, why they were not, or that the share sheet was opened.
+/// were written, why they were not, or that the share sheet was opened. The
+/// sheet's outcome is not known, so the spend is still not saved, but
+/// nothing was refused, so it is a note in the page's own colours rather than
+/// a refusal (docs/DECISIONS.md D32 item 10 (i)).
 fn saved_note<'a>(page: &'a SentPage) -> Option<Element<'a, Message>> {
     match &page.saved {
         Some(Ok(path)) => Some(
@@ -555,8 +551,8 @@ fn saved_note<'a>(page: &'a SentPage) -> Option<Element<'a, Message>> {
             .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
             .into(),
         ),
+        Some(Err(e)) if page.shared() => Some(t(e, ty::BODY_SMALL, color::TEXT_SECONDARY).into()),
         Some(Err(e)) => Some(ui::refusal(e)),
-        None if page.shared => Some(t(SHARED, ty::BODY_SMALL, color::TEXT_SECONDARY).into()),
         None => None,
     }
 }
@@ -836,5 +832,35 @@ mod tests {
         };
         let shell = compact_frame(&model, &page, iced::widget::column![].into());
         assert_eq!(crate::harness::fits(shell, NARROWEST), Ok(()));
+    }
+
+    #[test]
+    fn an_opened_share_sheet_is_a_note_and_a_refused_save_a_refusal() {
+        // docs/DECISIONS.md D32 item 10 (i): the sheet's outcome is not known,
+        // so the spend is not saved, but nothing was refused. The note is drawn
+        // as the page's own text; a save that failed keeps its refusal, here
+        // the one Save artifact gives when the sheet could not be shown.
+        use crate::app::SHARED;
+        use crate::harness::Driver;
+        const NOT_SHOWN: &str = "The bytes could not be shared: no window. Copy the hex \
+                                 instead and keep it somewhere safe.";
+        let page = |saved: &str| SentPage {
+            sent: tawara_wallet_core::sample::sent_view(),
+            resigned: false,
+            saved: Some(Err(saved.to_owned())),
+        };
+        let size = (360, 200);
+        let draw = |page: &SentPage| {
+            let note: Element<'_, Message> = saved_note(page).expect("a note is drawn");
+            Driver::new(note, size).draw()
+        };
+        let plain =
+            Driver::<Message>::new(t(SHARED, ty::BODY_SMALL, color::TEXT_SECONDARY), size).draw();
+        let refused = Driver::<Message>::new(ui::refusal(NOT_SHOWN), size).draw();
+        assert!(draw(&page(SHARED)) == plain, "the opened sheet is a note");
+        assert!(
+            draw(&page(NOT_SHOWN)) == refused,
+            "a failed save is a refusal"
+        );
     }
 }

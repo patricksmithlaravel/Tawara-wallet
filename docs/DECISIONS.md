@@ -2153,11 +2153,14 @@ on the three conditions D18 left open.
    desktop's file, as text: the hex and a line break. iOS uses
    `UIActivityViewController`; Android uses `ACTION_SEND` (`text/plain`)
    through `Intent.createChooser`, with the file's name as the subject. The
-   page then says the sheet was opened and that Tawara cannot tell what was
-   done with it, so the spend still counts as not saved and its banner stays
-   until it settles. `Host::share` is a field every shell must fill, so a
-   shell moved to a `tawara-app` that has it opens the sheet. Reasons: the
-   share sheet is how a phone hands text to
+   page then says, as a note and not as a refusal, that the sheet was opened
+   and that Tawara cannot tell whether the bytes were saved there, so the
+   spend still counts as not saved and its banner stays until it settles.
+   `Host::share` returns `Ok` when the sheet was shown and `Err` with the
+   reason when it was not; a sheet that could not be shown is a refusal, as
+   a file that could not be written is on the desktop. `Host::share` is a
+   field every shell must fill, so a shell moved to a `tawara-app` that has
+   it opens the sheet. Reasons: the share sheet is how a phone hands text to
    Files, a note or a message; a file on Android would need a `FileProvider`,
    which is Java (D4), or MediaStore's Downloads, which starts at API 29 while
    Tawara's minimum is 26.

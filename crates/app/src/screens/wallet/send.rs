@@ -1167,8 +1167,7 @@ mod tests {
         let sent = SentPage {
             sent: sample::sent_view(),
             resigned: false,
-            saved: None,
-            shared: true,
+            saved: Some(Err(crate::app::SHARED.to_owned())),
         };
         let model = phone(
             Page::Send(SendPage {
@@ -1181,7 +1180,7 @@ mod tests {
         assert_eq!(fits(screens::view(&model), NARROWEST), Ok(()));
         let drawn = texts(screens::view(&model), (NARROWEST, 2400.0));
         assert!(
-            drawn.iter().any(|(text, _)| text == super::super::SHARED),
+            drawn.iter().any(|(text, _)| text == crate::app::SHARED),
             "the page says the sheet was opened"
         );
     }

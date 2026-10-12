@@ -33,7 +33,7 @@ use tawara_wallet_core::{
 pub use wallet::{
     AccountPage, ActivityPage, AddAccountPage, BLOCK_ROWS, BlockPage, DestinationRow, Done,
     ExplorerPage, FormOf, Level, Missed, Page, QueuePage, ReceivePage, RecoveryPage, Remedy,
-    ReportKey, ResignPage, SendPage, SendStage, SentPage, SettingsPage, Signed, SpendForm,
+    ReportKey, ResignPage, SHARED, SendPage, SendStage, SentPage, SettingsPage, Signed, SpendForm,
     SubmitPage, TagPage, To, TransactionPage, WalletMsg, remedy, spend_request,
 };
 
