@@ -984,7 +984,11 @@ impl App {
                         }
                     }
                 }
-                // A mobile shell's clipboard, where iced's reaches nothing.
+                // A mobile shell copies through its own write first. That is
+                // where docs/DECISIONS.md D32 item 9 (d) puts the protection
+                // a copied secret needs, which iced's write does not set,
+                // though iced's reaches the phones at the pin. On the desktop
+                // there is no shell, so iced's write is used.
                 if crate::host::copy(&text) {
                     return Task::none();
                 }
