@@ -9,7 +9,7 @@
 //! does not keep, can be saved or copied (D27, item 5).
 
 use iced::widget::text::Wrapping;
-use iced::widget::{checkbox, column, container, row, space, text_input};
+use iced::widget::{Row, checkbox, column, container, row, space, text_input};
 use iced::{Alignment, Element, Length, Padding};
 use tawara_wallet_core::{MAX_DESTINATIONS, PlanView, REFERENCE_RULE};
 
@@ -91,7 +91,7 @@ fn compose<'a>(model: &'a Model, page: &'a WalletPage, s: &'a SendPage) -> Eleme
         // What signing would do is said only of an account that can sign.
         summary(model, s, s.from.filter(|_| blocked.is_none())),
         key_callout(model, s.from.filter(|_| blocked.is_none())),
-        steps(Step::Pending, Step::Pending, Step::Pending),
+        steps(model.compact(), Step::Pending, Step::Pending, Step::Pending),
         ui::button_with(
             "Review spend",
             theme::Button::Primary,
@@ -116,7 +116,7 @@ fn compose<'a>(model: &'a Model, page: &'a WalletPage, s: &'a SendPage) -> Eleme
         Vec::new(),
         vec![pair(
             model,
-            ui::card(form.spacing(sp::S20)).into(),
+            ui::card_for(model.compact(), form.spacing(sp::S20)).into(),
             summary.into(),
             7,
             4,
@@ -125,9 +125,12 @@ fn compose<'a>(model: &'a Model, page: &'a WalletPage, s: &'a SendPage) -> Eleme
 }
 
 /// The destinations as typed, the "everything" choice, and the fee and
-/// block-to-live: W4's form and W8's.
+/// block-to-live: W4's form and W8's. On a phone each destination is a block
+/// of its own, with no table header (docs/SCREENS.md, "Compact layout";
+/// docs/DECISIONS.md D32 item 10 (b)).
 fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> {
     let idle = model.busy.is_none();
+    let compact = model.compact();
     let field = |value: &'a str, placeholder: &'a str, mono: bool| {
         let face = if mono { ty::MONO } else { ty::FIELD };
         text_input(placeholder, value)
@@ -136,19 +139,24 @@ fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> 
             .padding(Padding::from([sp::S12, sp::S14]))
             .style(theme::field(radius::R12))
     };
-    let mut list = column![
-        row![
-            t("#", ty::TABLE_HEADER, color::TEXT_MUTED).width(Length::Fixed(20.0)),
-            t("Destination", ty::TABLE_HEADER, color::TEXT_MUTED).width(Length::FillPortion(6)),
-            // Typed in MCM whatever unit the wallet shows, exactly to nine
-            // places, so a figure is never read in the wrong unit.
-            t("Amount (MCM)", ty::TABLE_HEADER, color::TEXT_MUTED).width(Length::FillPortion(3)),
-            t("Reference", ty::TABLE_HEADER, color::TEXT_MUTED).width(Length::FillPortion(3)),
-            space().width(Length::Fixed(36.0)),
+    let mut list = if compact {
+        column![].spacing(sp::S16)
+    } else {
+        column![
+            row![
+                t("#", ty::TABLE_HEADER, color::TEXT_MUTED).width(Length::Fixed(20.0)),
+                t("Destination", ty::TABLE_HEADER, color::TEXT_MUTED).width(Length::FillPortion(6)),
+                // Typed in MCM whatever unit the wallet shows, exactly to nine
+                // places, so a figure is never read in the wrong unit.
+                t("Amount (MCM)", ty::TABLE_HEADER, color::TEXT_MUTED)
+                    .width(Length::FillPortion(3)),
+                t("Reference", ty::TABLE_HEADER, color::TEXT_MUTED).width(Length::FillPortion(3)),
+                space().width(Length::Fixed(36.0)),
+            ]
+            .spacing(sp::S12),
         ]
-        .spacing(sp::S12),
-    ]
-    .spacing(sp::S10);
+        .spacing(sp::S10)
+    };
     let several = f.rows.len() > 1;
     for (i, r) in f.rows.iter().enumerate() {
         let mut to = field(&r.to, "Base58 destination", true);
@@ -170,22 +178,67 @@ fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> 
             to = to.on_input(move |v| WalletMsg::DestinationTo(i, v).into());
             reference = reference.on_input(move |v| WalletMsg::Reference(i, v).into());
         }
-        list = list.push(
-            row![
-                t((i + 1).to_string(), ty::MONO, color::TEXT_MUTED).width(Length::Fixed(20.0)),
-                container(to).width(Length::FillPortion(6)),
-                container(amount).width(Length::FillPortion(3)),
-                container(reference).width(Length::FillPortion(3)),
-                iced::widget::button(crate::icon::icon(Icon::Trash, 16.0, 2.0, color::TEXT_MUTED))
-                    .padding(sp::S10)
-                    .style(theme::button(theme::Button::Ghost))
-                    .on_press_maybe(
-                        (idle && several).then_some(WalletMsg::RemoveDestination(i).into())
-                    ),
-            ]
-            .spacing(sp::S12)
-            .align_y(Alignment::Center),
-        );
+        let remove =
+            iced::widget::button(crate::icon::icon(Icon::Trash, 16.0, 2.0, color::TEXT_MUTED))
+                .padding(sp::S10)
+                .style(theme::button(theme::Button::Ghost))
+                .on_press_maybe(
+                    (idle && several).then_some(WalletMsg::RemoveDestination(i).into()),
+                );
+        if compact {
+            // The blocks are divided, with none above the first.
+            if i > 0 {
+                list = list.push(ui::divider());
+            }
+            // The destination takes the width, and the amount and the
+            // reference sit side by side beneath it, so that a long
+            // destination is not cut short on a phone (D32 item 10 (b)).
+            list = list.push(
+                column![
+                    row![
+                        t(
+                            format!("Destination {}", i + 1),
+                            ty::FORM_LABEL,
+                            color::TEXT_SECONDARY
+                        )
+                        .width(Length::Fill),
+                        remove,
+                    ]
+                    .width(Length::Fill)
+                    .align_y(Alignment::Center),
+                    row![to.width(Length::Fill)].width(Length::Fill),
+                    row![
+                        column![
+                            t("Amount (MCM)", ty::FORM_LABEL, color::TEXT_SECONDARY),
+                            amount
+                        ]
+                        .spacing(sp::S6)
+                        .width(Length::Fill),
+                        column![
+                            t("Reference", ty::FORM_LABEL, color::TEXT_SECONDARY),
+                            reference
+                        ]
+                        .spacing(sp::S6)
+                        .width(Length::Fill),
+                    ]
+                    .spacing(sp::S12)
+                    .width(Length::Fill),
+                ]
+                .spacing(sp::S12),
+            );
+        } else {
+            list = list.push(
+                row![
+                    t((i + 1).to_string(), ty::MONO, color::TEXT_MUTED).width(Length::Fixed(20.0)),
+                    container(to).width(Length::FillPortion(6)),
+                    container(amount).width(Length::FillPortion(3)),
+                    container(reference).width(Length::FillPortion(3)),
+                    remove,
+                ]
+                .spacing(sp::S12)
+                .align_y(Alignment::Center),
+            );
+        }
     }
     let mut part = column![
         row![
@@ -225,33 +278,37 @@ fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> 
         fee = fee.on_input(|v| WalletMsg::Fee(v).into());
         btl = btl.on_input(|v| WalletMsg::BlockToLive(v).into());
     }
-    part.push(
-        row![
-            column![
-                t(
-                    "Fee, nanoMCM in total",
-                    ty::FORM_LABEL,
-                    color::TEXT_SECONDARY
-                ),
-                fee
-            ]
-            .spacing(sp::S6)
-            .width(Length::Fill),
-            column![
-                t("Block-to-live", ty::FORM_LABEL, color::TEXT_SECONDARY),
-                btl
-            ]
-            .spacing(sp::S6)
-            .width(Length::Fill),
-        ]
-        .spacing(sp::S12),
-    )
-    .push(ui::helper(format!(
-        "The fee is {FEE_FLOOR} nanoMCM per destination, the node's floor, unless you give \
+    let fee = column![
+        t(
+            "Fee, nanoMCM in total",
+            ty::FORM_LABEL,
+            color::TEXT_SECONDARY
+        ),
+        fee
+    ]
+    .spacing(sp::S6)
+    .width(Length::Fill);
+    let btl = column![
+        t("Block-to-live", ty::FORM_LABEL, color::TEXT_SECONDARY),
+        btl
+    ]
+    .spacing(sp::S6)
+    .width(Length::Fill);
+    // At 360 a half-width fee field cuts its placeholder, "the node's floor",
+    // short, so on a phone the two fields stand one over the other
+    // (docs/DECISIONS.md D32 item 10 (b)).
+    let fees: Element<'a, Message> = if compact {
+        column![fee, btl].spacing(sp::S12).into()
+    } else {
+        row![fee, btl].spacing(sp::S12).into()
+    };
+    part.push(fees)
+        .push(ui::helper(format!(
+            "The fee is {FEE_FLOOR} nanoMCM per destination, the node's floor, unless you give \
          one. A block-to-live is the last block the spend may land in; none means it never \
          expires. The reference rule, in the wallet library's words: {REFERENCE_RULE}."
-    )))
-    .into()
+        )))
+        .into()
 }
 
 /// W4's summary (03): what the typed figures come to, as far as they can be
@@ -339,7 +396,7 @@ fn summary<'a>(
             },
         ));
     }
-    ui::card(card).into()
+    ui::card_for(model.compact(), card).into()
 }
 
 /// The key a spend from `from` signs with, and what signing does to the
@@ -373,8 +430,9 @@ enum Step {
 
 /// The three steps of a spend (03): reserving the key, submitting to the
 /// node's socket, and settling once the chain shows the change. They show
-/// what has happened, nothing more (docs/SCREENS.md W6).
-fn steps<'a>(reserve: Step, submit: Step, settle: Step) -> Element<'a, Message> {
+/// what has happened, nothing more (docs/SCREENS.md W6). On a phone they
+/// stand one above another in the card.
+fn steps<'a>(compact: bool, reserve: Step, submit: Step, settle: Step) -> Element<'a, Message> {
     let step = |title: &'a str, what: &'a str, at: Step| {
         let (bar, ink) = match at {
             Step::Done => (color::ACCENT, color::TEXT_PRIMARY),
@@ -392,42 +450,97 @@ fn steps<'a>(reserve: Step, submit: Step, settle: Step) -> Element<'a, Message> 
         .spacing(sp::S6)
         .width(Length::Fill)
     };
-    ui::card(
-        row![
-            step("Reserve", "key index saved", reserve),
-            step("Submit", "to the node's socket", submit),
-            step("Settle", "change on the ledger", settle),
-        ]
-        .spacing(sp::S12),
-    )
-    .into()
+    let (reserved, submitted, settled) = (
+        step("Reserve", "key index saved", reserve),
+        step("Submit", "to the node's socket", submit),
+        step("Settle", "change on the ledger", settle),
+    );
+    let body: Element<'a, Message> = if compact {
+        column![reserved, submitted, settled]
+            .spacing(sp::S16)
+            .into()
+    } else {
+        row![reserved, submitted, settled].spacing(sp::S12).into()
+    };
+    ui::card_for(compact, body).into()
+}
+
+/// A row of buttons. On a phone it wraps onto the next line when the buttons
+/// do not fit (docs/SCREENS.md, "Compact layout"); on the desktop it is one
+/// row, as it has always been drawn.
+fn button_row<'a>(compact: bool, buttons: Vec<Element<'a, Message>>) -> Element<'a, Message> {
+    let buttons = Row::with_children(buttons).spacing(sp::S10);
+    if compact {
+        buttons.wrap().vertical_spacing(sp::S10).into()
+    } else {
+        buttons.into()
+    }
 }
 
 /// W5: the library's page for the spend, not signed, whole; then signing,
 /// on its own step.
 fn review<'a>(model: &'a Model, page: &'a WalletPage, plan: &'a PlanView) -> Element<'a, Message> {
     let unit = model.prefs.unit;
+    let compact = model.compact();
     let index = row_of(model, plan.from).map(|a| a.index);
-    // What to check, one destination each, as they go on the wire.
-    let mut list = column![
-        ui::section_label("Check each destination against its payee"),
-        row![
-            t("#", ty::TABLE_HEADER, color::TEXT_MUTED).width(Length::Fixed(20.0)),
-            t("Destination", ty::TABLE_HEADER, color::TEXT_MUTED).width(Length::FillPortion(6)),
-            t("Reference", ty::TABLE_HEADER, color::TEXT_MUTED).width(Length::FillPortion(3)),
-            container(t(
-                format!("Amount ({})", ui::unit_name(unit)),
-                ty::TABLE_HEADER,
-                color::TEXT_MUTED
-            ))
-            .width(Length::FillPortion(3))
-            .align_x(Alignment::End),
-        ]
-        .spacing(sp::S12),
-    ]
+    // What to check, one destination each, as they go on the wire. A phone
+    // has no table header: each destination is a block (docs/SCREENS.md,
+    // "Compact layout").
+    let mut list = column![ui::section_label(
+        "Check each destination against its payee"
+    )]
     .spacing(sp::S12);
+    if !compact {
+        list = list.push(
+            row![
+                t("#", ty::TABLE_HEADER, color::TEXT_MUTED).width(Length::Fixed(20.0)),
+                t("Destination", ty::TABLE_HEADER, color::TEXT_MUTED).width(Length::FillPortion(6)),
+                t("Reference", ty::TABLE_HEADER, color::TEXT_MUTED).width(Length::FillPortion(3)),
+                container(t(
+                    format!("Amount ({})", ui::unit_name(unit)),
+                    ty::TABLE_HEADER,
+                    color::TEXT_MUTED
+                ))
+                .width(Length::FillPortion(3))
+                .align_x(Alignment::End),
+            ]
+            .spacing(sp::S12),
+        );
+    }
     for (i, d) in plan.destinations.iter().enumerate() {
-        list = list.push(ui::divider()).push(
+        let entry: Element<'a, Message> = if compact {
+            // The number and the amount on one line, then the destination and
+            // the reference, each wrapping at its glyphs.
+            let reference = if d.reference.is_empty() {
+                "none"
+            } else {
+                d.reference.as_str()
+            };
+            column![
+                row![
+                    t(format!("#{}", i + 1), ty::MONO, color::TEXT_MUTED),
+                    space().width(Length::Fill),
+                    t(
+                        ui::amount(d.amount, unit),
+                        ty::TABLE_AMOUNT,
+                        color::TEXT_PRIMARY
+                    )
+                    .wrapping(Wrapping::WordOrGlyph),
+                ]
+                .spacing(sp::S12)
+                .align_y(Alignment::Center),
+                t(d.destination.clone(), ty::MONO_SMALL, color::TEXT_PRIMARY)
+                    .wrapping(Wrapping::WordOrGlyph),
+                t(
+                    format!("Reference: {reference}"),
+                    ty::MONO_SMALL,
+                    color::TEXT_SECONDARY
+                )
+                .wrapping(Wrapping::WordOrGlyph),
+            ]
+            .spacing(sp::S6)
+            .into()
+        } else {
             row![
                 t((i + 1).to_string(), ty::MONO, color::TEXT_MUTED).width(Length::Fixed(20.0)),
                 t(d.destination.clone(), ty::MONO, color::TEXT_PRIMARY)
@@ -455,12 +568,14 @@ fn review<'a>(model: &'a Model, page: &'a WalletPage, plan: &'a PlanView) -> Ele
                 .align_x(Alignment::End),
             ]
             .spacing(sp::S12)
-            .align_y(Alignment::Center),
-        );
+            .align_y(Alignment::Center)
+            .into()
+        };
+        list = list.push(ui::divider()).push(entry);
     }
     let main = column![
-        report::show(page, ReportKey::Plan, report::plan(plan, index)),
-        ui::card(list),
+        report::show_in(compact, page, ReportKey::Plan, report::plan(plan, index)),
+        ui::card_for(compact, list),
     ]
     .spacing(sp::S16);
     let count = plan.destinations.len();
@@ -505,9 +620,9 @@ fn review<'a>(model: &'a Model, page: &'a WalletPage, plan: &'a PlanView) -> Ele
     ]
     .spacing(sp::S12);
     let side = column![
-        ui::card(summary),
+        ui::card_for(compact, summary),
         key_callout(model, Some(plan.from)),
-        steps(Step::Pending, Step::Pending, Step::Pending),
+        steps(compact, Step::Pending, Step::Pending, Step::Pending),
         action(
             model,
             "Sign & submit",
@@ -540,6 +655,7 @@ fn review<'a>(model: &'a Model, page: &'a WalletPage, plan: &'a PlanView) -> Ele
 /// page with its three facts, whole.
 fn sent_page<'a>(model: &'a Model, page: &'a WalletPage, s: &'a SentPage) -> Element<'a, Message> {
     let sent = &s.sent;
+    let compact = model.compact();
     let submitted = if sent.submitted {
         Step::Done
     } else {
@@ -554,18 +670,20 @@ fn sent_page<'a>(model: &'a Model, page: &'a WalletPage, s: &'a SentPage) -> Ele
             ty::BODY_SMALL,
             color::TEXT_SECONDARY,
         ),
-        row![
-            action(
-                model,
-                "Save artifact",
-                theme::Button::Primary,
-                Size::Medium,
-                Some(Icon::Download),
-                WalletMsg::SaveArtifact,
-            ),
-            copy(page, &sent.artifact_hex, "Copy hex"),
-        ]
-        .spacing(sp::S10),
+        button_row(
+            compact,
+            vec![
+                action(
+                    model,
+                    "Save artifact",
+                    theme::Button::Primary,
+                    Size::Medium,
+                    Some(Icon::Download),
+                    WalletMsg::SaveArtifact,
+                ),
+                copy(page, &sent.artifact_hex, "Copy hex"),
+            ],
+        ),
     ]
     .spacing(sp::S12);
     match &s.saved {
@@ -593,29 +711,30 @@ fn sent_page<'a>(model: &'a Model, page: &'a WalletPage, s: &'a SentPage) -> Ele
         );
     }
     let body = vec![
-        steps(Step::Done, submitted, Step::Pending),
-        report::show(page, ReportKey::Sent, report::sent(sent)),
-        ui::card(artifact).into(),
-        row![
-            action(
-                model,
-                "Back to the wallet",
-                theme::Button::Secondary,
-                Size::Medium,
-                None,
-                WalletMsg::Open(To::Dashboard),
-            ),
-            action(
-                model,
-                "Open the account",
-                theme::Button::Secondary,
-                Size::Medium,
-                None,
-                WalletMsg::Open(To::Account(sent.from)),
-            ),
-        ]
-        .spacing(sp::S10)
-        .into(),
+        steps(compact, Step::Done, submitted, Step::Pending),
+        report::show_in(compact, page, ReportKey::Sent, report::sent(sent)),
+        ui::card_for(compact, artifact).into(),
+        button_row(
+            compact,
+            vec![
+                action(
+                    model,
+                    "Back to the wallet",
+                    theme::Button::Secondary,
+                    Size::Medium,
+                    None,
+                    WalletMsg::Open(To::Dashboard),
+                ),
+                action(
+                    model,
+                    "Open the account",
+                    theme::Button::Secondary,
+                    Size::Medium,
+                    None,
+                    WalletMsg::Open(To::Account(sent.from)),
+                ),
+            ],
+        ),
     ];
     frame(
         model,
@@ -650,7 +769,7 @@ pub fn resign<'a>(
     ]
     .spacing(sp::S20);
     let side = column![
-        steps(Step::Done, Step::Pending, Step::Pending),
+        steps(model.compact(), Step::Done, Step::Pending, Step::Pending),
         action(
             model,
             "Re-sign & submit",
@@ -674,7 +793,13 @@ pub fn resign<'a>(
             name(r.account)
         ),
         Vec::new(),
-        vec![pair(model, ui::card(form).into(), side.into(), 7, 4)],
+        vec![pair(
+            model,
+            ui::card_for(model.compact(), form).into(),
+            side.into(),
+            7,
+            4,
+        )],
     )
 }
 
@@ -707,37 +832,46 @@ fn submit_form<'a>(
             .on_input(|v| WalletMsg::ArtifactHex(v).into())
             .on_submit_maybe(return_broadcasts.then_some(WalletMsg::Submit.into()));
     }
-    let mut body = vec![
-        ui::card(
-            column![
-                t(
-                    "Signed bytes, as hex",
-                    ty::FORM_LABEL,
-                    color::TEXT_SECONDARY
-                ),
-                hex,
-                row![
-                    action(
-                        model,
-                        "Submit",
-                        theme::Button::Primary,
-                        Size::Medium,
-                        None,
-                        WalletMsg::Submit,
-                    ),
-                    ui::helper(
-                        "Only the bytes' layout is checked here; the node validates the rest.",
-                    ),
-                ]
+    let compact = model.compact();
+    let label = t(
+        "Signed bytes, as hex",
+        ty::FORM_LABEL,
+        color::TEXT_SECONDARY,
+    );
+    let submit = action(
+        model,
+        "Submit",
+        theme::Button::Primary,
+        Size::Medium,
+        None,
+        WalletMsg::Submit,
+    );
+    let helper = ui::helper("Only the bytes' layout is checked here; the node validates the rest.");
+    // On a phone the field has the width of its row, with room to its right,
+    // and Submit stands above its helper (docs/SCREENS.md, "Compact layout").
+    let entry: Element<'a, Message> = if compact {
+        column![
+            label,
+            row![hex].width(Length::Fill),
+            column![submit, helper].spacing(sp::S12),
+        ]
+        .spacing(sp::S12)
+        .into()
+    } else {
+        column![
+            label,
+            hex,
+            row![submit, helper]
                 .spacing(sp::S12)
                 .align_y(Alignment::Center),
-            ]
-            .spacing(sp::S12),
-        )
-        .into(),
-    ];
+        ]
+        .spacing(sp::S12)
+        .into()
+    };
+    let mut body = vec![ui::card_for(compact, entry).into()];
     if let Some((accepted, text)) = &s.result {
-        body.push(report::show(
+        body.push(report::show_in(
+            compact,
             page,
             ReportKey::Submitted,
             report::submitted(*accepted, text),
@@ -755,18 +889,25 @@ fn submit_form<'a>(
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use iced::advanced::clipboard::Null;
+    use iced::advanced::layout;
     use iced::advanced::renderer::Headless;
-    use iced::advanced::widget::Operation;
-    use iced::advanced::widget::operation::{Outcome, focusable};
+    use iced::advanced::widget::operation::{Focusable, Outcome, focusable};
+    use iced::advanced::widget::{Operation, Tree};
     use iced::keyboard::key::{Named, NativeCode, Physical};
     use iced::keyboard::{Key, Location, Modifiers};
-    use iced::{Event, keyboard, mouse};
+    use iced::{Event, Rectangle, keyboard, mouse};
     use iced_runtime::user_interface::{Cache, UserInterface};
     use tawara_wallet_core::preferences::Preferences;
+    use tawara_wallet_core::sample;
+    use tawara_wallet_core::view::AccountState;
 
     use super::*;
-    use crate::app::Page;
+    use crate::app::{DestinationRow, Level, NARROWEST, Page, Screen};
+    use crate::harness::{Driver, fits};
+    use crate::screens;
 
     /// A key press as the keyboard sends it, with the text it types, if any.
     fn press(key: Key, text: Option<&str>) -> Event {
@@ -865,5 +1006,268 @@ mod tests {
             ),
             "{sent:?}"
         );
+    }
+
+    /// The sample wallet open on `page` at the phone's narrowest width, with
+    /// the report `open` (if any) opened to its summary.
+    fn phone(page: Page, open: Option<ReportKey>) -> Model {
+        let mut model = Model::new(Preferences::default(), None);
+        model.width = NARROWEST;
+        model.wallet = Some(sample::wallet_view());
+        let mut wallet = WalletPage {
+            page,
+            ..WalletPage::default()
+        };
+        if let Some(key) = open {
+            wallet.open.insert(key, Level::Summary);
+        }
+        model.screen = Screen::Wallet(wallet);
+        model
+    }
+
+    /// The sample's spend as a person types it: its two payees, with the
+    /// figures the sample lays out (`sample::plan_view`).
+    fn typed() -> SpendForm {
+        SpendForm {
+            rows: sample::plan_view()
+                .destinations
+                .iter()
+                .map(|d| DestinationRow {
+                    to: d.destination.clone(),
+                    amount: tawara_wallet_core::amount::format_mcm(d.amount)
+                        .trim_end_matches('0')
+                        .trim_end_matches('.')
+                        .to_owned(),
+                    reference: d.reference.clone(),
+                })
+                .collect(),
+            ..SpendForm::default()
+        }
+    }
+
+    /// The sample wallet's accounts, the first of which the sample spend comes
+    /// from.
+    fn accounts() -> Vec<tawara_wallet_core::view::AccountId> {
+        sample::wallet_view()
+            .accounts
+            .iter()
+            .map(|a| a.id)
+            .collect()
+    }
+
+    /// W4 from the sample's first account, with `form`.
+    fn compose(form: SpendForm) -> Page {
+        Page::Send(SendPage {
+            from: Some(accounts()[0]),
+            form,
+            stage: SendStage::Compose,
+        })
+    }
+
+    /// The bounds of the focusable widgets of `root` in a phone's window, in
+    /// Tab's order: a text field's bounds are its drawn box.
+    fn focusable_bounds(root: Element<'_, Message>) -> Vec<Rectangle> {
+        #[derive(Default)]
+        struct Bounds(Vec<Rectangle>);
+
+        impl Operation for Bounds {
+            fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+                operate(self);
+            }
+
+            fn focusable(
+                &mut self,
+                _: Option<&iced::advanced::widget::Id>,
+                bounds: Rectangle,
+                _: &mut dyn Focusable,
+            ) {
+                self.0.push(bounds);
+            }
+        }
+
+        let mut renderer = crate::harness::renderer();
+        let mut ui = UserInterface::build(
+            root,
+            iced::Size::new(NARROWEST, 844.0),
+            Cache::default(),
+            &mut renderer,
+        );
+        let mut bounds = Bounds::default();
+        ui.operate(&renderer, &mut bounds);
+        bounds.0
+    }
+
+    #[test]
+    fn w4_with_one_destination_fits_a_phone_screen() {
+        let model = phone(compose(typed()), None);
+        assert_eq!(fits(screens::view(&model), NARROWEST), Ok(()));
+    }
+
+    #[test]
+    fn w4_with_three_destinations_fits_a_phone_screen() {
+        let mut form = typed();
+        form.rows.push(DestinationRow {
+            to: form.rows[0].to.clone(),
+            amount: "1".to_owned(),
+            reference: "PAYROLL-13".to_owned(),
+        });
+        let model = phone(compose(form), None);
+        assert_eq!(fits(screens::view(&model), NARROWEST), Ok(()));
+    }
+
+    #[test]
+    fn w4_that_cannot_spend_fits_a_phone_screen() {
+        // The second account set aside when the wallet opened, as the sample
+        // draws it (`w4-send-cannot-spend`).
+        let mut wallet = sample::wallet_view();
+        wallet.accounts[1].state = AccountState::InSync {
+            balance: 3_180_000_000_000,
+        };
+        wallet.accounts[1].spendable = false;
+        let mut model = phone(
+            Page::Send(SendPage {
+                from: Some(accounts()[1]),
+                form: typed(),
+                stage: SendStage::Compose,
+            }),
+            None,
+        );
+        model.wallet = Some(wallet);
+        assert_eq!(fits(screens::view(&model), NARROWEST), Ok(()));
+    }
+
+    #[test]
+    fn w5_fits_a_phone_screen_with_its_report_open() {
+        let model = phone(
+            Page::Send(SendPage {
+                from: Some(accounts()[0]),
+                form: typed(),
+                stage: SendStage::Review(Box::new(sample::plan_view())),
+            }),
+            Some(ReportKey::Plan),
+        );
+        assert_eq!(fits(screens::view(&model), NARROWEST), Ok(()));
+    }
+
+    #[test]
+    fn w6_fits_a_phone_screen_with_its_report_open() {
+        let sent = SentPage {
+            sent: sample::sent_view(),
+            resigned: false,
+            saved: Some(Ok(PathBuf::from(
+                "/home/you/Downloads/tawara-spend-5e5e5e5e5e5e5e5e.hex",
+            ))),
+        };
+        let model = phone(
+            Page::Send(SendPage {
+                from: Some(accounts()[0]),
+                form: typed(),
+                stage: SendStage::Sent(Box::new(sent)),
+            }),
+            Some(ReportKey::Sent),
+        );
+        assert_eq!(fits(screens::view(&model), NARROWEST), Ok(()));
+    }
+
+    #[test]
+    fn w8_fits_a_phone_screen() {
+        let model = phone(
+            Page::Resign(ResignPage {
+                account: accounts()[1],
+                form: typed(),
+            }),
+            None,
+        );
+        assert_eq!(fits(screens::view(&model), NARROWEST), Ok(()));
+    }
+
+    #[test]
+    fn w9_fits_a_phone_screen() {
+        let model = phone(
+            Page::Submit(SubmitPage {
+                hex: sample::sent_view().artifact_hex,
+                result: Some((true, sample::submitted_text())),
+            }),
+            None,
+        );
+        assert_eq!(fits(screens::view(&model), NARROWEST), Ok(()));
+    }
+
+    #[test]
+    fn on_a_phone_the_first_destination_takes_typing() {
+        // Tab reaches the first destination's field, and what is typed into it
+        // is that destination's (docs/DECISIONS.md D32 item 10 (b)).
+        let model = phone(compose(SpendForm::default()), None);
+        let mut driver = Driver::new(screens::view(&model), (360, 844));
+        driver.focus_next();
+        let (messages, _, _) = driver.send(&[press(Key::Character("a".into()), Some("a"))]);
+        assert!(
+            matches!(
+                messages.as_slice(),
+                [Message::Wallet(WalletMsg::DestinationTo(0, to))] if to == "a"
+            ),
+            "{messages:?}"
+        );
+    }
+
+    #[test]
+    fn on_a_phone_a_destination_takes_the_width_of_its_card() {
+        // The destination has a block of its own, so its field is as wide as the
+        // card's inside: a share of a row with the amount and the reference
+        // would be well under the 290 pixels asked for here.
+        let model = phone(compose(typed()), None);
+        let fields = focusable_bounds(screens::view(&model));
+        assert!(
+            fields.first().is_some_and(|field| field.width >= 290.0),
+            "{fields:?}"
+        );
+    }
+
+    #[test]
+    fn on_a_phone_the_signed_bytes_field_takes_its_row() {
+        let model = phone(
+            Page::Submit(SubmitPage {
+                hex: sample::sent_view().artifact_hex,
+                result: None,
+            }),
+            None,
+        );
+        let fields = focusable_bounds(screens::view(&model));
+        assert!(
+            fields.first().is_some_and(|field| field.width >= 290.0),
+            "{fields:?}"
+        );
+    }
+
+    /// The bounds of the children of `root` as the layout gives them at the
+    /// phone's narrowest width, each relative to `root`. A row gives each child
+    /// no more than the room left in it, so a child that does not fit is drawn
+    /// narrower, not past the edge: `fits` cannot see that, and this can.
+    fn child_bounds(mut root: Element<'_, Message>) -> Vec<Rectangle> {
+        let renderer = crate::harness::renderer();
+        let mut tree = Tree::new(root.as_widget());
+        let limits = layout::Limits::new(iced::Size::ZERO, iced::Size::new(NARROWEST, 844.0));
+        let node = root.as_widget_mut().layout(&mut tree, &renderer, &limits);
+        node.children().iter().map(|child| child.bounds()).collect()
+    }
+
+    #[test]
+    fn a_row_of_buttons_wraps_on_a_phone_and_stays_one_row_on_the_desktop() {
+        // Two buttons 200 pixels across, which 360 cannot hold in one line: on a
+        // phone the second goes onto a line of its own and keeps its width; the
+        // desktop's row stays one row, as it has always been drawn.
+        let wide = || -> Element<'static, Message> {
+            space()
+                .width(Length::Fixed(200.0))
+                .height(Length::Fixed(40.0))
+                .into()
+        };
+        let phone = child_bounds(button_row(true, vec![wide(), wide()]));
+        assert!(
+            phone[1].y > phone[0].y && phone.iter().all(|b| b.width == 200.0),
+            "{phone:?}"
+        );
+        let desktop = child_bounds(button_row(false, vec![wide(), wide()]));
+        assert_eq!(desktop[1].y, desktop[0].y, "{desktop:?}");
     }
 }
