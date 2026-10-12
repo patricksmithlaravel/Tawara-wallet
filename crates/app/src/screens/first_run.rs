@@ -23,7 +23,7 @@ pub fn view(model: &Model) -> Element<'_, Message> {
         (None, Screen::NewWallet(f)) => new_wallet(model, f),
         (None, Screen::Phrase(p)) => phrase(p),
         (None, Screen::Confirm(p)) => confirm(p, model.drawn()),
-        (None, Screen::Restore(r)) => restore(r, model.drawn()),
+        (None, Screen::Restore(r)) => restore(model, r, model.drawn()),
         (None, Screen::Unlock(u)) => unlock(model, u),
         (None, Screen::Wallet(_)) => column![].into(),
     };
@@ -92,8 +92,17 @@ fn brand<'a>() -> Element<'a, Message> {
     .into()
 }
 
+/// Where the person's keys are, as the first-run screens say it: "computer",
+/// or "phone" in a phone shell (docs/DECISIONS.md D32 item 10 (a)).
+fn place(model: &Model) -> &'static str {
+    if model.phone() { "phone" } else { "computer" }
+}
+
 /// A title over an introduction.
-fn heading<'a>(title: &str, intro: &'a str) -> Element<'a, Message> {
+fn heading<'a>(
+    title: &str,
+    intro: impl iced::widget::text::IntoFragment<'a>,
+) -> Element<'a, Message> {
     column![
         t(
             title.to_uppercase(),
@@ -140,8 +149,10 @@ fn start(model: &Model, choice: StartChoice) -> Element<'_, Message> {
     column![
         heading(
             "Get started",
-            "Your keys are created and encrypted on this computer. Nothing secret ever \
-             leaves it.",
+            format!(
+                "Your keys are created and encrypted on this {}. Nothing secret ever leaves it.",
+                place(model)
+            ),
         ),
         column![
             radio_card(
@@ -155,8 +166,11 @@ fn start(model: &Model, choice: StartChoice) -> Element<'_, Message> {
                 choice == StartChoice::Restore,
                 "Restore from recovery phrase",
                 None,
-                "12 to 24 words you already have. The store is made from them on this \
-                 computer; accounts already on the chain are found from the wallet after.",
+                format!(
+                    "12 to 24 words you already have. The store is made from them on this {}; \
+                     accounts already on the chain are found from the wallet after.",
+                    place(model)
+                ),
                 Message::Choose(StartChoice::Restore),
             ),
         ]
@@ -169,7 +183,11 @@ fn start(model: &Model, choice: StartChoice) -> Element<'_, Message> {
             Some(Message::Continue),
         ),
         ui::link(
-            "Open a wallet already on this computer",
+            if model.phone() {
+                "Open the wallet on this phone"
+            } else {
+                "Open a wallet already on this computer"
+            },
             ty::LINK,
             Message::Go(Go::Unlock),
         ),
@@ -184,7 +202,7 @@ fn radio_card<'a>(
     selected: bool,
     title: &'a str,
     badge: Option<&'a str>,
-    description: &'a str,
+    description: impl iced::widget::text::IntoFragment<'a>,
     on_press: Message,
 ) -> Element<'a, Message> {
     let mut title_row = row![t(title, ty::RADIO_TITLE, color::TEXT_PRIMARY)]
@@ -266,9 +284,12 @@ fn node<'a>(model: &'a Model, form: &'a NodeForm) -> Element<'a, Message> {
     let mut body = column![
         heading(
             "Choose a node",
-            "There is no default node: you choose whom to trust. Every balance, key index and \
-             chain tip the wallet works from comes from this node, so use one you trust. \
-             https:// is required; http:// is accepted only to this computer.",
+            format!(
+                "There is no default node: you choose whom to trust. Every balance, key index \
+                 and chain tip the wallet works from comes from this node, so use one you \
+                 trust. https:// is required; http:// is accepted only to this {}.",
+                place(model)
+            ),
         ),
         ui::field(
             "Node URL",
@@ -299,24 +320,30 @@ fn node<'a>(model: &'a Model, form: &'a NodeForm) -> Element<'a, Message> {
 }
 
 /// The folder and the two passwords, shared by S3 and S6. `drawn` is the
-/// fields' generation (`Typed`).
+/// fields' generation (`Typed`). The folder, and the callout about a synced
+/// one, are drawn only when `folder` says the person chooses it: a phone
+/// keeps every store in the app's own folder (docs/DECISIONS.md D32 item 10
+/// (a)).
 fn password_fields(
     form: &PasswordForm,
     drawn: u64,
     submit: Option<Message>,
+    folder: bool,
 ) -> Element<'_, Message> {
-    let mut fields = column![ui::field(
-        "Folder",
-        "",
-        &form.dir,
-        ty::MONO,
-        false,
-        Message::Dir,
-        None,
-    )]
-    .spacing(sp::S16);
-    if let Some(w) = &form.synced {
-        fields = fields.push(ui::warning_callout("This folder is synced", w.as_str()));
+    let mut fields = column![].spacing(sp::S16);
+    if folder {
+        fields = fields.push(ui::field(
+            "Folder",
+            "",
+            &form.dir,
+            ty::MONO,
+            false,
+            Message::Dir,
+            None,
+        ));
+        if let Some(w) = &form.synced {
+            fields = fields.push(ui::warning_callout("This folder is synced", w.as_str()));
+        }
     }
     fields
         .push(
@@ -349,12 +376,14 @@ fn password_fields(
 /// S3: the folder and the password for a new store.
 fn new_wallet<'a>(model: &'a Model, form: &'a PasswordForm) -> Element<'a, Message> {
     let ready = !form.password.is_empty() && !form.again.is_empty() && !form.dir.trim().is_empty();
-    let mut body = column![heading(
-        "New wallet",
-        "Choose where the store is kept and the password that seals it. Nothing is \
-             written until you have confirmed the recovery phrase.",
-    ),]
-    .spacing(sp::S24);
+    let intro = if model.phone() {
+        "Choose the password that seals the store. The store is kept in the app's own folder. \
+         Nothing is written until you have confirmed the recovery phrase."
+    } else {
+        "Choose where the store is kept and the password that seals it. Nothing is written \
+         until you have confirmed the recovery phrase."
+    };
+    let mut body = column![heading("New wallet", intro),].spacing(sp::S24);
     if let Some(note) = &form.note {
         body = body.push(ui::accent_callout(
             crate::icon::Icon::Lock,
@@ -366,6 +395,7 @@ fn new_wallet<'a>(model: &'a Model, form: &'a PasswordForm) -> Element<'a, Messa
         form,
         model.drawn(),
         ready.then_some(Message::CreateWallet),
+        !model.phone(),
     ));
     if let Some(e) = &form.error {
         body = body.push(ui::refusal(e));
@@ -509,7 +539,7 @@ fn scheme_warning<'a>() -> Element<'a, Message> {
 }
 
 /// S6: a store from a phrase the person already has.
-fn restore(r: &RestoreForm, drawn: u64) -> Element<'_, Message> {
+fn restore<'a>(model: &Model, r: &'a RestoreForm, drawn: u64) -> Element<'a, Message> {
     let ready = !r.form.password.is_empty()
         && !r.form.again.is_empty()
         && !r.phrase.trim().is_empty()
@@ -521,7 +551,7 @@ fn restore(r: &RestoreForm, drawn: u64) -> Element<'_, Message> {
             color::TEXT_PRIMARY,
         ),
         scheme_warning(),
-        password_fields(&r.form, drawn, None),
+        password_fields(&r.form, drawn, None, !model.phone()),
         ui::field(
             "Recovery phrase",
             "",
@@ -553,8 +583,11 @@ fn unlock<'a>(model: &'a Model, form: &'a UnlockForm) -> Element<'a, Message> {
     let drawn = model.drawn();
     let mut body = column![heading(
         "Unlock",
-        "Open the store on this computer with its password. It stays open until you lock \
-         it, or until nothing has been done for the auto-lock period.",
+        format!(
+            "Open the store on this {} with its password. It stays open until you lock it, or \
+             until nothing has been done for the auto-lock period.",
+            place(model)
+        ),
     )]
     .spacing(sp::S24);
     if let Some(note) = &form.note {
@@ -564,8 +597,8 @@ fn unlock<'a>(model: &'a Model, form: &'a UnlockForm) -> Element<'a, Message> {
             note.as_str(),
         ));
     }
-    body = body
-        .push(ui::field(
+    if !model.phone() {
+        body = body.push(ui::field(
             "Folder",
             "",
             &form.dir,
@@ -573,16 +606,17 @@ fn unlock<'a>(model: &'a Model, form: &'a UnlockForm) -> Element<'a, Message> {
             false,
             Message::Dir,
             None,
-        ))
-        .push(ui::field(
-            "Password",
-            "",
-            &form.password,
-            ty::FIELD,
-            true,
-            move |text| Message::Password(Typed { text, drawn }),
-            ready.then_some(Message::UnlockWallet),
         ));
+    }
+    body = body.push(ui::field(
+        "Password",
+        "",
+        &form.password,
+        ty::FIELD,
+        true,
+        move |text| Message::Password(Typed { text, drawn }),
+        ready.then_some(Message::UnlockWallet),
+    ));
     if let Some(e) = &form.error {
         body = body.push(ui::refusal(e));
     }

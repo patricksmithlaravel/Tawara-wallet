@@ -8,6 +8,7 @@ use iced::{Alignment, Color, Element, Font, Length, Padding, Pixels};
 
 use crate::fonts;
 use crate::icon::{self, Icon};
+use crate::tap::tap;
 use crate::theme::{self, color, radius, space as sp};
 
 /// A role in the type scale: a face and a size. The line height follows
@@ -77,6 +78,10 @@ pub mod ty {
     pub const LINK_SMALL: Type = Type::new(fonts::BODY_MEDIUM, 12.0);
     pub const NAV: Type = Type::new(fonts::BODY_MEDIUM, 14.0);
     pub const NAV_ACTIVE: Type = Type::new(fonts::BODY_SEMIBOLD, 14.0);
+    /// The phone's bar at the foot of the window (docs/SCREENS.md, "Compact
+    /// layout"), which holds the six items in one row.
+    pub const NAV_TAB: Type = Type::new(fonts::BODY_MEDIUM, 11.0);
+    pub const NAV_TAB_ACTIVE: Type = Type::new(fonts::BODY_SEMIBOLD, 11.0);
     pub const CHIP: Type = Type::new(fonts::BODY_MEDIUM, 12.0);
     pub const BADGE: Type = Type::new(fonts::BODY_SEMIBOLD, 11.0);
     pub const PILL: Type = Type::new(fonts::BODY_MEDIUM, 13.0);
@@ -264,6 +269,29 @@ pub fn link<'a, M: Clone + 'a>(content: &'a str, ty: Type, on_press: M) -> Butto
         .padding(0)
         .style(theme::button(theme::Button::Link))
         .on_press(on_press)
+}
+
+/// A segment of a segmented control or a filter row (5.9, 5.10): drawn as
+/// `button_with(content, theme::Button::Segment { selected }, Size::Small,
+/// None, on_tap)` draws it, and acting on release, as a [`tap`] does
+/// (docs/DECISIONS.md D32 item 10 (d)). `width` is the segment's own.
+pub fn segment<'a, M: Clone + 'a>(
+    content: &'a str,
+    selected: bool,
+    width: Length,
+    on_tap: Option<M>,
+) -> Element<'a, M> {
+    let enabled = on_tap.is_some();
+    let segment = container(
+        container(row![label(content, ty::BUTTON_SECONDARY)].align_y(Alignment::Center))
+            .center_y(Length::Fill)
+            .center_x(width),
+    )
+    .height(Length::Fixed(Size::Small.height()))
+    .width(width)
+    .padding(Padding::from([0.0, sp::S14]))
+    .style(theme::segment(selected, enabled));
+    tap(segment).on_tap_maybe(on_tap).into()
 }
 
 /// A labelled text field (5.5): the label over the field, 6 px apart.
@@ -476,8 +504,18 @@ pub fn divider<'a, M: 'a>() -> Element<'a, M> {
 
 /// A card: surface, border, radius 20, padding 24 (3.3).
 pub fn card<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> container::Container<'a, M> {
+    card_for(false, content)
+}
+
+/// A card as [`card`] draws it, with its padding 16 in the phone layout, so
+/// that the card fills the width of a phone screen (docs/SCREENS.md, "Compact
+/// layout").
+pub fn card_for<'a, M: 'a>(
+    compact: bool,
+    content: impl Into<Element<'a, M>>,
+) -> container::Container<'a, M> {
     container(content)
-        .padding(sp::S24)
+        .padding(if compact { sp::S16 } else { sp::S24 })
         .width(Length::Fill)
         .style(theme::card)
 }
@@ -704,5 +742,84 @@ mod tests {
         assert_eq!(age(10_000 + 360_000, 10_000), "6 min ago");
         assert_eq!(age(3 * 86_400_000, 0), "3 days ago");
         assert_eq!(age(0, 5_000), "just now", "a clock behind the node's");
+    }
+
+    /// What `root` draws at `size`, as RGBA pixels.
+    fn drawn<'a>(root: impl Into<Element<'a, i32>>, size: (u32, u32)) -> Vec<u8> {
+        crate::harness::Driver::new(root, size).draw()
+    }
+
+    #[test]
+    fn a_segment_draws_the_pixels_of_the_button_it_replaces() {
+        for selected in [false, true] {
+            for enabled in [false, true] {
+                let on_tap = enabled.then_some(1);
+                let segment = segment("Week", selected, Length::Shrink, on_tap);
+                let button = button_with(
+                    "Week",
+                    theme::Button::Segment { selected },
+                    Size::Small,
+                    None,
+                    on_tap,
+                );
+                assert!(
+                    drawn(segment, (160, 60)) == drawn(button, (160, 60)),
+                    "selected {selected}, enabled {enabled}: the pixels differ"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_tap_over_a_card_draws_the_pixels_of_a_bare_button_over_it() {
+        for selected in [false, true] {
+            let content = || {
+                iced::widget::column![
+                    t("Account", ty::RADIO_TITLE, color::TEXT_PRIMARY),
+                    t(
+                        "9xQmT4vRbN2kWe7HpLsZ3cYdAf",
+                        ty::MONO_TINY,
+                        color::TEXT_MUTED
+                    ),
+                ]
+                .spacing(sp::S2)
+            };
+            let tapped: Element<'_, i32> = crate::tap::tap(
+                container(content())
+                    .padding(Padding::from([sp::S12, sp::S16]))
+                    .width(Length::Fill)
+                    .style(theme::radio_card(selected)),
+            )
+            .on_tap(1)
+            .into();
+            let bare: Element<'_, i32> = button(
+                container(content())
+                    .padding(Padding::from([sp::S12, sp::S16]))
+                    .width(Length::Fill)
+                    .style(theme::radio_card(selected)),
+            )
+            .padding(0)
+            .width(Length::Fill)
+            .style(theme::button(theme::Button::Bare))
+            .on_press(1)
+            .into();
+            assert!(
+                drawn(tapped, (320, 90)) == drawn(bare, (320, 90)),
+                "selected {selected}: the pixels differ"
+            );
+        }
+    }
+
+    #[test]
+    fn card_for_is_the_card_on_the_desktop_and_sixteen_padded_on_a_phone() {
+        let body = || t("body", ty::BODY, color::TEXT_PRIMARY);
+        assert!(
+            drawn(card(body()), (200, 100)) == drawn(card_for(false, body()), (200, 100)),
+            "the desktop card is unchanged"
+        );
+        assert!(
+            drawn(card_for(true, body()), (200, 100)) != drawn(card(body()), (200, 100)),
+            "the phone's card has the smaller padding"
+        );
     }
 }

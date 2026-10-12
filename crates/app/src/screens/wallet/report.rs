@@ -9,7 +9,7 @@
 //! cases come from what the worker reports (`DivergenceKind`,
 //! `NoticeKind`, the replies' own fields), never from reading the page.
 
-use iced::widget::{button, column, container, row};
+use iced::widget::{column, container, row};
 use iced::{Alignment, Element, Length};
 use tawara_wallet_core::explorer::{AccountHistory, ExplorerRefusal, IndexState};
 use tawara_wallet_core::view::{AccountRow, AccountState, DivergenceKind, NoticeKind, WalletView};
@@ -18,6 +18,7 @@ use tawara_wallet_core::{AccountReport, Discovered, PlanView, SentView};
 use super::name;
 use crate::app::{Done, Level, Message, Missed, ReportKey, WalletMsg, WalletPage};
 use crate::icon::{self, Icon};
+use crate::tap::tap;
 use crate::theme::{self, color, space as sp};
 use crate::ui::{self, t, ty};
 
@@ -78,6 +79,20 @@ impl<'a> Report<'a> {
 
 /// `r` as the page shows it, open as far as the page has it open.
 pub fn show<'a>(page: &WalletPage, key: ReportKey, r: Report<'a>) -> Element<'a, Message> {
+    show_in(false, page, key, r)
+}
+
+/// `r` as [`show`] draws it, or, when `compact`, as the phone layout does:
+/// the words beside the chevron are not drawn and the banner is padded less
+/// (docs/SCREENS.md, "Compact layout"). The title row acts on release, so a
+/// drag that starts on it scrolls the page (docs/DECISIONS.md D32 item 10
+/// (d)).
+pub fn show_in<'a>(
+    compact: bool,
+    page: &WalletPage,
+    key: ReportKey,
+    r: Report<'a>,
+) -> Element<'a, Message> {
     let level = page.open.get(&key).copied().unwrap_or_default();
     let (lead, ink, style): (Icon, _, fn(&iced::Theme) -> container::Style) = match r.tone {
         Tone::Warning => (Icon::Warning, color::WARNING, theme::callout_warning),
@@ -88,33 +103,35 @@ pub fn show<'a>(page: &WalletPage, key: ReportKey, r: Report<'a>) -> Element<'a,
         Tone::Note => color::TEXT_ON_ACCENT_SOFT,
     };
     let open = level != Level::Closed;
-    let banner = button(
-        row![
-            icon::icon(lead, 18.0, 2.0, ink),
-            t(r.title, ty::ROW_TITLE, color::TEXT_PRIMARY).width(Length::Fill),
-            t(
-                if open { "Less" } else { "What this means" },
-                ty::LINK_SMALL,
-                ink
-            ),
-            icon::icon(
-                if open {
-                    Icon::ChevronDown
-                } else {
-                    Icon::ChevronRight
-                },
-                16.0,
-                2.0,
-                ink
-            ),
-        ]
+    let mut title_row = row![
+        icon::icon(lead, 18.0, 2.0, ink),
+        t(r.title, ty::ROW_TITLE, color::TEXT_PRIMARY).width(Length::Fill),
+    ];
+    if !compact {
+        title_row = title_row.push(t(
+            if open { "Less" } else { "What this means" },
+            ty::LINK_SMALL,
+            ink,
+        ));
+    }
+    title_row = title_row.push(icon::icon(
+        if open {
+            Icon::ChevronDown
+        } else {
+            Icon::ChevronRight
+        },
+        16.0,
+        2.0,
+        ink,
+    ));
+    let banner = tap(title_row
         .spacing(sp::S10)
-        .align_y(Alignment::Center),
-    )
-    .padding(0)
-    .width(Length::Fill)
-    .style(theme::button(theme::Button::Bare))
-    .on_press(WalletMsg::Report(key, if open { Level::Closed } else { Level::Summary }).into());
+        .align_y(Alignment::Center)
+        .width(Length::Fill))
+    .on_tap(Message::Wallet(WalletMsg::Report(
+        key,
+        if open { Level::Closed } else { Level::Summary },
+    )));
     let mut card = column![banner].spacing(sp::S12);
     if open {
         let mut summary = column![].spacing(sp::S8);
@@ -126,6 +143,7 @@ pub fn show<'a>(page: &WalletPage, key: ReportKey, r: Report<'a>) -> Element<'a,
             let mut causes =
                 column![t(r.causes_title, ty::FORM_LABEL, color::TEXT_PRIMARY)].spacing(sp::S6);
             for cause in r.causes {
+                let cause = if compact { on_a_phone(cause) } else { cause };
                 causes = causes.push(
                     row![
                         t("•", ty::BODY_SMALL, ink),
@@ -153,7 +171,11 @@ pub fn show<'a>(page: &WalletPage, key: ReportKey, r: Report<'a>) -> Element<'a,
         }
     }
     container(card)
-        .padding([sp::S14, sp::S16])
+        .padding(if compact {
+            [sp::S12, sp::S14]
+        } else {
+            [sp::S14, sp::S16]
+        })
         .width(Length::Fill)
         .style(style)
         .into()
@@ -600,6 +622,23 @@ const READ_AGAIN: &str = "Read again in a while: an index that is starting answe
 const OTHER_INDEX: &str = "Another node's index may answer: Change node, in the sidebar or in \
                            Settings.";
 
+/// `cause` in a phone's words, where the desktop's would be wrong: a phone has
+/// no sidebar, its node is chosen from the node in the top bar or in Settings,
+/// and it is not a computer (docs/DECISIONS.md D32 item 10 (a) and (b)).
+fn on_a_phone(cause: &'static str) -> &'static str {
+    match cause {
+        OFFLINE => "This phone is offline.",
+        OTHER_NODE => {
+            "Another node may run one: choose it from the node in the top bar, or in Settings."
+        }
+        OTHER_INDEX => {
+            "Another node's index may answer: choose another node from the top bar, or in \
+             Settings."
+        }
+        _ => cause,
+    }
+}
+
 /// An explorer read the node did not serve: `what` it was for (W1, W10).
 pub fn explorer<'a>(refusal: &'a ExplorerRefusal, what: &str) -> Report<'a> {
     let r = match refusal.index {
@@ -767,6 +806,18 @@ mod tests {
     use tawara_wallet_core::view::Notice;
 
     #[test]
+    fn a_phone_is_not_told_of_a_sidebar_or_a_computer() {
+        for cause in [OFFLINE, OTHER_NODE, OTHER_INDEX] {
+            let phone = on_a_phone(cause);
+            assert!(
+                !phone.contains("sidebar") && !phone.to_lowercase().contains("computer"),
+                "{phone}"
+            );
+        }
+        assert_eq!(on_a_phone(NODE_DOWN), NODE_DOWN, "the rest are the same");
+    }
+
+    #[test]
     fn a_store_not_whole_is_summarized_with_the_causes_that_fit() {
         let wallet = sample::wallet_view();
         let r = notice(&wallet).expect("the sample store is not whole");
@@ -866,5 +917,41 @@ mod tests {
             vec!["first paragraph still the first".to_owned()]
         );
         assert_eq!(r.full, Some(long));
+    }
+
+    #[test]
+    fn tapping_a_banner_title_toggles_its_level() {
+        use crate::harness::{Driver, mouse_move, mouse_press, mouse_release};
+        let banner =
+            |page: &WalletPage| show(page, ReportKey::Notice, Report::new(Tone::Note, "A title"));
+        let tap_title = |page: &WalletPage| {
+            let mut driver = Driver::new(banner(page), (600, 200));
+            driver
+                .send(&[mouse_move(40.0, 20.0), mouse_press(), mouse_release()])
+                .0
+        };
+        let closed = WalletPage::default();
+        assert!(
+            matches!(
+                tap_title(&closed).as_slice(),
+                [Message::Wallet(WalletMsg::Report(
+                    ReportKey::Notice,
+                    Level::Summary
+                ))]
+            ),
+            "a closed banner opens to its summary"
+        );
+        let mut summary = WalletPage::default();
+        summary.open.insert(ReportKey::Notice, Level::Summary);
+        assert!(
+            matches!(
+                tap_title(&summary).as_slice(),
+                [Message::Wallet(WalletMsg::Report(
+                    ReportKey::Notice,
+                    Level::Closed
+                ))]
+            ),
+            "an open banner closes"
+        );
     }
 }
