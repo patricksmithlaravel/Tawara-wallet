@@ -27,6 +27,20 @@ use crate::ui::{self, Size, t, ty};
 /// is when the person gives none (`tawara_wallet_core::spend`).
 const FEE_FLOOR: u64 = 500;
 
+/// Whether Return in W9's field broadcasts the signed bytes (docs/DECISIONS.md
+/// D32 item 9). On the desktop it does, as it always has, since Return is how
+/// a keyboard submits there. On a phone the soft keyboard's Return is easy to
+/// press straight after a paste, and a broadcast cannot be undone, so Return
+/// does nothing there and the Submit button is the only way to send. The
+/// button sends the same message and is disabled while busy, as the field is.
+///
+/// An expression rather than a `cfg` attribute, so that both branches are
+/// compiled and type-checked on every target. The tests run on the desktop,
+/// so they give the phones' value to [`submit_form`] directly; that this
+/// constant is false on Android and iOS is checked by reading it and by the
+/// phone builds, not by a test.
+const RETURN_BROADCASTS: bool = !cfg!(any(target_os = "android", target_os = "ios"));
+
 /// W4 to W6.
 pub fn view<'a>(model: &'a Model, page: &'a WalletPage, s: &'a SendPage) -> Element<'a, Message> {
     match &s.stage {
@@ -671,6 +685,18 @@ pub fn submit<'a>(
     page: &'a WalletPage,
     s: &'a SubmitPage,
 ) -> Element<'a, Message> {
+    submit_form(model, page, s, RETURN_BROADCASTS)
+}
+
+/// W9 with Return's binding given, so that the tests, which run on the
+/// desktop, can draw the page as a phone has it (docs/DECISIONS.md D32 item
+/// 9).
+fn submit_form<'a>(
+    model: &'a Model,
+    page: &'a WalletPage,
+    s: &'a SubmitPage,
+    return_broadcasts: bool,
+) -> Element<'a, Message> {
     let mut hex = text_input("the hex the sent page saved or copied", &s.hex)
         .font(ty::MONO_SMALL.font)
         .size(ty::MONO_SMALL.size)
@@ -679,7 +705,7 @@ pub fn submit<'a>(
     if model.busy.is_none() {
         hex = hex
             .on_input(|v| WalletMsg::ArtifactHex(v).into())
-            .on_submit(WalletMsg::Submit.into());
+            .on_submit_maybe(return_broadcasts.then_some(WalletMsg::Submit.into()));
     }
     let mut body = vec![
         ui::card(
@@ -725,4 +751,119 @@ pub fn submit<'a>(
         Vec::new(),
         body,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use iced::advanced::clipboard::Null;
+    use iced::advanced::renderer::Headless;
+    use iced::advanced::widget::Operation;
+    use iced::advanced::widget::operation::{Outcome, focusable};
+    use iced::keyboard::key::{Named, NativeCode, Physical};
+    use iced::keyboard::{Key, Location, Modifiers};
+    use iced::{Event, keyboard, mouse};
+    use iced_runtime::user_interface::{Cache, UserInterface};
+    use tawara_wallet_core::preferences::Preferences;
+
+    use super::*;
+    use crate::app::Page;
+
+    /// A key press as the keyboard sends it, with the text it types, if any.
+    fn press(key: Key, text: Option<&str>) -> Event {
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: key.clone(),
+            modified_key: key,
+            physical_key: Physical::Unidentified(NativeCode::Unidentified),
+            location: Location::Standard,
+            modifiers: Modifiers::empty(),
+            text: text.map(Into::into),
+            repeat: false,
+        })
+    }
+
+    /// Draws W9 with `view`, gives its field Tab's first focus, then sends
+    /// `events` one at a time and returns the messages each produced.
+    fn drive(
+        view: impl for<'a> Fn(&'a Model, &'a WalletPage, &'a SubmitPage) -> Element<'a, Message>,
+        events: &[Event],
+    ) -> Vec<Vec<Message>> {
+        let model = Model::new(Preferences::default(), None);
+        let page = WalletPage {
+            page: Page::Submit(SubmitPage::default()),
+            error: None,
+            copied: None,
+            open: Default::default(),
+        };
+        let s = SubmitPage::default();
+        let mut renderer = iced::futures::executor::block_on(<iced::Renderer as Headless>::new(
+            iced::Font::DEFAULT,
+            iced::Pixels(16.0),
+            Some("tiny-skia"),
+        ))
+        .expect("the software renderer starts");
+        let mut ui = UserInterface::build(
+            view(&model, &page, &s),
+            iced::Size::new(1440.0, 900.0),
+            Cache::default(),
+            &mut renderer,
+        );
+        // Tab's first focus: the field is the page's first focusable widget,
+        // so the keys below reach it.
+        let mut next: Option<Box<dyn Operation>> = Some(Box::new(focusable::focus_next()));
+        while let Some(mut operation) = next.take() {
+            ui.operate(&renderer, operation.as_mut());
+            if let Outcome::Chain(chained) = operation.finish() {
+                next = Some(chained);
+            }
+        }
+        events
+            .iter()
+            .map(|event| {
+                let mut messages = Vec::new();
+                ui.update(
+                    std::slice::from_ref(event),
+                    mouse::Cursor::Unavailable,
+                    &mut renderer,
+                    &mut Null,
+                    &mut messages,
+                );
+                messages
+            })
+            .collect()
+    }
+
+    #[test]
+    fn return_in_the_signed_bytes_field_submits_on_the_host() {
+        // The page as the application draws it, so this pins the desktop's
+        // value of RETURN_BROADCASTS (docs/DECISIONS.md D32 item 9).
+        let sent = drive(submit, &[press(Key::Named(Named::Enter), None)]);
+        assert!(
+            matches!(sent.as_slice(), [m] if matches!(m.as_slice(), [Message::Wallet(WalletMsg::Submit)])),
+            "{sent:?}"
+        );
+    }
+
+    #[test]
+    fn return_in_the_signed_bytes_field_does_nothing_on_a_phone() {
+        // The page as a phone draws it (docs/DECISIONS.md D32 item 9). The
+        // letter after Return shows that the field had the focus and still
+        // took input, so the silence on Return is the binding's and not a
+        // missed focus.
+        let sent = drive(
+            |model, page, s| submit_form(model, page, s, false),
+            &[
+                press(Key::Named(Named::Enter), None),
+                press(Key::Character("a".into()), Some("a")),
+            ],
+        );
+        assert!(
+            matches!(
+                sent.as_slice(),
+                [on_return, on_letter]
+                    if on_return.is_empty()
+                        && matches!(on_letter.as_slice(), [Message::Wallet(WalletMsg::ArtifactHex(v))] if v == "a")
+            ),
+            "{sent:?}"
+        );
+    }
 }
