@@ -125,6 +125,14 @@ impl<'a, M: 'a> Driver<'a, M> {
         (counted.total, counted.focused)
     }
 
+    /// Where the focused widget is laid out, in the window as it would be
+    /// with nothing scrolled, if one is focused.
+    pub(crate) fn focused_bounds(&mut self) -> Option<Rectangle> {
+        let mut counted = Focusables::default();
+        self.ui.operate(&self.renderer, &mut counted);
+        counted.bounds
+    }
+
     /// The window as RGBA pixels, drawn the way the screenshot example draws
     /// a screen.
     pub(crate) fn draw(&mut self) -> Vec<u8> {
@@ -154,11 +162,12 @@ impl<'a, M: 'a> Driver<'a, M> {
 }
 
 /// The focusable widgets an interface holds, counted in the order Tab goes
-/// through them, and the index of the focused one.
+/// through them, and the index and the bounds of the focused one.
 #[derive(Default)]
 struct Focusables {
     total: usize,
     focused: Option<usize>,
+    bounds: Option<Rectangle>,
 }
 
 impl iced::advanced::widget::Operation for Focusables {
@@ -169,11 +178,12 @@ impl iced::advanced::widget::Operation for Focusables {
     fn focusable(
         &mut self,
         _: Option<&iced::advanced::widget::Id>,
-        _: Rectangle,
+        bounds: Rectangle,
         state: &mut dyn iced::advanced::widget::operation::Focusable,
     ) {
         if state.is_focused() {
             self.focused = Some(self.total);
+            self.bounds = Some(bounds);
         }
         self.total += 1;
     }

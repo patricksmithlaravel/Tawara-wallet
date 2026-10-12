@@ -25,6 +25,7 @@ pub mod fonts;
 pub mod history;
 pub mod host;
 pub mod icon;
+mod keyboard;
 pub mod screens;
 pub mod tap;
 pub mod theme;

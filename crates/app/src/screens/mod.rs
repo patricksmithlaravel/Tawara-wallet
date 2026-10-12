@@ -8,6 +8,7 @@ use iced::{Element, Length};
 use tawara_wallet_core::Activity;
 
 use crate::app::{Busy, Message, Model, Screen};
+use crate::keyboard;
 use crate::theme::{self, color, space};
 use crate::ui::{self, t, ty};
 
@@ -28,6 +29,18 @@ pub fn view(model: &Model) -> Element<'_, Message> {
             Screen::Wallet(page) => wallet::view(model, page),
             _ => first_run::view(model),
         }
+    };
+    // On a phone the page is wrapped once, inside the safe area's padding
+    // applied below. The wrapper draws nothing of its own, and it asks for the
+    // keyboard again on a tap of a focused field while the keyboard is hidden
+    // (docs/DECISIONS.md D32 item 10 (e)). The desktop has no soft keyboard,
+    // and a touch screen there would have the wrapper withhold a frame's
+    // request and end an input method's composition, so its page is not
+    // wrapped.
+    let page = if model.phone() {
+        keyboard::reshow(page, model.safe_area.keyboard > 0.0)
+    } else {
+        page
     };
     // A compact wallet's bars are the chrome colour, and the strips the system
     // covers above and below them take the same colour, so they read as part
@@ -156,7 +169,9 @@ mod tests {
 
     use super::*;
     use crate::app::{Page, UnlockForm, WalletPage};
-    use crate::harness::Driver;
+    use crate::harness::{Driver, finger_lift, finger_press, redraw};
+    use iced::time::Instant;
+    use iced_runtime::user_interface::State;
 
     /// The phone's safe area: the status bar above, the home indicator below.
     fn phone_area(keyboard: f32) -> SafeArea {
@@ -277,6 +292,38 @@ mod tests {
         phone.screen = form();
         let mut driver = Driver::new(view(&phone), (390, 844));
         assert_eq!(driver.focusable().0, 1, "the password alone");
+    }
+
+    #[test]
+    fn only_a_phone_withholds_a_frames_request_after_a_tap_on_the_focused_field() {
+        // The keyboard wrapper is a phone's alone (docs/DECISIONS.md D32 item 10
+        // (e)): on the desktop a tap on the focused field, from a touch screen,
+        // leaves the field's request for the input method as it was.
+        for phone in [true, false] {
+            let mut model = Model::new(Preferences::default(), None);
+            let size = if phone {
+                model.confine(PathBuf::from("/private"));
+                model.width = 390.0;
+                (390, 844)
+            } else {
+                (1440, 900)
+            };
+            model.screen = Screen::Unlock(UnlockForm::default());
+            let mut driver = Driver::new(view(&model), size);
+            driver.focus_next();
+            let at = driver.focused_bounds().expect("a field has the focus");
+            let (x, y) = (at.center_x(), at.center_y());
+            driver.send(&[finger_press(1, x, y), finger_lift(1, x, y)]);
+            let (_, _, state) = driver.send(&[redraw(Instant::now())]);
+            let State::Updated { input_method, .. } = state else {
+                panic!("the interface was outdated, so it asked for nothing");
+            };
+            assert_eq!(
+                input_method.is_enabled(),
+                !phone,
+                "phone {phone}: the frame after the tap"
+            );
+        }
     }
 
     #[test]
