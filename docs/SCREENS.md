@@ -79,6 +79,74 @@ The sidebar of 02-08: the "Tawara" wordmark, the six items, and on 02 and
 | E4 | **Transaction**: one transaction, whole | 04 detail | d | `Find` | From E1's search by its id (the node's index, first; D31, item 3), or opened from a block, a tag's history or the queue. Its block and confirmations, or that it waits in the queue; its time; who it left and who it paid, with their references; the fee; and how what it lists was counted (the index's source at its gross amount and the change as a destination, or a block's or the queue's source net of the change). The index's page for it, when it came from there, is a banner (D28). |
 | E5 | **Mempool**: every transaction waiting | 06 "View all pending" | d | `Pending` | The node's whole queue, every transaction read whole up to the command line's most for one read (100), the rest counted; one that left the queue before it was read says so. Each row: its id, who it left, how many destinations, what it sends and its fee, "Yours" on one from an account in this store; each opens whole (E4). The library's page for the queue is a banner (D28). Read when the page opens and on "Read again" (D31, items 6 and 7). |
 
+## Compact layout (phones)
+
+The layout is chosen by the window's logical width: compact below 600 logical
+pixels, and the desktop's layouts (D27, item 9) from there up. A phone starts
+at 360 wide until the window reports its size. The narrowest width supported
+is 360: at it nothing is cut off and nothing scrolls sideways. The safe area
+the system reports (the status bar, the home indicator and the on-screen
+keyboard) pads the root of every layout, so a phone held sideways, which is
+wider than 600, keeps its notch clear; while an iPhone reports no inset at
+all, the root is padded 64 above and 48 below. When the keyboard comes up,
+the page scrolls the focused field above it (D32 item 10 (b)). A phone held
+sideways, 600 to 1023 wide, draws the desktop's medium layout, which is not
+checked at those widths.
+
+The wallet's shell in the compact layout (`crates/app/src/screens/wallet.rs`):
+
+- a bar at the top, 56 logical pixels tall: the wordmark, the node chip (the
+  node's dot and its chain tip, or a dash, which goes to the node screen while
+  the wallet is idle), and Lock;
+- the page between 16-pixel margins, scrolled as one page;
+- a bar at the foot, 56 pixels tall, with the six items of the sidebar, each
+  an icon over its name, sharing the width; it is not drawn while the keyboard
+  shows;
+- a page's actions sit beneath its title and wrap onto the next line when they
+  do not fit (the page decides which: W1 drops Receive and Send, since they are
+  tabs);
+- there is no back stack: the sub-pages (W3, W7, W8, W9, W12, E2 to E5) are
+  left by a tab, by their own links, or by the crumbs, as on the desktop, and
+  Android's Back keeps its meaning (`Host::back`).
+
+Every screen has a compact form. Tables become stacked rows, cards keep 16
+pixels of padding, and a long token (a destination, a hash, an id, an amount)
+wraps at its glyphs. Acting on a row or a card is by release, so a drag that
+starts on it scrolls the list (D32 item 10 (d)). A drag that starts on a
+button or a field does not scroll the page, since the fork's button and
+field capture the press; on the forms a drag starts on a label or a gap.
+Beside each field a person pastes into (a destination, the signed bytes, the
+recovery phrase) stands a Paste button, which replaces the field's text with
+the clipboard's (D32 item 10 (g)).
+
+| screens | compact form |
+|---|---|
+| S1 to S8 | no brand panel: the wordmark over "A wallet for Mochimo" stands in its place; the node footer's URL is on a line of its own; S1's cards act on release, and their badge wraps under the title when it does not fit; S4's twelve rows are two columns; on a phone there is no Folder field on S3, S6 or S7, and the words say "phone" for "computer"; S6's recovery phrase has a Paste button beside it, and a pasted phrase's line breaks become spaces |
+| Stopped | the card fills the width between 16-pixel margins; each spend's buttons wrap beneath its name |
+| W1 | Refresh is the only header control; accounts are stacked items that open the account, each with its destination, balance and next key; recent rows keep their amount and state on the right |
+| W2 | the account choice is stacked; Copy sits under the destination |
+| W3 | the index field and "Discover accounts" take the full width; found rows are stacked, with the full destination under each |
+| W4, W8 | one block per destination: the destination takes the full width less its Paste button, and the amount and the reference sit side by side beneath it; the fee and the block-to-live stand one over the other; the steps are stacked |
+| W5 | one block per destination; the summary follows |
+| W6 | the artifact buttons and the "Back to the wallet" and "Open the account" pair wrap; on a phone Save artifact opens the share sheet, and the page says the spend still counts as not saved (D32 item 10 (i)) |
+| W7 | the state panel's buttons wrap |
+| W9 | the signed-bytes field takes the full width less its Paste button; Submit and its helper stack |
+| W10 | the four filters share one line and the search field sits beneath them; rows are two lines (title and amount, then date and account, then the detail); the chosen transaction's detail opens under its row |
+| W11 | accounts are stacked items with their status; each control sits under its label; the auto-lock periods keep their own widths and wrap onto a second line, since five that share 328 pixels cannot hold their labels on one line; the two units share the width |
+| W12 | each head row is stacked; labels sit over the index fields |
+| E1 | the tiles are two to a row; the latest blocks are two-line rows |
+| E2 | the haiku panel grows to its text; facts are a label over a value; transactions are two-line rows |
+| E3 | the forms are a label over a value; the history is two-line rows |
+| E4 | facts are a label over a value |
+| E5 | rows are two lines |
+
+The phone's images are committed beside the desktop's, as `phone-<name>.png` at
+390 by 844 logical pixels, with the long pages again at their end
+(`phone-<name>-end.png`) and two with the keyboard up, the field typed into
+focused and scrolled above it (D32 item 10 (c)). The
+Linux job checks them as it checks the desktop's, and
+`screenshots -- --fit` lays every one out at 360.
+
 ## The worker's own texts (D25, D26 item 3, D27 item 12)
 
 | text | where it is shown |

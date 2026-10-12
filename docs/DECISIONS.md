@@ -1884,6 +1884,212 @@ on the three conditions D18 left open.
    `setAlwaysFinish`, whose binder transaction number differs between Android
    15 builds. The check `exit.runtime` confirms that the setting took.*
 
+10. **Phase 4 (b): the phone layout and its glue. Decided under the owner's
+   delegation, 2026-10-12.** On 2026-10-12 the owner asked that the questions
+   phase 4 (b)'s studies raised be decided without waiting for them, and that
+   the work proceed. The decisions below were made that way; each is marked so
+   and gives the reasons it rests on. Two belong to earlier items and are
+   recorded there: the emulator repeat of item 9 (j), and the amendment to
+   item 8.
+
+   **(a) No store folder on a phone (decided under the owner's delegation,
+   2026-10-12).** A phone draws no folder field on S3, S6 or S7. The store
+   always lives in the hosted default folder, `keystore/` inside
+   `Host::private_dir` (item 7), the only place the shells protect:
+   `no_backup/` on Android, `NSFileProtectionComplete` and the backup
+   exclusion on iOS, and mode `0700` on both. A folder remembered from an
+   earlier run is not offered on a phone unless it is that one. Item 7's check
+   that a store's folder is strictly inside the private folder stays, as a
+   second guard; its refusal no longer asks the person to choose a folder,
+   since there is no field to choose one with. Where the first-run screens say
+   "this computer", a phone says "this phone". The desktop is unchanged.
+   Reason: a field whose only accepted values are the default folder and the
+   folders under it offers a choice that protects nothing and can only be
+   refused.
+
+   **(b) The compact layout (decided under the owner's delegation,
+   2026-10-12).** The layout is chosen by the window's logical width: compact
+   below 600 logical pixels, and the expanded and medium layouts of D27 item 9
+   from there up. The desktop window's minimum width is 1024, so a desktop
+   never sees it. The narrowest width supported is 360 logical pixels: at 360
+   nothing is cut off and nothing scrolls sideways. The screenshot check lays
+   every phone screen out at 360 and reports anything laid out past the edge;
+   since iced fits each child into the room its parent gives it, a squeezed
+   control or words drawn past their own box are not seen that way, so each
+   screen's tests check the rows that could be squeezed, and the images are
+   looked at drawn 360 wide as well. Every screen has a compact
+   form (docs/SCREENS.md, "Compact layout"): no sidebar, a bar at the top with
+   the wordmark, the node's tip and Lock, the six items in a bar at the
+   bottom, 16-pixel margins, tables turned into stacked rows, and controls
+   that do not fit on one line wrapped onto the next; the first-run screens
+   show the wordmark above the form in place of the brand panel. A phone
+   starts at 360 wide until the window reports its size, so its first frame
+   is already compact. While the keyboard shows, the bottom bar is not
+   drawn. Reasons: every phone held upright is below 600, and 360 is the
+   narrowest common Android width.
+
+   The decision as given padded the root by the fork's safe area
+   (`iced::mobile::safe_area`, the keyboard included) in the compact layout
+   alone. It pads the root in every layout instead, a widening made under
+   the same delegation on 2026-10-12, for the owner's approval with the
+   rest: a phone held sideways is wider than 600 and still has its notch,
+   and the safe area is zero on the desktop, so the desktop draws as before.
+   Two more parts of the safe area's handling, decided the same way:
+
+   - When the keyboard comes up or grows, the page is scrolled, by no more
+     than it must, until the focused field stands above the keyboard with 16
+     pixels of room (`screens::reveal_focused`). The root is already padded
+     up to the keyboard's top, but iced's field does not scroll the page it
+     sits in, so a field low on a long form (S6's recovery phrase) stayed
+     under the keyboard.
+   - While an iPhone's shell reports no inset at all, the root is padded by
+     what the fork's template keeps until the safe area arrives, 64 above and
+     48 below (the fork's `docs/icm/DESIGN.md`, F6), the bottom raised to the
+     keyboard's top while it shows. An iPhone held upright always has at
+     least its 20-point status bar, and an iPhone SE (3rd generation, iOS
+     18.3) on the simulator was drawn with no top inset on two cold launches
+     (item (f)). What a shell reports otherwise is used as it is, and
+     Android, where a window not drawn edge to edge can report zero, is not
+     changed.
+
+   Not checked: widths from 600 to 1023, a phone held sideways, draw the
+   medium layout, which D27 item 9 designs for 1024 and up. Drawn at 700 for
+   the review of this change, W4's table squeezes its fields to their first
+   characters and S1's footer link wraps onto two lines. No test covers that
+   range. The owner's narrowest width, 360, is a phone held upright; a
+   layout for phones held sideways is left for a later change.
+
+   **(c) Phone screenshots (decided under the owner's delegation,
+   2026-10-12).** Every screen drawn for the desktop, except the `narrow-*`
+   images of the desktop's smallest window, is also drawn at 390 × 844 logical
+   pixels at a scale of 1, with a safe area of 47 at the top and 34 at the
+   bottom (an iPhone of that size), and committed as `phone-<name>.png` beside
+   the desktop images; the long pages are drawn a second time scrolled to
+   their end (`-end`), and two with a keyboard showing (`-keyboard`). The same
+   Linux job checks them pixel for pixel (D27 item 1). The desktop images do
+   not change. They are drawn on this Mac in an `ubuntu:24.04` linux/amd64
+   container that runs CI's own command, and only once that container has
+   drawn the 55 committed desktop images byte for byte. Had it not, the
+   phone images would have been taken from what CI's check prints, as
+   base64, for an image that differs or is missing
+   (`TAWARA_SCREENSHOTS_PRINT`). On 2026-10-12 the container
+   (`ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55`,
+   x86_64 with AVX2 and FMA, rustc 1.98.0) drew the 55 byte for byte, twice.
+   The phone images are the proposal D27 item 9 asked for: the owner
+   approves the compact layout by approving them.
+
+   **(d) Touch (decided under the owner's delegation, 2026-10-12).** List
+   rows and radio or choice items act on release, only if the pointer moved
+   less than 10 logical pixels since the press and is still inside, and they
+   do not capture the press, so a drag that starts on one scrolls the list
+   (`tawara_app::tap`). This covers the whole-row controls (the activity rows,
+   the explorer's queue rows, W1's account rows on a phone), the account
+   choice and S1's cards, the segmented controls and the report banners' title
+   rows. It applies on every platform: a desktop click is a press and release
+   in place, so nothing visible changes, and the desktop images are the
+   check. Buttons, links, checkboxes and the navigation keep iced's own
+   behaviour: none of them is a row of a list, and the navigation is outside
+   any scrolling. Reasons: iced's button captures the press, which stops a
+   scrollable's drag (the fork's `docs/agents/limitations.md`), and acts on any
+   release over it, however far the finger travelled.
+
+   A new press takes the place of the one a row waits on, so a press whose
+   release never reached it does not leave the row deaf to the next; and a
+   press under a pointer that has not moved since the row was drawn is taken
+   where the pointer is.
+
+   What is left as it is: a drag that starts on a button or on a text field
+   does not scroll the page, because the fork's button and text input
+   capture the finger's press (`widget/src/button.rs`,
+   `widget/src/text_input.rs`). On the compact forms (S3, S6, S7, W4, W8,
+   W9), where fields and buttons fill much of the page, a drag starts on a
+   label, a gap between fields or a card's padding, which the forms keep.
+   Accepted under the owner's delegation, 2026-10-12, since changing it is
+   the fork's; not yet checked on a device.
+
+   **(e) The keyboard shown again (decided under the owner's delegation,
+   2026-10-12).** A tap on the text field that already has focus shows the
+   soft keyboard again. iced's shell asks the platform for the keyboard only
+   when no field asked for it on the frame before, so after the person hides
+   it (Android's Back) the focused field goes on asking and the shell asks for
+   nothing. In `tawara-app`, a wrapper at the root of a phone's window
+   watches for a touch that leaves a field focused when one already was,
+   while the safe area reports no keyboard, and withholds that frame's
+   request; the shell lets the keyboard go and asks for it again on the next
+   frame. Nothing in the fork changes. The field keeps its focus, its caret
+   and its text, and no message passes through the application. The
+   desktop's window is not wrapped: it has no soft keyboard, and on a touch
+   screen the withheld frame would end an input method's composition.
+
+   **(f) The first gesture after launch (decided under the owner's
+   delegation, 2026-10-12).** It is investigated on the iOS simulator, on
+   the builds named below. If the cause is Tawara's, it is fixed here; if it is
+   the fork's, it is recorded here and left for a change to the fork, which
+   needs the owner's say-so.
+
+   **(g) Paste buttons (decided under the owner's delegation, 2026-10-12).**
+   In the compact layout a Paste button stands beside each destination field
+   (W4, W8), the signed-bytes field (W9) and the recovery-phrase field (S6).
+   It reads the platform's clipboard with `iced::clipboard::read`, only on that
+   tap, and what it read replaces what the field held: for a destination or
+   the signed bytes, with the control characters left out, as iced's own
+   paste leaves them out; for the phrase, cleaned as (h) says. An empty or
+   refused read, or one of whitespace alone, changes nothing, and nothing is
+   submitted. The desktop keeps keyboard paste and shows no button
+   (`tawara_app::paste`). Reasons: on a phone iced's fields have no edit
+   menu and paste is reachable only from a hardware keyboard (item 9 (g)),
+   while a destination or a saved transaction is pasted far more often than
+   typed.
+
+   **(h) Pasted recovery phrases (decided under the owner's delegation,
+   2026-10-12).** In the restore field, line breaks, tabs and runs of spaces
+   become single spaces and the text is trimmed, before validation, for the
+   Paste button and keyboard paste alike. iced's `text_input` drops every
+   control character before any hook sees the paste (item 9 (g)), so the
+   restore field alone is wrapped: the wrapper hands the field a clipboard
+   whose read returns the cleaned text, and iced inserts that at the caret as
+   it would anything pasted. The whole phrase is cleaned the same way before
+   it is sent. Typed text is not changed. Reason: a phrase is usually copied
+   from a list, one word per line, and iced would join the words into one.
+
+   **(i) Saving a signed transaction on a phone (decided under the owner's
+   delegation, 2026-10-12).** `tawara-app` asks its `Host` to share the signed
+   transaction (`Host::share`, given a file name and the text). On the desktop
+   nothing changes: Save artifact writes the file to the Downloads folder, as
+   D27 item 5 says. On a phone, where there is no Downloads folder, Save
+   artifact opens the system's share sheet with the same content as the
+   desktop's file, as text: the hex and a line break. iOS uses
+   `UIActivityViewController`; Android uses `ACTION_SEND` (`text/plain`)
+   through `Intent.createChooser`, with the file's name as the subject. The
+   page then says the sheet was opened and that Tawara cannot tell what was
+   done with it, so the spend still counts as not saved and its banner stays
+   until it settles. `Host::share` is a field every shell must fill, so a
+   shell moved to a `tawara-app` that has it opens the sheet. Reasons: the
+   share sheet is how a phone hands text to
+   Files, a note or a message; a file on Android would need a `FileProvider`,
+   which is Java (D4), or MediaStore's Downloads, which starts at API 29 while
+   Tawara's minimum is 26.
+
+   **(j) Clipboard protection (decided under the owner's delegation,
+   2026-10-12).** Tawara-mobile's copy path marks every copy as sensitive on
+   Android (`ClipDescription` extras `android.content.extra.IS_SENSITIVE` set
+   to true, which the system reads from API 33 and which is harmless below)
+   and as local-only with a two-minute expiry on iOS (`UIPasteboard`
+   `setItems:options:` with `UIPasteboardOptionLocalOnly` and
+   `UIPasteboardOptionExpirationDate`). Two minutes is long enough to paste
+   into another app and short enough that a copied destination or transaction
+   does not linger. This is item 9 (d)'s protection, made exact.
+
+   **(k) Android target API 36 after Tawara-mobile #4 and #5 (decided under
+   the owner's delegation, 2026-10-12).** Item 9 (i)'s PR B is made after #4
+   and #5 merge, so that the three do not edit `platform/android/tawara.sh`
+   at once. It names the 20 configChanges, `0xd800ffff`.
+
+   **(l) CI watched on the open wallet pull request (decided under the owner's
+   delegation, 2026-10-12).** Automatic fixing of CI failures is on for the
+   open wallet pull request; a red run is fixed by a commit added to its
+   branch, never by a force-push.
+
 ### D33. The mobile wallet in its own repository
 
 **owner, 2026-10-06.** Until now the plan kept the Android and iOS entry

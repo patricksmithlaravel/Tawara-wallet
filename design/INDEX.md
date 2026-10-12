@@ -71,3 +71,8 @@ cropped or rescaled.
 - **Screenshots.** `design/screenshots/` holds the application's own
   screens, drawn headlessly at these sizes (docs/DECISIONS.md D27, item 1),
   to compare side by side with the renderings.
+  `design/screenshots/` also holds `phone-*.png`: each screen at 390 by 844
+  logical pixels with a safe area of 47 at the top and 34 at the bottom, an
+  iPhone's size (docs/DECISIONS.md D32 item 10 (c)). They are proposed for
+  the owner's approval: by approving these images, the owner approves the
+  compact layout.
