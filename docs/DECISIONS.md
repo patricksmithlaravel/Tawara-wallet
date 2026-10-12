@@ -1868,6 +1868,13 @@ on the three conditions D18 left open.
    unchanged. A test that sends the app to the background and kills it from
    Recents cannot settle this, as the lock already runs by then.
 
+   *Added (decided under the owner's delegation, 2026-10-12; Tawara-mobile#4):
+   the repeat with "Don't keep activities" on is made by writing the setting
+   and rebooting the emulator. ActivityManagerService reads the setting into
+   its runtime field only at boot, and no shell command calls
+   `setAlwaysFinish`, whose binder transaction number differs between Android
+   15 builds. The check `exit.runtime` confirms that the setting took.*
+
 ### D33. The mobile wallet in its own repository
 
 **owner, 2026-10-06.** Until now the plan kept the Android and iOS entry
