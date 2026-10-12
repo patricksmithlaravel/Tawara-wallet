@@ -1625,14 +1625,14 @@ on the three conditions D18 left open.
    When winit gains its own scene support, the fork's commit is dropped
    and the manifest kept or replaced as winit's documentation says.
 
-9. **The move to the fork's releases: owner, 2026-10-12.** The owner
-   decided that Tawara moves from the frozen fork branch
+9. **The move to the fork's releases: owner, 2026-10-11.** The owner
+   decided on 2026-10-11 that Tawara moves from the frozen fork branch
    `tawara/0.14-mobile`, at `71f00e8` (the pin since item 8), to the
    releases of the reworked fork, `patricksmithlaravel/iced_mobile`. On
-   2026-10-12 the owner accepted the ten decisions below, each marked with
-   that date. They supersede what D6, D12, item 1 and D33 say about iced's
-   source and pin; those entries keep their wording until the move corrects
-   them.
+   2026-10-12 the owner accepted the ten recommendations below, each marked
+   'owner, 2026-10-12'. They supersede what D6, D12, item 1 and D33 say
+   about iced's source and pin; those entries keep their wording until the
+   move corrects them.
 
    **Facts the decisions rest on.** On the arm64 Mac that ran the checks, 37
    of the 55 screens differ from their committed images by 3 pixels each, at
@@ -1798,10 +1798,15 @@ on the three conditions D18 left open.
    2026-11-01 if an existing listing would otherwise need the extension:
    `TARGET_API=36` in `platform/android/tawara.sh`, the compile jar pinned to
    `platforms/android-36` rather than the newest of 35 to 39, the android-36
-   emulator image, and `assetsPaths` added to `configChanges` (19 names,
-   `0xd000ffff`). `assetsPaths` is not a Play requirement, but the fork's
-   reason for it was measured on API 36 emulators. PR B is checked with
-   `aapt2 dump badging` and `xmltree`. Google Play requires target API 36 for
+   emulator image, and `assetsPaths` and `resourcesUnused` added to
+   `configChanges`. That makes the API 36 set of 20 names, `0xd800ffff`: the
+   18 names of PR A, plus `assetsPaths` (`0x80000000`) and `resourcesUnused`
+   (`0x08000000`), both new at API 36 in the platform's
+   `data/api-versions.xml`. aapt2 2.20 gives `0x5000ffff` for the 18 names and
+   `0xd800ffff` for the 20 against the android-36 `android.jar`. `assetsPaths`
+   is not a Play requirement, but the fork's reason for it was measured on API
+   36 emulators. PR B is checked with `aapt2 dump badging` and `xmltree`, which
+   must read `0xd800ffff`. Google Play requires target API 36 for
    new apps and updates from 2026-08-31, with an extension to 2026-11-01 on
    request; the rule and the extension are to be confirmed in Play Console
    before PR B. Target 36 keeps Tawara's Back opt-out
