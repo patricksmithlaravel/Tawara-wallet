@@ -3,9 +3,12 @@
 mod first_run;
 mod wallet;
 
+use iced::advanced::widget::operation::scrollable::{AbsoluteOffset, scroll_to};
+use iced::advanced::widget::operation::{Focusable, Outcome, Scrollable};
+use iced::advanced::widget::{Id, Operation};
 use iced::mobile::SafeArea;
 use iced::widget::{column, container, progress_bar, scrollable};
-use iced::{Element, Length, Padding};
+use iced::{Element, Length, Padding, Rectangle, Vector};
 use tawara_wallet_core::Activity;
 
 use crate::app::{Busy, Message, Model, Screen};
@@ -46,6 +49,83 @@ fn root_padding(area: SafeArea, iphone: bool) -> Padding {
         UNREPORTED.bottom(UNREPORTED.bottom.max(area.keyboard))
     } else {
         area.padding(0.0)
+    }
+}
+
+/// Scrolls the page so that the focused field stands clear of the keyboard
+/// (docs/DECISIONS.md D32 item 10 (b)). The root is padded up to the
+/// keyboard's top, so the page's scrollable already ends there; this moves
+/// the page, by no more than it must, until the field lies inside it with
+/// [`space::S16`] of room above and below, its top kept in view when it is
+/// taller than the room. Nothing moves when the field is already in view,
+/// or when no field of the page has the focus. iced's own field does not
+/// scroll the page it sits in, and the fork leaves that to the application.
+pub fn reveal_focused() -> impl Operation + 'static {
+    Reveal::default()
+}
+
+/// [`reveal_focused`]: the page's scrollable as it was laid out, then the
+/// offset the focused field asks for, which a scroll of the page applies.
+#[derive(Default)]
+struct Reveal {
+    page: Option<(Rectangle, Rectangle, Vector)>,
+    to: Option<f32>,
+}
+
+impl Operation for Reveal {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+        operate(self);
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&Id>,
+        bounds: Rectangle,
+        content: Rectangle,
+        translation: Vector,
+        _state: &mut dyn Scrollable,
+    ) {
+        if id == Some(&page_id()) {
+            self.page = Some((bounds, content, translation));
+        }
+    }
+
+    fn focusable(&mut self, _id: Option<&Id>, field: Rectangle, state: &mut dyn Focusable) {
+        let Some((bounds, content, translation)) = self.page else {
+            return;
+        };
+        if !state.is_focused() {
+            return;
+        }
+        // The field's top and bottom within the page, and the part of the page
+        // in view, from its offset.
+        let top = field.y - content.y - space::S16;
+        let bottom = field.y + field.height - content.y + space::S16;
+        let shown = translation.y;
+        let mut to = shown;
+        if bottom > to + bounds.height {
+            to = bottom - bounds.height;
+        }
+        if top < to {
+            to = top;
+        }
+        let to = to.max(0.0);
+        if (to - shown).abs() > 0.5 {
+            self.to = Some(to);
+        }
+    }
+
+    fn finish(&self) -> Outcome<()> {
+        match self.to {
+            Some(y) => Outcome::Chain(Box::new(scroll_to(
+                page_id(),
+                AbsoluteOffset {
+                    x: None,
+                    y: Some(y),
+                },
+            ))),
+            None => Outcome::None,
+        }
     }
 }
 
@@ -204,6 +284,7 @@ fn stopped(model: &Model, panicked: bool) -> Element<'_, Message> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
 
     use iced::advanced::layout;
     use iced::advanced::widget::Tree;
@@ -213,7 +294,7 @@ mod tests {
     use tawara_wallet_core::sample;
 
     use super::*;
-    use crate::app::{Page, UnlockForm, WalletPage};
+    use crate::app::{Page, RestoreForm, UnlockForm, WalletPage};
     use crate::harness::{Driver, finger_lift, finger_press, redraw};
     use iced::time::Instant;
     use iced_runtime::user_interface::State;
@@ -316,6 +397,72 @@ mod tests {
             boxes(&phone_wallet(336.0)).len() < boxes(&phone_wallet(0.0)).len(),
             "the tab bar's nodes are not laid out while the keyboard shows"
         );
+    }
+
+    /// Where the page shows the focused field, in the window: its laid-out
+    /// bounds less the page's scroll.
+    fn focused_in_view(driver: &mut Driver<'_, Message>) -> Rectangle {
+        /// The page's scroll, kept where the test reads it once the operation
+        /// has run.
+        struct Scroll(Arc<Mutex<Option<Vector>>>);
+        impl Operation for Scroll {
+            fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+                operate(self);
+            }
+            fn scrollable(
+                &mut self,
+                id: Option<&Id>,
+                _: Rectangle,
+                _: Rectangle,
+                translation: Vector,
+                _: &mut dyn Scrollable,
+            ) {
+                if id == Some(&page_id()) {
+                    *self.0.lock().expect("not poisoned") = Some(translation);
+                }
+            }
+        }
+        let field = driver.focused_bounds().expect("a field has the focus");
+        let scroll = Arc::new(Mutex::new(None));
+        driver.operate(Box::new(Scroll(Arc::clone(&scroll))));
+        let translation = scroll
+            .lock()
+            .expect("not poisoned")
+            .expect("the page scrolls");
+        Rectangle {
+            y: field.y - translation.y,
+            ..field
+        }
+    }
+
+    #[test]
+    fn with_the_keyboard_up_the_focused_phrase_field_is_scrolled_above_it() {
+        // S6 on a phone of 390 by 844 with a keyboard of 336: the keyboard's
+        // top is at 508, and the phrase field, the form's last, lies below it
+        // until the page is scrolled (docs/DECISIONS.md D32 item 10 (b)).
+        let mut model = Model::new(Preferences::default(), None);
+        model.confine(PathBuf::from("/private"));
+        model.width = 390.0;
+        model.safe_area = phone_area(336.0);
+        model.screen = Screen::Restore(RestoreForm::default());
+        let mut driver = Driver::new(view(&model), (390, 844));
+        driver.operate(Box::new(
+            iced::advanced::widget::operation::focusable::focus(phrase_id()),
+        ));
+        let before = focused_in_view(&mut driver);
+        assert!(
+            before.y + before.height > 508.0,
+            "the field starts under the keyboard: {before:?}"
+        );
+        driver.operate(Box::new(reveal_focused()));
+        let after = focused_in_view(&mut driver);
+        assert!(
+            after.y >= 47.0 && after.y + after.height + space::S16 <= 508.0 + 0.5,
+            "the field is in view above the keyboard: {after:?}"
+        );
+        // Once in view, a second reveal moves nothing.
+        driver.operate(Box::new(reveal_focused()));
+        assert_eq!(focused_in_view(&mut driver), after);
     }
 
     #[test]

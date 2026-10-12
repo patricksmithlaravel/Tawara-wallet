@@ -15,7 +15,9 @@
 //! `<name>.png`. The phone's are `phone-<name>.png` at 390 by 844 logical
 //! pixels with a safe area of 47 at the top and 34 at the bottom, the long
 //! pages again scrolled to their end (`phone-<name>-end.png`), and two with
-//! the keyboard up (`phone-<name>-keyboard.png`): 63 in all. Every piece of
+//! the keyboard up (`phone-<name>-keyboard.png`), the field typed into
+//! focused and the page scrolled to it as the keyboard's coming up scrolls
+//! it: 63 in all. Every piece of
 //! text names a bundled face (`tawara_app::fonts`), so the pixels do not
 //! depend on the fonts a machine has installed.
 //!
@@ -50,8 +52,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use iced::advanced::renderer::{self, Headless};
-use iced::advanced::widget::Tree;
 use iced::advanced::widget::operation::scrollable::{self, RelativeOffset};
+use iced::advanced::widget::operation::{Outcome, focusable};
+use iced::advanced::widget::{Id, Operation, Tree};
 use iced::advanced::{clipboard, graphics, layout};
 use iced::mouse::Cursor;
 use iced::theme::Base;
@@ -759,12 +762,14 @@ fn phone(mut model: Model, keyboard: f32) -> Model {
 }
 
 /// One image to draw: its name (its file's), the window it is drawn in, the
-/// model it draws, and whether it is drawn scrolled to the end of its page.
+/// model it draws, whether it is drawn scrolled to the end of its page, and
+/// the field given the focus, if any.
 struct Image {
     name: String,
     size: (u32, u32),
     model: Model,
     to_end: bool,
+    focus: Option<Id>,
 }
 
 /// Every desktop image, as the screens are drawn in their windows.
@@ -776,6 +781,7 @@ fn desktop() -> Vec<Image> {
             size,
             model,
             to_end: false,
+            focus: None,
         })
         .collect()
 }
@@ -802,6 +808,7 @@ fn phones(width: u32) -> Vec<Image> {
             size,
             model: phone(model, 0.0),
             to_end: false,
+            focus: None,
         })
         .collect();
     for name in PHONE_ENDS {
@@ -810,14 +817,21 @@ fn phones(width: u32) -> Vec<Image> {
             size,
             model: phone(sample_named(name), 0.0),
             to_end: true,
+            focus: None,
         });
     }
-    for name in ["s6-restore", "w4-send"] {
+    // The field the keyboard came up for: the recovery phrase, and the first
+    // destination.
+    for (name, field) in [
+        ("s6-restore", screens::phrase_id()),
+        ("w4-send", screens::destination_id(0)),
+    ] {
         out.push(Image {
             name: format!("phone-{name}-keyboard"),
             size,
             model: phone(sample_named(name), KEYBOARD),
             to_end: false,
+            focus: Some(field),
         });
     }
     out
@@ -832,8 +846,17 @@ fn selected(name: &str, only: &[String], except: &[String]) -> bool {
 }
 
 /// The pixels of `model`'s window at `size`, as RGBA. `to_end` scrolls the
-/// page to its end first, as a person scrolls it.
-fn draw(renderer: &mut iced::Renderer, model: &Model, size: (u32, u32), to_end: bool) -> Vec<u8> {
+/// page to its end first, as a person scrolls it; `focus` gives that field the
+/// focus, and the page is scrolled to it as the application scrolls it when
+/// the keyboard comes up (`screens::reveal_focused`). The frame's instant is
+/// taken before the focus, so the caret is drawn on every run.
+fn draw(
+    renderer: &mut iced::Renderer,
+    model: &Model,
+    size: (u32, u32),
+    to_end: bool,
+    focus: Option<Id>,
+) -> Vec<u8> {
     let theme = theme::theme();
     #[allow(clippy::cast_precision_loss)]
     let bounds = Size::new(size.0 as f32, size.1 as f32);
@@ -849,6 +872,24 @@ fn draw(renderer: &mut iced::Renderer, model: &Model, size: (u32, u32), to_end: 
         &mut clipboard::Null,
         &mut messages,
     );
+    if let Some(field) = focus {
+        ui.operate(renderer, &mut focusable::focus::<()>(field));
+        let mut operation: Box<dyn Operation> = Box::new(screens::reveal_focused());
+        loop {
+            ui.operate(renderer, operation.as_mut());
+            match operation.finish() {
+                Outcome::Chain(next) => operation = next,
+                _ => break,
+            }
+        }
+        let _ = ui.update(
+            &frame,
+            Cursor::Unavailable,
+            renderer,
+            &mut clipboard::Null,
+            &mut messages,
+        );
+    }
     if to_end {
         let mut snap = scrollable::snap_to(
             screens::page_id(),
@@ -1086,13 +1127,14 @@ fn main() -> ExitCode {
             size,
             mut model,
             to_end,
+            focus,
         } = image;
         // The window the screen is drawn in is this wide (D27, item 9).
         #[allow(clippy::cast_precision_loss)]
         {
             model.width = size.0 as f32;
         }
-        let rgba = draw(&mut renderer, &model, size, to_end);
+        let rgba = draw(&mut renderer, &model, size, to_end, focus);
         let path = dir.join(format!("{name}.png"));
         if options.check {
             match decode(&path) {

@@ -125,7 +125,7 @@ impl<'a, M: 'a> Driver<'a, M> {
     }
 
     /// Runs `operation` over the interface to its end, as the runtime does.
-    fn operate(&mut self, operation: Box<dyn Operation>) {
+    pub(crate) fn operate(&mut self, operation: Box<dyn Operation>) {
         let mut next = Some(operation);
         while let Some(mut operation) = next.take() {
             self.ui.operate(&self.renderer, operation.as_mut());

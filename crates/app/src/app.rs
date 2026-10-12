@@ -1351,7 +1351,18 @@ impl App {
             }
             Message::Width(width) => m.width = width,
             // Not the person's input: the idle period is not restarted here.
-            Message::SafeArea(area) => m.safe_area = area,
+            // When the keyboard comes up or grows on a phone, the page is
+            // scrolled so the focused field stands above it, once the page
+            // has been laid out again above the keyboard (docs/DECISIONS.md D32
+            // item 10 (b)).
+            Message::SafeArea(area) => {
+                let rose = area.keyboard > m.safe_area.keyboard;
+                m.safe_area = area;
+                if rose && m.compact() {
+                    return iced::advanced::widget::operate(crate::screens::reveal_focused())
+                        .discard();
+                }
+            }
             Message::Tick(ms) => m.clock_ms = ms,
         }
         Task::none()
@@ -2591,6 +2602,23 @@ mod tests {
         app.model.left.fetch_add(1, Ordering::SeqCst);
         let _ = app.update(stale);
         assert!(matches!(&app.model.screen, Screen::Restore(r) if r.phrase.is_empty()));
+    }
+
+    #[test]
+    fn the_keyboard_coming_up_on_a_phone_scrolls_to_the_focused_field() {
+        // Only a rise of the keyboard in the compact layout: the operation then
+        // runs over the page laid out above it (docs/DECISIONS.md D32 item 10
+        // (b)).
+        let with = |keyboard: f32| {
+            iced::mobile::SafeArea::new(iced::Padding::ZERO).with_keyboard(keyboard)
+        };
+        let mut phone = alone();
+        phone.model.width = NARROWEST;
+        assert!(phone.update(Message::SafeArea(with(336.0))).units() > 0);
+        assert_eq!(phone.update(Message::SafeArea(with(336.0))).units(), 0);
+        assert_eq!(phone.update(Message::SafeArea(with(0.0))).units(), 0);
+        let mut desktop = alone();
+        assert_eq!(desktop.update(Message::SafeArea(with(336.0))).units(), 0);
     }
 
     #[test]
