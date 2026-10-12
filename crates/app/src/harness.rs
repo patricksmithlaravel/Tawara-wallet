@@ -94,6 +94,29 @@ impl<'a, M: 'a> Driver<'a, M> {
         (messages, statuses, state)
     }
 
+    /// Hands `events` to the interface one at a time with `clipboard` as the
+    /// platform's, and returns the messages they produced.
+    pub(crate) fn send_with(
+        &mut self,
+        events: &[Event],
+        clipboard: &mut dyn iced::advanced::Clipboard,
+    ) -> Vec<M> {
+        let mut messages = Vec::new();
+        for event in events {
+            let cursor = self
+                .cursor
+                .map_or(mouse::Cursor::Unavailable, mouse::Cursor::Available);
+            let _ = self.ui.update(
+                std::slice::from_ref(event),
+                cursor,
+                &mut self.renderer,
+                clipboard,
+                &mut messages,
+            );
+        }
+        messages
+    }
+
     /// Puts the pointer at `(x, y)` without an event, as when an interface is
     /// drawn new under a pointer that does not move: the widgets see the
     /// cursor there, and no move of it.

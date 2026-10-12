@@ -4,17 +4,18 @@
 //! (docs/DECISIONS.md D32 item 10 (b)).
 
 use iced::widget::text::{LineHeight, Wrapping};
-use iced::widget::{checkbox, column, container, row, scrollable, space};
+use iced::widget::{checkbox, column, container, row, scrollable, space, text_input};
 use iced::{Alignment, Element, Length, Padding};
 use tawara_wallet_core::{MIN_PASSWORD_LEN, SCHEME_WARNING};
 
 use crate::app::{
-    Back, Busy, Go, Message, Model, NodeForm, PasswordForm, PhraseState, RestoreForm, Screen,
-    StartChoice, Typed, UnlockForm,
+    Back, Busy, Go, Message, Model, NodeForm, PasswordForm, PasteInto, PhraseState, RestoreForm,
+    Screen, StartChoice, Typed, UnlockForm,
 };
 use crate::fonts;
+use crate::paste;
 use crate::tap::tap;
-use crate::theme::{self, color, space as sp};
+use crate::theme::{self, color, radius, space as sp};
 use crate::ui::{self, Size, Type, t, ty};
 
 /// The first-run and unlock screens.
@@ -674,15 +675,7 @@ fn restore<'a>(model: &Model, r: &'a RestoreForm, drawn: u64) -> Element<'a, Mes
         ),
         scheme_warning(),
         password_fields(&r.form, drawn, None, !model.phone()),
-        ui::field(
-            "Recovery phrase",
-            "",
-            &r.phrase,
-            ty::FIELD,
-            true,
-            move |text| Message::PhraseText(Typed { text, drawn }),
-            ready.then_some(Message::RestoreWallet),
-        ),
+        phrase_field(model, r, drawn, ready),
     ]
     .spacing(sp::S20);
     if let Some(e) = &r.form.error {
@@ -696,6 +689,43 @@ fn restore<'a>(model: &Model, r: &'a RestoreForm, drawn: u64) -> Element<'a, Mes
         ready.then_some(Message::RestoreWallet),
     ))
     .push(ui::link("Back", ty::LINK, Message::Go(Go::Start)))
+    .into()
+}
+
+/// S6's recovery-phrase field, drawn as `ui::field` draws a field, with what
+/// keyboard paste brings cleaned as a phrase (docs/DECISIONS.md D32 item 10
+/// (h)), and in the compact layout a Paste button beside it (item 10 (g)).
+fn phrase_field<'a>(
+    model: &Model,
+    r: &'a RestoreForm,
+    drawn: u64,
+    ready: bool,
+) -> Element<'a, Message> {
+    let field = text_input("", &r.phrase)
+        .id(super::phrase_id())
+        .font(ty::FIELD.font)
+        .size(ty::FIELD.size)
+        .padding(Padding::from([sp::S12, sp::S14]))
+        .secure(true)
+        .style(theme::field(radius::R12))
+        .on_input(move |text| Message::PhraseText(Typed { text, drawn }))
+        .on_submit_maybe(ready.then_some(Message::RestoreWallet));
+    let entry = if model.compact() {
+        row![
+            paste::cleaned(field),
+            paste::button(Some(Message::Paste(PasteInto::Phrase))),
+        ]
+        .spacing(sp::S8)
+        .align_y(Alignment::Center)
+        .into()
+    } else {
+        paste::cleaned(field)
+    };
+    column![
+        t("Recovery phrase", ty::FORM_LABEL, color::TEXT_SECONDARY),
+        entry
+    ]
+    .spacing(sp::S6)
     .into()
 }
 
@@ -788,7 +818,10 @@ mod tests {
 
     use super::*;
     use crate::app::NARROWEST;
-    use crate::harness::{Driver, finger_lift, finger_move, finger_press, fits};
+    use crate::harness::{
+        Driver, finger_lift, finger_move, finger_press, fits, mouse_move, mouse_press,
+        mouse_release, texts,
+    };
 
     /// The phone's own folder, as the shells report it (docs/DECISIONS.md D32
     /// item 7). The store is kept in a `keystore` folder inside it.
@@ -1155,6 +1188,38 @@ mod tests {
         assert!(
             messages.iter().any(restore),
             "a tap chose nothing: {messages:?}"
+        );
+    }
+
+    #[test]
+    fn s6_has_a_paste_button_by_the_phrase_on_a_phone_alone() {
+        // docs/DECISIONS.md D32 item 10 (g): the button asks for the phrase's
+        // paste; the desktop pastes from the keyboard.
+        let model = phone_model(Screen::Restore(RestoreForm::default()));
+        let pastes: Vec<Rectangle> = texts(view(&model), (NARROWEST, 844.0))
+            .into_iter()
+            .filter(|(text, _)| text == "Paste")
+            .map(|(_, at)| at)
+            .collect();
+        assert_eq!(pastes.len(), 1, "{pastes:?}");
+        let at = pastes[0];
+        let mut driver = Driver::new(view(&model), (360, 844));
+        let (messages, _, _) = driver.send(&[
+            mouse_move(at.center_x(), at.center_y()),
+            mouse_press(),
+            mouse_release(),
+        ]);
+        assert!(
+            matches!(messages.as_slice(), [Message::Paste(PasteInto::Phrase)]),
+            "{messages:?}"
+        );
+
+        let mut desktop = Model::new(Preferences::default(), None);
+        desktop.screen = Screen::Restore(RestoreForm::default());
+        assert!(
+            !texts(view(&desktop), (1440.0, 900.0))
+                .iter()
+                .any(|(text, _)| text == "Paste")
         );
     }
 }

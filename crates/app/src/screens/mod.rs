@@ -49,6 +49,20 @@ fn root_padding(area: SafeArea, iphone: bool) -> Padding {
     }
 }
 
+/// The recovery-phrase field (S6): the field the screenshot example gives the
+/// focus when it draws S6 with the keyboard up (docs/DECISIONS.md D32 item 10
+/// (c)).
+pub fn phrase_id() -> iced::widget::Id {
+    iced::widget::Id::from("phrase")
+}
+
+/// The destination field of the spend form's row `n` (W4, W8): the field
+/// the screenshot example gives the focus when it draws W4 with the keyboard
+/// up.
+pub fn destination_id(n: usize) -> iced::widget::Id {
+    iced::widget::Id::from(format!("destination-{n}"))
+}
+
 /// The whole window for `model`. The safe area pads the root in every layout:
 /// it is zero on the desktop, and a phone's system bars and keyboard are kept
 /// clear of the content (docs/DECISIONS.md D32 item 10 (b)).

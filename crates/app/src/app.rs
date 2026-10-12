@@ -427,6 +427,9 @@ pub enum Message {
     Refresh,
     /// A wallet page (W1 to W9).
     Wallet(WalletMsg),
+    /// A Paste button was tapped: read the platform's clipboard into the
+    /// field beside it (docs/DECISIONS.md D32 item 10 (g)).
+    Paste(PasteInto),
     /// The window opened or changed size: its width.
     Width(f32),
     /// The safe area changed: what the system covers at each edge, and the
@@ -436,6 +439,37 @@ pub enum Message {
     /// A second passed: the wall clock, in milliseconds since the epoch.
     /// Not the person's input.
     Tick(i64),
+}
+
+/// The field a Paste button fills (docs/DECISIONS.md D32 item 10 (g)).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PasteInto {
+    /// The destination of row `n` of the spend form (W4, W8).
+    Destination(usize),
+    /// The signed bytes (W9).
+    Artifact,
+    /// The recovery phrase (S6).
+    Phrase,
+}
+
+/// The message that gives `into` the text a Paste button read, `drawn` being
+/// the generation of the field the button was drawn with (see [`Typed`]), or
+/// `None` when the read holds nothing to paste and the field stays as it is.
+/// The text read is wiped once it has been taken.
+fn pasted(into: PasteInto, mut read: String, drawn: u64) -> Option<Message> {
+    let message = match into {
+        PasteInto::Phrase => {
+            let text = crate::paste::phrase(&read);
+            (!text.is_empty()).then_some(Message::PhraseText(Typed { text, drawn }))
+        }
+        PasteInto::Destination(i) => crate::paste::plain(&read)
+            .map(|text| Message::Wallet(WalletMsg::DestinationTo(i, text))),
+        PasteInto::Artifact => {
+            crate::paste::plain(&read).map(|text| Message::Wallet(WalletMsg::ArtifactHex(text)))
+        }
+    };
+    wipe(&mut read);
+    message
 }
 
 /// The screens a message can go to.
@@ -1249,11 +1283,16 @@ impl App {
                     r.form.error = Some(why);
                 } else if let Screen::Restore(r) = &mut m.screen {
                     r.form.error = None;
+                    // The whole phrase is cleaned as a paste into it is, so
+                    // a phrase typed or pasted one word to a line is read
+                    // word by word (docs/DECISIONS.md D32 item 10 (h)).
+                    let mut phrase = crate::paste::phrase(&r.phrase);
+                    wipe(&mut r.phrase);
                     let command = Command::CreateFromPhrase {
                         dir: store_dir(&r.form.dir),
                         password: SecretText::take(&mut r.form.password),
                         password_again: SecretText::take(&mut r.form.again),
-                        phrase: SecretText::take(&mut r.phrase),
+                        phrase: SecretText::take(&mut phrase),
                     };
                     self.send(command, Purpose::CreateFromPhrase);
                 }
@@ -1301,6 +1340,15 @@ impl App {
                 self.send(Command::Refresh, Purpose::Refresh);
             }
             Message::Wallet(msg) => return self.on_wallet(msg),
+            // The clipboard is read only on the tap, and what it holds
+            // replaces the field's text; an empty or refused read changes
+            // nothing (docs/DECISIONS.md D32 item 10 (g)).
+            Message::Paste(into) => {
+                let drawn = m.drawn();
+                return iced::clipboard::read().and_then(move |read| {
+                    pasted(into, read, drawn).map_or_else(Task::none, Task::done)
+                });
+            }
             Message::Width(width) => m.width = width,
             // Not the person's input: the idle period is not restarted here.
             Message::SafeArea(area) => m.safe_area = area,
@@ -2496,6 +2544,53 @@ mod tests {
             !matches!(app.model.screen, Screen::Phrase(_)),
             "the idle lock dropped the phrase: the safe area did not restart it"
         );
+    }
+
+    #[test]
+    fn what_a_paste_button_reads_goes_to_its_field_and_a_blank_read_changes_nothing() {
+        // docs/DECISIONS.md D32 item 10 (g) and (h): the phrase is cleaned, the
+        // other fields take what iced's paste would insert, and a read with
+        // nothing in it sends nothing.
+        match pasted(PasteInto::Phrase, "abandon\nability\n\table\n".into(), 3) {
+            Some(Message::PhraseText(typed)) => {
+                assert_eq!(typed.text, "abandon ability able");
+                assert_eq!(typed.drawn, 3, "drawn with the field the button was");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            pasted(PasteInto::Destination(1), "3vQB7B6MrGQZaxCuFg4oh\n".into(), 0),
+            Some(Message::Wallet(WalletMsg::DestinationTo(1, to))) if to == "3vQB7B6MrGQZaxCuFg4oh"
+        ));
+        assert!(matches!(
+            pasted(PasteInto::Artifact, "4f2a\n".into(), 0),
+            Some(Message::Wallet(WalletMsg::ArtifactHex(hex))) if hex == "4f2a"
+        ));
+        for into in [
+            PasteInto::Phrase,
+            PasteInto::Destination(0),
+            PasteInto::Artifact,
+        ] {
+            assert!(pasted(into, " \n\t".into(), 0).is_none(), "{into:?}");
+        }
+    }
+
+    #[test]
+    fn a_pasted_phrase_replaces_the_field_and_is_dropped_after_a_move_away() {
+        let mut app = alone();
+        app.model.screen = Screen::Restore(RestoreForm::default());
+        let _ = app.update(Message::PhraseText(typed("abandon")));
+        let Some(message) = pasted(PasteInto::Phrase, PHRASE.replace(' ', "\n"), 0) else {
+            panic!("a phrase was read");
+        };
+        let _ = app.update(message);
+        assert!(matches!(&app.model.screen, Screen::Restore(r) if r.phrase == PHRASE));
+        // A paste read for the field as drawn before the application left the
+        // foreground is not taken.
+        let stale = pasted(PasteInto::Phrase, "abandon".into(), 0).expect("read");
+        app.model.left.fetch_add(1, Ordering::SeqCst);
+        let _ = app.update(stale);
+        assert!(matches!(&app.model.screen, Screen::Restore(r) if r.phrase.is_empty()));
     }
 
     #[test]

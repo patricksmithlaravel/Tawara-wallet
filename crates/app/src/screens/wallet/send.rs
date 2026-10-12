@@ -15,13 +15,13 @@ use tawara_wallet_core::{MAX_DESTINATIONS, PlanView, REFERENCE_RULE};
 
 use super::{account_choice, action, copy, figure, frame, name, pair, report, row_of};
 use crate::app::{
-    Message, Model, ReportKey, ResignPage, SendPage, SendStage, SentPage, SpendForm, SubmitPage,
-    To, WalletMsg, WalletPage,
+    Message, Model, PasteInto, ReportKey, ResignPage, SendPage, SendStage, SentPage, SpendForm,
+    SubmitPage, To, WalletMsg, WalletPage,
 };
-use crate::fonts;
 use crate::icon::Icon;
 use crate::theme::{self, color, radius, space as sp};
 use crate::ui::{self, Size, t, ty};
+use crate::{fonts, paste};
 
 /// The node's floor for the fee, per destination, in nanoMCM: what the fee
 /// is when the person gives none (`tawara_wallet_core::spend`).
@@ -159,7 +159,7 @@ fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> 
     };
     let several = f.rows.len() > 1;
     for (i, r) in f.rows.iter().enumerate() {
-        let mut to = field(&r.to, "Base58 destination", true);
+        let mut to = field(&r.to, "Base58 destination", true).id(crate::screens::destination_id(i));
         let mut reference = field(&r.reference, "none", true);
         let amount: Element<'a, Message> = if f.everything && !several {
             container(t("everything", ty::FIELD, color::TEXT_MUTED))
@@ -206,7 +206,15 @@ fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> 
                     ]
                     .width(Length::Fill)
                     .align_y(Alignment::Center),
-                    row![to.width(Length::Fill)].width(Length::Fill),
+                    // A Paste button beside it (docs/DECISIONS.md D32 item
+                    // 10 (g)).
+                    row![
+                        to.width(Length::Fill),
+                        paste::button(idle.then_some(Message::Paste(PasteInto::Destination(i)))),
+                    ]
+                    .spacing(sp::S8)
+                    .align_y(Alignment::Center)
+                    .width(Length::Fill),
                     row![
                         column![
                             t("Amount (MCM)", ty::FORM_LABEL, color::TEXT_SECONDARY),
@@ -847,12 +855,22 @@ fn submit_form<'a>(
         WalletMsg::Submit,
     );
     let helper = ui::helper("Only the bytes' layout is checked here; the node validates the rest.");
-    // On a phone the field has the width of its row, with room to its right,
-    // and Submit stands above its helper (docs/SCREENS.md, "Compact layout").
+    // On a phone the field has the width of its row, less the Paste button
+    // beside it (docs/DECISIONS.md D32 item 10 (g)), and Submit stands above
+    // its helper (docs/SCREENS.md, "Compact layout").
+    let paste = paste::button(
+        model
+            .busy
+            .is_none()
+            .then_some(Message::Paste(PasteInto::Artifact)),
+    );
     let entry: Element<'a, Message> = if compact {
         column![
             label,
-            row![hex].width(Length::Fill),
+            row![hex, paste]
+                .spacing(sp::S8)
+                .align_y(Alignment::Center)
+                .width(Length::Fill),
             column![submit, helper].spacing(sp::S12),
         ]
         .spacing(sp::S12)
@@ -906,7 +924,7 @@ mod tests {
 
     use super::*;
     use crate::app::{DestinationRow, Level, NARROWEST, Page, Screen};
-    use crate::harness::{Driver, fits};
+    use crate::harness::{Driver, fits, mouse_move, mouse_press, mouse_release, texts};
     use crate::screens;
 
     /// A key press as the keyboard sends it, with the text it types, if any.
@@ -1210,21 +1228,34 @@ mod tests {
         );
     }
 
+    /// Where each Paste button's label lies in `model`'s window at the
+    /// phone's narrowest width.
+    fn pastes(model: &Model) -> Vec<Rectangle> {
+        texts(screens::view(model), (NARROWEST, 844.0))
+            .into_iter()
+            .filter(|(text, _)| text == "Paste")
+            .map(|(_, at)| at)
+            .collect()
+    }
+
     #[test]
-    fn on_a_phone_a_destination_takes_the_width_of_its_card() {
+    fn on_a_phone_a_destination_takes_the_width_of_its_card_beside_its_paste() {
         // The destination has a block of its own, so its field is as wide as the
-        // card's inside: a share of a row with the amount and the reference
-        // would be well under the 290 pixels asked for here.
+        // card's inside less the Paste button: a share of a row with the amount
+        // and the reference would be well under the 200 pixels asked for here.
         let model = phone(compose(typed()), None);
         let fields = focusable_bounds(screens::view(&model));
+        let field = fields.first().copied().expect("the first destination");
+        let paste = pastes(&model)[0];
+        assert!(field.width >= 200.0, "{fields:?}");
         assert!(
-            fields.first().is_some_and(|field| field.width >= 290.0),
-            "{fields:?}"
+            paste.x > field.x + field.width && paste.y < field.y + field.height,
+            "the Paste button stands to the field's right: {paste:?}, {field:?}"
         );
     }
 
     #[test]
-    fn on_a_phone_the_signed_bytes_field_takes_its_row() {
+    fn on_a_phone_the_signed_bytes_field_takes_its_row_beside_its_paste() {
         let model = phone(
             Page::Submit(SubmitPage {
                 hex: sample::sent_view().artifact_hex,
@@ -1233,9 +1264,75 @@ mod tests {
             None,
         );
         let fields = focusable_bounds(screens::view(&model));
+        let field = fields.first().copied().expect("the signed-bytes field");
+        let paste = pastes(&model)[0];
+        assert!(field.width >= 200.0, "{fields:?}");
         assert!(
-            fields.first().is_some_and(|field| field.width >= 290.0),
-            "{fields:?}"
+            paste.x > field.x + field.width && paste.y < field.y + field.height,
+            "{paste:?}, {field:?}"
+        );
+    }
+
+    #[test]
+    fn a_paste_button_stands_by_each_pasted_field_on_a_phone_and_none_on_the_desktop() {
+        // W4 and W8 with the sample's two destinations, and W9 (docs/DECISIONS.md
+        // D32 item 10 (g)).
+        let pages = || {
+            [
+                (compose(typed()), 2),
+                (
+                    Page::Resign(ResignPage {
+                        account: accounts()[1],
+                        form: typed(),
+                    }),
+                    2,
+                ),
+                (Page::Submit(SubmitPage::default()), 1),
+            ]
+        };
+        for (page, fields) in pages() {
+            assert_eq!(pastes(&phone(page, None)).len(), fields);
+        }
+        for (page, _) in pages() {
+            let mut desktop = phone(page, None);
+            desktop.width = 1440.0;
+            let drawn = texts(screens::view(&desktop), (1440.0, 1200.0));
+            assert!(
+                !drawn.iter().any(|(text, _)| text == "Paste"),
+                "the desktop pastes from the keyboard"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tap_on_a_paste_button_asks_for_its_own_fields_paste() {
+        let model = phone(compose(typed()), None);
+        let second = pastes(&model)[1];
+        let mut driver = Driver::new(screens::view(&model), (360, 844));
+        let (messages, _, _) = driver.send(&[
+            mouse_move(second.center_x(), second.center_y()),
+            mouse_press(),
+            mouse_release(),
+        ]);
+        assert!(
+            matches!(
+                messages.as_slice(),
+                [Message::Paste(PasteInto::Destination(1))]
+            ),
+            "{messages:?}"
+        );
+
+        let model = phone(Page::Submit(SubmitPage::default()), None);
+        let at = pastes(&model)[0];
+        let mut driver = Driver::new(screens::view(&model), (360, 844));
+        let (messages, _, _) = driver.send(&[
+            mouse_move(at.center_x(), at.center_y()),
+            mouse_press(),
+            mouse_release(),
+        ]);
+        assert!(
+            matches!(messages.as_slice(), [Message::Paste(PasteInto::Artifact)]),
+            "{messages:?}"
         );
     }
 
