@@ -22,7 +22,7 @@ use tawara_wallet_core::view::{
 };
 
 use crate::app::{
-    Back, Busy, Go, Message, Model, Page, ReportKey, Signed, To, WalletMsg, WalletPage,
+    Back, Busy, Go, Message, Model, Page, ReportKey, SentPage, Signed, To, WalletMsg, WalletPage,
 };
 use crate::icon::{self, Icon};
 use crate::tap::tap;
@@ -527,23 +527,38 @@ pub fn kept_after_stop(model: &Model) -> Option<Element<'_, Message>> {
                 .into()
         };
         let mut item = column![line].spacing(sp::S8);
-        match &kept.sent.saved {
-            Some(Ok(path)) => {
-                item = item.push(
-                    t(
-                        format!("Saved to {}", path.display()),
-                        ty::MONO_SMALL,
-                        color::ACCENT,
-                    )
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                );
-            }
-            Some(Err(e)) => item = item.push(ui::refusal(e)),
-            None => {}
+        if let Some(note) = saved_note(&kept.sent) {
+            item = item.push(note);
         }
         list = list.push(ui::divider()).push(item);
     }
     Some(ui::card_for(compact, list).into())
+}
+
+/// What a signed spend's page says once Save artifact has opened a phone's
+/// share sheet: the sheet's outcome is not known, so the spend is still not
+/// saved (docs/DECISIONS.md D32 item 10 (i)).
+const SHARED: &str = "The share sheet was opened with the signed bytes. Tawara cannot tell \
+                      what was done with them there, so this spend still counts as not saved \
+                      until it settles.";
+
+/// What became of Save artifact for a signed spend's page: where the bytes
+/// were written, why they were not, or that the share sheet was opened.
+fn saved_note<'a>(page: &'a SentPage) -> Option<Element<'a, Message>> {
+    match &page.saved {
+        Some(Ok(path)) => Some(
+            t(
+                format!("Saved to {}", path.display()),
+                ty::MONO_SMALL,
+                color::ACCENT,
+            )
+            .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+            .into(),
+        ),
+        Some(Err(e)) => Some(ui::refusal(e)),
+        None if page.shared => Some(t(SHARED, ty::BODY_SMALL, color::TEXT_SECONDARY).into()),
+        None => None,
+    }
 }
 
 /// What the worker is doing for the page (S8's words), how far it has got,

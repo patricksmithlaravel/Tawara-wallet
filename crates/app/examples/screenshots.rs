@@ -248,6 +248,7 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
             saved: Some(Ok(PathBuf::from(
                 "/home/you/Downloads/tawara-spend-5e5e5e5e5e5e5e5e.hex",
             ))),
+            shared: false,
         })),
     })));
     sent.wallet = Some(sample::sent_view().view);
@@ -257,6 +258,7 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
             sent: sample::sent_view(),
             resigned: false,
             saved: None,
+            shared: false,
         },
         form: typed.clone(),
         open: Default::default(),
@@ -729,8 +731,9 @@ const PHONE_ENDS: [&str; 10] = [
 const KEYBOARD: f32 = 336.0;
 
 /// `model` as a phone draws it: the phone's safe area, with the keyboard up
-/// when `keyboard` is above zero, and every store in the phone's own folder
-/// (docs/DECISIONS.md D32 items 7 and 10 (a), (c)).
+/// when `keyboard` is above zero, every store in the phone's own folder, and
+/// Save artifact's share sheet where the desktop wrote a file
+/// (docs/DECISIONS.md D32 items 7 and 10 (a), (c), (i)).
 fn phone(mut model: Model, keyboard: f32) -> Model {
     model.safe_area = iced::mobile::SafeArea::new(iced::Padding {
         top: 47.0,
@@ -746,17 +749,30 @@ fn phone(mut model: Model, keyboard: f32) -> Model {
     if let Some(wallet) = &mut model.wallet {
         wallet.dir = keystore.clone();
     }
-    // The worker names the folder it found no store in, and on a phone that is
-    // the phone's own.
-    if let Screen::Unlock(UnlockForm {
-        error: Some(error), ..
-    }) = &mut model.screen
-        && error.starts_with("there is no keystore at ")
-    {
-        *error = format!(
-            "there is no keystore at {}: the folder does not exist",
-            keystore.display()
-        );
+    match &mut model.screen {
+        // The worker names the folder it found no store in, and on a phone that
+        // is the phone's own.
+        Screen::Unlock(UnlockForm {
+            error: Some(error), ..
+        }) if error.starts_with("there is no keystore at ") => {
+            *error = format!(
+                "there is no keystore at {}: the folder does not exist",
+                keystore.display()
+            );
+        }
+        // A phone has no Downloads folder: Save artifact opened the share sheet.
+        Screen::Wallet(WalletPage {
+            page:
+                Page::Send(SendPage {
+                    stage: SendStage::Sent(sent),
+                    ..
+                }),
+            ..
+        }) if sent.saved.is_some() => {
+            sent.saved = None;
+            sent.shared = true;
+        }
+        _ => {}
     }
     model
 }

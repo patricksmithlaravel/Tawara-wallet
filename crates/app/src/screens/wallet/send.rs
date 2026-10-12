@@ -694,19 +694,8 @@ fn sent_page<'a>(model: &'a Model, page: &'a WalletPage, s: &'a SentPage) -> Ele
         ),
     ]
     .spacing(sp::S12);
-    match &s.saved {
-        Some(Ok(path)) => {
-            artifact = artifact.push(
-                t(
-                    format!("Saved to {}", path.display()),
-                    ty::MONO_SMALL,
-                    color::ACCENT,
-                )
-                .wrapping(Wrapping::WordOrGlyph),
-            );
-        }
-        Some(Err(e)) => artifact = artifact.push(ui::refusal(e)),
-        None => {}
+    if let Some(note) = super::saved_note(s) {
+        artifact = artifact.push(note);
     }
     if let Some(id) = &sent.tx_id {
         artifact = artifact.push(
@@ -907,8 +896,6 @@ fn submit_form<'a>(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use iced::advanced::clipboard::Null;
     use iced::advanced::layout;
     use iced::advanced::renderer::Headless;
@@ -1169,12 +1156,13 @@ mod tests {
 
     #[test]
     fn w6_fits_a_phone_screen_with_its_report_open() {
+        // On a phone Save artifact opens the share sheet, and the page says so
+        // (docs/DECISIONS.md D32 item 10 (i)).
         let sent = SentPage {
             sent: sample::sent_view(),
             resigned: false,
-            saved: Some(Ok(PathBuf::from(
-                "/home/you/Downloads/tawara-spend-5e5e5e5e5e5e5e5e.hex",
-            ))),
+            saved: None,
+            shared: true,
         };
         let model = phone(
             Page::Send(SendPage {
@@ -1185,6 +1173,11 @@ mod tests {
             Some(ReportKey::Sent),
         );
         assert_eq!(fits(screens::view(&model), NARROWEST), Ok(()));
+        let drawn = texts(screens::view(&model), (NARROWEST, 2400.0));
+        assert!(
+            drawn.iter().any(|(text, _)| text == super::super::SHARED),
+            "the page says the sheet was opened"
+        );
     }
 
     #[test]
