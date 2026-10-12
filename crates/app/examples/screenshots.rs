@@ -1,29 +1,63 @@
 //! Draws every built screen headlessly into `design/screenshots/`, or checks
 //! that the images there are what the screens draw now (docs/DECISIONS.md
-//! D27, item 1).
+//! D27, item 1). The phone's screens are drawn the same way, in their own
+//! images (docs/DECISIONS.md D32 item 10 (c)).
 //!
 //! ```text
-//! cargo run -p tawara-app --example screenshots            # write them
-//! cargo run -p tawara-app --example screenshots -- --check # compare
+//! cargo run -p tawara-app --example screenshots                 # write them all
+//! cargo run -p tawara-app --example screenshots -- --check      # compare them
+//! cargo run -p tawara-app --example screenshots -- --fit        # the phone at 360
 //! ```
 //!
 //! Each screen is drawn from sample data (`tawara_wallet_core::sample` and
 //! the forms below) with iced's software renderer, tiny-skia, at the size of
-//! the rendering it follows and a scale of 1. Every piece of text names a
-//! bundled face (`tawara_app::fonts`), so the pixels do not depend on the
-//! fonts a machine has installed. `--check` compares pixels, not file bytes,
-//! and writes what it drew beside the committed image when they differ.
+//! the rendering it follows and a scale of 1. The desktop's images are
+//! `<name>.png`. The phone's are `phone-<name>.png` at 390 by 844 logical
+//! pixels with a safe area of 47 at the top and 34 at the bottom, the long
+//! pages again scrolled to their end (`phone-<name>-end.png`), and two with
+//! the keyboard up (`phone-<name>-keyboard.png`): 63 in all. Every piece of
+//! text names a bundled face (`tawara_app::fonts`), so the pixels do not
+//! depend on the fonts a machine has installed.
+//!
+//! Flags:
+//!
+//! - `DIR`: the folder to write into, or to check. The default is
+//!   `design/screenshots`.
+//! - `--check`: compares every selected image with the one committed, and
+//!   reports `same`, `DIFFERS` (with the pixels that differ), `MISSING`, and
+//!   in an unfiltered run `STALE` for a PNG that no sample draws. It exits
+//!   non-zero on anything but `same`. What it drew is written into the
+//!   system's temporary folder, as `<name>.drawn.png`, when an image differs.
+//!   The selected phone screens are also laid out at 360 logical pixels, as
+//!   `--fit` lays them out.
+//! - `--only PREFIX`, repeatable: only the samples whose name starts with a
+//!   prefix, for example `--only phone-`.
+//! - `--except PREFIX`, repeatable: leaves out the samples whose name starts
+//!   with a prefix, for example `--except phone-` for the desktop alone.
+//! - `--phone-width N`: draws the phone's images N logical pixels wide rather
+//!   than 390, for looking at a width. It is refused with `--check`.
+//! - `--fit`: lays every selected phone sample out at 360 by 844 and prints
+//!   `OVERFLOW name: left..right` for each node whose right edge passes 360
+//!   (ten a sample at most). It exits non-zero if there is any, and writes
+//!   nothing.
+//! - The environment variable `TAWARA_SCREENSHOTS_PRINT`: with `--check`,
+//!   prints each image that DIFFERS or is MISSING as base64, between
+//!   `----- BEGIN <name>.png -----` and `----- END <name>.png -----`, so that
+//!   the log of CI carries what it would commit (docs/DECISIONS.md D13).
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
 use iced::advanced::renderer::{self, Headless};
-use iced::advanced::{clipboard, graphics};
+use iced::advanced::widget::Tree;
+use iced::advanced::widget::operation::scrollable::{self, RelativeOffset};
+use iced::advanced::{clipboard, graphics, layout};
 use iced::mouse::Cursor;
 use iced::theme::Base;
-use iced::{Event, Size, window};
+use iced::{Event, Point, Size, window};
 use iced_runtime::user_interface::{Cache, UserInterface};
+use tawara_app::app::NARROWEST;
 use tawara_app::app::{
     AccountPage, ActivityPage, AddAccountPage, Back, BlockPage, Busy, DestinationRow, Explored,
     ExplorerPage, Level, Missed, Model, NodeForm, NodeState, Page, PasswordForm, PhraseState,
@@ -666,22 +700,172 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
     ]
 }
 
-/// The pixels of `model`'s window at `size`, as RGBA.
-fn draw(renderer: &mut iced::Renderer, model: &Model, size: (u32, u32)) -> Vec<u8> {
+/// The phone's window (docs/DECISIONS.md D32 item 10 (c)), and the folder a
+/// phone keeps its stores in: the one the system protects, as the shells
+/// report it.
+const PHONE: (u32, u32) = (390, 844);
+const PHONE_DIR: &str =
+    "/private/var/mobile/Containers/Data/Application/0A1B2C3D/Library/Application Support/Tawara";
+
+/// The long pages drawn a second time scrolled to their end.
+const PHONE_ENDS: [&str; 10] = [
+    "w1-wallet",
+    "w4-send",
+    "w5-review",
+    "w6-sent",
+    "w10-activity",
+    "w11-settings",
+    "w12-recovery",
+    "e1-explorer",
+    "e2-block",
+    "e3-tag",
+];
+
+/// The phone's keyboard, in logical pixels, when it shows for a screen drawn
+/// with one.
+const KEYBOARD: f32 = 336.0;
+
+/// `model` as a phone draws it: the phone's safe area, with the keyboard up
+/// when `keyboard` is above zero, and every store in the phone's own folder
+/// (docs/DECISIONS.md D32 items 7 and 10 (a), (c)).
+fn phone(mut model: Model, keyboard: f32) -> Model {
+    model.safe_area = iced::mobile::SafeArea::new(iced::Padding {
+        top: 47.0,
+        right: 0.0,
+        bottom: 34.0,
+        left: 0.0,
+    })
+    .with_keyboard(keyboard);
+    model.default_dir = Some(Path::new(PHONE_DIR).join("keystore"));
+    model.confine(PathBuf::from(PHONE_DIR));
+    // An open store on a phone is the one in its own folder: W11 shows it.
+    let keystore = Path::new(PHONE_DIR).join("keystore");
+    if let Some(wallet) = &mut model.wallet {
+        wallet.dir = keystore.clone();
+    }
+    // The worker names the folder it found no store in, and on a phone that is
+    // the phone's own.
+    if let Screen::Unlock(UnlockForm {
+        error: Some(error), ..
+    }) = &mut model.screen
+        && error.starts_with("there is no keystore at ")
+    {
+        *error = format!(
+            "there is no keystore at {}: the folder does not exist",
+            keystore.display()
+        );
+    }
+    model
+}
+
+/// One image to draw: its name (its file's), the window it is drawn in, the
+/// model it draws, and whether it is drawn scrolled to the end of its page.
+struct Image {
+    name: String,
+    size: (u32, u32),
+    model: Model,
+    to_end: bool,
+}
+
+/// Every desktop image, as the screens are drawn in their windows.
+fn desktop() -> Vec<Image> {
+    samples()
+        .into_iter()
+        .map(|(name, size, model)| Image {
+            name: name.to_owned(),
+            size,
+            model,
+            to_end: false,
+        })
+        .collect()
+}
+
+/// The sample named `name`, built again: a model is not cloned.
+fn sample_named(name: &str) -> Model {
+    samples()
+        .into_iter()
+        .find(|(n, _, _)| *n == name)
+        .map(|(_, _, model)| model)
+        .unwrap_or_else(|| panic!("no sample named {name}"))
+}
+
+/// The phone images at `width` logical pixels across: every desktop sample
+/// but the narrow ones, the long pages scrolled to their end, and two drawn
+/// with the keyboard up (docs/DECISIONS.md D32 item 10 (c)).
+fn phones(width: u32) -> Vec<Image> {
+    let size = (width, PHONE.1);
+    let mut out: Vec<Image> = samples()
+        .into_iter()
+        .filter(|(name, _, _)| !name.starts_with("narrow-"))
+        .map(|(name, _, model)| Image {
+            name: format!("phone-{name}"),
+            size,
+            model: phone(model, 0.0),
+            to_end: false,
+        })
+        .collect();
+    for name in PHONE_ENDS {
+        out.push(Image {
+            name: format!("phone-{name}-end"),
+            size,
+            model: phone(sample_named(name), 0.0),
+            to_end: true,
+        });
+    }
+    for name in ["s6-restore", "w4-send"] {
+        out.push(Image {
+            name: format!("phone-{name}-keyboard"),
+            size,
+            model: phone(sample_named(name), KEYBOARD),
+            to_end: false,
+        });
+    }
+    out
+}
+
+/// Whether an image named `name` is among those the command line asks for:
+/// with `--only` prefixes, one of them starts it; `--except` prefixes leave
+/// it out.
+fn selected(name: &str, only: &[String], except: &[String]) -> bool {
+    (only.is_empty() || only.iter().any(|p| name.starts_with(p.as_str())))
+        && !except.iter().any(|p| name.starts_with(p.as_str()))
+}
+
+/// The pixels of `model`'s window at `size`, as RGBA. `to_end` scrolls the
+/// page to its end first, as a person scrolls it.
+fn draw(renderer: &mut iced::Renderer, model: &Model, size: (u32, u32), to_end: bool) -> Vec<u8> {
     let theme = theme::theme();
     #[allow(clippy::cast_precision_loss)]
     let bounds = Size::new(size.0 as f32, size.1 as f32);
     let mut ui = UserInterface::build(screens::view(model), bounds, Cache::default(), renderer);
     let mut messages = Vec::new();
+    let frame = [Event::Window(window::Event::RedrawRequested(
+        iced::time::Instant::now(),
+    ))];
     let _ = ui.update(
-        &[Event::Window(window::Event::RedrawRequested(
-            iced::time::Instant::now(),
-        ))],
+        &frame,
         Cursor::Unavailable,
         renderer,
         &mut clipboard::Null,
         &mut messages,
     );
+    if to_end {
+        let mut snap = scrollable::snap_to(
+            screens::page_id(),
+            RelativeOffset {
+                x: None,
+                y: Some(1.0),
+            },
+        );
+        ui.operate(renderer, &mut snap);
+        let _ = ui.update(
+            &frame,
+            Cursor::Unavailable,
+            renderer,
+            &mut clipboard::Null,
+            &mut messages,
+        );
+    }
     let style = theme.base();
     ui.draw(
         renderer,
@@ -725,16 +909,138 @@ fn decode(path: &Path) -> Result<((u32, u32), Vec<u8>), String> {
     Ok(((info.width, info.height), buf))
 }
 
-fn main() -> ExitCode {
-    let mut check = false;
-    let mut dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../design/screenshots");
-    for arg in std::env::args().skip(1) {
-        if arg == "--check" {
-            check = true;
-        } else {
-            dir = PathBuf::from(arg);
+/// `bytes` in the standard base64 alphabet, padded, in lines of 76
+/// characters: the form a log carries an image in (docs/DECISIONS.md D13).
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut text = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = u32::from(chunk[0]);
+        let second = u32::from(chunk.get(1).copied().unwrap_or(0));
+        let third = u32::from(chunk.get(2).copied().unwrap_or(0));
+        let group = (first << 16) | (second << 8) | third;
+        for i in 0..4 {
+            if i <= chunk.len() {
+                let index = (group >> (18 - 6 * i)) & 0x3f;
+                text.push(char::from(ALPHABET[index as usize]));
+            } else {
+                text.push('=');
+            }
         }
     }
+    text.as_bytes()
+        .chunks(76)
+        .map(|line| std::str::from_utf8(line).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The nodes of `model`'s window at `width` logical pixels that pass its
+/// right edge, as `OVERFLOW name: left..right` lines: a node's position is
+/// its parent's plus its own (docs/DECISIONS.md D32 item 10 (b)).
+fn overflow_lines(renderer: &iced::Renderer, name: &str, model: &Model, width: f32) -> Vec<String> {
+    fn walk(node: &layout::Node, origin: Point, width: f32, name: &str, out: &mut Vec<String>) {
+        for child in node.children() {
+            let bounds = child.bounds();
+            let at = Point::new(origin.x + bounds.x, origin.y + bounds.y);
+            if at.x + bounds.width > width + 0.5 {
+                out.push(format!(
+                    "OVERFLOW {name}: {:.1}..{:.1}",
+                    at.x,
+                    at.x + bounds.width
+                ));
+            }
+            walk(child, at, width, name, out);
+        }
+    }
+    let mut element = screens::view(model);
+    let mut tree = Tree::new(element.as_widget());
+    let limits = layout::Limits::new(Size::ZERO, Size::new(width, PHONE.1 as f32));
+    let root = element.as_widget_mut().layout(&mut tree, renderer, &limits);
+    let mut out = Vec::new();
+    walk(&root, Point::ORIGIN, width, name, &mut out);
+    out
+}
+
+/// The phone images selected, laid out at 360 logical pixels: prints every
+/// overflow (at most ten a sample) and reports whether there was one.
+fn fit(renderer: &iced::Renderer, only: &[String], except: &[String]) -> bool {
+    let mut failed = false;
+    for image in phones(NARROWEST_PX) {
+        if !selected(&image.name, only, except) {
+            continue;
+        }
+        let mut model = image.model;
+        model.width = NARROWEST;
+        for line in overflow_lines(renderer, &image.name, &model, NARROWEST)
+            .into_iter()
+            .take(10)
+        {
+            println!("{line}");
+            failed = true;
+        }
+    }
+    failed
+}
+
+/// The narrowest width the phone layout is drawn at, as the image sizes
+/// name it (`tawara_app::app::NARROWEST`, in logical pixels).
+const NARROWEST_PX: u32 = 360;
+
+/// The command line (see the module documentation).
+#[derive(Default)]
+struct Options {
+    check: bool,
+    fit: bool,
+    dir: Option<PathBuf>,
+    only: Vec<String>,
+    except: Vec<String>,
+    phone_width: Option<u32>,
+}
+
+fn options() -> Result<Options, String> {
+    let mut options = Options::default();
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--check" => options.check = true,
+            "--fit" => options.fit = true,
+            "--only" | "--except" | "--phone-width" => {
+                let value = args.next().ok_or_else(|| format!("{arg} needs a value"))?;
+                match arg.as_str() {
+                    "--only" => options.only.push(value),
+                    "--except" => options.except.push(value),
+                    _ => {
+                        options.phone_width = Some(
+                            value
+                                .parse()
+                                .map_err(|_| format!("--phone-width {value}: not a width"))?,
+                        );
+                    }
+                }
+            }
+            _ => options.dir = Some(PathBuf::from(&arg)),
+        }
+    }
+    Ok(options)
+}
+
+fn main() -> ExitCode {
+    let options = match options() {
+        Ok(options) => options,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if options.check && options.phone_width.is_some() {
+        eprintln!("--phone-width draws a width to look at, and is not checked: leave it out");
+        return ExitCode::FAILURE;
+    }
+    let dir = options
+        .dir
+        .clone()
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../design/screenshots"));
     if let Ok(mut font_system) = graphics::text::font_system().write() {
         for bytes in fonts::FILES {
             font_system.load_font(std::borrow::Cow::Borrowed(bytes));
@@ -748,20 +1054,47 @@ fn main() -> ExitCode {
         eprintln!("the tiny-skia renderer did not start");
         return ExitCode::FAILURE;
     };
-    if !check && let Err(e) = std::fs::create_dir_all(&dir) {
+    let (only, except) = (&options.only, &options.except);
+    if options.fit {
+        return if fit(&renderer, only, except) {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        };
+    }
+    let mut images = desktop();
+    images.extend(phones(options.phone_width.unwrap_or(PHONE.0)));
+    let names: Vec<String> = images.iter().map(|image| image.name.clone()).collect();
+    let mut failed = false;
+    if options.check {
+        // The phone screens are held to 360 logical pixels as well.
+        failed |= fit(&renderer, only, except);
+    }
+    if !options.check
+        && let Err(e) = std::fs::create_dir_all(&dir)
+    {
         eprintln!("{}: {e}", dir.display());
         return ExitCode::FAILURE;
     }
-    let mut failed = false;
-    for (name, size, mut model) in samples() {
+    let print = std::env::var_os("TAWARA_SCREENSHOTS_PRINT").is_some();
+    for image in images {
+        if !selected(&image.name, only, except) {
+            continue;
+        }
+        let Image {
+            name,
+            size,
+            mut model,
+            to_end,
+        } = image;
         // The window the screen is drawn in is this wide (D27, item 9).
         #[allow(clippy::cast_precision_loss)]
         {
             model.width = size.0 as f32;
         }
-        let rgba = draw(&mut renderer, &model, size);
+        let rgba = draw(&mut renderer, &model, size, to_end);
         let path = dir.join(format!("{name}.png"));
-        if check {
+        if options.check {
             match decode(&path) {
                 Ok((drawn_size, committed)) if drawn_size == size && committed == rgba => {
                     println!("same     {name}");
@@ -773,7 +1106,8 @@ fn main() -> ExitCode {
                         .filter(|(a, b)| a != b)
                         .count();
                     let fresh = std::env::temp_dir().join(format!("{name}.drawn.png"));
-                    let _ = encode(&rgba, size).map(|bytes| std::fs::write(&fresh, bytes));
+                    let bytes = encode(&rgba, size);
+                    let _ = bytes.as_ref().map(|b| std::fs::write(&fresh, b));
                     eprintln!(
                         "DIFFERS  {name}: committed {}x{}, drawn {}x{}, {differing} pixel(s) \
                          differ; what was drawn is at {}",
@@ -783,10 +1117,16 @@ fn main() -> ExitCode {
                         size.1,
                         fresh.display()
                     );
+                    if print && let Ok(b) = &bytes {
+                        print_image(&name, b);
+                    }
                     failed = true;
                 }
                 Err(e) => {
                     eprintln!("MISSING  {name}: {e}");
+                    if print && let Ok(b) = encode(&rgba, size) {
+                        print_image(&name, &b);
+                    }
                     failed = true;
                 }
             }
@@ -802,6 +1142,26 @@ fn main() -> ExitCode {
             }
         }
     }
+    // Unfiltered, a committed image that no sample draws is stale.
+    if options.check
+        && only.is_empty()
+        && except.is_empty()
+        && let Ok(entries) = std::fs::read_dir(&dir)
+    {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "png") {
+                let stem = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if !names.contains(&stem) {
+                    eprintln!("STALE    {stem}: no sample draws it");
+                    failed = true;
+                }
+            }
+        }
+    }
     if failed {
         eprintln!(
             "\nThe screenshots in {} are not what the screens draw. Run `cargo run -p \
@@ -812,4 +1172,12 @@ fn main() -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// A drawn image, printed in a log between markers, so that CI's check can
+/// show what it would have committed (docs/DECISIONS.md D13).
+fn print_image(name: &str, png: &[u8]) {
+    println!("----- BEGIN {name}.png -----");
+    println!("{}", base64(png));
+    println!("----- END {name}.png -----");
 }
