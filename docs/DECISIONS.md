@@ -1625,6 +1625,213 @@ on the three conditions D18 left open.
    When winit gains its own scene support, the fork's commit is dropped
    and the manifest kept or replaced as winit's documentation says.
 
+9. **The move to the fork's releases: owner, 2026-10-11.** The owner
+   decided on 2026-10-11 that Tawara moves from the frozen fork branch
+   `tawara/0.14-mobile`, at `71f00e8` (the pin since item 8), to the
+   releases of the reworked fork, `patricksmithlaravel/iced_mobile`. On
+   2026-10-12 the owner accepted the ten recommendations below, each marked
+   'owner, 2026-10-12'. They supersede what D6, D12, item 1 and D33 say
+   about iced's source and pin; those entries keep their wording until the
+   move corrects them.
+
+   **Facts the decisions rest on.** On the arm64 Mac that ran the checks, 37
+   of the 55 screens differ from their committed images by 3 pixels each, at
+   the current pin and at the new one alike. The 37 drawn images are
+   byte-identical between the two pins, so the move changes no pixel on that
+   host. CI's Linux screenshot step is the exact check. At the current pin
+   it passed in all 11 CI runs on record, and run 37535340401 passed on all
+   three hosts. If the Linux images differ at the move, they are regenerated
+   and reviewed under D27 item 1. Windows and Linux at the new pin were not
+   run locally; the move pull request's CI on three hosts is their check.
+   The vendored winit's desktop sources (macOS, Windows and Linux) are
+   byte-identical to crates.io winit 0.30.13. Its three differing files are
+   the Android module, a `cfg` in `event_loop.rs` widened to Android, and
+   the changelog. The lock changes 14 packages: the twelve iced crates keep
+   their versions, `winit` and `dpi` come from the fork, and `dpi` goes back
+   from 0.1.2 to the fork's 0.1.1, which Tawara's code does not name. With
+   `--locked`, every `ci.yml` gate passes on the arm64 Mac at the new pin
+   except the Linux-only screenshot step, which fails identically at the
+   current pin.
+
+   **(a) The pin and its moves: owner, 2026-10-12.** The pin is the fork's
+   release `v0.14.1-mobile.2`, written as
+   `d4ab3a057db96162b087a27dd0752a3b15abfa6b` on every iced line of both
+   repositories. Later moves go only to fork tags `v*-mobile.*`, written as
+   full hashes. The wallet moves first, and Tawara-mobile follows to that
+   wallet commit on `main`. Each move must pass both policy suites;
+   `cargo deny`, with its advisory ignores re-examined; clippy, tests and
+   docs on three hosts; the Linux screenshot step; the mobile emulator and
+   simulator jobs; and a hand-run desktop check. Each move gets an entry
+   here. When a release contains the iOS Return fix, `586665c08`, the pin
+   moves to it. The tag is the newest release, and framework code had
+   settled by then. Tags do not move. The fork's stability rules keep the
+   entry points Tawara uses (`set_android_app`, `on_lifecycle` and the
+   two-variant `Lifecycle`) as they are.
+
+   **(b) One winit, the fork's: owner, 2026-10-12.** Tawara-mobile takes
+   `winit` only from the fork, through `iced_winit` with the
+   `android-native-activity` feature. The crates.io `winit` lines in the
+   root `Cargo.toml` and in `crates/mobile/Cargo.toml` are deleted.
+   `AndroidApp` and `WindowManagerFlags` are imported from
+   `iced_winit::winit::platform::android::activity`. The manifest change
+   alone does not compile. The graph holds one winit only once the wallet
+   pins the new tag, and until then the policy test fails. Reasons: this is
+   the fork's documented route; a second copy would register the same
+   Objective-C classes twice, and objc2 panics on the duplicate name; and
+   the activity backend is chosen explicitly, not by feature unification.
+   The feature sits on an Android-only dependency, so it should not reach
+   iOS; the iOS check in the mobile pull request is to confirm that.
+
+   **(c) Two pull requests in lockstep: owner, 2026-10-12.** The
+   Tawara-wallet pull request moves every iced line, desktop included, and
+   merges with a merge commit. The Tawara-mobile pull request follows
+   straight after. It takes that wallet commit from `main` by full hash,
+   with the new tag, and no other wallet change sits between the two. Mobile
+   cannot take the tag before the wallet has. A gap would let phase 4 (b)
+   work, which uses `safe_area()` and `clipboard::read` in `tawara-app`,
+   land on a wallet `main` that Tawara-mobile cannot follow. The wallet pull
+   request checks the desktop: the three-host CI, the Linux screenshot step
+   and the hand-run desktop check.
+
+   **(d) Glue kept, fork APIs adopted: owner, 2026-10-12.** Tawara-mobile
+   keeps its security glue: `FLAG_SECURE` and the hand-written Android
+   entry, which starts cold after the Activity is destroyed; the iOS privacy
+   cover, the iOS lifecycle observers and the background-task lock, with no
+   `on_lifecycle` hook on iOS; and the Android lifecycle hook and Back
+   handling, unchanged. The iOS scene manifest and its checks stay, and the
+   fork's reworked scene adoption arrives with the move. The clipboard write
+   path is kept and gains protection: `ClipDescription.EXTRA_IS_SENSITIVE`
+   on Android, and an expiring, local-only pasteboard item on iOS. The fork
+   has no FLAG_SECURE, snapshot cover, background-task API or clipboard
+   protection. A same-process restart would need the Activity's handles, the
+   host statics and FLAG_SECURE rebuilt, all for a rare event. Adopted from
+   the fork: `iced::clipboard::read`, behind a Paste button for the
+   signed-bytes and address fields, and `safe_area()` for the insets of
+   phase 4 (b)(1). Separately, the iOS `cover()` log is to report a cover
+   only when one was added, and `UIWindowScene.keyWindow` is to be
+   considered in place of the deprecated `UIApplication.keyWindow`.
+
+   **(e) Policy rules: owner, 2026-10-12.** In the wallet's `policy.rs`
+   (D15), every `Cargo.lock` package from the fork's URL must be at the
+   pinned rev, which covers `winit` and `dpi`. There must be exactly one
+   `winit`, from the fork. No crate manifest may name `winit`, and the iced
+   lines keep `default-features = false` and their feature list. In
+   Tawara-mobile's `policy.rs`, the one-copy test covers every package from
+   the fork's URL. A crate name that appears twice with different sources
+   fails, `winit` leaves the allowed list, and `android-activity` has the
+   native-activity backend only. Both `deny.toml` files keep their git
+   sources, which are already allowed. Their stale comments are fixed. Their
+   advisory ignores are re-examined at the new tag, where both are still
+   needed, and their iced 0.14.0 wording is updated. A ban on `winit` except
+   through `iced_winit` may follow once cargo-deny 0.20.2 is seen to accept
+   its syntax. Reasons: the current tests pass with a direct `winit`, with
+   defaults turned on, and with features removed; a mobile graph with two
+   winit passes both the policy test and `cargo deny`; and
+   `multiple-versions = "deny"` is unworkable, as 39 duplicate names come
+   from iced, wgpu and objc2.
+
+   **(f) Return does not broadcast on phones: owner, 2026-10-12.** Return
+   already broadcast on desktop when this was decided: W9's field in
+   `crates/app/src/screens/wallet/send.rs` bound
+   `on_submit(WalletMsg::Submit)` with no platform gate. The Submit button
+   sends the same message, which starts `Command::SubmitArtifact` at once
+   with no confirmation, and both are disabled while busy. The move adds
+   Return-to-submit on phones. So the field's Return is bound only when
+   building for neither Android nor iOS (`target_os`): on phones Return does
+   nothing, the Submit button still broadcasts, and desktop is unchanged. The
+   guard must reach the wallet's `main` before or with the move, so that
+   Tawara-mobile's pin never carries a Return that broadcasts. It is the
+   first `target_os` gate in `crates/app`, which until then had only
+   `cfg(test)` and one test-only `cfg(unix)`. Reasons: a soft-keyboard Return
+   is easy to press just after a paste, a broadcast cannot be undone, and the
+   guard removes the risk the move adds without changing desktop behaviour.
+   The tests run on the desktop. They draw W9 as the desktop has it, where
+   Return submits, and with the binding a phone has, where Return sends
+   nothing and the field still takes input. That the constant choosing the
+   binding, `RETURN_BROADCASTS`, is false on Android and iOS is checked only
+   by review and by the phone builds.
+
+   **(g) Paste into secret fields: owner, 2026-10-12.** Paste into
+   `secure(true)` fields is allowed. PLAN section 4 forbids copy and cut in
+   those fields, not paste, and restore and password-manager use depend on
+   paste. On phones paste is reachable only from a hardware keyboard, as
+   there is no edit menu. Iced's paste strips every control character, so a
+   phrase copied over several lines is joined into one word, as already
+   happens on desktop. The restore field turns line breaks into spaces
+   before validation. `on_paste` receives the value after filtering, when
+   the breaks are already gone, so the change either handles the paste
+   before the filter or splits the joined text back into words. Which of the
+   two is possible needs a short design look first.
+
+   **(h) Linux liveness step before the move: owner, 2026-10-12.** A small
+   wallet pull request, merged at the current pin before the move, adds a
+   Linux step to `ci.yml` or a new workflow, because `spikes.yml` does not
+   run on the move's pull request. The step starts `tawara-desktop` under
+   Xvfb, once on wgpu with `mesa-vulkan-drivers` for lavapipe, and once on
+   tiny-skia. It waits a fixed time and passes if the process is still
+   alive. It uses only `apt`, `xvfb-run` and shell, with no third-party
+   action (D13). First, check that start-up needs no network, or that a
+   missing node does not end the process. As built, a launch passes only if
+   the app's own process is still running and its log holds no panic, since
+   a panic on another thread, such as the worker's, does not end the
+   process. Start-up was checked and needs no network: a fresh `HOME` names
+   no node, because `Preferences` has no node by default
+   (`crates/wallet-core/src/preferences.rs:54`), and the application sends
+   `SetNode` at start-up only when a node is set
+   (`crates/app/src/app.rs:898-900`). Today no automated job starts the
+   desktop window, before or after the move, so a start-up panic, such as a
+   shader or surface failure, would pass CI. Landing the step at the current
+   pin gives a baseline, so the move shows whether the fork changes the
+   result. A ready marker or self-test flag would be stronger and may follow
+   later. The move's pull request keeps a hand-run desktop check on macOS,
+   Windows and Linux.
+
+   **(i) Android: configChanges now, target 36 later: owner, 2026-10-12.**
+   Two Tawara-mobile pull requests, kept apart from the move. PR A, now: add
+   `mcc|mnc|grammaticalGender` to `configChanges` at
+   `platform/android/AndroidManifest.xml:33`, so that the list has the 18
+   names of the API 35 set in the fork's `icm` tool, and check `0x5000ffff`
+   with `aapt2 dump xmltree`. Without them, a change of mobile country or
+   network code, or of grammatical gender, would on Android's own rules
+   recreate the Activity and end the iced app. That is a live defect whatever
+   Play requires. PR B, before the first Play submission and before
+   2026-11-01 if an existing listing would otherwise need the extension:
+   `TARGET_API=36` in `platform/android/tawara.sh`, the compile jar pinned to
+   `platforms/android-36` rather than the newest of 35 to 39, the android-36
+   emulator image, and `assetsPaths` and `resourcesUnused` added to
+   `configChanges`. That makes the API 36 set of 20 names, `0xd800ffff`: the
+   18 names of PR A, plus `assetsPaths` (`0x80000000`) and `resourcesUnused`
+   (`0x08000000`), both new at API 36 in the platform's
+   `data/api-versions.xml`. aapt2 2.20 gives `0x5000ffff` for the 18 names and
+   `0xd800ffff` for the 20 against the android-36 `android.jar`. `assetsPaths`
+   is not a Play requirement, but the fork's reason for it was measured on API
+   36 emulators. PR B is checked with `aapt2 dump badging` and `xmltree`, which
+   must read `0xd800ffff`. Google Play requires target API 36 for
+   new apps and updates from 2026-08-31, with an extension to 2026-11-01 on
+   request; the rule and the extension are to be confirmed in Play Console
+   before PR B. Target 36 keeps Tawara's Back opt-out
+   (`enableOnBackInvokedCallback="false"`), which is removed at 37. Kept
+   apart, a failure on the API 36 emulator is not confused with the fork
+   change; the 36 path has so far run only on an API 35 emulator.
+
+   **(j) Android exit after destruction: owner, 2026-10-12.** Check first,
+   then act. On an emulator, press Back from the foreground, then repeat
+   once with "Don't keep activities" switched on. Read the logcat tag
+   `RustStdoutStderr` for "TAWARA lifecycle: suspended; locking", for
+   whatever the lock logs when it completes, and for any SIGABRT. If the
+   lock's work is cut short, wait for `Leaving` for a short bound, about two
+   seconds, after `run_in` returns and before the process ends. If a SIGABRT
+   is reproduced, end the process with `libc::_exit` instead; that adds
+   `libc` to the mobile dependencies and the policy test. Reasons: Tawara
+   calls `exit(0)` as soon as `run_in` returns, without waiting for the lock
+   it started; `exit` runs no destructors; android-activity's documentation
+   says not to call `process::exit` from `android_main`; and the fork
+   reports SIGABRT in renderer threads under `exit` but not under `_exit`,
+   which has not been reproduced here. The wait comes after the Activity has
+   gone, so the suspend path, where the owner chose not to wait, is
+   unchanged. A test that sends the app to the background and kills it from
+   Recents cannot settle this, as the lock already runs by then.
+
 ### D33. The mobile wallet in its own repository
 
 **owner, 2026-10-06.** Until now the plan kept the Android and iOS entry
