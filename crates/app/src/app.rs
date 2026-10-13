@@ -96,10 +96,15 @@ pub struct Model {
     /// forgotten once its account is in sync again. Unsaved bytes are kept
     /// past that, since a reorganisation of the chain can revert a settle
     /// (docs/DECISIONS.md D38 item 5, as revised on 2026-10-13): they go
-    /// only when they are saved, dismissed, or the wallet locks. A lock
+    /// only when they are saved, dismissed, or the wallet locks. The locks
+    /// that release them are the person's, the idle one, the move to the
+    /// background and the worker's shutdown; a store the worker closed after
+    /// a failed read-back, or one another unlock replaced, keeps them, since
+    /// no one asked for that and the bytes may not have been seen. A lock
     /// brings a saved spend's page back once its store is unlocked, and the
     /// stopped screen offers to save what is left. What the store showed is
-    /// dropped from it, and the bytes are wiped whenever a spend is dropped.
+    /// dropped from it, and whenever a spend is dropped its bytes are wiped,
+    /// with the library's page, which repeats them.
     pub signed: Vec<Signed>,
     /// The worker stopped: `Some(true)` when it panicked. Nothing more can
     /// be done in this run.
@@ -1746,8 +1751,20 @@ impl App {
                 // A lock wipes the signed bytes that were not saved, and drops the
                 // page of such a spend when it is shown (docs/DECISIONS.md D38
                 // item 5, as revised on 2026-10-13). A saved spend is kept as it
-                // was.
-                let wiped = !self.model.drop_unsaved_at_lock().is_empty();
+                // was. Only the locks the owner named release them (asked for,
+                // idle, the background) and the shutdown, which ends the run.
+                // A store the worker closed because it could not be read back
+                // after a send or a settle, or one replaced by another unlock,
+                // keeps them: no one asked for that close, and bytes just signed
+                // may not have been seen yet.
+                let releases = matches!(
+                    reason,
+                    LockReason::Asked
+                        | LockReason::Idle
+                        | LockReason::Background
+                        | LockReason::Shutdown
+                );
+                let wiped = releases && !self.model.drop_unsaved_at_lock().is_empty();
                 self.model.busy = None;
                 // What the index holds for the store goes with it, and so does a
                 // settlement's banner that waited for a page of the store
@@ -1794,7 +1811,7 @@ impl App {
                 if wiped {
                     let gone = "Signed bytes that were not saved were wiped when the wallet \
                                 locked. Nothing is written to disk, so they are gone: if the \
-                                spend has not settled, its account's page offers Re-sign, which \
+                                spend has not landed, its account's page offers Re-sign, which \
                                 takes the same destinations, amounts, references, fee and \
                                 block-to-live typed again.";
                     note = Some(match note {
@@ -3700,17 +3717,57 @@ mod tests {
         }
     }
 
+    /// The application on W5 with a worker, the sample spend being signed:
+    /// the worker's answer to it, then a lock for `reason`, reach the
+    /// interface as events, in that order, as a lock queued behind a sign
+    /// does (the worker finishes a spend it has started, then locks).
+    fn signed_then_locked(
+        scratch: &Scratch,
+        reason: LockReason,
+    ) -> (App, tawara_wallet_core::SentView) {
+        let (mut app, _events) = app(scratch);
+        let plan = tawara_wallet_core::sample::plan_view();
+        app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        app.model.screen = Screen::Wallet(WalletPage {
+            page: Page::Send(SendPage {
+                from: Some(plan.from),
+                form: spend_typed(),
+                stage: SendStage::Review(Box::new(plan)),
+            }),
+            ..WalletPage::default()
+        });
+        let id = RequestId::example();
+        app.worker
+            .as_mut()
+            .expect("a worker")
+            .waiting
+            .push((id, Purpose::ConfirmSend));
+        app.model.busy = Some(Busy {
+            id,
+            activity: None,
+            progress: None,
+        });
+        let sent = tawara_wallet_core::sample::sent_view();
+        for event in [
+            Event::Done {
+                id,
+                reply: Reply::Sent(sent.clone()),
+            },
+            Event::Locked { reason },
+        ] {
+            let _ = app.update(Message::Worker(WorkerEvent::new(event)));
+        }
+        (app, sent)
+    }
+
     #[test]
     fn a_lock_while_signing_wipes_the_unsaved_sent_page() {
         // Lock is pressed while the spend waits on the node. The worker does
         // not stop a spend it has started: the spend answers, then the lock.
         // The bytes were not saved, so the lock wipes them (docs/DECISIONS.md
         // D38 item 5, as revised on 2026-10-13).
-        let (mut app, sent) = just_sent();
-        wallet(&mut app, WalletMsg::Report(ReportKey::Sent, Level::Full));
-        let _ = app.on_event(Event::Locked {
-            reason: LockReason::Asked,
-        });
+        let scratch = Scratch::new("lock-while-signing");
+        let (mut app, sent) = signed_then_locked(&scratch, LockReason::Asked);
         assert_eq!(app.model.wallet, None);
         match &app.model.screen {
             Screen::Unlock(u) => {
@@ -3826,20 +3883,23 @@ mod tests {
         assert!(matches!(&wallet_page(&app).page,
             Page::Resign(ResignPage { form, .. }) if *form == spend_typed()));
 
-        // Re-signed, the same bytes again: kept once, as the newest page.
+        // Re-signed, the same bytes again: kept once, as the newest page, and
+        // saved, since those bytes were (D38 item 5, as revised on 2026-10-13).
         let _ = app.on_reply(Purpose::Resign, Reply::Sent(sent.clone()));
-        assert!(sent_shown(&app).is_some_and(|(_, s)| s.resigned));
+        assert!(sent_shown(&app).is_some_and(|(_, s)| s.resigned && !s.unsaved()));
         let other = app.model.wallet.as_ref().unwrap().accounts[1].id;
         wallet(&mut app, WalletMsg::Open(To::Resign(other)));
         assert_eq!(app.model.signed.len(), 1);
         assert!(app.model.signed[0].sent.resigned);
+        assert!(!app.model.signed[0].unsaved());
+        assert_eq!(app.model.unsaved_signed().count(), 0);
         assert!(matches!(&wallet_page(&app).page,
             Page::Resign(ResignPage { form, .. }) if *form == SpendForm::default()));
 
         // Settling that finds the spend not landed keeps it. A check that
-        // finds the account in sync keeps the bytes that are not saved (D38
-        // item 5, as revised on 2026-10-13); once they are saved, it forgets
-        // them.
+        // finds the account in sync forgets it, since its bytes are saved
+        // (D38 item 5, as revised on 2026-10-13; unsaved bytes are kept past
+        // that, as the tests below show).
         let _ = app.on_reply(
             Purpose::Settle,
             Reply::Settled {
@@ -3848,11 +3908,6 @@ mod tests {
             },
         );
         assert_eq!(app.model.signed.len(), 1);
-        let _ = app.on_reply(Purpose::Status, in_sync_status(from));
-        assert_eq!(app.model.signed.len(), 1, "in sync, but not saved");
-        assert_eq!(app.model.unsaved_signed().count(), 1);
-        wallet(&mut app, WalletMsg::SaveSigned(hex.clone()));
-        assert_eq!(app.model.unsaved_signed().count(), 0);
         let _ = app.on_reply(Purpose::Status, in_sync_status(from));
         assert!(app.model.signed.is_empty());
         wallet(&mut app, WalletMsg::Open(To::Resign(from)));
@@ -3976,8 +4031,16 @@ mod tests {
 
     #[test]
     fn dismissing_unsaved_bytes_drops_and_wipes_them() {
-        // On the sent page that shows them: the page is left with them.
+        // On the sent page that shows them: Dismiss asks first, and the bytes
+        // stay until it is confirmed.
         let (mut app, sent) = just_sent();
+        wallet(&mut app, WalletMsg::AskDismiss);
+        assert!(sent_shown(&app).is_some_and(|(_, s)| s.dismissing));
+        wallet(&mut app, WalletMsg::CancelDismiss);
+        let (_, s) = sent_shown(&app).expect("the page stays");
+        assert!(!s.dismissing && s.sent.artifact_hex == sent.artifact_hex);
+        wallet(&mut app, WalletMsg::AskDismiss);
+        // Confirmed: the page is left with them.
         wallet(
             &mut app,
             WalletMsg::DismissSigned(sent.artifact_hex.clone()),
@@ -3993,18 +4056,33 @@ mod tests {
         let dropped = app.model.dismiss_signed(&sent.artifact_hex);
         assert_eq!(dropped.len(), 1);
         assert!(
-            dropped.iter().all(|s| s.sent.sent.artifact_hex.is_empty()),
-            "the bytes are wiped"
+            dropped
+                .iter()
+                .all(|s| s.sent.sent.artifact_hex.is_empty() && s.sent.sent.text.is_empty()),
+            "the bytes are wiped, and the library's page that repeats them"
         );
+
+        // Saved bytes are not dismissed: Dismiss is not asked for them.
+        let scratch = Scratch::new("dismiss-saved");
+        let (mut app, _) = just_sent();
+        app.model.downloads = Some(scratch.0.join("Downloads"));
+        wallet(&mut app, WalletMsg::SaveArtifact);
+        wallet(&mut app, WalletMsg::AskDismiss);
+        assert!(sent_shown(&app).is_some_and(|(_, s)| !s.dismissing));
         assert!(app.model.signed.is_empty());
         assert_eq!(app.model.unsaved_signed().count(), 0);
     }
 
     #[test]
-    fn a_lock_wipes_the_unsaved_bytes_shown_or_kept_whatever_closes_the_store() {
-        // Asked, idle and background locks alike: nothing unsaved survives one
-        // (D38 item 5, as revised on 2026-10-13).
-        for reason in [LockReason::Asked, LockReason::Idle, LockReason::Background] {
+    fn a_lock_asked_for_idle_background_or_at_shutdown_wipes_the_unsaved_bytes_shown_or_kept() {
+        // The locks the owner named, and the shutdown that ends the run: nothing
+        // unsaved survives one (D38 item 5, as revised on 2026-10-13).
+        for reason in [
+            LockReason::Asked,
+            LockReason::Idle,
+            LockReason::Background,
+            LockReason::Shutdown,
+        ] {
             let (mut app, _) = just_sent();
             let _ = app.on_event(Event::Locked { reason });
             assert!(app.model.signed.is_empty(), "{reason:?}: the shown bytes");
@@ -4023,6 +4101,72 @@ mod tests {
     }
 
     #[test]
+    fn bytes_saved_before_a_resign_stay_saved_over_a_lock() {
+        // The bytes are saved, the page left, and a re-sign gives the same
+        // bytes again: they are on disk, so the re-signed page is saved, and
+        // a lock keeps it to show again rather than wiping it (D38 item 5, as
+        // revised on 2026-10-13).
+        let scratch = Scratch::new("resign-saved-lock");
+        let (mut app, sent) = just_sent();
+        app.model.downloads = Some(scratch.0.join("Downloads"));
+        wallet(&mut app, WalletMsg::SaveArtifact);
+        wallet(&mut app, WalletMsg::Open(To::Resign(sent.from)));
+        let _ = app.on_reply(Purpose::Resign, Reply::Sent(sent.clone()));
+        assert!(sent_shown(&app).is_some_and(|(_, s)| !s.unsaved()));
+        let _ = app.on_event(Event::Locked {
+            reason: LockReason::Asked,
+        });
+        assert_eq!(app.model.signed.len(), 1);
+        assert!(app.model.signed[0].resume && !app.model.signed[0].unsaved());
+        assert!(matches!(&app.model.screen, Screen::Unlock(u)
+            if u.note.as_deref().is_some_and(|n| !n.contains("wiped"))));
+    }
+
+    #[test]
+    fn a_close_no_one_asked_for_keeps_the_unsaved_bytes() {
+        // The worker closes a store it could not read back after a send's
+        // settle, right after the send's answer, and an unlock replaces a
+        // store: neither is a lock the person asked for or one the wallet
+        // makes on idle or in the background, so bytes just signed are kept,
+        // not wiped before they are seen (D38 item 5, as revised on
+        // 2026-10-13).
+        let scratch = Scratch::new("reopen-failed-keeps");
+        let (mut app, sent) = signed_then_locked(&scratch, LockReason::ReopenFailed);
+        assert_eq!(app.model.signed.len(), 1);
+        let kept = &app.model.signed[0];
+        assert!(kept.unsaved() && kept.resume);
+        assert_eq!(kept.sent.sent.artifact_hex, sent.artifact_hex);
+        assert_eq!(kept.sent.sent.text, sent.text);
+        match &app.model.screen {
+            Screen::Unlock(u) => {
+                let note = u.note.as_deref().unwrap_or_default();
+                assert!(note.contains("signed spend"), "{note}");
+                assert!(!note.contains("wiped"), "{note}");
+            }
+            other => panic!("expected the unlock screen, got {other:?}"),
+        }
+        // Its store unlocked: the page as it was left, still unsaved.
+        let _ = app.on_reply(Purpose::Unlock, Reply::Unlocked(sent.view.clone()));
+        let (_, s) = sent_shown(&app).expect("the sent page");
+        assert!(s.unsaved());
+        assert_eq!(s.sent.artifact_hex, sent.artifact_hex);
+
+        // Kept and not shown: a store replaced, or closed, keeps it offered.
+        for reason in [LockReason::Replaced, LockReason::ReopenFailed] {
+            let (mut app, sent) = just_sent();
+            wallet(&mut app, WalletMsg::Open(To::Dashboard));
+            let _ = app.on_event(Event::Locked { reason });
+            assert_eq!(app.model.signed.len(), 1, "{reason:?}");
+            assert_eq!(
+                app.model.signed[0].sent.sent.artifact_hex, sent.artifact_hex,
+                "{reason:?}"
+            );
+            let _ = app.on_reply(Purpose::Unlock, Reply::Unlocked(sent.view.clone()));
+            assert_eq!(app.model.unsaved_signed().count(), 1, "{reason:?}");
+        }
+    }
+
+    #[test]
     fn the_lock_wipes_what_it_drops_and_keeps_a_saved_spend() {
         let (mut app, _) = just_sent();
         wallet(&mut app, WalletMsg::Open(To::Dashboard));
@@ -4034,8 +4178,10 @@ mod tests {
         let dropped = app.model.drop_unsaved_at_lock();
         assert_eq!(dropped.len(), 1, "the unsaved one");
         assert!(
-            dropped.iter().all(|s| s.sent.sent.artifact_hex.is_empty()),
-            "the bytes are wiped"
+            dropped
+                .iter()
+                .all(|s| s.sent.sent.artifact_hex.is_empty() && s.sent.sent.text.is_empty()),
+            "the bytes are wiped, and the library's page that repeats them"
         );
         assert_eq!(app.model.signed.len(), 1);
         assert!(!app.model.signed[0].unsaved());

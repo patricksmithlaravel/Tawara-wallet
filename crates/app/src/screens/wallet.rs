@@ -853,6 +853,7 @@ mod tests {
             sent: tawara_wallet_core::sample::sent_view(),
             resigned: false,
             saved: Some(Err(saved.to_owned())),
+            dismissing: false,
         };
         let size = (360, 200);
         let draw = |page: &SentPage| {

@@ -251,6 +251,7 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
             saved: Some(Ok(PathBuf::from(
                 "/home/you/Downloads/tawara-spend-5e5e5e5e5e5e5e5e.hex",
             ))),
+            dismissing: false,
         })),
     })));
     sent.wallet = Some(sample::sent_view().view);
@@ -260,6 +261,7 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
             sent: sample::sent_view(),
             resigned: false,
             saved: None,
+            dismissing: false,
         },
         form: typed.clone(),
         open: Default::default(),
@@ -308,6 +310,7 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
                 saved: Some(Ok(PathBuf::from(
                     "/home/you/Downloads/tawara-spend-5e5e5e5e5e5e5e5e.hex",
                 ))),
+                dismissing: false,
             })),
         })));
         m.wallet = Some(settled_wallet);
