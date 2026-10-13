@@ -976,6 +976,7 @@ mod tests {
             state: AccountState::InSync { balance: 1 },
             spendable: false,
             number: Some(0),
+            reserved: false,
         };
         let r = done(Done::Settled, &row, "the library's page");
         assert_eq!(r.title, "Settled: the account spends again after Refresh");
@@ -992,6 +993,7 @@ mod tests {
             state: AccountState::InSync { balance: 1 },
             spendable: true,
             number: Some(0),
+            reserved: false,
         };
         let r = done(Done::Settled, &row, "the library's page");
         assert_eq!(r.title, "Settled: the account can spend again");

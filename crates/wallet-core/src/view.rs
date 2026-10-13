@@ -6,7 +6,7 @@
 //! report text. The interface reads these and never a library type.
 
 use core::fmt;
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use mochimo_crypto::account::AccountKind as LibraryKind;
@@ -209,6 +209,45 @@ impl AccountState {
             }
         )
     }
+
+    /// Whether the store holds an open reservation for the account, as far as
+    /// this state says. A read that reached the node and the store says: the
+    /// library reads an outstanding or landed spend, and an unexplained
+    /// reservation, only when one is open, and an index out of step or an
+    /// account in sync only when none is. A read that failed before that point
+    /// (the node did not answer, answered "account not found", or the store
+    /// could not be read), and one that asked no node, do not say, so `None`.
+    /// [`AccountRow::set_state`] keeps the row's last word in that case, which
+    /// is what lets the polls start for an account whose first read failed
+    /// (docs/DECISIONS.md D38 item 2).
+    #[must_use]
+    pub fn reservation_held(&self) -> Option<bool> {
+        match self {
+            AccountState::SpendOutstanding { .. }
+            | AccountState::SpendLanded { .. }
+            | AccountState::Diverged {
+                kind: DivergenceKind::ReservationUnexplained,
+                ..
+            } => Some(true),
+            AccountState::InSync { .. }
+            | AccountState::Diverged {
+                kind:
+                    DivergenceKind::Ahead { .. }
+                    | DivergenceKind::Behind { .. }
+                    | DivergenceKind::Unlocated,
+                ..
+            } => Some(false),
+            AccountState::Diverged {
+                kind:
+                    DivergenceKind::NotFound
+                    | DivergenceKind::Unreachable
+                    | DivergenceKind::NoMaster
+                    | DivergenceKind::Failed,
+                ..
+            }
+            | AccountState::NotReconciled => None,
+        }
+    }
 }
 
 /// What reconciliation found for an account it could not explain, as the
@@ -258,69 +297,171 @@ impl DivergenceKind {
     }
 }
 
+/// How many polls in a row a [`Watch`] sends about an account whose reads
+/// leave its spend in doubt (see [`Watch`]): two, so that the third such read
+/// in a row ends the polls. A doubtful read may be a failed lookup that the
+/// next minute mends, so one is not enough to stop; but an account spent to
+/// zero reads "account not found" every time, and a settle the library keeps
+/// refusing leaves a landed spend every time, so the polls must end on their
+/// own (docs/DECISIONS.md D38 item 2).
+pub const DOUBTFUL_POLLS: u8 = 2;
+
+/// What one read of an account means for its polls ([`Watch`]).
+enum Read {
+    /// The reservation is live: the account is polled.
+    Live,
+    /// The read failed and says nothing: the node did not answer, or the
+    /// expiry could not be read. The polls go on as they were.
+    Silent,
+    /// The read leaves the spend in doubt: the node answered "account not
+    /// found", which the Mesh also answers for a lookup that failed (the
+    /// library's `recon` module, fact 3), or the spend landed and the
+    /// automatic settle did not make it. Polled again, a bounded number of
+    /// times ([`DOUBTFUL_POLLS`]).
+    Doubtful,
+    /// No node was asked: nothing changes.
+    Unasked,
+    /// The read settles the question: the account is in sync, its
+    /// reservation is dead or unrecorded, or it diverged in a way that is for
+    /// the person to look at. The polls end until a live read.
+    Ended,
+}
+
+impl Read {
+    fn of(state: &AccountState) -> Read {
+        match state {
+            AccountState::SpendOutstanding {
+                reservation: ReservationState::Live,
+                ..
+            } => Read::Live,
+            _ if state.is_transient() => Read::Silent,
+            AccountState::Diverged {
+                kind: DivergenceKind::NotFound,
+                ..
+            }
+            | AccountState::SpendLanded { .. } => Read::Doubtful,
+            AccountState::NotReconciled => Read::Unasked,
+            _ => Read::Ended,
+        }
+    }
+}
+
+/// Where one account's polls stand ([`Watch`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Polls {
+    /// Polled, with the number of polls sent about it while its read left
+    /// the spend in doubt, since its last live read. A silent read neither
+    /// adds to it nor starts it over.
+    Asking(u8),
+    /// A read ended its polls, and only a live read starts them again.
+    Ended,
+}
+
 /// The accounts a poll asks the node about (docs/DECISIONS.md D38 item 2), as
-/// the reads so far say. An account is asked about while its row shows a live
-/// reservation. It is also asked about while its read fails transiently (see
-/// [`AccountState::is_transient`]), for as long as its last good read showed a
-/// live reservation: a node that did not answer for a minute must not stop the
-/// polls that settle the spend once it answers. Any other read drops it: the
-/// spend landed, the account settled, the reservation is dead, or the account
-/// diverged for another reason. A lock drops every account ([`Watch::clear`]),
-/// and a view drops the accounts it does not hold. A poll is never the
-/// person's input (docs/DECISIONS.md D24), so nothing here restarts the idle
-/// period.
+/// the reads so far say. The rule extends D38 item 2, which polls only a live
+/// reservation, so that an outage does not stop the polls that settle a spend:
+///
+/// - An account is asked about while its row shows a live reservation.
+/// - It is still asked about while its reads fail and say nothing (the node
+///   did not answer, or the expiry could not be read; see
+///   [`AccountState::is_transient`]), once a read showed its reservation live,
+///   or when the store holds a reservation for it ([`AccountRow::reserved`]):
+///   a wallet opened during an outage has never read the spend live.
+/// - It is asked about while its reads leave the spend in doubt (the node
+///   answered "account not found", or the spend landed and the automatic
+///   settle did not make it), in the same cases, but for at most
+///   [`DOUBTFUL_POLLS`] polls in a row: the third doubtful read ends them.
+/// - Any other read ends its polls until a live read: the account settled,
+///   the reservation is dead or unrecorded, or the account diverged in a way
+///   that is for the person to look at. A read that asked no node changes
+///   nothing.
+/// - A lock forgets every account ([`Watch::clear`]), and a view forgets the
+///   accounts it does not hold.
+///
+/// A poll is never the person's input (docs/DECISIONS.md D24), so nothing here
+/// restarts the idle period.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Watch {
-    /// The accounts whose last good read showed a live reservation.
-    live: BTreeSet<AccountId>,
+    accounts: BTreeMap<AccountId, Polls>,
 }
 
 impl Watch {
     /// Whether a poll asks the node about `account`, whose row shows `state`.
     #[must_use]
     pub fn asks(&self, account: AccountId, state: &AccountState) -> bool {
-        match state {
-            AccountState::SpendOutstanding {
-                reservation: ReservationState::Live,
-                ..
-            } => true,
-            _ => state.is_transient() && self.live.contains(&account),
+        match Read::of(state) {
+            Read::Live => true,
+            Read::Silent => matches!(self.accounts.get(&account), Some(Polls::Asking(_))),
+            Read::Doubtful => matches!(
+                self.accounts.get(&account),
+                Some(Polls::Asking(n)) if *n < DOUBTFUL_POLLS
+            ),
+            Read::Unasked | Read::Ended => false,
         }
     }
 
-    /// Notes a read of `account` that showed `state`. A live reservation starts
-    /// the account's polls. A transient failure, and `NotReconciled` (nothing
-    /// has asked the node about the account), leave them as they were. Any
-    /// other state ends them.
+    /// Notes a read of `account` that showed `state`, as a check or a poll
+    /// answers it, which does not say whether the store holds a reservation
+    /// (see [`Watch::read_row`]).
     pub fn read(&mut self, account: AccountId, state: &AccountState) {
-        match state {
-            AccountState::SpendOutstanding {
-                reservation: ReservationState::Live,
-                ..
-            } => {
-                self.live.insert(account);
+        self.note(account, state, false);
+    }
+
+    /// Notes the read a row shows, with what the store holds for it: a row
+    /// whose store holds a reservation starts the polls on a failed read, as
+    /// a live read does.
+    pub fn read_row(&mut self, row: &AccountRow) {
+        self.note(row.id, &row.state, row.reserved);
+    }
+
+    fn note(&mut self, account: AccountId, state: &AccountState, reserved: bool) {
+        // The same read noted again (every reply notes every row) leaves the
+        // count as it was, so only polls advance it.
+        match (Read::of(state), self.accounts.get(&account).copied()) {
+            (Read::Live, _) => {
+                self.accounts.insert(account, Polls::Asking(0));
             }
-            _ if state.is_transient() => {}
-            AccountState::NotReconciled => {}
-            _ => {
-                self.live.remove(&account);
+            // A doubtful read once the polls in doubt are spent ends them, so a
+            // silent read after it asks nothing either.
+            (Read::Doubtful, Some(Polls::Asking(n))) if n >= DOUBTFUL_POLLS => {
+                self.accounts.insert(account, Polls::Ended);
             }
+            (Read::Silent | Read::Doubtful, None)
+                if reserved || state.reservation_held() == Some(true) =>
+            {
+                self.accounts.insert(account, Polls::Asking(0));
+            }
+            (Read::Ended, _) => {
+                self.accounts.insert(account, Polls::Ended);
+            }
+            (Read::Silent | Read::Doubtful | Read::Unasked, _) => {}
         }
     }
 
-    /// Notes each row of `view` as a read (see [`Watch::read`]), and forgets
-    /// the accounts the view does not hold.
+    /// Notes that a poll asked the node about `account`, whose row showed
+    /// `state`: a poll sent while the spend is in doubt counts towards
+    /// [`DOUBTFUL_POLLS`].
+    pub fn asked(&mut self, account: AccountId, state: &AccountState) {
+        if matches!(Read::of(state), Read::Doubtful)
+            && let Some(Polls::Asking(n)) = self.accounts.get_mut(&account)
+        {
+            *n = n.saturating_add(1);
+        }
+    }
+
+    /// Notes each row of `view` (see [`Watch::read_row`]), and forgets the
+    /// accounts the view does not hold.
     pub fn read_view(&mut self, view: &WalletView) {
-        self.live
-            .retain(|id| view.accounts.iter().any(|row| row.id == *id));
+        self.accounts
+            .retain(|id, _| view.accounts.iter().any(|row| row.id == *id));
         for row in &view.accounts {
-            self.read(row.id, &row.state);
+            self.read_row(row);
         }
     }
 
     /// Forgets every account: the wallet locked, so its next reads start over.
     pub fn clear(&mut self) {
-        self.live.clear();
+        self.accounts.clear();
     }
 }
 
@@ -385,6 +526,25 @@ pub struct AccountRow {
     /// account, for a store without its seed, and for a derived account
     /// not found within [`crate::DISCOVER_MAX_TO`].
     pub number: Option<u32>,
+    /// Whether the store holds an open reservation for it (the library's
+    /// `AccountView::pending`), as the store said when the row was made and as
+    /// each read since has said ([`AccountRow::set_state`]). A read that failed
+    /// does not say whether a spend is outstanding, and this does, so that the
+    /// polls carry on for a wallet opened during an outage (docs/DECISIONS.md
+    /// D38 item 2; [`Watch`]).
+    pub reserved: bool,
+}
+
+impl AccountRow {
+    /// The row as a read left it: its state, and whether a reservation is
+    /// held when the state says (see [`AccountState::reservation_held`]). A
+    /// state that does not say leaves `reserved` as the last word was.
+    pub fn set_state(&mut self, state: AccountState) {
+        if let Some(held) = state.reservation_held() {
+            self.reserved = held;
+        }
+        self.state = state;
+    }
 }
 
 /// The unlocked store, as the interface shows it.
@@ -494,6 +654,7 @@ mod tests {
             state,
             spendable: false,
             number: Some(0),
+            reserved: false,
         };
         let view = WalletView {
             dir: PathBuf::new(),
@@ -527,38 +688,62 @@ mod tests {
         assert_eq!(none.total(), Total::Unknown);
     }
 
-    #[test]
-    fn a_watch_asks_through_transient_reads_after_a_live_one_and_stops_on_any_other() {
-        let id = AccountId::from_tag([7; 20]);
-        let outstanding = |reservation| AccountState::SpendOutstanding {
+    fn outstanding(reservation: ReservationState) -> AccountState {
+        AccountState::SpendOutstanding {
             balance: 1,
             spent_index: 2,
             reservation,
-        };
-        let live = outstanding(ReservationState::Live);
-        let silent = AccountState::Diverged {
-            kind: DivergenceKind::Unreachable,
-            report: "no answer".to_owned(),
+        }
+    }
+
+    fn diverged(kind: DivergenceKind) -> AccountState {
+        AccountState::Diverged {
+            kind,
+            report: "the library's report".to_owned(),
             advance_to: None,
-        };
+        }
+    }
+
+    fn landed() -> AccountState {
+        AccountState::SpendLanded {
+            balance: 1,
+            spent_index: 2,
+            settled_index: 3,
+        }
+    }
+
+    #[test]
+    fn a_watch_asks_through_transient_reads_after_a_live_one_and_stops_on_any_other() {
+        let id = AccountId::from_tag([7; 20]);
+        let live = outstanding(ReservationState::Live);
+        let silent = diverged(DivergenceKind::Unreachable);
         let unclassified = outstanding(ReservationState::Unclassified);
         // A live reservation is asked about whatever the reads said before.
         assert!(Watch::default().asks(id, &live));
-        // An account never read live is not asked about because a read failed.
+        // Nothing is asked about a failed read before a read is noted.
         let mut watch = Watch::default();
         assert!(!watch.asks(id, &silent));
         assert!(!watch.asks(id, &unclassified));
-        // A live read asks, and each transient read after it keeps asking.
-        watch.read(id, &live);
+        // A node that did not answer does not say a spend is outstanding, so
+        // that read alone starts nothing.
         watch.read(id, &silent);
-        assert!(watch.asks(id, &silent));
-        watch.read(id, &unclassified);
-        assert!(watch.asks(id, &unclassified));
+        assert!(!watch.asks(id, &silent));
+        // A live read asks, and each transient read after it keeps asking, for
+        // as long as they last: they are not counted.
+        watch.read(id, &live);
+        for _ in 0..5 {
+            watch.read(id, &silent);
+            assert!(watch.asks(id, &silent));
+            watch.asked(id, &silent);
+            watch.read(id, &unclassified);
+            assert!(watch.asks(id, &unclassified));
+            watch.asked(id, &unclassified);
+        }
         // A read that asked no node says nothing either way.
         watch.read(id, &AccountState::NotReconciled);
         assert!(watch.asks(id, &silent));
-        // Any other read drops the account, and a transient read after it does
-        // not bring it back.
+        // Any other read ends the polls, and a transient read after it does
+        // not bring them back, even on a row whose store holds a reservation.
         let others = [
             outstanding(ReservationState::Dead {
                 balance_moved: true,
@@ -569,30 +754,149 @@ mod tests {
                 expired: true,
             }),
             outstanding(ReservationState::Unrecorded),
-            AccountState::SpendLanded {
-                balance: 1,
-                spent_index: 2,
-                settled_index: 3,
-            },
             AccountState::InSync { balance: 1 },
-            AccountState::Diverged {
-                kind: DivergenceKind::ReservationUnexplained,
-                report: "unexplained".to_owned(),
-                advance_to: None,
-            },
-            AccountState::Diverged {
-                kind: DivergenceKind::NotFound,
-                report: "not found".to_owned(),
-                advance_to: None,
-            },
+            diverged(DivergenceKind::ReservationUnexplained),
+            diverged(DivergenceKind::Ahead { gap: 1 }),
+            diverged(DivergenceKind::Behind { gap: 1 }),
+            diverged(DivergenceKind::Unlocated),
+            diverged(DivergenceKind::NoMaster),
+            diverged(DivergenceKind::Failed),
         ];
         for other in others {
             let mut watch = Watch::default();
             watch.read(id, &live);
             watch.read(id, &other);
+            assert!(!watch.asks(id, &other), "{other:?}");
+            for after in [&silent, &unclassified] {
+                let mut row = AccountRow {
+                    id,
+                    kind: AccountKind::Derived,
+                    index: 0,
+                    state: after.clone(),
+                    spendable: false,
+                    number: None,
+                    reserved: true,
+                };
+                watch.read_row(&row);
+                assert!(!watch.asks(id, after), "{other:?}, then {after:?}");
+                row.state = landed();
+                watch.read_row(&row);
+                assert!(!watch.asks(id, &landed()), "{other:?}, then landed");
+            }
+            // A live read starts them again.
+            watch.read(id, &live);
             watch.read(id, &silent);
-            assert!(!watch.asks(id, &silent), "{other:?}");
-            assert!(!watch.asks(id, &unclassified), "{other:?}");
+            assert!(watch.asks(id, &silent), "{other:?}, then live");
+        }
+    }
+
+    #[test]
+    fn a_watch_asks_about_a_doubtful_read_twice_in_a_row_and_the_third_ends_it() {
+        let id = AccountId::from_tag([7; 20]);
+        let live = outstanding(ReservationState::Live);
+        let silent = diverged(DivergenceKind::Unreachable);
+        for doubtful in [diverged(DivergenceKind::NotFound), landed()] {
+            let mut watch = Watch::default();
+            watch.read(id, &live);
+            // One doubtful read and then a live one: the count starts over.
+            watch.read(id, &doubtful);
+            assert!(watch.asks(id, &doubtful), "{doubtful:?}");
+            watch.asked(id, &doubtful);
+            watch.read(id, &live);
+            // Two polls are sent while the reads stay in doubt, and noting the
+            // same read again, as every reply does, counts nothing.
+            for n in 0..DOUBTFUL_POLLS {
+                watch.read(id, &doubtful);
+                watch.read(id, &doubtful);
+                assert!(watch.asks(id, &doubtful), "{doubtful:?}, poll {n}");
+                watch.asked(id, &doubtful);
+                // A node that does not answer between them neither counts nor
+                // starts the count over.
+                watch.read(id, &silent);
+                assert!(watch.asks(id, &silent), "{doubtful:?}, poll {n}");
+                watch.asked(id, &silent);
+            }
+            // The third doubtful read in a row asks nothing, nor does a silent
+            // one after it.
+            watch.read(id, &doubtful);
+            assert!(!watch.asks(id, &doubtful), "{doubtful:?}");
+            watch.read(id, &silent);
+            assert!(!watch.asks(id, &silent), "{doubtful:?}");
+            // A live read starts the polls again.
+            watch.read(id, &live);
+            watch.read(id, &doubtful);
+            assert!(watch.asks(id, &doubtful), "{doubtful:?}");
+        }
+    }
+
+    #[test]
+    fn a_watch_starts_on_a_failed_first_read_when_a_reservation_is_held() {
+        let id = AccountId::from_tag([7; 20]);
+        let row = |state: AccountState, reserved| AccountRow {
+            id,
+            kind: AccountKind::Derived,
+            index: 0,
+            state,
+            spendable: false,
+            number: None,
+            reserved,
+        };
+        let failed = [
+            diverged(DivergenceKind::Unreachable),
+            diverged(DivergenceKind::NotFound),
+        ];
+        // A failed lookup on a row whose store holds a reservation is polled,
+        // as a wallet opened during an outage shows it.
+        for state in &failed {
+            let mut watch = Watch::default();
+            watch.read_row(&row(state.clone(), true));
+            assert!(watch.asks(id, state), "{state:?}");
+            // One whose store holds none is not.
+            let mut watch = Watch::default();
+            watch.read_row(&row(state.clone(), false));
+            assert!(!watch.asks(id, state), "{state:?}");
+        }
+        // An unreadable expiry and a landed spend each say that a reservation
+        // is held, so either starts the polls on its own.
+        for state in [outstanding(ReservationState::Unclassified), landed()] {
+            let mut watch = Watch::default();
+            watch.read(id, &state);
+            assert!(watch.asks(id, &state), "{state:?}");
+        }
+    }
+
+    #[test]
+    fn a_row_keeps_its_reservation_through_a_read_that_does_not_say() {
+        let mut row = AccountRow {
+            id: AccountId::from_tag([7; 20]),
+            kind: AccountKind::Derived,
+            index: 0,
+            state: AccountState::NotReconciled,
+            spendable: false,
+            number: None,
+            reserved: true,
+        };
+        for state in [
+            diverged(DivergenceKind::Unreachable),
+            diverged(DivergenceKind::NotFound),
+            diverged(DivergenceKind::NoMaster),
+            diverged(DivergenceKind::Failed),
+            AccountState::NotReconciled,
+        ] {
+            row.set_state(state.clone());
+            assert!(row.reserved, "{state:?}");
+            assert_eq!(row.state, state);
+        }
+        for (state, held) in [
+            (AccountState::InSync { balance: 1 }, false),
+            (outstanding(ReservationState::Live), true),
+            (diverged(DivergenceKind::Ahead { gap: 1 }), false),
+            (landed(), true),
+            (diverged(DivergenceKind::Unlocated), false),
+            (diverged(DivergenceKind::ReservationUnexplained), true),
+        ] {
+            row.set_state(state.clone());
+            assert_eq!(row.reserved, held, "{state:?}");
         }
     }
 
@@ -605,17 +909,10 @@ mod tests {
             state,
             spendable: false,
             number: None,
+            reserved: false,
         };
-        let live = AccountState::SpendOutstanding {
-            balance: 1,
-            spent_index: 2,
-            reservation: ReservationState::Live,
-        };
-        let silent = AccountState::Diverged {
-            kind: DivergenceKind::Unreachable,
-            report: "no answer".to_owned(),
-            advance_to: None,
-        };
+        let live = outstanding(ReservationState::Live);
+        let silent = diverged(DivergenceKind::Unreachable);
         let (one, two) = (AccountId::from_tag([1; 20]), AccountId::from_tag([2; 20]));
         let mut view = WalletView {
             dir: PathBuf::new(),

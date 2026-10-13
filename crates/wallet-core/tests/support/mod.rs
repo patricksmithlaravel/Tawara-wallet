@@ -34,7 +34,7 @@
 
 #![allow(dead_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Condvar, Mutex};
@@ -113,6 +113,9 @@ struct State {
     /// expiry of an outstanding spend cannot be checked (the library's
     /// `Expiry::Unreadable`).
     status_down: bool,
+    /// The tags whose lookups the node does not answer, while it answers the
+    /// rest: one account reads `ChainUnreachable` and the others reconcile.
+    silent_for: BTreeSet<Tag>,
     refuse_submits: bool,
     submits: Vec<Vec<u8>>,
     calls: usize,
@@ -297,6 +300,16 @@ impl Chain {
     /// The node answers the ledger but not its status: a read of the tip fails.
     pub fn set_status_down(&self, down: bool) {
         self.0.lock().expect("chain").status_down = down;
+    }
+
+    /// The node does not answer a lookup of `tag`, or answers again.
+    pub fn set_silent_for(&self, tag: Tag, silent: bool) {
+        let mut s = self.0.lock().expect("chain");
+        if silent {
+            s.silent_for.insert(tag);
+        } else {
+            s.silent_for.remove(&tag);
+        }
     }
 
     pub fn refuse_submits(&self, refuse: bool) {
@@ -501,6 +514,12 @@ impl Transport for Chain {
                     .and_then(unhex)
                     .ok_or(mesh("test: tag hex"))?;
                 let tag: Tag = raw.try_into().map_err(|_| mesh("test: tag length"))?;
+                if s.silent_for.contains(&tag) {
+                    return Err(Error::Transport {
+                        op: "call",
+                        kind: TransportKind::Io(std::io::ErrorKind::TimedOut),
+                    });
+                }
                 let nth = {
                     let count = s.resolved.entry(tag).or_default();
                     *count += 1;

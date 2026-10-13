@@ -2359,6 +2359,206 @@ fn a_poll_stops_asking_once_a_read_shows_an_unexplained_reservation() {
     assert!(!watch.asks(account0(), &state));
 }
 
+/// The next poll of account 0, as the interface sends it after a read that
+/// showed `last`: only when the watch asks about it, and noted as asked.
+fn poll_after(
+    h: &mut Harness,
+    watch: &mut Watch,
+    last: &AccountState,
+) -> (AccountState, bool, Option<SettledAccount>) {
+    assert!(
+        watch.asks(account0(), last),
+        "no poll is owed after {last:?}"
+    );
+    watch.asked(account0(), last);
+    poll_account0(h, watch)
+}
+
+fn is_not_found(state: &AccountState) -> bool {
+    matches!(
+        state,
+        AccountState::Diverged {
+            kind: DivergenceKind::NotFound,
+            ..
+        }
+    )
+}
+
+fn is_live(state: &AccountState) -> bool {
+    matches!(
+        state,
+        AccountState::SpendOutstanding {
+            reservation: ReservationState::Live,
+            ..
+        }
+    )
+}
+
+#[test]
+fn a_poll_keeps_asking_through_a_mesh_not_found_for_a_bounded_run() {
+    // D38 item 2, as the watch extends it: the Mesh answers "account not
+    // found" for a lookup that failed as well as for an empty account (the
+    // library's recon module, fact 3), so the polls go on through such reads,
+    // but the third in a row ends them, since an account spent to zero reads
+    // so every time.
+    let scratch = Scratch::new("poll-not-found");
+    let (mut h, start) = funded(&scratch);
+    let plan = send_expiring_from_account0(&mut h, 100_000, 1_100);
+    let mut watch = Watch::default();
+    let (state, _, _) = poll_account0(&mut h, &mut watch);
+    assert!(is_live(&state), "{state:?}");
+
+    // Two reads not found, then the node answers again: the polls went on
+    // throughout, and the count starts over.
+    h.chain.vanish_from(tag(0), h.chain.resolves(tag(0)) + 1);
+    let (state, _, _) = poll_after(&mut h, &mut watch, &state);
+    assert!(is_not_found(&state), "{state:?}");
+    let (state, _, _) = poll_after(&mut h, &mut watch, &state);
+    assert!(is_not_found(&state), "{state:?}");
+    h.chain.vanish_from(tag(0), usize::MAX);
+    let (state, _, _) = poll_after(&mut h, &mut watch, &state);
+    assert!(is_live(&state), "{state:?}");
+
+    // Three reads not found in a row end the polls.
+    h.chain.vanish_from(tag(0), h.chain.resolves(tag(0)) + 1);
+    let (state, _, _) = poll_after(&mut h, &mut watch, &state);
+    let (state, _, _) = poll_after(&mut h, &mut watch, &state);
+    let (state, _, _) = poll_after(&mut h, &mut watch, &state);
+    assert!(is_not_found(&state), "{state:?}");
+    assert!(
+        !watch.asks(account0(), &state),
+        "the third read not found in a row ends the polls"
+    );
+
+    // A live read starts them again, and the spend that lands is settled by
+    // the poll that finds it.
+    h.chain.vanish_from(tag(0), usize::MAX);
+    let (state, _, _) = poll_account0(&mut h, &mut watch);
+    assert!(is_live(&state), "{state:?}");
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    let (state, spendable, settled) = poll_after(&mut h, &mut watch, &state);
+    assert_eq!(
+        state,
+        AccountState::InSync {
+            balance: plan.change_total
+        }
+    );
+    assert!(spendable);
+    assert!(settled.is_some(), "the landed spend settles on this poll");
+    assert!(!watch.asks(account0(), &state));
+}
+
+#[test]
+fn a_poll_tries_again_a_landed_spend_whose_automatic_settle_the_node_interrupted() {
+    // D38: a poll that finds the spend landed settles it. When the node stops
+    // answering between the read and the settle, the account is left landed,
+    // and the next poll tries the settle again.
+    let scratch = Scratch::new("poll-landed");
+    let (mut h, start) = funded(&scratch);
+    let plan = send_expiring_from_account0(&mut h, 100_000, 1_100);
+    let mut watch = Watch::default();
+    let (state, _, _) = poll_account0(&mut h, &mut watch);
+    assert!(is_live(&state), "{state:?}");
+
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    // The poll's own read is the node's next answer; the settle's read after
+    // it is not, so the library refuses the settle.
+    h.chain.vanish_from(tag(0), h.chain.resolves(tag(0)) + 2);
+    let (state, _, settled) = poll_after(&mut h, &mut watch, &state);
+    assert!(
+        matches!(state, AccountState::SpendLanded { spent_index, .. } if spent_index == start),
+        "{state:?}"
+    );
+    assert_eq!(settled, None);
+    assert!(
+        watch.asks(account0(), &state),
+        "a settle the node interrupted is tried again"
+    );
+
+    h.chain.vanish_from(tag(0), usize::MAX);
+    let (state, spendable, settled) = poll_after(&mut h, &mut watch, &state);
+    assert_eq!(
+        state,
+        AccountState::InSync {
+            balance: plan.change_total
+        }
+    );
+    assert!(spendable);
+    assert_eq!(settled.map(|s| s.account), Some(account0()));
+    assert!(!watch.asks(account0(), &state));
+}
+
+#[test]
+fn a_wallet_opened_while_the_node_fails_for_the_spend_polls_it() {
+    // D38 item 2, as the watch extends it: the read that opens the wallet may
+    // fail for the account whose spend is outstanding while another account
+    // reconciles, so the wallet opens with that read alone. The row carries
+    // the store's reservation, and the polls start from it.
+    let scratch = Scratch::new("poll-open-outage");
+    let dir = scratch.store();
+    let mut h = two_accounts(&scratch);
+    let plan = send_expiring_from_account0(&mut h, 100_000, 1_100);
+    let row0 = |view: &WalletView| row_of(view, account0());
+
+    // The node does not answer for the account, then answers "account not
+    // found" for it.
+    for silent in [true, false] {
+        assert!(matches!(h.call(Command::Lock), Reply::Locked));
+        assert_eq!(h.wait_locked(Duration::from_secs(5)), LockReason::Asked);
+        if silent {
+            h.chain.set_silent_for(tag(0), true);
+        } else {
+            h.chain.vanish_from(tag(0), h.chain.resolves(tag(0)) + 1);
+        }
+        let view = opened(h.unlock(&dir, PASSWORD));
+        assert!(view.opened, "the other account reconciled: {view:?}");
+        let row = row0(&view);
+        let kind = if silent {
+            DivergenceKind::Unreachable
+        } else {
+            DivergenceKind::NotFound
+        };
+        assert!(
+            matches!(&row.state, AccountState::Diverged { kind: k, .. } if *k == kind),
+            "{:?}",
+            row.state
+        );
+        assert!(row.reserved, "the store holds the spend's reservation");
+        assert!(
+            !row_of(&view, AccountId::from_tag(tag(1))).reserved,
+            "and none for the other account"
+        );
+        let mut watch = Watch::default();
+        watch.read_view(&view);
+        assert!(
+            watch.asks(account0(), &row.state),
+            "a wallet opened during an outage polls the outstanding spend"
+        );
+
+        // The node answers again: the poll reads the reservation live.
+        h.chain.set_silent_for(tag(0), false);
+        h.chain.vanish_from(tag(0), usize::MAX);
+        let (state, _, _) = poll_after(&mut h, &mut watch, &row.state);
+        assert!(is_live(&state), "{state:?}");
+        assert!(watch.asks(account0(), &state));
+    }
+
+    // The spend lands, and the poll settles it.
+    let mut watch = Watch::default();
+    let (state, _, _) = poll_account0(&mut h, &mut watch);
+    let start = match state {
+        AccountState::SpendOutstanding { spent_index, .. } => spent_index,
+        other => panic!("expected the spend outstanding, got {other:?}"),
+    };
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    let (state, _, settled) = poll_after(&mut h, &mut watch, &state);
+    assert!(settled.is_some(), "{state:?}");
+    assert!(!watch.asks(account0(), &state));
+}
+
 #[test]
 fn the_node_is_chosen_https_or_loopback_only() {
     let mut h = Harness::new();

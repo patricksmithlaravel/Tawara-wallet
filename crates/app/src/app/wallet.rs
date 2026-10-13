@@ -894,7 +894,7 @@ impl App {
             && let Some(row) = w.accounts.iter_mut().find(|a| a.id == account)
         {
             row.spendable = spendable;
-            row.state = state;
+            row.set_state(state);
         }
     }
 
@@ -2032,7 +2032,7 @@ impl App {
                 if let Some(w) = &mut self.model.wallet {
                     for found in &reports {
                         if let Some(row) = w.accounts.iter_mut().find(|a| a.id == found.account) {
-                            row.state = found.state.clone();
+                            row.set_state(found.state.clone());
                             row.spendable = found.spendable;
                         }
                     }

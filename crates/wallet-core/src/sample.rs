@@ -111,6 +111,7 @@ pub fn wallet_view() -> WalletView {
             },
             spendable: true,
             number: Some(0),
+            reserved: false,
         },
         AccountRow {
             id: AccountId::from_tag(tag(2)),
@@ -123,6 +124,7 @@ pub fn wallet_view() -> WalletView {
             },
             spendable: false,
             number: Some(1),
+            reserved: true,
         },
         AccountRow {
             id: AccountId::from_tag(tag(3)),
@@ -131,6 +133,7 @@ pub fn wallet_view() -> WalletView {
             state: AccountState::from_divergence(&diverged),
             spendable: false,
             number: None,
+            reserved: false,
         },
     ];
     WalletView {
@@ -314,11 +317,11 @@ pub fn sent_view() -> SentView {
         },
     );
     let mut view = wallet_view();
-    view.accounts[0].state = AccountState::SpendOutstanding {
+    view.accounts[0].set_state(AccountState::SpendOutstanding {
         balance: FIRST_BALANCE,
         spent_index: 49,
         reservation: ReservationState::Live,
-    };
+    });
     view.accounts[0].spendable = false;
     view.accounts[0].index = 50;
     SentView {

@@ -990,8 +990,19 @@ fn store_rows(store: &Keystore<Disk>) -> Result<Vec<AccountRow>, Refusal> {
             state: AccountState::NotReconciled,
             spendable: false,
             number: None,
+            reserved: reserved_in(store, &h.tag),
         })
         .collect())
+}
+
+/// Whether the store holds an open reservation for `tag`: the library's
+/// `AccountView::pending`, which reconciliation reads before it asks the node.
+/// A row carries it so that the polls of an outstanding spend start even when
+/// the read that opened the wallet failed for it (docs/DECISIONS.md D38 item
+/// 2; `view::Watch`). A store that cannot be read for the tag says no: that
+/// read diverges the account, and no poll is owed to it.
+fn reserved_in(store: &Keystore<Disk>, tag: &Tag) -> bool {
+    matches!(store.view(tag), Ok(Some(v)) if v.pending.is_some())
 }
 
 /// The Store session's notice when the library would not open the wallet,
@@ -1073,6 +1084,7 @@ fn wallet_rows<T: Transport>(wallet: &Wallet<Disk, T>) -> Result<Vec<AccountRow>
                 state,
                 spendable,
                 number: None,
+                reserved: reserved_in(wallet.store(), &h.tag),
             }
         })
         .collect())
@@ -1171,7 +1183,7 @@ fn update_row(
     index: Option<u32>,
 ) {
     if let Some(row) = rows.iter_mut().find(|r| r.id.tag() == *tag) {
-        row.state = state;
+        row.set_state(state);
         row.spendable = spendable;
         if let Some(i) = index {
             row.index = i;
@@ -1774,7 +1786,7 @@ impl<C: Connect> Worker<C> {
                         AutoSettle::Settled { text, state } => {
                             row.spendable = wallet.accounts().iter().any(|(t, _)| *t == tag)
                                 && matches!(state, AccountState::InSync { .. });
-                            row.state = state;
+                            row.set_state(state);
                             self.settled.push(SettledAccount {
                                 account: row.id,
                                 text,

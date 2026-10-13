@@ -39,8 +39,8 @@ pub use wallet::{
 };
 
 /// How often a poll asks the node about an account [`Watch::asks`] names: one
-/// whose reservation is live and outstanding, or whose reads have failed
-/// transiently since a read showed it live (docs/DECISIONS.md D38 item 2).
+/// whose reservation is live and outstanding, or whose spend a failed read
+/// left unanswered (docs/DECISIONS.md D38 item 2, as [`Watch`] extends it).
 const POLL_EVERY: Duration = Duration::from_secs(60);
 
 /// The accounts the worker settled on its own in answering with `reply`
@@ -122,7 +122,8 @@ pub struct Model {
     /// much.
     polled_at: Option<Instant>,
     /// The accounts a poll asks the node about, as the reads so far say
-    /// (docs/DECISIONS.md D38 item 2; [`Watch`]). A lock empties it.
+    /// (docs/DECISIONS.md D38 item 2; [`Watch`]). A lock and a stopped worker
+    /// empty it.
     watch: Watch,
     /// Whether the window has the system's focus, as its last focus event
     /// said; a window starts with it. A poll asks only while it does, since
@@ -1200,7 +1201,9 @@ impl App {
     /// Asks the node about each account that [`Watch::asks`] names, once a
     /// minute, while a wallet is open and its window is in the foreground
     /// (docs/DECISIONS.md D38 item 2): an account whose reservation is live and
-    /// outstanding, and one whose read failed transiently after such a read.
+    /// outstanding, and one whose spend a failed read left unanswered, as
+    /// [`Watch`] sets out. Each poll is noted in the watch, which bounds the
+    /// polls of a spend in doubt.
     /// The worker's own read settles an account whose chain shows the change
     /// key, and the answer is shown as a settlement's banner when it does. A
     /// poll is not the person's input, so it does not restart the idle period
@@ -1216,6 +1219,14 @@ impl App {
         }
         self.model.polled_at = Some(now);
         for account in accounts {
+            let m = &mut self.model;
+            if let Some(row) = m
+                .wallet
+                .as_ref()
+                .and_then(|w| w.accounts.iter().find(|a| a.id == account))
+            {
+                m.watch.asked(account, &row.state);
+            }
             self.send(
                 Command::Status {
                     account,
@@ -1229,14 +1240,16 @@ impl App {
     /// The accounts a poll asks about at `now` (see [`App::poll`]): in an open
     /// wallet whose window is in the foreground, when a minute has passed since
     /// the last poll and nothing else is awaited, those that [`Watch::asks`]
-    /// names. An account whose reservation is live is polled, and one whose
-    /// read failed transiently is polled only after a read that showed its
-    /// reservation live (docs/DECISIONS.md D38 item 2). A dead reservation is
-    /// never polled, since it never settles. A diverged account that is not
-    /// failing transiently is not polled either: it is for the person to look
-    /// at, not for a timer to walk the chain for (docs/DECISIONS.md D19, D38).
-    /// A landed spend is not polled either: the read that found it settled it,
-    /// or failed and left it for Refresh, Check now or the Settle button.
+    /// names. An account whose reservation is live is polled. One whose read
+    /// failed is polled once a read showed its reservation live or when the
+    /// store holds a reservation for it, so a wallet opened during an outage
+    /// polls its outstanding spend; an answer of "account not found", and a
+    /// landed spend the automatic settle did not make, are polled at most
+    /// twice more in a row, after which Refresh, Check now or the Settle button
+    /// remain (docs/DECISIONS.md D38 item 2, as [`Watch`] extends it). A dead
+    /// reservation is never polled, since it never settles. Any other diverged
+    /// account is not polled either: it is for the person to look at, not for
+    /// a timer to walk the chain for (docs/DECISIONS.md D19, D38).
     fn polled_accounts(&self, now: Instant) -> Vec<AccountId> {
         let m = &self.model;
         let due = m
@@ -5263,7 +5276,7 @@ mod tests {
                 vec![],
             ),
             (
-                "landed",
+                "landed, with no read noted",
                 AccountState::SpendLanded {
                     balance: 1,
                     spent_index: 6,
@@ -5273,7 +5286,7 @@ mod tests {
             ),
             ("in sync", AccountState::InSync { balance: 1 }, vec![]),
             (
-                "diverged, never read live",
+                "unreachable, with no read noted",
                 AccountState::Diverged {
                     kind: DivergenceKind::Unreachable,
                     report: "no answer".to_owned(),
@@ -5282,6 +5295,9 @@ mod tests {
                 vec![],
             ),
         ];
+        // Each state is put on the row with no read of it noted in the watch,
+        // so only a live reservation is polled. What a noted read starts is
+        // for the tests after this one.
         for (label, state, polled) in cases {
             let mut wallet = tawara_wallet_core::sample::wallet_view();
             wallet.accounts[1].state = state;
@@ -5355,8 +5371,9 @@ mod tests {
             answered(app);
             sent
         };
-        // The first read the app takes of the account shows its reservation live,
-        // as every read that opens or answers for the wallet does.
+        // The first read the app takes of the account here shows its reservation
+        // live. A wallet opened while the node fails for the account is the
+        // next test's.
         answer(&mut app, live.clone(), None);
         assert!(polls(&mut app), "a live reservation is polled");
 
@@ -5416,8 +5433,11 @@ mod tests {
             reason: LockReason::Background,
         });
         assert!(app.model.wallet.is_none());
+        // The row says the store holds no reservation, so only what the watch
+        // kept from before the lock could poll it.
         let mut wallet = tawara_wallet_core::sample::wallet_view();
         wallet.accounts[1].state = silent.clone();
+        wallet.accounts[1].reserved = false;
         let _ = app.on_reply(Purpose::Refresh, Reply::Wallet(wallet));
         assert!(
             !polls(&mut app),
@@ -5428,6 +5448,98 @@ mod tests {
             touched,
             "a poll is not the person's input"
         );
+    }
+
+    #[test]
+    fn a_poll_asks_about_a_spend_a_failed_first_read_left_and_bounds_a_spend_in_doubt() {
+        use tawara_wallet_core::view::{AccountState, DivergenceKind, ReservationState};
+        let scratch = Scratch::new("poll-first-read");
+        let (mut app, _events) = app(&scratch);
+        let account = live_account();
+        let diverged = |kind| AccountState::Diverged {
+            kind,
+            report: "the library's report".to_owned(),
+            advance_to: None,
+        };
+        let silent = diverged(DivergenceKind::Unreachable);
+        let not_found = diverged(DivergenceKind::NotFound);
+        let landed = AccountState::SpendLanded {
+            balance: 2_640_000_000_000,
+            spent_index: 6,
+            settled_index: 7,
+        };
+        let live = AccountState::SpendOutstanding {
+            balance: 3_180_000_000_000,
+            spent_index: 6,
+            reservation: ReservationState::Live,
+        };
+        let answer = |app: &mut App, state: AccountState| {
+            let _ = app.on_reply(
+                Purpose::Poll,
+                Reply::Status {
+                    account,
+                    state,
+                    spendable: false,
+                    text: "checked".to_owned(),
+                    settled: None,
+                },
+            );
+        };
+        let polls = |app: &mut App| {
+            app.model.polled_at = None;
+            answered(app);
+            let _ = app.update(Message::Tick(now_ms()));
+            let sent = app.waiting_on(|p| matches!(p, Purpose::Poll));
+            answered(app);
+            sent
+        };
+        // A wallet opens while the node does not answer, or answers "account
+        // not found", for the account whose spend is outstanding: the store
+        // holds its reservation, so it is polled from that first read.
+        for first in [&silent, &not_found] {
+            let _ = app.on_event(Event::Locked {
+                reason: LockReason::Asked,
+            });
+            let mut wallet = tawara_wallet_core::sample::wallet_view();
+            wallet.accounts[1].state = first.clone();
+            assert!(wallet.accounts[1].reserved, "the sample's spend");
+            let _ = app.on_reply(Purpose::Refresh, Reply::Wallet(wallet));
+            assert!(polls(&mut app), "{first:?} at open");
+            answer(&mut app, silent.clone());
+            assert!(polls(&mut app), "{first:?}, then no answer");
+        }
+
+        // "Account not found" leaves the spend in doubt: it is asked about twice
+        // more in a row, and the third such read ends the polls.
+        answer(&mut app, live.clone());
+        for n in 0..2 {
+            answer(&mut app, not_found.clone());
+            assert!(polls(&mut app), "not found, poll {n}");
+        }
+        answer(&mut app, not_found.clone());
+        assert!(!polls(&mut app), "the third read not found ends the polls");
+        answer(&mut app, silent.clone());
+        assert!(!polls(&mut app), "and a silent one does not restart them");
+
+        // A landed spend the automatic settle did not make is asked about in the
+        // same way, so a settle the node interrupted is tried again.
+        answer(&mut app, live.clone());
+        for n in 0..2 {
+            answer(&mut app, landed.clone());
+            assert!(polls(&mut app), "landed, poll {n}");
+        }
+        answer(&mut app, landed.clone());
+        assert!(!polls(&mut app), "the third landed read ends the polls");
+
+        // A row whose store holds no reservation is not polled on a failed read.
+        let _ = app.on_event(Event::Locked {
+            reason: LockReason::Asked,
+        });
+        let mut wallet = tawara_wallet_core::sample::wallet_view();
+        wallet.accounts[1].state = silent.clone();
+        wallet.accounts[1].reserved = false;
+        let _ = app.on_reply(Purpose::Refresh, Reply::Wallet(wallet));
+        assert!(!polls(&mut app));
     }
 
     #[test]
