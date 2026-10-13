@@ -158,7 +158,11 @@ fn code_style(_: &iced::Theme) -> qr_code::Style {
 }
 
 #[cfg(test)]
+mod reader;
+
+#[cfg(test)]
 mod tests {
+    use super::reader::{SIDE, decode, in_grid, placement};
     use super::*;
     use crate::app::{NARROWEST, Page, Screen};
     use crate::harness::{Driver, fits, texts};
@@ -166,17 +170,9 @@ mod tests {
     use tawara_wallet_core::view::AccountId;
     use tawara_wallet_core::{ReceiveView, sample};
 
-    /// The window a code is drawn in: larger than the card, which is 37 modules
-    /// across with its quiet zone at version 3.
+    /// The window a code is drawn in on its own: larger than the card, which
+    /// is 37 modules across with its quiet zone at version 3.
     const PANE: (u32, u32) = (300, 300);
-    const SIDE: usize = 37;
-
-    /// The format information's mask, which the standard XORs into the BCH
-    /// code of the EC level and mask (ISO/IEC 18004, 7.9.4).
-    const FORMAT_MASK: u32 = 0x5412;
-
-    /// The alphanumeric mode's characters, by their values.
-    const ALPHANUMERIC: &[u8; 45] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:";
 
     /// The model on the Receive page at `width`, with the first account's
     /// answer `view`, as the worker gives it.
@@ -203,6 +199,18 @@ mod tests {
         }
     }
 
+    /// The answer for an account whose destination is `destination`, which
+    /// need not be one a tag renders to.
+    fn view_of(account: AccountId, destination: &str) -> ReceiveView {
+        ReceiveView {
+            account,
+            destination: Some(destination.to_owned()),
+            index: 0,
+            ledger_address: String::new(),
+            text: String::new(),
+        }
+    }
+
     #[test]
     fn the_phone_receive_page_fits_at_360() {
         let model = receiving(NARROWEST, sample::receive_view());
@@ -210,55 +218,79 @@ mod tests {
     }
 
     #[test]
-    fn the_code_card_fits_inside_a_phone_card_at_360() {
-        // The page's 16 on each side, the card's 1-pixel border on each side and
-        // its 16 of padding on each side leave 294 of the 360 pixels for the card's
-        // content. The window-edge check cannot see a card wider than that: a
-        // container is clamped to the room it is given, so its own padding would
-        // overflow unseen. So the card is drawn alone at the top-left of a window,
-        // and its width is the white that runs along its middle row.
-        const PHONE_CARD_CONTENT: usize = 360 - 2 * (16 + 1 + 16);
-        const WINDOW: usize = 400;
+    fn the_code_card_is_37_modules_across() {
+        // The card drawn alone at the top-left of a window, measured by the white
+        // that runs along its middle row.
         let view = sample::receive_view();
         let page = ReceivePage::answered(view.account, view);
         let code = page.code.as_deref().expect("a destination has a code");
-        let pixels =
-            Driver::<()>::new(code_card::<()>(code), (WINDOW as u32, WINDOW as u32)).draw();
-        let middle = WINDOW / 2;
-        let white = |x: usize| {
-            pixels[(middle * WINDOW + x) * 4..][..3]
-                .iter()
-                .all(|&v| v > 250)
-        };
-        let width = (0..WINDOW).rev().find(|&x| white(x)).map_or(0, |x| x + 1);
+        let pixels = Driver::<()>::new(code_card::<()>(code), PANE).draw();
+        let width = PANE.0 as usize;
+        let middle = PANE.1 as usize / 2;
+        let white = |x: usize| is_white(&pixels, width, x, middle);
+        let across = (0..width).rev().find(|&x| white(x)).map_or(0, |x| x + 1);
         assert_eq!(
-            width,
-            37 * MODULE as usize,
+            across,
+            SIDE * MODULE as usize,
             "the card is 37 modules across: a version 3 code and its quiet zone"
-        );
-        assert!(
-            width <= PHONE_CARD_CONTENT,
-            "the card is {width} pixels wide, and a phone's card holds {PHONE_CARD_CONTENT}"
         );
     }
 
     #[test]
-    fn the_code_encodes_the_destination_and_nothing_else() {
+    fn the_phone_page_draws_the_whole_code_at_360_and_it_reads_back() {
+        // The window-edge check cannot see a card that is given less room than it
+        // needs: a container is clamped to the room it is given, so the code would
+        // overflow its white card unseen. So the whole phone page is drawn at 360,
+        // tall enough that nothing scrolls, and the card's white must still be 37
+        // modules across, with the code inside it reading back as the
+        // destination. The page's margins, the card's border and its padding are
+        // all in that room, as they are drawn.
+        const WIDTH: usize = NARROWEST as usize;
+        const HEIGHT: usize = 1600;
         let view = sample::receive_view();
+        let destination = view
+            .destination
+            .clone()
+            .expect("the sample has a destination");
+        let model = receiving(NARROWEST, view);
+        assert!(model.compact(), "the phone layout is drawn at 360");
+        let pixels =
+            Driver::<Message>::new(crate::screens::view(&model), (WIDTH as u32, HEIGHT as u32))
+                .draw();
+        let white = |x: usize, y: usize| is_white(&pixels, WIDTH, x, y);
+
+        // The longest run of white on any row, and where it starts.
+        let (across, left) = (0..HEIGHT)
+            .flat_map(|y| {
+                let mut runs = Vec::new();
+                let mut x = 0;
+                while x < WIDTH {
+                    let start = x;
+                    while x < WIDTH && white(x, y) {
+                        x += 1;
+                    }
+                    runs.push((x - start, start));
+                    x += 1;
+                }
+                runs
+            })
+            .max()
+            .expect("the page has rows");
         assert_eq!(
-            ReceivePage::code_text(&view),
-            view.destination.as_deref(),
-            "the text encoded is the destination the page prints"
+            across,
+            SIDE * MODULE as usize,
+            "the code's card is clamped to {across} pixels on a phone at 360"
         );
-        let hex_only = ReceiveView {
-            destination: None,
-            ..view
-        };
-        assert_eq!(
-            ReceivePage::code_text(&hex_only),
-            None,
-            "with only the hex form known there is no text to encode"
-        );
+
+        // The card's top: the first row of the four white modules above the
+        // code, down its middle.
+        let quiet = 4 * MODULE as usize;
+        let middle = left + across / 2;
+        let top = (0..HEIGHT - quiet)
+            .find(|&y| (y..y + quiet).all(|y| white(middle, y)))
+            .expect("the card's quiet zone is drawn");
+        let grid = modules(&pixels, WIDTH, (left, top));
+        assert_eq!(decode(&grid), Ok(destination));
     }
 
     #[test]
@@ -311,10 +343,13 @@ mod tests {
     }
 
     #[test]
-    fn every_destination_has_a_code_at_version_3() {
+    fn destinations_of_512_sampled_tags_have_a_code_at_version_3() {
         // Every destination is the 22-byte payload in Base58, so at most 31
-        // characters. The extremes are the all-zero and the all-0xFF tags, and the
-        // checksum does not change the length.
+        // characters: 31 Base58 digits reach 58^31, which passes 256^22, and 30
+        // do not. That bound is checked here by logarithms; the tags below are a
+        // sample that includes the extremes, the all-zero and the all-0xFF tags.
+        let bits = |digits: f64| digits * 58f64.log2();
+        assert!(bits(31.0) > 22.0 * 8.0 && bits(30.0) < 22.0 * 8.0);
         for n in 0..=u8::MAX {
             let mut ones = [0xFF; 20];
             ones[0] = n;
@@ -322,15 +357,10 @@ mod tests {
                 let account = AccountId::from_tag(tag);
                 let destination = account.destination().expect("a tag renders");
                 assert!(destination.len() <= 31, "{destination} is too long");
-                let view = ReceiveView {
-                    account,
-                    destination: Some(destination.clone()),
-                    index: 0,
-                    ledger_address: String::new(),
-                    text: String::new(),
-                };
                 assert!(
-                    ReceivePage::answered(account, view).code.is_some(),
+                    ReceivePage::answered(account, view_of(account, &destination))
+                        .code
+                        .is_some(),
                     "{destination} has no code"
                 );
             }
@@ -342,273 +372,81 @@ mod tests {
         for tag in [[0x00; 20], [0xFF; 20]] {
             let account = AccountId::from_tag(tag);
             let destination = account.destination().expect("a tag renders");
-            let view = ReceiveView {
-                account,
-                destination: Some(destination.clone()),
-                index: 0,
-                ledger_address: String::new(),
-                text: String::new(),
-            };
-            let page = ReceivePage::answered(account, view);
+            let page = ReceivePage::answered(account, view_of(account, &destination));
             let code = page.code.as_deref().expect("a destination has a code");
             assert_eq!(read_back(code), Ok(destination));
         }
     }
 
     #[test]
-    fn the_format_information_is_the_standards() {
-        // ISO/IEC 18004's table: error correction M with mask 0, and L with mask 0.
-        assert_eq!(format_code(0b00000), 0b101010000010010);
-        assert_eq!(format_code(0b01000), 0b111011111000100);
+    fn a_destination_of_capitals_and_digits_alone_decodes_to_itself() {
+        // The encoder chooses each segment's mode, and a text of capitals and
+        // digits alone goes in the alphanumeric mode, not as bytes. Base58 has
+        // such texts, and 31 of them still fit version 3 at Q.
+        let account = sample::receive_view().account;
+        let destination = "9U2VH66SWRKEJPPATCCFJMVJHVYFHT1";
+        let page = ReceivePage::answered(account, view_of(account, destination));
+        let code = page.code.as_deref().expect("the text has a code");
+        assert_eq!(read_back(code), Ok(destination.to_owned()));
+    }
+
+    #[test]
+    fn any_codeword_module_changed_makes_the_code_unreadable() {
+        // Each block is checked against its error correction codewords, so one
+        // module of the data or of the error correction changed is an error,
+        // never another text; the seven remainder modules carry nothing.
+        let view = sample::receive_view();
+        let page = ReceivePage::answered(view.account, view);
+        let code = page.code.as_deref().expect("a destination has a code");
+        let grid = drawn(code);
+        assert!(decode(&grid).is_ok());
+        let codewords = placement();
+        for &at in &codewords[..codewords.len() - 7] {
+            let (r, c) = in_grid(at);
+            let mut changed = grid.clone();
+            changed[r][c] = !changed[r][c];
+            let read = decode(&changed);
+            assert!(
+                read.is_err(),
+                "the module at {r},{c} changed reads {read:?}"
+            );
+        }
     }
 
     /// The text the drawn code encodes, read back from its pixels: the card
     /// as the page draws it, at the top-left of a pane.
     fn read_back(code: &qr_code::Data) -> Result<String, String> {
-        let pixels = Driver::<()>::new(code_card::<()>(code), PANE).draw();
-        decode(&modules(&pixels, PANE.0 as usize, SIDE))
+        decode(&drawn(code))
     }
 
-    /// The modules of a `side` by `side` grid at the top-left of a window
-    /// `width` pixels wide, dark where the pixel at each module's centre is.
-    fn modules(pixels: &[u8], width: usize, side: usize) -> Vec<Vec<bool>> {
+    /// The modules of `code` as the card draws it at the top-left of a pane.
+    fn drawn(code: &qr_code::Data) -> Vec<Vec<bool>> {
+        let pixels = Driver::<()>::new(code_card::<()>(code), PANE).draw();
+        modules(&pixels, PANE.0 as usize, (0, 0))
+    }
+
+    /// Whether the pixel at `x`, `y` of a window `width` pixels wide is white.
+    fn is_white(pixels: &[u8], width: usize, x: usize, y: usize) -> bool {
+        pixels[(y * width + x) * 4..][..3].iter().all(|&v| v > 250)
+    }
+
+    /// The modules of a code and its quiet zone whose top-left corner is at
+    /// `origin` in a window `width` pixels wide, dark where the pixel at each
+    /// module's centre is.
+    fn modules(pixels: &[u8], width: usize, origin: (usize, usize)) -> Vec<Vec<bool>> {
         let px = MODULE as usize;
-        (0..side)
+        (0..SIDE)
             .map(|r| {
-                (0..side)
+                (0..SIDE)
                     .map(|c| {
-                        let at = ((r * px + px / 2) * width + c * px + px / 2) * 4;
+                        let y = origin.1 + r * px + px / 2;
+                        let x = origin.0 + c * px + px / 2;
+                        let at = (y * width + x) * 4;
                         let total: u32 = pixels[at..at + 3].iter().map(|&v| u32::from(v)).sum();
                         total < 3 * 128
                     })
                     .collect()
             })
             .collect()
-    }
-
-    /// The text a code encodes, read from its modules with the quiet zone
-    /// included, by the standard's own layout (ISO/IEC 18004). It reads
-    /// version 3 at error correction Q and nothing else. The code under test
-    /// is drawn, not damaged, so nothing is corrected: every format bit, every
-    /// block and every segment must be where the standard puts it.
-    fn decode(grid: &[Vec<bool>]) -> Result<String, String> {
-        const QUIET: usize = 4;
-        const W: usize = 29;
-        let side = grid.len();
-        if side != W + 2 * QUIET || grid.iter().any(|row| row.len() != side) {
-            return Err(format!("{side} modules across, not {}", W + 2 * QUIET));
-        }
-        for (r, row) in grid.iter().enumerate() {
-            for (c, &dark) in row.iter().enumerate() {
-                let inside =
-                    (QUIET..side - QUIET).contains(&r) && (QUIET..side - QUIET).contains(&c);
-                if dark && !inside {
-                    return Err(format!("a dark module in the quiet zone at {r},{c}"));
-                }
-            }
-        }
-        let module = |r: usize, c: usize| grid[r + QUIET][c + QUIET];
-
-        // The format information, twice: round the top-left finder, and split
-        // between the bottom-left and the top-right. The first bit read is the
-        // most significant.
-        let first: [(usize, usize); 15] = [
-            (8, 0),
-            (8, 1),
-            (8, 2),
-            (8, 3),
-            (8, 4),
-            (8, 5),
-            (8, 7),
-            (8, 8),
-            (7, 8),
-            (5, 8),
-            (4, 8),
-            (3, 8),
-            (2, 8),
-            (1, 8),
-            (0, 8),
-        ];
-        let second: Vec<(usize, usize)> = (W - 7..W)
-            .rev()
-            .map(|r| (r, 8))
-            .chain((W - 8..W).map(|c| (8, c)))
-            .collect();
-        let read = |at: &[(usize, usize)]| {
-            at.iter()
-                .fold(0u32, |bits, &(r, c)| (bits << 1) | u32::from(module(r, c)))
-        };
-        let format = read(&first);
-        if read(&second) != format {
-            return Err("the two copies of the format information differ".to_owned());
-        }
-        let data = (0..32u32)
-            .find(|&d| format_code(d) == format)
-            .ok_or_else(|| format!("{format:015b} is no format information"))?;
-        if data >> 3 != 0b11 {
-            return Err(format!(
-                "error correction bits {:02b}, not 11 (Q)",
-                data >> 3
-            ));
-        }
-        let mask = (data & 7) as usize;
-
-        // The data and error correction codewords, read in the zigzag from the
-        // bottom-right corner, skipping the function patterns and the timing
-        // column. Each module is unmasked as it is read.
-        let function = |r: usize, c: usize| {
-            (r <= 8 && (c <= 8 || c >= W - 8))
-                || (r >= W - 8 && c <= 8)
-                || r == 6
-                || c == 6
-                || ((20..=24).contains(&r) && (20..=24).contains(&c))
-        };
-        let mut stream = Vec::new();
-        let mut col = W - 1;
-        let mut upward = true;
-        loop {
-            if col == 6 {
-                col = 5;
-            }
-            let rows: Vec<usize> = if upward {
-                (0..W).rev().collect()
-            } else {
-                (0..W).collect()
-            };
-            for r in rows {
-                for c in [col, col - 1] {
-                    if !function(r, c) {
-                        stream.push(module(r, c) ^ mask_bit(mask, r, c));
-                    }
-                }
-            }
-            upward = !upward;
-            if col <= 2 {
-                break;
-            }
-            col -= 2;
-        }
-
-        // Version 3 at Q has two blocks of 17 data codewords, interleaved one
-        // from each block in turn; the message is the first block then the second.
-        if stream.len() < 34 * 8 {
-            return Err(format!("{} data modules, not 272", stream.len()));
-        }
-        let mut message = [0u8; 34];
-        for k in 0..34 {
-            let byte = stream[8 * k..8 * k + 8]
-                .iter()
-                .fold(0u8, |v, &bit| (v << 1) | u8::from(bit));
-            message[(k % 2) * 17 + k / 2] = byte;
-        }
-
-        let mut reader = Reader {
-            bytes: &message,
-            at: 0,
-        };
-        let mut text = Vec::new();
-        loop {
-            match reader.take(4)? {
-                0b0000 => break,
-                0b0001 => {
-                    // Numeric: three digits in ten bits, then two in seven or one in four.
-                    let mut left = reader.take(10)?;
-                    while left >= 3 {
-                        let v = reader.take(10)?;
-                        if v > 999 {
-                            return Err(format!("{v} is no three digits"));
-                        }
-                        text.extend(format!("{v:03}").bytes());
-                        left -= 3;
-                    }
-                    if left > 0 {
-                        let width = if left == 2 { 7 } else { 4 };
-                        let v = reader.take(width)?;
-                        if v >= 10usize.pow(left as u32) {
-                            return Err(format!("{v} is no {left} digits"));
-                        }
-                        text.extend(format!("{v:0left$}").bytes());
-                    }
-                }
-                0b0010 => {
-                    // Alphanumeric: two characters in eleven bits, then one in six.
-                    let mut left = reader.take(9)?;
-                    while left >= 2 {
-                        let v = reader.take(11)?;
-                        text.push(alphanumeric(v / 45)?);
-                        text.push(alphanumeric(v % 45)?);
-                        left -= 2;
-                    }
-                    if left == 1 {
-                        let v = reader.take(6)?;
-                        text.push(alphanumeric(v)?);
-                    }
-                }
-                0b0100 => {
-                    // Byte: eight bits a character.
-                    let n = reader.take(8)?;
-                    for _ in 0..n {
-                        text.push(reader.take(8)? as u8);
-                    }
-                }
-                mode => return Err(format!("mode {mode:04b} is none of the three read here")),
-            }
-        }
-        String::from_utf8(text).map_err(|e| e.to_string())
-    }
-
-    /// The bits of a message, read most significant first.
-    struct Reader<'a> {
-        bytes: &'a [u8],
-        at: usize,
-    }
-
-    impl Reader<'_> {
-        fn take(&mut self, n: usize) -> Result<usize, String> {
-            if self.at + n > 8 * self.bytes.len() {
-                return Err("the message ends inside a segment".to_owned());
-            }
-            let mut v = 0;
-            for i in self.at..self.at + n {
-                v = (v << 1) | usize::from((self.bytes[i / 8] >> (7 - i % 8)) & 1);
-            }
-            self.at += n;
-            Ok(v)
-        }
-    }
-
-    fn alphanumeric(i: usize) -> Result<u8, String> {
-        ALPHANUMERIC
-            .get(i)
-            .copied()
-            .ok_or_else(|| format!("{i} is no alphanumeric character"))
-    }
-
-    /// The format information the standard gives `data`, its two error
-    /// correction bits and three mask bits: a BCH code of fifteen bits, masked
-    /// with [`FORMAT_MASK`].
-    fn format_code(data: u32) -> u32 {
-        let mut rem = data << 10;
-        for bit in (10..15).rev() {
-            if rem & (1 << bit) != 0 {
-                rem ^= 0x537 << (bit - 10);
-            }
-        }
-        ((data << 10) | rem) ^ FORMAT_MASK
-    }
-
-    /// Whether the module at `r`, `c` is inverted by `mask`, by the standard's
-    /// eight patterns (ISO/IEC 18004, 7.8.2).
-    fn mask_bit(mask: usize, r: usize, c: usize) -> bool {
-        match mask {
-            0 => (r + c).is_multiple_of(2),
-            1 => r.is_multiple_of(2),
-            2 => c.is_multiple_of(3),
-            3 => (r + c).is_multiple_of(3),
-            4 => (r / 2 + c / 3).is_multiple_of(2),
-            5 => (r * c) % 2 + (r * c) % 3 == 0,
-            6 => ((r * c) % 2 + (r * c) % 3).is_multiple_of(2),
-            _ => ((r + c) % 2 + (r * c) % 3).is_multiple_of(2),
-        }
     }
 }

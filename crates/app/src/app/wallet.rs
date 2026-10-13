@@ -250,10 +250,14 @@ impl ReceivePage {
     }
 
     /// The page once the worker has answered `view` for `account`. The code
-    /// is version 3 at error correction Q (docs/DECISIONS.md D41), which holds
-    /// 32 bytes in byte mode; a destination is at most 31 characters, being the
-    /// 22-byte payload in Base58. A destination that does not encode is drawn
-    /// as no code at all, never as a different one.
+    /// is version 3 at error correction Q (docs/DECISIONS.md D41). The encoder
+    /// chooses the modes, the shortest it finds for the text: bytes where there
+    /// are small letters, and the alphanumeric mode for a destination of
+    /// capitals and digits alone, which scanners read the same. Version 3 at Q
+    /// holds 32 bytes even in byte mode, the longest, and a destination is at
+    /// most 31 characters, being the 22-byte payload in Base58. A destination
+    /// that does not encode is drawn as no code at all, never as a different
+    /// one.
     #[must_use]
     pub fn answered(account: AccountId, view: ReceiveView) -> ReceivePage {
         let code = Self::code_text(&view)
