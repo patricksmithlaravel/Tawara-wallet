@@ -1,9 +1,11 @@
 # Release checklist
 
 The steps from a green `main` to Tawara in people's hands, in the order they
-are done. docs/PLAN.md section 7 makes this checklist a condition of phase 5;
-D36 in docs/DECISIONS.md proposes the tools it uses. It covers both
-repositories: this one, which builds the desktop packages, and
+are done. Section 2 is the exception: it lists the threat model's items and
+names for each the gate it closes at, section 3's or section 8's.
+docs/PLAN.md section 7 makes this checklist a condition of phase 5; D36 in
+docs/DECISIONS.md proposes the tools it uses. It covers both repositories:
+this one, which builds the desktop packages, and
 [Tawara-mobile](https://github.com/patricksmithlaravel/Tawara-mobile), which
 builds the phone packages from `tawara-app` pinned here (D33). The threat
 model is D34 (docs/THREAT_MODEL.md); the third-party notices are D35.
@@ -215,28 +217,46 @@ PLAN sections 3 and 7 make docs/THREAT_MODEL.md (D34) a condition of any
 release. Its section 6 lists what must be closed, or accepted by the owner in
 writing in docs/DECISIONS.md, before any release. Items that need a built
 package or a device close at section 8's gate; the rest close at section 3's
-gate, before the tag. In summary, with the threat model's own identifiers:
+gate, before the tag. Each item below names its gate. A failure found at
+section 3 costs no new tag; one found at section 8 costs a new version and
+new packages (section 8, "When a check fails and is fixed"). In summary,
+with the threat model's own identifiers:
 
 - [ ] **Every device check, V1 to V17** (its section 5.2), run on the
-  builds to be released and recorded: section 8 here (owner).
-- [ ] **G6**, the Android exit after `Destroy`, checked at the release's pin
-  and acted on as D32 item 9 (j) says (delegated, then owner).
+  builds to be released and recorded: section 8 here (owner; section 8's
+  gate).
+- [ ] **G6**, the Android exit after `Destroy`: its emulator run at the
+  release's pin, and what D32 item 9 (j) says to do with the result
+  (delegated, then owner; section 3's gate). Its run on the phone is V4
+  (section 8's gate).
 - [ ] **G17**, a working save path on phones: Tawara-mobile #8 (the share
-  sheet) merged, with its pin on this repository's `main` (delegated).
+  sheet) merged, with its pin on this repository's `main` (delegated;
+  section 3's gate).
 - [ ] **C1**, the records on what an interrupted send can leave (D19
   against D28 and D32 item 6), made to agree, in words the owner approves
-  (owner).
+  (owner; section 3's gate).
 - [ ] **G4 and C7**, the typed-secret fields' plain `String`s against PLAN
-  4.2's "at once": fixed, or the deviation recorded (owner).
+  4.2's "at once": fixed, or the deviation recorded (owner; section 3's
+  gate).
 - [ ] **G1, G2, G10, G12 and G24**, the owner's decisions on the
   two-wallets warning, the desktop's phrase on screen, accessibility,
-  clearing a pasted phrase, and the application's wording (owner).
+  clearing a pasted phrase, and the application's wording (owner; section
+  3's gate). G10's decision says what is required, and its check is V7
+  (section 8's gate). G24's wording is approved on the screens the release
+  commit draws, as `design/screenshots/` shows them; CI checks those images
+  pixel for pixel against what the screens draw (D27 item 1).
 - [ ] **Its section 5.4**: each residual risk accepted, or a control added
-  (owner).
-- [ ] **Phase 5's own items** (its item 8): signed packages, notices, the
-  counsel questions, the executable's name, this checklist, target API 36,
-  and UIScene re-checked with the Xcode that builds the upload (D32 item
-  8): the signed build launches on the newest iOS and on iOS 16.
+  (owner; section 3's gate). The phone part of its item 10, T16 and T31 on
+  phones, waits for V1 and V7 (section 8's gate).
+- [ ] **Phase 5's own items** (its item 8): the notices, the counsel
+  questions, the executable's name, this checklist and target API 36
+  (section 3's gate); signed packages for every platform, and UIScene
+  re-checked with the Xcode that builds the upload (D32 item 8), so that
+  the signed build launches on the newest iOS and on iOS 16 (section 8's
+  gate). iOS 16 is the lowest version the build declares
+  (`IPHONEOS_DEPLOYMENT_TARGET=16.0`, section 6.5, as Tawara-mobile's
+  `platform/ios/tawara.sh` sets it). No decision records it as the floor,
+  so the owner confirms it before the tag.
 
 The threat model also lists items that may follow the first release if the
 owner agrees; they do not block it. If its list and this summary differ, the
@@ -534,12 +554,12 @@ for review or published.
   model's section 5.2 (D34), V1 to V17; if it changes before the release,
   its list is the one run:
   - V1 text entry and keyboard learning; V2 `FLAG_SECURE` from the first
-    frame; V3 the Android share chooser; V4 the Android exit after
-    `Destroy`, first on the emulator at the release's pin, then on the
-    phone; V5 iOS data protection, on the signed build; V6 the iOS app
-    switcher's snapshot; V7 TalkBack and VoiceOver; V8 the library on a
-    phone's file system; V9 the first gesture after launch, and touch;
-    V10 the background lock;
+    frame; V3 the Android share chooser; V4 the Android exit after `Destroy`
+    on the phone (its emulator run at the release's pin is G6, before the
+    tag; section 2); V5 iOS data protection, on the signed build; V6 the iOS
+    app switcher's snapshot; V7 TalkBack and VoiceOver; V8 the library on a
+    phone's file system; V9 the first gesture after launch, and touch; V10
+    the background lock;
   - V11 backup and transfer leave the store out; V12 the app starts on
     arm64; V13 a kill mid-send, and split screen; V14 the copy mark on
     Android; V15 hardware-keyboard copy and cut; V16 the first screen on
