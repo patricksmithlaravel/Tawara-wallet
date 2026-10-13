@@ -5809,6 +5809,54 @@ mod tests {
     }
 
     #[test]
+    fn a_sign_the_library_refused_reads_its_account_again() {
+        // The library records a reservation before it signs, so a sign it
+        // refused may have left one with no bytes. The account is read again,
+        // quietly, as a poll is (D38 item 2). A refusal of the worker's own, for
+        // a plan that is gone, reaches no reservation and reads nothing.
+        use tawara_wallet_core::{Refusal, RefusalKind};
+        let scratch = Scratch::new("refused-sign");
+        let (mut app, _events) = app(&scratch);
+        app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        let reviewing = |app: &mut App| {
+            let plan = tawara_wallet_core::sample::plan_view();
+            app.model.screen = Screen::Wallet(WalletPage {
+                page: Page::Send(SendPage {
+                    from: Some(plan.from),
+                    form: spend_typed(),
+                    stage: SendStage::Review(Box::new(plan)),
+                }),
+                ..WalletPage::default()
+            });
+        };
+        reviewing(&mut app);
+        let _ = app.on_reply(
+            Purpose::ConfirmSend,
+            Reply::Refused(Refusal {
+                kind: RefusalKind::NoSuchPlan,
+                text: "plan it again".to_owned(),
+            }),
+        );
+        assert!(!app.waiting_on(|p| matches!(p, Purpose::Poll)));
+        reviewing(&mut app);
+        let _ = app.on_reply(
+            Purpose::ConfirmSend,
+            Reply::Refused(Refusal {
+                kind: RefusalKind::Library,
+                text: "the library refused".to_owned(),
+            }),
+        );
+        assert!(app.waiting_on(|p| matches!(p, Purpose::Poll)), "read again");
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Compose,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn a_poll_asks_about_a_live_reservation_once_a_minute_and_is_not_input() {
         let scratch = Scratch::new("poll");
         let (mut app, _events) = app(&scratch);

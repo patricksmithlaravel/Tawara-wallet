@@ -25,7 +25,7 @@ use tawara_wallet_core::{AccountReport, amount};
 use crate::history::{Filter, RowId};
 use crate::host;
 use tawara_wallet_core::{
-    Command, Discovered, MAX_DESTINATIONS, PlanView, ReceiveView, Reply, SentView,
+    Command, Discovered, MAX_DESTINATIONS, PlanView, ReceiveView, RefusalKind, Reply, SentView,
 };
 
 use super::{App, Message, Model, Purpose, Screen, WalletPage, wipe};
@@ -2131,9 +2131,31 @@ impl App {
                 // of view above it (docs/SCREENS.md W6).
                 return crate::screens::page_top();
             }
-            // Signing was refused; the worker dropped the plan and used no
-            // key. Back to the form, with why.
+            // Signing was refused; the worker dropped the plan. Back to the
+            // form, with why.
             (Purpose::ConfirmSend, Reply::Refused(r)) => {
+                // The library records the reservation before it signs (library
+                // `wallet.rs:619-620`), so a sign it refused may have left one,
+                // with no bytes, while the account's row still says what the
+                // last read found. The account is read again, quietly, as a poll
+                // is, so that its row and its polls follow what the store holds
+                // (D38 item 2).
+                let from = match self.wallet_page().map(|p| &p.page) {
+                    Some(Page::Send(SendPage {
+                        stage: SendStage::Review(plan),
+                        ..
+                    })) => Some(plan.from),
+                    _ => None,
+                };
+                if let Some(account) = from.filter(|_| r.kind == RefusalKind::Library) {
+                    self.send(
+                        Command::Status {
+                            account,
+                            scan_to: None,
+                        },
+                        Purpose::Poll,
+                    );
+                }
                 if let Some(WalletPage {
                     page: Page::Send(s),
                     error,
