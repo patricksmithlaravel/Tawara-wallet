@@ -79,7 +79,11 @@
 //! depth would freeze the account. The step runs only in an open wallet, only
 //! after a read that nobody cancelled, and only while no stop is asked. A
 //! settle the library refuses writes nothing, and the next read tries again.
-//! It moves no key index.
+//! It moves no key index. A settle whose write fails leaves the store's
+//! handle poisoned, and the library's word is then to reopen from disk: the
+//! command answers as if nothing was settled, and the store is then closed
+//! as a reopen that cannot read it back closes it
+//! ([`LockReason::ReopenFailed`]), so that unlocking it reads disk again.
 //!
 //! An account the wallet set aside when it opened settles in the same way
 //! once a read shows it landed, as Settle settles it (D19, D38 item 1). A
@@ -430,6 +434,7 @@ pub fn spawn<C: Connect>(
                 next_plan: 1,
                 numbers: RefCell::new(BTreeMap::new()),
                 settled: Vec::new(),
+                poisoned: false,
             };
             worker.run(guard.queue());
         })?;
@@ -558,6 +563,10 @@ struct Worker<C: Connect> {
     /// D38), with the library's page for each, for the view it answers with.
     /// Cleared before each command.
     settled: Vec<SettledAccount>,
+    /// Whether an automatic settle in the running command left the store's
+    /// handle poisoned ([`AutoSettle::Poisoned`]): the store is then closed
+    /// once the command has answered. Cleared before each command.
+    poisoned: bool,
 }
 
 /// Whether a command does nothing when a cancel reached it before it
@@ -1069,28 +1078,52 @@ fn wallet_rows<T: Transport>(wallet: &Wallet<Disk, T>) -> Result<Vec<AccountRow>
         .collect())
 }
 
+/// What an automatic settle did ([`settle_landed`]).
+enum AutoSettle {
+    /// The library settled the account: its page for the settlement, as
+    /// Settle shows it, and the account's state read after it.
+    Settled { text: String, state: AccountState },
+    /// Nothing was settled and the store's handle is as it was: the library
+    /// refused (a node that did not answer, for one), found nothing to
+    /// settle, or could not write the settle and wrote nothing. A refusal is
+    /// not reported from here. The next read tries again, and the person's
+    /// own Settle shows the library's words (D38).
+    NotSettled,
+    /// The library's write failed and left the store's handle poisoned: a
+    /// failed commit poisons it, and so does a failure to apply in memory a
+    /// commit that is already durable (`Keystore::persist_settled`). Memory
+    /// and disk may then disagree, and the library's word is to drop the
+    /// handle and reopen from disk. The worker closes the store once the
+    /// command has answered (`Worker::close_poisoned`).
+    Poisoned,
+}
+
 /// Settle `tag` on its own, for a read that has just shown it landed
 /// (docs/DECISIONS.md D38). It takes the two steps `Worker::settle` takes,
 /// `cli::key_access` and then `Wallet::settle_if_landed`, and then reads the
-/// account's status again for its row. `Some` holds the library's page for
-/// the settlement, as Settle shows it, and the account's state after it,
-/// when the library settled it. `None` means nothing was settled: the library
-/// refused (a node that did not answer, for one), found nothing to settle, or
-/// could not write the settle. A refusal is not reported from here. The next
-/// read tries again, and the person's own Settle shows the library's words
-/// (D38). The caller has checked that no stop is asked. An account the wallet
-/// set aside when it opened is settled here as Settle settles it (D19).
+/// account's status again for its row. The caller has checked that no stop
+/// is asked. An account the wallet set aside when it opened is settled here
+/// as Settle settles it (D19).
 fn settle_landed<T: Transport>(
     wallet: &mut Wallet<Disk, T>,
     master: Option<&Secret<SEED_LEN>>,
     tag: &Tag,
-) -> Option<(String, AccountState)> {
-    let access = cli::key_access(wallet.store(), tag, master).ok()?;
-    let settlement = wallet.settle_if_landed(tag, &access).ok()?;
-    if !matches!(settlement, Settlement::Settled { .. }) {
-        return None;
-    }
-    let page = text::page(
+) -> AutoSettle {
+    let settled = match cli::key_access(wallet.store(), tag, master) {
+        Ok(access) => wallet.settle_if_landed(tag, &access),
+        Err(e) => Err(e),
+    };
+    let settlement = match settled {
+        Ok(settlement @ Settlement::Settled { .. }) => settlement,
+        Ok(_) => return AutoSettle::NotSettled,
+        // Whatever the error says, a handle the library has poisoned refuses
+        // every later call, so it is the handle's state that is asked.
+        Err(_) if matches!(wallet.store().generation(), Err(Error::Poisoned { .. })) => {
+            return AutoSettle::Poisoned;
+        }
+        Err(_) => return AutoSettle::NotSettled,
+    };
+    let text = text::page(
         wallet.diverged(),
         Outcome::Settled {
             settlement,
@@ -1104,7 +1137,7 @@ fn settle_landed<T: Transport>(
         },
         Err(d) => AccountState::from_divergence(&d),
     };
-    Some((page, state))
+    AutoSettle::Settled { text, state }
 }
 
 /// Which of `derived` the seed derives, and as which account: the tag of
@@ -1237,6 +1270,7 @@ impl<C: Connect> Worker<C> {
                     self.idle_stops = !typed;
                     self.stopped = Arc::new(AtomicBool::new(false));
                     self.settled.clear();
+                    self.poisoned = false;
                     let reply = if stops_before_starting(&command) && self.cancel_reached(id) {
                         // Sent before a cancel and not yet started: it does
                         // nothing at all (module doc). This is what keeps a
@@ -1253,6 +1287,9 @@ impl<C: Connect> Worker<C> {
                         self.activity.mark();
                     }
                     self.emit(Event::Done { id, reply });
+                    if self.poisoned {
+                        self.close_poisoned();
+                    }
                 }
                 Envelope::Background(seq) => {
                     self.lock(LockReason::Background);
@@ -1294,6 +1331,23 @@ impl<C: Connect> Worker<C> {
         self.plan = None;
         self.session = Session::Locked;
         self.emit(Event::Locked { reason });
+    }
+
+    /// Close the store after an automatic settle left its handle poisoned
+    /// (docs/DECISIONS.md D38; [`AutoSettle::Poisoned`]). The library's word
+    /// for a poisoned handle is to drop it and reopen from disk, and only the
+    /// person's password reopens a store from disk. So the store is closed as
+    /// one that a reopen could not read back is (`closed`, with
+    /// [`LockReason::ReopenFailed`]), and unlocking it again reads what disk
+    /// holds: the account settled, or still landed and settled by that
+    /// unlock. It runs once the command has answered, so that an answer that
+    /// carries signed bytes (the read after a send) still reaches the
+    /// interface before the store closes.
+    fn close_poisoned(&mut self) {
+        self.poisoned = false;
+        if !matches!(self.session, Session::Locked) {
+            self.closed(LockReason::ReopenFailed);
+        }
     }
 
     fn view(&self) -> Option<WalletView> {
@@ -1716,13 +1770,21 @@ impl<C: Connect> Worker<C> {
                         continue;
                     }
                     let tag = row.id.tag();
-                    if let Some((text, state)) = settle_landed(&mut wallet, master.as_ref(), &tag) {
-                        row.spendable = matches!(state, AccountState::InSync { .. });
-                        row.state = state;
-                        self.settled.push(SettledAccount {
-                            account: row.id,
-                            text,
-                        });
+                    match settle_landed(&mut wallet, master.as_ref(), &tag) {
+                        AutoSettle::Settled { text, state } => {
+                            row.spendable = wallet.accounts().iter().any(|(t, _)| *t == tag)
+                                && matches!(state, AccountState::InSync { .. });
+                            row.state = state;
+                            self.settled.push(SettledAccount {
+                                account: row.id,
+                                text,
+                            });
+                        }
+                        AutoSettle::NotSettled => {}
+                        AutoSettle::Poisoned => {
+                            self.poisoned = true;
+                            break;
+                        }
                     }
                 }
                 self.session = Session::Wallet(WalletSession {
@@ -1906,15 +1968,25 @@ impl<C: Connect> Worker<C> {
             let Session::Wallet(w) = &mut self.session else {
                 break;
             };
-            // Every account here reconciled at open: one set aside that now
-            // reads cleanly took the reopen above instead.
-            if let Some((text, state)) = settle_landed(&mut w.wallet, w.master.as_ref(), &tag) {
-                let spendable = matches!(state, AccountState::InSync { .. });
-                update_row(&mut w.rows, &tag, state, spendable, None);
-                self.settled.push(SettledAccount {
-                    account: AccountId::from_tag(tag),
-                    text,
-                });
+            // An account set aside at open that now reads cleanly took the
+            // reopen above instead, so each one here reconciled at open; the
+            // test is the same as every other read's all the same, so that it
+            // does not rest on that.
+            match settle_landed(&mut w.wallet, w.master.as_ref(), &tag) {
+                AutoSettle::Settled { text, state } => {
+                    let spendable = w.wallet.accounts().iter().any(|(t, _)| *t == tag)
+                        && matches!(state, AccountState::InSync { .. });
+                    update_row(&mut w.rows, &tag, state, spendable, None);
+                    self.settled.push(SettledAccount {
+                        account: AccountId::from_tag(tag),
+                        text,
+                    });
+                }
+                AutoSettle::NotSettled => {}
+                AutoSettle::Poisoned => {
+                    self.poisoned = true;
+                    break;
+                }
             }
         }
         self.view().map_or_else(Self::not_unlocked, Reply::Wallet)
@@ -2152,13 +2224,17 @@ impl<C: Connect> Worker<C> {
         let Session::Wallet(w) = &mut self.session else {
             return;
         };
-        if let Some((text, state)) = settle_landed(&mut w.wallet, w.master.as_ref(), tag) {
-            let spendable = reconciled_at_open && matches!(state, AccountState::InSync { .. });
-            update_row(&mut w.rows, tag, state, spendable, None);
-            self.settled.push(SettledAccount {
-                account: AccountId::from_tag(*tag),
-                text,
-            });
+        match settle_landed(&mut w.wallet, w.master.as_ref(), tag) {
+            AutoSettle::Settled { text, state } => {
+                let spendable = reconciled_at_open && matches!(state, AccountState::InSync { .. });
+                update_row(&mut w.rows, tag, state, spendable, None);
+                self.settled.push(SettledAccount {
+                    account: AccountId::from_tag(*tag),
+                    text,
+                });
+            }
+            AutoSettle::NotSettled => {}
+            AutoSettle::Poisoned => self.poisoned = true,
         }
     }
 
@@ -2381,17 +2457,25 @@ impl<C: Connect> Worker<C> {
         if let Session::Wallet(w) = &mut self.session
             && matches!(state, AccountState::SpendLanded { .. })
             && !asked()
-            && let Some((page, after)) = settle_landed(&mut w.wallet, w.master.as_ref(), &tag)
         {
-            spendable = w.wallet.accounts().iter().any(|(t, _)| *t == tag)
-                && matches!(after, AccountState::InSync { .. });
-            update_row(&mut w.rows, &tag, after.clone(), spendable, None);
-            text.clone_from(&page);
-            state = after;
-            settled = Some(SettledAccount {
-                account,
-                text: page,
-            });
+            match settle_landed(&mut w.wallet, w.master.as_ref(), &tag) {
+                AutoSettle::Settled {
+                    text: page,
+                    state: after,
+                } => {
+                    spendable = w.wallet.accounts().iter().any(|(t, _)| *t == tag)
+                        && matches!(after, AccountState::InSync { .. });
+                    update_row(&mut w.rows, &tag, after.clone(), spendable, None);
+                    text.clone_from(&page);
+                    state = after;
+                    settled = Some(SettledAccount {
+                        account,
+                        text: page,
+                    });
+                }
+                AutoSettle::NotSettled => {}
+                AutoSettle::Poisoned => self.poisoned = true,
+            }
         }
         Reply::Status {
             account,

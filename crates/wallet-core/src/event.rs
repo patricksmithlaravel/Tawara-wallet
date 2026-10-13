@@ -107,7 +107,10 @@ pub enum LockReason {
     /// node, an advance, a restore) and could not be read back; the
     /// command's refusal says why. A wallet the library refuses to open
     /// does not close the store: it stays open on its own, with the
-    /// library's page as its notice.
+    /// library's page as its notice. Also sent, after the command's answer,
+    /// when an automatic settle's write failed and left the store's handle
+    /// unusable (docs/DECISIONS.md D38): the store is closed so that
+    /// unlocking it reads disk again.
     ReopenFailed,
     /// The worker is shutting down.
     Shutdown,

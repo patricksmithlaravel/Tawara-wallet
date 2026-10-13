@@ -148,8 +148,9 @@ pub fn wallet_view() -> WalletView {
 /// The sample store with the second account's spend landed: the chain holds
 /// that account at its change key, and the account reads `SpendLanded` until
 /// the worker settles it (docs/DECISIONS.md D38). Its other accounts are as
-/// in [`wallet_view`], which the committed screenshots draw, so it is a
-/// separate view.
+/// in [`wallet_view`]. It is a separate view because the committed
+/// screenshots draw [`wallet_view`]; the screenshots' `w7-account-landed`
+/// draws this one.
 #[must_use]
 pub fn landed_view() -> WalletView {
     let mut view = wallet_view();

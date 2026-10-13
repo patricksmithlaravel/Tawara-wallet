@@ -1146,6 +1146,154 @@ fn a_node_that_stops_answering_during_the_automatic_settle_writes_nothing() {
 }
 
 #[test]
+fn a_node_whose_answer_changes_before_the_settle_holds_the_lock_for_its_walk() {
+    // D38 item 6, the case the owner accepted. The check's read shows the
+    // spend landed. The settle's own read, which the library makes inside
+    // `settle_if_landed` with no cancel, then finds the account at a key the
+    // reservation does not explain, so the library walks key positions to
+    // say where it is. A move to the background asked while that read waits
+    // stops nothing: the walk runs to its end, the check answers, and only
+    // then does the lock come.
+    let scratch = Scratch::new("settle-walk");
+    let (mut h, start) = funded(&scratch);
+    let plan = send_from_account0(&mut h, 100_000);
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    let before = store_files(&scratch.store());
+    // The check's own read passes the first gate, and the settle's waits at
+    // the second.
+    let first = h.chain.close_gate();
+    let check = h
+        .handle
+        .send(Command::Status {
+            account: account0(),
+            scan_to: None,
+        })
+        .expect("worker running");
+    first.wait_reached(1);
+    let second = h.chain.close_gate();
+    first.open();
+    second.wait_reached(1);
+    // Five keys past the change key: inside the window the library searches
+    // around it, so the walk is short here. A key no position derives would
+    // be searched for up to the library's ceiling of 10,000 positions, at
+    // about 1.6 ms a position (D19), and the lock would wait as long.
+    h.chain
+        .hold(tag(0), address(0, start + 6), plan.change_total);
+    let asked = Instant::now();
+    let _ = h.handle.background();
+    second.open();
+    match h.wait_for(check) {
+        Reply::Status {
+            state,
+            spendable,
+            settled,
+            ..
+        } => {
+            // What the check's read found; the settle found the account
+            // unexplained, and the library refused it.
+            assert!(
+                matches!(state, AccountState::SpendLanded { spent_index, .. } if spent_index == start),
+                "{state:?}"
+            );
+            assert!(!spendable);
+            assert_eq!(settled, None);
+        }
+        other => panic!("expected a status, not a cancel: {other:?}"),
+    }
+    assert!(
+        !h.seen.iter().any(|e| matches!(e, Event::Locked { .. })),
+        "the lock waited for the check, walk and all: {:?}",
+        h.seen
+    );
+    assert_eq!(
+        h.wait_locked(Duration::from_secs(30)),
+        LockReason::Background
+    );
+    let waited = asked.elapsed();
+    assert!(
+        waited < Duration::from_secs(30),
+        "the lock waited {waited:?} for a walk inside the window"
+    );
+    assert_eq!(store_files(&scratch.store()), before, "nothing was written");
+}
+
+/// A settle whose write fails leaves the library's handle poisoned (D38):
+/// the command answers as if nothing was settled, and then the store is
+/// closed, as a reopen that cannot read it back closes it. Unlocking it reads
+/// disk again, and that unlock settles the account.
+#[cfg(unix)]
+#[test]
+fn a_settle_whose_write_fails_closes_the_store_after_the_answer() {
+    use std::os::unix::fs::PermissionsExt;
+    let scratch = Scratch::new("settle-poisoned");
+    let dir = scratch.store();
+    let (mut h, start) = funded(&scratch);
+    let plan = send_from_account0(&mut h, 100_000);
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    let before = store_files(&dir);
+    // A folder the store cannot write to: the library's commit fails before
+    // anything is durable, and poisons the handle.
+    let writable = std::fs::metadata(&dir).expect("the store").permissions();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500))
+        .expect("the store's folder made read-only");
+    let probe = dir.join("probe");
+    if std::fs::write(&probe, b"").is_ok() {
+        // The superuser writes whatever the mode says: nothing to test here.
+        let _ = std::fs::remove_file(&probe);
+        std::fs::set_permissions(&dir, writable).expect("the store's folder restored");
+        return;
+    }
+    let reply = h.call(Command::Status {
+        account: account0(),
+        scan_to: None,
+    });
+    std::fs::set_permissions(&dir, writable).expect("the store's folder restored");
+    match reply {
+        Reply::Status {
+            state,
+            spendable,
+            settled,
+            ..
+        } => {
+            assert!(
+                matches!(state, AccountState::SpendLanded { spent_index, .. } if spent_index == start),
+                "{state:?}"
+            );
+            assert!(!spendable);
+            assert_eq!(settled, None);
+        }
+        other => panic!("expected a status, got {other:?}"),
+    }
+    assert!(
+        !h.seen.iter().any(|e| matches!(e, Event::Locked { .. })),
+        "the store closes after the answer: {:?}",
+        h.seen
+    );
+    assert_eq!(
+        h.wait_locked(Duration::from_secs(10)),
+        LockReason::ReopenFailed
+    );
+    assert_eq!(store_files(&dir), before, "nothing was written");
+    assert_eq!(
+        refusal(h.call(Command::Refresh)).kind,
+        RefusalKind::NotUnlocked,
+        "the poisoned handle is gone"
+    );
+
+    // Unlocking reads disk again, and that unlock settles the account.
+    let view = opened(h.unlock(&dir, PASSWORD));
+    assert_eq!(
+        view.accounts[0].state,
+        AccountState::InSync {
+            balance: plan.change_total
+        }
+    );
+    assert_eq!(settled_ids(&view), vec![account0()]);
+}
+
+#[test]
 fn a_diverged_account_is_not_settled_by_a_refresh_or_a_check() {
     let scratch = Scratch::new("settle-diverged");
     let (mut h, start) = funded(&scratch);
