@@ -2672,16 +2672,15 @@ item 6's.
    the account can spend again" (`report::done`), with the library's page
    one step away (D28). W6's Settle step follows the account's state.
    **Open:** where the banner sits, the W7 panel and the copy for a dead
-   reservation are new wording, for the owner's approval. So are W7's copy
-   for a settle that a reorganisation reverted, the copy for signed bytes
-   kept after a settle, and the dismiss control item 5 names, which does
-   not exist yet. Its summary says
-   spending is paused and the other accounts are unaffected, and its causes
-   are a spend not landed, a store moved ahead and another chain
-   (`crates/app/src/screens/wallet/report.rs:241`, `:266-275`). None of them
-   names a reorg, which only the library's full report beneath does, and
-   none says that the pause lasts until the spend lands or a saved copy is
-   re-submitted (library `recon.rs:962-964`, `:986-1000`).
+   reservation are new wording, for the owner's approval. So are the copy for
+   signed bytes kept after a settle, the dismiss control item 5 names (which
+   does not exist yet), and W7's copy for a settle that a reorganisation
+   reverted (item 5). Its summary says spending is paused and the other accounts
+   are unaffected, and its causes are a spend not landed, a store moved ahead
+   and another chain (`crates/app/src/screens/wallet/report.rs:241`,
+   `:266-275`). None of them names a reorg, which only the library's full report
+   beneath does, and none says that the pause lasts until the spend lands or a
+   saved copy is re-submitted (library `recon.rs:962-964`, `:986-1000`).
 4. **The Settle button stays as a fallback (recommended).** It stays on W7
    for a landed spend whose automatic settle could not reach the node, and
    is hidden on a dead reservation, whose present copy promises a
