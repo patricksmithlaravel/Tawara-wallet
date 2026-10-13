@@ -11,6 +11,7 @@
 use iced::widget::text::Wrapping;
 use iced::widget::{Row, checkbox, column, container, row, space, text_input};
 use iced::{Alignment, Element, Length, Padding};
+use tawara_wallet_core::view::{AccountId, AccountState};
 use tawara_wallet_core::{MAX_DESTINATIONS, PlanView, REFERENCE_RULE};
 
 use super::{account_choice, action, copy, figure, frame, name, pair, report, row_of};
@@ -442,6 +443,17 @@ enum Step {
     Failed,
 }
 
+/// The settle step of W6 follows the account's live state (docs/DECISIONS.md
+/// D38): done once the account is in sync again, which settling leaves, and
+/// pending until then, whether the spend is still outstanding or has landed
+/// and not yet settled.
+fn settle_step(model: &Model, from: AccountId) -> Step {
+    match row_of(model, from).map(|a| &a.state) {
+        Some(AccountState::InSync { .. }) => Step::Done,
+        _ => Step::Pending,
+    }
+}
+
 /// The three steps of a spend (03): reserving the key, submitting to the
 /// node's socket, and settling once the chain shows the change. They show
 /// what has happened, nothing more (docs/SCREENS.md W6). On a phone they
@@ -714,7 +726,12 @@ fn sent_page<'a>(model: &'a Model, page: &'a WalletPage, s: &'a SentPage) -> Ele
         );
     }
     let body = vec![
-        steps(compact, Step::Done, submitted, Step::Pending),
+        steps(
+            compact,
+            Step::Done,
+            submitted,
+            settle_step(model, sent.from),
+        ),
         report::show_in(compact, page, ReportKey::Sent, report::sent(sent)),
         ui::card_for(compact, artifact).into(),
         button_row(
@@ -1373,5 +1390,30 @@ mod tests {
         );
         let desktop = child_bounds(button_row(false, vec![wide(), wide()]));
         assert_eq!(desktop[1].y, desktop[0].y, "{desktop:?}");
+    }
+
+    #[test]
+    fn the_settle_step_is_done_once_the_account_is_in_sync_again() {
+        let mut wallet = sample::wallet_view();
+        let account = wallet.accounts[1].id;
+        let mut model = Model::new(Preferences::default(), None);
+        // Outstanding: the step waits.
+        model.wallet = Some(wallet.clone());
+        assert!(matches!(settle_step(&model, account), Step::Pending));
+        // Landed and not yet settled: it waits for the settle that follows.
+        wallet.accounts[1].state = AccountState::SpendLanded {
+            balance: 1,
+            spent_index: 1,
+            settled_index: 2,
+        };
+        model.wallet = Some(wallet.clone());
+        assert!(matches!(settle_step(&model, account), Step::Pending));
+        // Settled: in sync again, and the step is done, as the live view says.
+        wallet.accounts[1].state = AccountState::InSync { balance: 1 };
+        model.wallet = Some(wallet.clone());
+        assert!(matches!(settle_step(&model, account), Step::Done));
+        // With no store open there is nothing that says it settled.
+        model.wallet = None;
+        assert!(matches!(settle_step(&model, account), Step::Pending));
     }
 }

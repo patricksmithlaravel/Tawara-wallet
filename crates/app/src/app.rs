@@ -10,6 +10,7 @@
 
 mod wallet;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -24,7 +25,9 @@ use tawara_wallet_core::explorer::{
 };
 use tawara_wallet_core::location::{self, Environment, Platform};
 use tawara_wallet_core::preferences::{self, Preferences};
-use tawara_wallet_core::view::{AccountId, WalletView};
+use tawara_wallet_core::view::{
+    AccountId, AccountState, ReservationState, SettledAccount, WalletView,
+};
 use tawara_wallet_core::{
     Activity, Command, Config, Event, HttpsNode, LockReason, NetworkName, PhraseForDisplay,
     Progress, Refusal, RefusalKind, Reply, RequestId, SecretText, SyncState, WorkerHandle,
@@ -36,6 +39,35 @@ pub use wallet::{
     ReportKey, ResignPage, SHARED, SendPage, SendStage, SentPage, SettingsPage, Signed, SpendForm,
     SubmitPage, TagPage, To, TransactionPage, WalletMsg, remedy, spend_request,
 };
+
+/// How often a poll asks the node about an account whose reservation is live
+/// and outstanding (docs/DECISIONS.md D38 item 2).
+const POLL_EVERY: Duration = Duration::from_secs(60);
+
+/// The accounts the worker settled on its own in answering with `reply`
+/// (docs/DECISIONS.md D38), from the store's view the reply carries. Every
+/// reply that opens or reads the wallet can carry them: a refresh, an unlock,
+/// the read after a send, and the reopen after a restore or an advance. A
+/// check's or a poll's own settlement is `Reply::Status::settled`, which the
+/// check's answer shows itself.
+fn settled_in(reply: &Reply) -> Vec<SettledAccount> {
+    let view = match reply {
+        Reply::Wallet(view) | Reply::Unlocked(view) | Reply::Settled { view, .. } => Some(view),
+        Reply::Sent(sent) => Some(&sent.view),
+        Reply::Created {
+            opened: Ok(view), ..
+        }
+        | Reply::Reconciled {
+            opened: Ok(view), ..
+        }
+        | Reply::Restored {
+            opened: Ok(view), ..
+        } => Some(view),
+        Reply::NodeSet { view, .. } | Reply::NodeCleared { view } => view.as_ref(),
+        _ => None,
+    };
+    view.map(|v| v.settled.clone()).unwrap_or_default()
+}
 
 /// What the application shows and holds. Plain data, apart from the
 /// recovery phrase while it is being shown and confirmed, and the text of
@@ -82,6 +114,19 @@ pub struct Model {
     /// The wall clock, in milliseconds since the epoch, moved on each
     /// second: what a block's age is told against.
     pub clock_ms: i64,
+    /// The settlements the worker reported while no page of their account was
+    /// shown: each one's banner waits for that page (docs/DECISIONS.md D38).
+    settled_waiting: BTreeMap<AccountId, String>,
+    /// When the last poll of a live reservation was sent, so that the polls
+    /// come once a minute (docs/DECISIONS.md D38 item 2). A monotonic clock,
+    /// not `clock_ms`: a wall clock set back would hold the polls back by as
+    /// much.
+    polled_at: Option<Instant>,
+    /// Whether the window has the system's focus, as its last focus event
+    /// said; a window starts with it. A poll asks only while it does, since
+    /// D38 item 2 polls only in the foreground: a desktop window left behind
+    /// others or minimised asks nothing until it is brought back.
+    foreground: bool,
     /// The time zone dates are shown in: the system's.
     pub zone: crate::ui::Zone,
     /// The open store's transactions from the node's index (W1, W10).
@@ -442,6 +487,11 @@ pub enum Message {
     /// A second passed: the wall clock, in milliseconds since the epoch.
     /// Not the person's input.
     Tick(i64),
+    /// The window gained (`true`) or lost (`false`) the system's focus. Not
+    /// the person's input, so it does not restart the idle period: it says
+    /// only whether the wallet is in the foreground, which a poll needs
+    /// (docs/DECISIONS.md D38 item 2).
+    Foreground(bool),
 }
 
 /// The field a Paste button fills (docs/DECISIONS.md D32 item 10 (g)).
@@ -592,6 +642,10 @@ enum Purpose {
     Find([u8; 32]),
     /// The node's whole queue, for its own page.
     Queue,
+    /// An account with a live reservation, asked about once a minute: a
+    /// settlement it finds is the worker's own, and a refusal says nothing
+    /// (docs/DECISIONS.md D38).
+    Poll,
 }
 
 impl Purpose {
@@ -636,6 +690,7 @@ impl Purpose {
                 | Purpose::Status
                 | Purpose::Review
                 | Purpose::Reconcile
+                | Purpose::Poll
                 | Purpose::Block(_)
                 | Purpose::Tag(_)
                 | Purpose::TagHistory(_)
@@ -758,6 +813,9 @@ impl Model {
             width: crate::WINDOW.0,
             safe_area: iced::mobile::SafeArea::ZERO,
             clock_ms: now_ms(),
+            settled_waiting: BTreeMap::new(),
+            polled_at: None,
+            foreground: true,
             zone: crate::ui::Zone::System,
             activity: Explored::default(),
             blocks: Explored::default(),
@@ -1136,6 +1194,77 @@ impl App {
         }
     }
 
+    /// Asks the node about each account with a live reservation that is still
+    /// outstanding, once a minute, while a wallet is open and its window is in
+    /// the foreground (docs/DECISIONS.md D38 item 2). The worker's own read
+    /// settles an account whose chain shows the change key, and the answer is
+    /// shown as a settlement's banner when it does. A poll is not the person's
+    /// input, so it does not restart the idle period (D24). Nothing shows for
+    /// a poll that is refused or unanswered: the next one asks again. On the
+    /// desktop a window that loses the focus asks nothing until it has it
+    /// again. On a phone a move to the background locks the wallet, and a lock
+    /// leaves nothing open to poll (docs/DECISIONS.md D32 item 6).
+    fn poll(&mut self, now: Instant) {
+        let accounts = self.polled_accounts(now);
+        if accounts.is_empty() {
+            return;
+        }
+        self.model.polled_at = Some(now);
+        for account in accounts {
+            self.send(
+                Command::Status {
+                    account,
+                    scan_to: None,
+                },
+                Purpose::Poll,
+            );
+        }
+    }
+
+    /// The accounts a poll asks about at `now` (see [`App::poll`]): those
+    /// whose reservation is live and still outstanding, in an open wallet
+    /// whose window is in the foreground, when a minute has passed since the
+    /// last poll and nothing else is awaited. Dead reservations and diverged
+    /// accounts are never polled: a dead reservation never settles, and a
+    /// diverged account is for the person to look at, not for a timer to walk
+    /// the chain for (docs/DECISIONS.md D19, D38). A landed spend is not
+    /// polled either: the read that found it settled it, or failed and left
+    /// it for Refresh, Check now or the Settle button.
+    fn polled_accounts(&self, now: Instant) -> Vec<AccountId> {
+        let m = &self.model;
+        let due = m
+            .polled_at
+            .is_none_or(|at| now.saturating_duration_since(at) >= POLL_EVERY);
+        // A poll waits behind nothing the person asked for, and never queues
+        // a second behind one still on its way.
+        if !due
+            || !m.foreground
+            || m.busy.is_some()
+            || self.waiting_on(|p| matches!(p, Purpose::Poll))
+        {
+            return Vec::new();
+        }
+        // Only an open wallet settles: a store open on its own, with no node
+        // or with the node not answering, has nothing a poll could settle.
+        let Some(wallet) = m.wallet.as_ref().filter(|w| w.opened) else {
+            return Vec::new();
+        };
+        wallet
+            .accounts
+            .iter()
+            .filter(|a| {
+                matches!(
+                    a.state,
+                    AccountState::SpendOutstanding {
+                        reservation: ReservationState::Live,
+                        ..
+                    }
+                )
+            })
+            .map(|a| a.id)
+            .collect()
+    }
+
     fn save_prefs(&self) {
         if let Some(path) = &self.prefs_path {
             // A preference that cannot be written is lost at the next start,
@@ -1445,7 +1574,13 @@ impl App {
                         .discard();
                 }
             }
-            Message::Tick(ms) => m.clock_ms = ms,
+            // The clock's second is what a poll of a live reservation waits for
+            // (docs/DECISIONS.md D38). It is not the person's input.
+            Message::Tick(ms) => {
+                m.clock_ms = ms;
+                self.poll(Instant::now());
+            }
+            Message::Foreground(focused) => m.foreground = focused,
         }
         Task::none()
     }
@@ -1593,7 +1728,10 @@ impl App {
                     .take()
                     .map(|w| w.dir.display().to_string());
                 self.model.busy = None;
-                // What the index holds for the store goes with it.
+                // What the index holds for the store goes with it, and so does a
+                // settlement's banner that waited for a page of the store
+                // (docs/DECISIONS.md D38).
+                self.model.settled_waiting.clear();
                 self.model.activity = Explored::default();
                 // With no store open, the lock dropped a recovery phrase
                 // waiting to be confirmed (wallet-core's `Event::Locked`):
@@ -1691,13 +1829,22 @@ impl App {
 
     /// The worker's answer to a command. A spend kept for a reservation the
     /// answer shows settled is forgotten after it (see [`Model::signed`]).
+    /// An account the worker settled on its own in answering has its banner
+    /// shown once the answer has taken its page (docs/DECISIONS.md D38): on
+    /// the account's page if that is the one shown, and otherwise when it is
+    /// next opened. A refresh or an unlock shows the dashboard, and a send
+    /// shows its sent page, so for those the banner waits.
     fn on_reply(&mut self, purpose: Purpose, reply: Reply) -> Task<Message> {
+        let settled = settled_in(&reply);
         let task = if purpose.wallet_page() {
             self.on_wallet_reply(purpose, reply)
         } else {
             self.answer(purpose, reply);
             Task::none()
         };
+        for settled in settled {
+            self.model.show_settled(settled);
+        }
         self.model.forget_settled();
         task
     }
@@ -1992,6 +2139,10 @@ fn person_input(event: IcedEvent, status: event::Status, _: iced::window::Id) ->
         IcedEvent::Window(
             iced::window::Event::Opened { size, .. } | iced::window::Event::Resized(size),
         ) => Some(Message::Width(size.width)),
+        // Whether the window is in the foreground, for the poll of a live
+        // reservation (docs/DECISIONS.md D38 item 2). Not the person's input.
+        IcedEvent::Window(iced::window::Event::Focused) => Some(Message::Foreground(true)),
+        IcedEvent::Window(iced::window::Event::Unfocused) => Some(Message::Foreground(false)),
         _ => None,
     }
 }
@@ -4976,5 +5127,352 @@ mod tests {
             },
         );
         assert!(app.model.chain.last.is_none() && app.model.pending.last.is_none());
+    }
+
+    /// The sample store's second account: outstanding, with a live reservation.
+    fn live_account() -> AccountId {
+        tawara_wallet_core::sample::wallet_view().accounts[1].id
+    }
+
+    /// The worker has answered every command sent so far: its queue is empty.
+    fn answered(app: &mut App) {
+        if let Some(w) = app.worker.as_mut() {
+            w.waiting.clear();
+        }
+    }
+
+    #[test]
+    fn a_poll_asks_about_a_live_reservation_once_a_minute_and_is_not_input() {
+        let scratch = Scratch::new("poll");
+        let (mut app, _events) = app(&scratch);
+        app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        let touched = app.touches.get();
+        // The tick polls, by the monotonic clock.
+        let _ = app.update(Message::Tick(100_000));
+        assert!(app.waiting_on(|p| matches!(p, Purpose::Poll)), "sent");
+        let first = app.model.polled_at.expect("the poll's time is kept");
+        assert_eq!(
+            app.touches.get(),
+            touched,
+            "a poll is not the person's input"
+        );
+        // Not again while the last one is on its way, nor within the minute,
+        // whatever the wall clock says: one set back, or forward, moves
+        // nothing.
+        answered(&mut app);
+        let _ = app.update(Message::Tick(0));
+        let _ = app.update(Message::Tick(10_000_000));
+        assert!(
+            !app.waiting_on(|p| matches!(p, Purpose::Poll)),
+            "a minute has not passed"
+        );
+        app.poll(first + Duration::from_secs(30));
+        assert!(!app.waiting_on(|p| matches!(p, Purpose::Poll)));
+        assert_eq!(app.model.polled_at, Some(first));
+        // Again once a minute has passed.
+        app.poll(first + Duration::from_secs(60));
+        assert!(
+            app.waiting_on(|p| matches!(p, Purpose::Poll)),
+            "a minute has passed"
+        );
+        assert_eq!(app.touches.get(), touched, "still not the person's input");
+    }
+
+    #[test]
+    fn a_window_without_the_focus_polls_nothing_until_it_has_it_again() {
+        // D38 item 2: the poll runs only in the foreground. A desktop window
+        // behind others, or minimised, keeps the wallet open until the idle
+        // lock, and asks the node nothing meanwhile.
+        let scratch = Scratch::new("poll-focus");
+        let (mut app, _events) = app(&scratch);
+        app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        let touched = app.touches.get();
+        let now = Instant::now();
+        assert_eq!(
+            person_input(
+                IcedEvent::Window(iced::window::Event::Unfocused),
+                event::Status::Ignored,
+                iced::window::Id::unique(),
+            )
+            .map(|m| matches!(m, Message::Foreground(false))),
+            Some(true)
+        );
+        let _ = app.update(Message::Foreground(false));
+        assert_eq!(app.touches.get(), touched, "not the person's input");
+        app.poll(now);
+        assert!(!app.waiting_on(|p| matches!(p, Purpose::Poll)));
+        assert_eq!(app.polled_accounts(now), Vec::<AccountId>::new());
+        assert_eq!(app.model.polled_at, None);
+        // Back in the foreground, it polls at the next tick.
+        assert_eq!(
+            person_input(
+                IcedEvent::Window(iced::window::Event::Focused),
+                event::Status::Ignored,
+                iced::window::Id::unique(),
+            )
+            .map(|m| matches!(m, Message::Foreground(true))),
+            Some(true)
+        );
+        let _ = app.update(Message::Foreground(true));
+        assert_eq!(app.touches.get(), touched, "not the person's input");
+        let _ = app.update(Message::Tick(now_ms()));
+        assert!(app.waiting_on(|p| matches!(p, Purpose::Poll)), "sent");
+    }
+
+    #[test]
+    fn a_poll_asks_only_about_a_live_reservation_and_stops_on_lock() {
+        use tawara_wallet_core::view::{AccountState, DivergenceKind};
+        let scratch = Scratch::new("poll-stops");
+        let (mut app, _events) = app(&scratch);
+        let account = live_account();
+        let outstanding = |reservation| AccountState::SpendOutstanding {
+            balance: 1,
+            spent_index: 6,
+            reservation,
+        };
+        let cases = [
+            ("live", outstanding(ReservationState::Live), vec![account]),
+            (
+                "dead, the balance moved",
+                outstanding(ReservationState::Dead {
+                    balance_moved: true,
+                    expired: false,
+                }),
+                vec![],
+            ),
+            (
+                "dead, expired",
+                outstanding(ReservationState::Dead {
+                    balance_moved: false,
+                    expired: true,
+                }),
+                vec![],
+            ),
+            (
+                "not known to be live",
+                outstanding(ReservationState::Unrecorded),
+                vec![],
+            ),
+            (
+                "landed",
+                AccountState::SpendLanded {
+                    balance: 1,
+                    spent_index: 6,
+                    settled_index: 7,
+                },
+                vec![],
+            ),
+            ("in sync", AccountState::InSync { balance: 1 }, vec![]),
+            (
+                "diverged",
+                AccountState::Diverged {
+                    kind: DivergenceKind::Unreachable,
+                    report: "no answer".to_owned(),
+                    advance_to: None,
+                },
+                vec![],
+            ),
+        ];
+        for (label, state, polled) in cases {
+            let mut wallet = tawara_wallet_core::sample::wallet_view();
+            wallet.accounts[1].state = state;
+            app.model.wallet = Some(wallet);
+            app.model.polled_at = None;
+            assert_eq!(app.polled_accounts(Instant::now()), polled, "{label}");
+        }
+
+        // With no wallet open there is nothing to poll.
+        app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        app.model.polled_at = None;
+        assert_eq!(app.polled_accounts(Instant::now()), vec![account]);
+        app.model.settled_waiting.insert(account, "kept".to_owned());
+        let _ = app.on_event(Event::Locked {
+            reason: LockReason::Background,
+        });
+        assert!(app.model.wallet.is_none());
+        assert!(
+            app.model.settled_waiting.is_empty(),
+            "a lock drops the banners"
+        );
+        assert_eq!(app.polled_accounts(Instant::now()), Vec::<AccountId>::new());
+        let _ = app.update(Message::Tick(500_000));
+        assert!(
+            !app.waiting_on(|p| matches!(p, Purpose::Poll)),
+            "nothing is sent"
+        );
+    }
+
+    #[test]
+    fn a_settlement_a_poll_or_a_check_finds_is_the_banner_on_its_page_or_waits_for_it() {
+        use tawara_wallet_core::view::{AccountState, SettledAccount};
+        let account = live_account();
+        let in_sync = AccountState::InSync {
+            balance: 3_180_000_000_000,
+        };
+        let answer = |purpose: Purpose, settled: Option<SettledAccount>, text: &str| {
+            (
+                purpose,
+                Reply::Status {
+                    account,
+                    state: in_sync.clone(),
+                    spendable: true,
+                    text: text.to_owned(),
+                    settled,
+                },
+            )
+        };
+        let settled = || {
+            Some(SettledAccount {
+                account,
+                text: "the library's page".to_owned(),
+            })
+        };
+        let banner = |app: &App| match &wallet_page(app).page {
+            Page::Account(a) => a.report.clone(),
+            _ => None,
+        };
+        let said = Some((Done::Settled, "the library's page".to_owned()));
+
+        // On the account's own page the banner is shown at once.
+        let mut app = on_wallet(Page::Account(AccountPage {
+            account,
+            report: None,
+        }));
+        let (purpose, reply) = answer(Purpose::Poll, settled(), "checked");
+        let _ = app.on_reply(purpose, reply);
+        assert_eq!(banner(&app), said);
+        assert!(app.model.settled_waiting.is_empty());
+        assert_eq!(
+            app.model.wallet.as_ref().unwrap().accounts[1].state,
+            in_sync,
+            "the row shows the state the worker reports"
+        );
+
+        // Elsewhere it waits for the account's page, and is shown once that is
+        // opened, and then only once.
+        let mut app = on_wallet(Page::Dashboard);
+        let (purpose, reply) = answer(Purpose::Poll, settled(), "checked");
+        let _ = app.on_reply(purpose, reply);
+        assert!(matches!(wallet_page(&app).page, Page::Dashboard));
+        wallet(&mut app, WalletMsg::Open(To::Account(account)));
+        assert_eq!(banner(&app), said);
+        wallet(&mut app, WalletMsg::Open(To::Dashboard));
+        wallet(&mut app, WalletMsg::Open(To::Account(account)));
+        assert_eq!(banner(&app), None);
+
+        // A check that settles the account says so, in place of what it found;
+        // a check that settles nothing says what it found.
+        let mut app = on_wallet(Page::Account(AccountPage {
+            account,
+            report: None,
+        }));
+        let (purpose, reply) = answer(Purpose::Status, settled(), "checked");
+        let _ = app.on_reply(purpose, reply);
+        assert_eq!(banner(&app), said);
+        let (purpose, reply) = answer(Purpose::Status, None, "checked again");
+        let _ = app.on_reply(purpose, reply);
+        assert_eq!(
+            banner(&app),
+            Some((Done::Checked, "checked again".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_refresh_that_settles_an_account_leaves_its_banner_for_its_page() {
+        use tawara_wallet_core::view::{AccountState, SettledAccount};
+        let account = live_account();
+        let mut app = on_wallet(Page::Account(AccountPage {
+            account,
+            report: None,
+        }));
+        let mut view = tawara_wallet_core::sample::wallet_view();
+        view.accounts[1].state = AccountState::InSync { balance: 1 };
+        view.settled = vec![SettledAccount {
+            account,
+            text: "the library's page".to_owned(),
+        }];
+        let _ = app.on_reply(Purpose::Refresh, Reply::Wallet(view));
+        // A refresh shows the dashboard, as it always has.
+        assert!(matches!(wallet_page(&app).page, Page::Dashboard));
+        wallet(&mut app, WalletMsg::Open(To::Account(account)));
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Account(AccountPage {
+                report: Some((Done::Settled, text)),
+                ..
+            }) if text == "the library's page"
+        ));
+    }
+
+    #[test]
+    fn a_settlement_in_the_answer_to_a_send_or_a_restore_waits_for_its_page() {
+        use tawara_wallet_core::view::SettledAccount;
+        let account = live_account();
+        let settled = vec![SettledAccount {
+            account,
+            text: "the library's page".to_owned(),
+        }];
+        // The read after a send settled it: the sent page is shown, and the
+        // banner waits for the account's page.
+        let mut app = on_wallet(Page::Dashboard);
+        let mut sent = tawara_wallet_core::sample::sent_view();
+        sent.view.settled.clone_from(&settled);
+        let _ = app.on_reply(Purpose::ConfirmSend, Reply::Sent(sent));
+        assert!(matches!(wallet_page(&app).page, Page::Send(_)));
+        assert_eq!(
+            app.model.settled_waiting.get(&account).map(String::as_str),
+            Some("the library's page")
+        );
+        // The reopen after a restore settled it.
+        let mut app = on_wallet(Page::Dashboard);
+        let mut view = tawara_wallet_core::sample::wallet_view();
+        view.settled = settled;
+        let _ = app.on_reply(
+            Purpose::Restore,
+            Reply::Restored {
+                ok: true,
+                text: "restored".to_owned(),
+                opened: Ok(view),
+            },
+        );
+        wallet(&mut app, WalletMsg::Open(To::Account(account)));
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Account(AccountPage {
+                report: Some((Done::Settled, text)),
+                ..
+            }) if text == "the library's page"
+        ));
+    }
+
+    #[test]
+    fn a_poll_of_a_store_open_on_its_own_asks_nothing() {
+        let scratch = Scratch::new("poll-store");
+        let (mut app, _events) = app(&scratch);
+        let mut wallet = tawara_wallet_core::sample::wallet_view();
+        wallet.opened = false;
+        app.model.wallet = Some(wallet);
+        assert_eq!(app.polled_accounts(Instant::now()), Vec::<AccountId>::new());
+    }
+
+    #[test]
+    fn a_poll_that_is_refused_or_unanswered_says_nothing() {
+        let account = live_account();
+        let mut app = on_wallet(Page::Account(AccountPage {
+            account,
+            report: None,
+        }));
+        let _ = app.on_reply(
+            Purpose::Poll,
+            Reply::Refused(Refusal {
+                kind: RefusalKind::Library,
+                text: "the chain did not answer".to_owned(),
+            }),
+        );
+        assert_eq!(wallet_page(&app).error, None, "nothing is shown");
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Account(AccountPage { report: None, .. })
+        ));
     }
 }

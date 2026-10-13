@@ -16,7 +16,9 @@ use tawara_wallet_core::explorer::{
 };
 use tawara_wallet_core::preferences::{AmountUnit, IDLE_LOCK_MINUTES};
 use tawara_wallet_core::spend::{Amount, DestinationInput, SpendRequest};
-use tawara_wallet_core::view::{AccountId, AccountState, DivergenceKind, WalletView};
+use tawara_wallet_core::view::{
+    AccountId, AccountState, DivergenceKind, SettledAccount, WalletView,
+};
 use tawara_wallet_core::{AccountReport, amount};
 
 use crate::history::{Filter, RowId};
@@ -765,6 +767,26 @@ impl Model {
         self.screen = Screen::Wallet(kept.into_page());
     }
 
+    /// The banner for an account the worker settled, with the library's page
+    /// of the settlement (docs/DECISIONS.md D38). It is shown on the account's
+    /// own page (W7) when that page is the one shown. Otherwise it waits for
+    /// that page's next opening, so that a settle reported while the person is
+    /// elsewhere is not lost.
+    pub(super) fn show_settled(&mut self, settled: SettledAccount) {
+        let SettledAccount { account, text } = settled;
+        self.settled_waiting.remove(&account);
+        if let Screen::Wallet(WalletPage {
+            page: Page::Account(a),
+            ..
+        }) = &mut self.screen
+            && a.account == account
+        {
+            a.report = Some((Done::Settled, text));
+        } else {
+            self.settled_waiting.insert(account, text);
+        }
+    }
+
     /// Forget the kept spends whose account the open store now shows in
     /// sync: the reservation is settled, and the bytes can move nothing.
     pub(super) fn forget_settled(&mut self) {
@@ -865,6 +887,17 @@ fn artifact_stem(sent: &SentView) -> String {
 }
 
 impl App {
+    /// The account's row as the worker's answer says it stands now: its state,
+    /// and whether a spend may be planned from it (`AccountRow::spendable`).
+    fn set_row(&mut self, account: AccountId, state: AccountState, spendable: bool) {
+        if let Some(w) = &mut self.model.wallet
+            && let Some(row) = w.accounts.iter_mut().find(|a| a.id == account)
+        {
+            row.spendable = spendable;
+            row.state = state;
+        }
+    }
+
     /// The wallet page shown, when the wallet is.
     fn wallet_page(&mut self) -> Option<&mut WalletPage> {
         match &mut self.model.screen {
@@ -933,9 +966,15 @@ impl App {
                 from: from.or_else(|| spendable(wallet).next()),
                 ..SendPage::default()
             }),
+            // A settlement reported while this page was not shown is said here
+            // first (docs/DECISIONS.md D38).
             To::Account(account) => Page::Account(AccountPage {
                 account,
-                report: None,
+                report: self
+                    .model
+                    .settled_waiting
+                    .remove(&account)
+                    .map(|text| (Done::Settled, text)),
             }),
             // The same spend exactly: what was typed for it, when this run
             // signed it.
@@ -1914,6 +1953,25 @@ impl App {
                     a.report = Some((Done::Settled, text));
                 }
             }
+            // A poll answers as a check does, but it says nothing of its own: a
+            // poll that is refused or unanswered changes nothing, and the next
+            // one asks again (docs/DECISIONS.md D38).
+            (
+                Purpose::Poll,
+                Reply::Status {
+                    account,
+                    state,
+                    spendable,
+                    settled,
+                    ..
+                },
+            ) => {
+                self.set_row(account, state, spendable);
+                if let Some(settled) = settled {
+                    self.model.show_settled(settled);
+                }
+            }
+            (Purpose::Poll, _) => {}
             (
                 Purpose::Status,
                 Reply::Status {
@@ -1921,24 +1979,25 @@ impl App {
                     state,
                     spendable,
                     text,
-                    ..
+                    settled,
                 },
             ) => {
                 // The worker's word on spending, not one worked out here: a
                 // check that failed and then one that reconciled leave an
                 // account the wallet held spendable again, and one set aside
                 // when it opened stays aside.
-                if let Some(w) = &mut self.model.wallet
-                    && let Some(row) = w.accounts.iter_mut().find(|a| a.id == account)
-                {
-                    row.spendable = spendable;
-                    row.state = state.clone();
+                self.set_row(account, state.clone(), spendable);
+                // A check that settled the account says so, with the page of
+                // its settlement, in place of what the check found (D38).
+                let was_settled = settled.is_some();
+                if let Some(settled) = settled {
+                    self.model.show_settled(settled);
                 }
                 let Some(p) = self.wallet_page() else {
                     return Task::none();
                 };
                 match &mut p.page {
-                    Page::Account(a) if a.account == account => {
+                    Page::Account(a) if a.account == account && !was_settled => {
                         a.report = Some((Done::Checked, text));
                     }
                     // A further search on the recovery page: the account's

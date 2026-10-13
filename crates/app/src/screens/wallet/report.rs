@@ -566,6 +566,17 @@ pub fn submitted(accepted: bool, text: &str) -> Report<'_> {
 /// afterwards.
 pub fn done<'a>(done: Done, account: &AccountRow, text: &'a str) -> Report<'a> {
     let r = match (done, &account.state) {
+        // Set aside when the wallet opened, the account spends again only once
+        // Refresh opens the wallet with it (docs/DECISIONS.md D38).
+        (Done::Settled, AccountState::InSync { .. }) if !account.spendable => Report::new(
+            Tone::Note,
+            "Settled: the account spends again after Refresh",
+        )
+        .says(
+            "The chain shows the change key: the spend landed, and the store records it. The \
+             account was set aside when the wallet opened, so Refresh on the wallet's page \
+             opens the wallet with it.",
+        ),
         (Done::Settled, AccountState::InSync { .. }) => {
             Report::new(Tone::Note, "Settled: the account can spend again")
                 .says("The chain shows the change key: the spend landed, and the store records it.")
@@ -953,5 +964,37 @@ mod tests {
             ),
             "an open banner closes"
         );
+    }
+
+    #[test]
+    fn a_settlement_of_an_account_set_aside_says_it_spends_after_refresh() {
+        use tawara_wallet_core::view::{AccountKind, AccountRow, AccountState};
+        let row = AccountRow {
+            id: tawara_wallet_core::view::AccountId::from_tag([2; 20]),
+            kind: AccountKind::Derived,
+            index: 7,
+            state: AccountState::InSync { balance: 1 },
+            spendable: false,
+            number: Some(0),
+        };
+        let r = done(Done::Settled, &row, "the library's page");
+        assert_eq!(r.title, "Settled: the account spends again after Refresh");
+        assert_eq!(r.full, Some("the library's page"));
+    }
+
+    #[test]
+    fn a_settlement_the_worker_reports_says_the_account_can_spend_again() {
+        use tawara_wallet_core::view::{AccountKind, AccountRow, AccountState};
+        let row = AccountRow {
+            id: tawara_wallet_core::view::AccountId::from_tag([1; 20]),
+            kind: AccountKind::Derived,
+            index: 7,
+            state: AccountState::InSync { balance: 1 },
+            spendable: true,
+            number: Some(0),
+        };
+        let r = done(Done::Settled, &row, "the library's page");
+        assert_eq!(r.title, "Settled: the account can spend again");
+        assert_eq!(r.full, Some("the library's page"));
     }
 }

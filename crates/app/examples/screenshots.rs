@@ -280,6 +280,39 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         m.wallet = Some(aside.clone());
         m
     };
+    // The second account's spend has landed: the chain shows the change key,
+    // and the automatic settle has not yet been made, so W7 offers Settle as
+    // its fallback (docs/DECISIONS.md D38).
+    let landed_wallet = sample::landed_view();
+    let landed = |page| {
+        let mut m = on(page);
+        m.wallet = Some(landed_wallet.clone());
+        m
+    };
+    // The first account's spend once it has settled: the account is in sync
+    // again, so the sent page's Settle step is done (docs/DECISIONS.md D38).
+    let settled_sent = {
+        let mut settled_wallet = sample::sent_view().view;
+        let balance = settled_wallet.accounts[0]
+            .state
+            .balance()
+            .unwrap_or_default();
+        settled_wallet.accounts[0].state = AccountState::InSync { balance };
+        settled_wallet.accounts[0].spendable = true;
+        let mut m = opened_sent(on(Page::Send(SendPage {
+            from: Some(accounts[0].id),
+            form: typed.clone(),
+            stage: SendStage::Sent(Box::new(SentPage {
+                sent: sample::sent_view(),
+                resigned: false,
+                saved: Some(Ok(PathBuf::from(
+                    "/home/you/Downloads/tawara-spend-5e5e5e5e5e5e5e5e.hex",
+                ))),
+            })),
+        })));
+        m.wallet = Some(settled_wallet);
+        m
+    };
     let refused = |state| {
         let mut m = on(Page::Activity(ActivityPage::default()));
         m.activity = Explored {
@@ -530,10 +563,19 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
             })),
         ),
         ("w6-sent", DASHBOARD, sent),
+        ("w6-sent-settled", DASHBOARD, settled_sent),
         (
             "w7-account-outstanding",
             DASHBOARD,
             on(Page::Account(AccountPage {
+                account: accounts[1].id,
+                report: None,
+            })),
+        ),
+        (
+            "w7-account-landed",
+            DASHBOARD,
+            landed(Page::Account(AccountPage {
                 account: accounts[1].id,
                 report: None,
             })),
