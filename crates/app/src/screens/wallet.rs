@@ -539,8 +539,8 @@ pub fn kept_after_stop(model: &Model) -> Option<Element<'_, Message>> {
 }
 
 /// What became of Save artifact for a signed spend's page: where the bytes
-/// were written, why they were not, or that the share sheet was opened. The
-/// sheet's outcome is not known, so the spend is still not saved, but
+/// were written, why they were not, or that the share sheet was asked for.
+/// The sheet's outcome is not known, so the spend is still not saved, but
 /// nothing was refused, so it is a note in the page's own colours rather than
 /// a refusal (docs/DECISIONS.md D32 item 10 (i)).
 fn saved_note<'a>(page: &'a SentPage) -> Option<Element<'a, Message>> {
@@ -838,11 +838,12 @@ mod tests {
     }
 
     #[test]
-    fn an_opened_share_sheet_is_a_note_and_a_refused_save_a_refusal() {
+    fn an_asked_for_share_sheet_is_a_note_and_a_refused_save_a_refusal() {
         // docs/DECISIONS.md D32 item 10 (i): the sheet's outcome is not known,
         // so the spend is not saved, but nothing was refused. The note is drawn
         // as the page's own text; a save that failed keeps its refusal, here
-        // the one Save artifact gives when the sheet could not be shown.
+        // the one Save artifact gives when the platform was not asked for the
+        // sheet.
         use crate::app::SHARED;
         use crate::harness::Driver;
         const NOT_SHOWN: &str = "The bytes could not be shared: no window. Copy the hex \
@@ -860,7 +861,10 @@ mod tests {
         let plain =
             Driver::<Message>::new(t(SHARED, ty::BODY_SMALL, color::TEXT_SECONDARY), size).draw();
         let refused = Driver::<Message>::new(ui::refusal(NOT_SHOWN), size).draw();
-        assert!(draw(&page(SHARED)) == plain, "the opened sheet is a note");
+        assert!(
+            draw(&page(SHARED)) == plain,
+            "a share sheet asked for is a note"
+        );
         assert!(
             draw(&page(NOT_SHOWN)) == refused,
             "a failed save is a refusal"

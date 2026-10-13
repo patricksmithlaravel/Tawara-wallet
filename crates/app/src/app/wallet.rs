@@ -334,12 +334,12 @@ pub struct SentPage {
 }
 
 impl SentPage {
-    /// On a phone, "Save artifact" opened the share sheet with the bytes:
-    /// `saved` holds [`SHARED`]. What was done there is not known, so the
-    /// spend still counts as not saved, but nothing was refused, and the page
-    /// says so as a note, not as a refusal (docs/DECISIONS.md D32 item 10
-    /// (i)). It is read from `saved` rather than kept beside it, so that the
-    /// two cannot disagree.
+    /// On a phone, "Save artifact" asked the system to open the share sheet
+    /// with the bytes: `saved` holds [`SHARED`]. What was done there is not
+    /// known, so the spend still counts as not saved, but nothing was refused,
+    /// and the page says so as a note, not as a refusal (docs/DECISIONS.md D32
+    /// item 10 (i)). It is read from `saved` rather than kept beside it, so
+    /// that the two cannot disagree.
     #[must_use]
     pub fn shared(&self) -> bool {
         matches!(&self.saved, Some(Err(e)) if e == SHARED)
@@ -799,12 +799,15 @@ impl Model {
     }
 }
 
-/// What a phone's "Save artifact" says once the share sheet has opened.
-/// Tawara cannot tell what was done with the bytes there, so they still count
-/// as not saved (docs/DECISIONS.md D32 item 10 (i)). The note stays after the
-/// sheet is closed, so it says the sheet was opened, not that it is open.
-pub const SHARED: &str = "The share sheet was opened. Tawara cannot tell whether the bytes were \
-                          saved there, so keep them until you have them somewhere safe.";
+/// What a phone's "Save artifact" says once Tawara has asked the system to
+/// open the share sheet. Tawara cannot tell what was done with the bytes
+/// there, so they still count as not saved (docs/DECISIONS.md D32 item 10 (i),
+/// as amended on 2026-10-13). The note stays after the sheet is closed, so it
+/// says what Tawara asked for, not that the sheet opened: the platform presents
+/// it later, and a refusal it makes then is not reported.
+pub const SHARED: &str = "Tawara asked the system to open the share sheet. Tawara cannot tell \
+                          whether the bytes were saved there, so keep them until you have them \
+                          somewhere safe.";
 
 /// "Save artifact" for a spend's page: the bytes go where [`save`] puts them,
 /// `share` being the shell's share sheet, and the page keeps what came of it,
@@ -821,9 +824,9 @@ fn keep_bytes(
 /// their own, or say why they were not. With no Downloads folder, a shell's
 /// share sheet takes them where the shell has one, under the desktop file's
 /// name and with its exact text: the hex and a line break (docs/DECISIONS.md
-/// D32 item 10 (i), and D27 item 5 for the file). An opened sheet is not a
-/// save, because the application cannot learn what was done with it, so it is
-/// an `Err` too.
+/// D32 item 10 (i), and D27 item 5 for the file). A sheet the platform was
+/// asked to show is not a save, because the application cannot learn what was
+/// done with it, so it is an `Err` too.
 fn save(
     downloads: Option<&Path>,
     share: fn(&str, &str) -> Option<Result<(), String>>,
@@ -2159,8 +2162,8 @@ mod tests {
     }
 
     #[test]
-    fn save_artifact_opens_the_share_sheet_without_a_downloads_folder() {
-        // What the sheet was last opened with: the file's name and its text.
+    fn save_artifact_asks_for_the_share_sheet_without_a_downloads_folder() {
+        // What the sheet was last asked for: the file's name and its text.
         static SHEET: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
         fn sheet(name: &str, text: &str) -> Option<Result<(), String>> {
             *SHEET.lock().expect("not poisoned") = Some((name.to_owned(), text.to_owned()));
@@ -2172,7 +2175,7 @@ mod tests {
             .lock()
             .expect("not poisoned")
             .take()
-            .expect("the sheet was opened");
+            .expect("the sheet was asked for");
         assert_eq!(name, format!("{}.hex", artifact_stem(&sent)));
         assert_eq!(text, format!("{}\n", sent.artifact_hex));
         // The sheet's Ok is not a save, so the spend still counts as not
@@ -2233,17 +2236,17 @@ mod tests {
     }
 
     #[test]
-    fn save_artifact_on_a_phone_keeps_the_opened_sheet_as_shared_and_not_saved() {
+    fn save_artifact_on_a_phone_keeps_the_asked_for_sheet_as_shared_and_not_saved() {
         // docs/DECISIONS.md D32 item 10 (i): what the page keeps when the
-        // sheet opened is SHARED, which it shows as a note, and the spend
-        // still counts as not saved.
-        fn opened(_: &str, _: &str) -> Option<Result<(), String>> {
+        // sheet was asked for is SHARED, which it shows as a note, and the
+        // spend still counts as not saved.
+        fn asked(_: &str, _: &str) -> Option<Result<(), String>> {
             Some(Ok(()))
         }
         let mut page = sent_page();
-        keep_bytes(None, opened, &mut page);
+        keep_bytes(None, asked, &mut page);
         assert_eq!(page.saved, Some(Err(SHARED.to_owned())));
-        assert!(page.shared(), "the opened sheet is shown as a note");
+        assert!(page.shared(), "the sheet asked for is shown as a note");
     }
 
     #[test]
