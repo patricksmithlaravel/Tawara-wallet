@@ -18,6 +18,8 @@
 //!   recovery phrase's cleaning (docs/DECISIONS.md D32 item 10 (g), (h)).
 //! - [`tap`]: a row or card that acts on release, as a touch scroll needs
 //!   (docs/DECISIONS.md D32 item 10 (d)).
+//! - [`overflow`]: the check that nothing a phone screen draws passes the
+//!   edge of its window (docs/DECISIONS.md D32 item 10 (b)).
 //! - [`theme`], [`fonts`], [`icon`], [`ui`]: the renderings' tokens, the
 //!   bundled faces, the line icons and the pieces the screens are built
 //!   from.
@@ -28,6 +30,7 @@ pub mod history;
 pub mod host;
 pub mod icon;
 mod keyboard;
+pub mod overflow;
 pub mod paste;
 pub mod screens;
 pub mod tap;

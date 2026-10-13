@@ -120,10 +120,26 @@ fn balance<'a>(model: &'a Model, wallet: &'a WalletView) -> Element<'a, Message>
                 }),
             AmountUnit::NanoMcm => (shown.clone(), String::new()),
         };
+        // On a phone the whole figure is set as large as its card lets it stay
+        // on one line, because a figure wider than the card runs past the
+        // window and is cut off (docs/DECISIONS.md D32 item 10 (b)). The
+        // desktop's figure is set as it always was.
+        let size = if model.compact() {
+            figure_size(&whole, balance_room(model.width))
+        } else {
+            ty::BALANCE.size
+        };
         card = card
             .push(
                 row![
-                    t(whole, ty::BALANCE, color::TEXT_PRIMARY),
+                    t(
+                        whole,
+                        ui::Type {
+                            size,
+                            ..ty::BALANCE
+                        },
+                        color::TEXT_PRIMARY
+                    ),
                     t(frac, ty::BALANCE_DECIMALS, color::TEXT_SECONDARY),
                     container(t(ui::unit_name(unit), ty::BALANCE_UNIT, color::ACCENT)).padding(
                         Padding {
@@ -194,6 +210,49 @@ fn balance<'a>(model: &'a Model, wallet: &'a WalletView) -> Element<'a, Message>
         .width(Length::Fill)
         .style(theme::hero_card)
         .into()
+}
+
+/// The width a phone's balance figure has at a window `width` logical pixels
+/// wide: the window less the page's margins of 16 and the hero card's padding
+/// of 20 on each side (docs/SCREENS.md, "Compact layout").
+fn balance_room(width: f32) -> f32 {
+    width - 2.0 * (sp::S16 + sp::S20)
+}
+
+/// The size a phone's balance figure is set at: the largest whole size, no
+/// larger than the balance's own, at which `figure` fits `room` on one line.
+/// The width is the sum of the glyphs' advances, which leaves out the kerning
+/// between them; the shaped width is measured by
+/// `the_longest_amount_in_each_unit_fits_a_phone_card_at_360_and_390`, so a
+/// kerning that widened a figure would fail there.
+fn figure_size(figure: &str, room: f32) -> f32 {
+    let em: f32 = figure.chars().map(glyph_em).sum();
+    if em <= 0.0 {
+        return ty::BALANCE.size;
+    }
+    (room / em).floor().clamp(1.0, ty::BALANCE.size)
+}
+
+/// A glyph's advance in ems in the balance's face, Montserrat Bold
+/// (`fonts::DISPLAY_BOLD`), read from `crates/app/fonts/Montserrat-Bold.ttf`.
+/// Its figures are proportional, so each digit has its own advance. Any other
+/// glyph is taken at the widest digit's, so that a figure is never sized too
+/// large for the face.
+fn glyph_em(glyph: char) -> f32 {
+    match glyph {
+        '0' => 0.679,
+        '1' => 0.392,
+        '2' => 0.590,
+        '3' => 0.592,
+        '4' => 0.689,
+        '5' => 0.595,
+        '6' => 0.637,
+        '7' => 0.620,
+        '8' => 0.660,
+        '9' => 0.637,
+        ',' => 0.262,
+        _ => 0.689,
+    }
 }
 
 /// The one-time keys (02): each account's next key, and whether it is
@@ -817,7 +876,7 @@ mod tests {
     use iced::Rectangle;
     use iced::advanced::widget::Operation;
     use iced_runtime::user_interface::{Cache, UserInterface};
-    use tawara_wallet_core::preferences::Preferences;
+    use tawara_wallet_core::preferences::{AmountUnit, Preferences};
     use tawara_wallet_core::{Activity, Progress, RequestId, sample};
 
     use super::*;
@@ -925,6 +984,24 @@ mod tests {
     }
 
     #[test]
+    fn the_phone_wallet_fits_at_360_and_390_in_nanomcm() {
+        // In nanoMCM the sample balance, 12,395,402,118,000, is wider at 56 than
+        // the card a 360 window leaves it, so its words run past the window's
+        // edge unless the figure is set smaller (docs/DECISIONS.md D32 item 10
+        // (b)).
+        for width in [NARROWEST, 390.0] {
+            let mut model = phone();
+            model.width = width;
+            model.prefs.unit = AmountUnit::NanoMcm;
+            assert_eq!(
+                fits(crate::screens::view(&model), width),
+                Ok(()),
+                "nanoMCM at {width}"
+            );
+        }
+    }
+
+    #[test]
     fn a_phone_keeps_refresh_as_its_only_header_action() {
         // Receive and Send are the phone's tabs, so the header keeps one
         // button; the desktop keeps all three.
@@ -1017,5 +1094,78 @@ mod tests {
             ),
             "{messages:?}"
         );
+    }
+
+    /// The width `text` takes in the figure's face at `size`, on one line.
+    /// It is drawn in a window far wider than the figure, so nothing is
+    /// squeezed and the box is the width the words need.
+    fn natural_width(text: &str, size: f32) -> f32 {
+        let figure: Element<'_, ()> = t(
+            text.to_owned(),
+            ui::Type {
+                size,
+                ..ty::BALANCE
+            },
+            color::TEXT_PRIMARY,
+        )
+        .into();
+        crate::harness::texts(figure, (4000.0, 200.0))
+            .into_iter()
+            .find(|(content, _)| content == text)
+            .map(|(_, bounds)| bounds.width)
+            .expect("the figure is drawn")
+    }
+
+    #[test]
+    fn the_longest_amount_in_each_unit_fits_a_phone_card_at_360_and_390() {
+        // The largest amount an account holds, u64::MAX (a balance is a u64),
+        // in each unit. In MCM the figure is the whole part before the point,
+        // which is the widest.
+        for width in [NARROWEST, 390.0] {
+            let room = balance_room(width);
+            for unit in [AmountUnit::NanoMcm, AmountUnit::Mcm] {
+                let shown = ui::amount(u64::MAX, unit);
+                let whole = match unit {
+                    AmountUnit::Mcm => shown
+                        .split_once('.')
+                        .map_or(shown.as_str(), |(whole, _)| whole)
+                        .to_owned(),
+                    AmountUnit::NanoMcm => shown,
+                };
+                let size = figure_size(&whole, room);
+                assert!(
+                    (1.0..=ty::BALANCE.size).contains(&size),
+                    "{unit:?} at {width}: {size}"
+                );
+                let needs = natural_width(&whole, size);
+                assert!(
+                    needs <= room + 0.5,
+                    "{unit:?} at {width}: {whole} needs {needs} in {room}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_mcm_figure_keeps_the_balances_own_size_on_a_phone() {
+        // 12,395 MCM fits its card at 56, so the MCM images are unchanged.
+        for width in [NARROWEST, 390.0] {
+            assert_eq!(
+                figure_size("12,395", balance_room(width)),
+                ty::BALANCE.size,
+                "at {width}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_nanomcm_sample_is_set_smaller_so_that_it_stays_on_one_line() {
+        // 12,395,402,118,000 is 520 pixels at 56, and the card has 288 at 360
+        // and 318 at 390.
+        let sample = "12,395,402,118,000";
+        assert_eq!(figure_size(sample, balance_room(NARROWEST)), 30.0);
+        assert_eq!(figure_size(sample, balance_room(390.0)), 34.0);
+        assert!(natural_width(sample, 30.0) <= balance_room(NARROWEST));
+        assert!(natural_width(sample, 34.0) <= balance_room(390.0));
     }
 }

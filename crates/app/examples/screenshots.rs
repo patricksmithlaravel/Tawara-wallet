@@ -39,9 +39,10 @@
 //! - `--phone-width N`: draws the phone's images N logical pixels wide rather
 //!   than 390, for looking at a width. It is refused with `--check`.
 //! - `--fit`: lays every selected phone sample out at 360 by 844 and prints
-//!   `OVERFLOW name: left..right` for each node whose right edge passes 360
-//!   (ten a sample at most). It exits non-zero if there is any, and writes
-//!   nothing.
+//!   `OVERFLOW name: left..right` for each node whose right edge passes 360,
+//!   and for each text whose words do, with its content (ten a sample at most).
+//!   The phone's wallet page is also laid out in nanoMCM. It exits non-zero if
+//!   there is any, and writes nothing.
 //! - The environment variable `TAWARA_SCREENSHOTS_PRINT`: with `--check`,
 //!   prints each image that DIFFERS or is MISSING as base64, between
 //!   `----- BEGIN <name>.png -----` and `----- END <name>.png -----`, so that
@@ -54,11 +55,11 @@ use std::time::Duration;
 use iced::advanced::renderer::{self, Headless};
 use iced::advanced::widget::operation::scrollable::{self, RelativeOffset};
 use iced::advanced::widget::operation::{Outcome, focusable};
-use iced::advanced::widget::{Id, Operation, Tree};
-use iced::advanced::{clipboard, graphics, layout};
+use iced::advanced::widget::{Id, Operation};
+use iced::advanced::{clipboard, graphics};
 use iced::mouse::Cursor;
 use iced::theme::Base;
-use iced::{Event, Point, Size, window};
+use iced::{Event, Size, window};
 use iced_runtime::user_interface::{Cache, UserInterface};
 use tawara_app::app::NARROWEST;
 use tawara_app::app::{
@@ -69,10 +70,10 @@ use tawara_app::app::{
     TransactionPage, UnlockForm, WalletPage,
 };
 use tawara_app::history::Filter;
-use tawara_app::{fonts, screens, theme};
+use tawara_app::{fonts, overflow, screens, theme};
 use tawara_wallet_core::explorer::{BlockAt, IndexState, LedgerRead, Party, TagView};
 use tawara_wallet_core::location::SyncWarning;
-use tawara_wallet_core::preferences::Preferences;
+use tawara_wallet_core::preferences::{AmountUnit, Preferences};
 use tawara_wallet_core::sample;
 use tawara_wallet_core::view::AccountState;
 use tawara_wallet_core::{
@@ -853,6 +854,22 @@ fn phones(width: u32) -> Vec<Image> {
     out
 }
 
+/// The phone's wallet page in nanoMCM, the unit a person can choose in place
+/// of MCM. It is laid out at 360 by `fit`, with the phone set, so that the
+/// check covers the balance in that unit (docs/DECISIONS.md D32 item 10 (b)).
+/// It is not drawn: the committed images are of MCM, as the desktop's are.
+fn nanomcm_samples() -> Vec<Image> {
+    let mut model = sample_named("w1-wallet");
+    model.prefs.unit = AmountUnit::NanoMcm;
+    vec![Image {
+        name: "phone-w1-wallet-nanomcm".to_owned(),
+        size: (NARROWEST_PX, PHONE.1),
+        model: phone(model, 0.0),
+        to_end: false,
+        focus: None,
+    }]
+}
+
 /// Whether an image named `name` is among those the command line asks for:
 /// with `--only` prefixes, one of them starts it; `--except` prefixes leave
 /// it out.
@@ -992,38 +1009,27 @@ fn base64(bytes: &[u8]) -> String {
         .join("\n")
 }
 
-/// The nodes of `model`'s window at `width` logical pixels that pass its
-/// right edge, as `OVERFLOW name: left..right` lines: a node's position is
-/// its parent's plus its own (docs/DECISIONS.md D32 item 10 (b)).
+/// What `model`'s window at `width` logical pixels draws past its right edge,
+/// as `OVERFLOW name: left..right` lines, each text's content after its
+/// extent (docs/DECISIONS.md D32 item 10 (b); `tawara_app::overflow`).
 fn overflow_lines(renderer: &iced::Renderer, name: &str, model: &Model, width: f32) -> Vec<String> {
-    fn walk(node: &layout::Node, origin: Point, width: f32, name: &str, out: &mut Vec<String>) {
-        for child in node.children() {
-            let bounds = child.bounds();
-            let at = Point::new(origin.x + bounds.x, origin.y + bounds.y);
-            if at.x + bounds.width > width + 0.5 {
-                out.push(format!(
-                    "OVERFLOW {name}: {:.1}..{:.1}",
-                    at.x,
-                    at.x + bounds.width
-                ));
+    overflow::past_the_edge(screens::view(model), renderer, width, PHONE.1 as f32)
+        .into_iter()
+        .map(|past| {
+            let (left, right) = (past.bounds.x, past.bounds.x + past.bounds.width);
+            match past.text {
+                Some(text) => format!("OVERFLOW {name}: {left:.1}..{right:.1} {text:?}"),
+                None => format!("OVERFLOW {name}: {left:.1}..{right:.1}"),
             }
-            walk(child, at, width, name, out);
-        }
-    }
-    let mut element = screens::view(model);
-    let mut tree = Tree::new(element.as_widget());
-    let limits = layout::Limits::new(Size::ZERO, Size::new(width, PHONE.1 as f32));
-    let root = element.as_widget_mut().layout(&mut tree, renderer, &limits);
-    let mut out = Vec::new();
-    walk(&root, Point::ORIGIN, width, name, &mut out);
-    out
+        })
+        .collect()
 }
 
 /// The phone images selected, laid out at 360 logical pixels: prints every
 /// overflow (at most ten a sample) and reports whether there was one.
 fn fit(renderer: &iced::Renderer, only: &[String], except: &[String]) -> bool {
     let mut failed = false;
-    for image in phones(NARROWEST_PX) {
+    for image in phones(NARROWEST_PX).into_iter().chain(nanomcm_samples()) {
         if !selected(&image.name, only, except) {
             continue;
         }
