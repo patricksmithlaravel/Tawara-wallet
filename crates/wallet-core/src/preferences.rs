@@ -154,11 +154,23 @@ pub fn render(prefs: &Preferences) -> String {
     out
 }
 
-/// The preferences in `path`, or the defaults when it does not exist or
-/// cannot be read.
+/// The preferences in `path`, or the defaults when it does not exist.
+///
+/// A file that is there but cannot be read gives the defaults with no
+/// node, not [`DEFAULT_NODE`]: it may hold a node the person chose, or
+/// `none` for one they forgot, and the default must never take the place
+/// of either (docs/DECISIONS.md D43). With no node the wallet says so, and
+/// the person can choose again.
 #[must_use]
 pub fn load(path: &Path) -> Preferences {
-    std::fs::read_to_string(path).map_or_else(|_| Preferences::default(), |text| parse(&text))
+    match std::fs::read_to_string(path) {
+        Ok(text) => parse(&text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Preferences::default(),
+        Err(_) => Preferences {
+            node: None,
+            ..Preferences::default()
+        },
+    }
 }
 
 /// Write `prefs` to `path`, replacing the file whole: written to a new file
@@ -273,6 +285,30 @@ mod tests {
         };
         save(&path, &chosen).unwrap();
         assert_eq!(load(&path), chosen, "a node chosen after it persists");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_gives_no_node_not_the_default() {
+        let dir = std::env::temp_dir().join(format!("tawara-prefs-unread-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // A folder where the file should be, and a file that is not text:
+        // each is there, and neither can be read as preferences.
+        let folder = dir.join("folder").join(FILE_NAME);
+        std::fs::create_dir_all(&folder).unwrap();
+        let binary = dir.join(FILE_NAME);
+        std::fs::write(&binary, b"node = none\n\xff\xfe\n").unwrap();
+        for path in [&folder, &binary] {
+            assert_eq!(
+                load(path),
+                Preferences {
+                    node: None,
+                    ..Preferences::default()
+                },
+                "{}",
+                path.display()
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -147,9 +147,10 @@ jobs:
         # so a panic at start-up would pass without this. ci/liveness.sh runs
         # the binary this job built once per renderer, for a fixed wait, and
         # fails if the app exits, cannot be found among the launch's processes,
-        # or its log holds a panic. With HOME and the XDG folders fresh there is
-        # no node to contact, so the check needs no network. This step runs only
-        # where the packages step did, which is on Linux after a good build.
+        # or its log holds a panic. With HOME and the XDG folders fresh the
+        # default node is set but asked nothing until a wallet is opened
+        # (docs/DECISIONS.md D43), so the check needs no network. This step runs
+        # only where the packages step did, which is on Linux after a good build.
         if: ${{ !cancelled() && steps.packages.outcome == 'success' }}
         run: |
           cd "$TAWARA"
