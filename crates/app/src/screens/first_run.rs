@@ -10,8 +10,8 @@ use tawara_wallet_core::preferences::DEFAULT_NODE;
 use tawara_wallet_core::{MIN_PASSWORD_LEN, SCHEME_WARNING};
 
 use crate::app::{
-    Back, Busy, Go, Message, Model, NodeForm, PasswordForm, PasteInto, PhraseState, RestoreForm,
-    Screen, StartChoice, Typed, UnlockForm,
+    Back, Busy, Go, HELD_BODY, HELD_TITLE, Message, Model, NodeForm, PasswordForm, PasteInto,
+    PhraseState, RestoreForm, Screen, StartChoice, Typed, UnlockForm,
 };
 use crate::fonts;
 use crate::paste;
@@ -378,7 +378,10 @@ fn node<'a>(model: &'a Model, form: &'a NodeForm) -> Element<'a, Message> {
         Back::Wallet => Go::Wallet,
     };
     let mut links = row![ui::link("Back", ty::LINK, Message::Go(back))].spacing(sp::S24);
-    if model.node.url.is_some() {
+    // Forget is also the way out of a preferences file that could not be read,
+    // since the wallet has no node until the person chooses one or forgets it
+    // (PR #29's review, P2-2; docs/DECISIONS.md D43).
+    if model.node.url.is_some() || model.prefs_held {
         links = links.push(ui::link("Forget the node", ty::LINK, Message::ForgetNode));
     }
     // On a phone the links wrap onto a second line when the width runs out.
@@ -412,6 +415,9 @@ fn node<'a>(model: &'a Model, form: &'a NodeForm) -> Element<'a, Message> {
         ),
     ]
     .spacing(sp::S24);
+    if model.prefs_held {
+        body = body.push(ui::warning_callout(HELD_TITLE, HELD_BODY));
+    }
     if let Some(e) = &form.error {
         body = body.push(ui::refusal(e));
     } else if let Some(e) = &model.node.error {
@@ -921,6 +927,16 @@ mod tests {
                     back: Back::Start,
                 })),
             ),
+            ("S2 with the preferences held", {
+                let mut model = phone_model(Screen::Node(NodeForm {
+                    url: String::new(),
+                    error: None,
+                    back: Back::Start,
+                }));
+                model.node.url = None;
+                model.prefs_held = true;
+                model
+            }),
             ("S3", phone_model(Screen::NewWallet(form()))),
             (
                 "S3 with a discarded phrase",

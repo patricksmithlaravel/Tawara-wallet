@@ -23,7 +23,7 @@ use tawara_wallet_core::preferences::{AmountUnit, DEFAULT_NODE, IDLE_LOCK_MINUTE
 use tawara_wallet_core::view::{AccountRow, AccountState, DivergenceKind};
 
 use super::{action, frame, kind, name, pair, status};
-use crate::app::{Message, Model, SettingsPage, To, WalletMsg, WalletPage};
+use crate::app::{HELD_BODY, HELD_TITLE, Message, Model, SettingsPage, To, WalletMsg, WalletPage};
 use crate::icon::{self, Icon};
 use crate::theme::{self, color, radius, space as sp};
 use crate::ui::{self, Size, t, ty};
@@ -481,66 +481,99 @@ fn node<'a>(model: &'a Model, s: &'a SettingsPage) -> Element<'a, Message> {
             .width(Length::Fill)
             .style(theme::field_box)
     };
-    ui::card_for(
-        model.compact(),
-        column![
-            card_head(
-                Icon::Server,
-                "Node",
-                "Balances, tag lookups, submits and the index".to_owned()
-            ),
-            t("Address", ty::FORM_LABEL, color::TEXT_SECONDARY),
-            row![
-                field,
-                action(
-                    model,
-                    "Save",
-                    theme::Button::Primary,
-                    Size::Medium,
-                    None,
-                    WalletMsg::SaveNode,
-                ),
-            ]
-            .spacing(sp::S10)
-            .align_y(Alignment::Center),
-            ui::helper(format!(
-                "{} {}",
-                node_note(model.node.url.is_some()),
-                // The same rule in a phone's words (docs/DECISIONS.md D32 item
-                // 10 (a)).
-                if model.phone() {
-                    "https:// only, or http:// to this phone."
-                } else {
-                    "https:// only, or http:// to this computer."
-                }
-            )),
-            row![
-                tile("Network", network, color::TEXT_PRIMARY, None),
-                tile("Status", state, ink, None),
-            ]
-            .spacing(sp::S12),
-            row![
-                tile("Tip", tip, color::TEXT_PRIMARY, solved),
-                tile("Middleware sync", sync, sync_ink, None),
-            ]
-            .spacing(sp::S12),
-            ui::helper(
-                "Sync is the Mesh middleware's view of its own node: whether its last read of \
-                 the node's tip finished. It does not say the node is current with the network; \
-                 how long ago the tip was solved does."
-            ),
+    // The card's pieces stay in one column, so that a card without a held file
+    // draws what it drew. While the preferences file cannot be read, the card
+    // says why and offers Forget beside Check now, the way out of holding it
+    // (PR #29's review, P2-2; docs/DECISIONS.md D43).
+    let mut parts: Vec<Element<'a, Message>> = vec![card_head(
+        Icon::Server,
+        "Node",
+        "Balances, tag lookups, submits and the index".to_owned(),
+    )];
+    if model.prefs_held {
+        parts.push(ui::warning_callout(HELD_TITLE, HELD_BODY));
+    }
+    parts.push(t("Address", ty::FORM_LABEL, color::TEXT_SECONDARY).into());
+    parts.push(
+        row![
+            field,
             action(
                 model,
-                "Check now",
-                theme::Button::Secondary,
-                Size::Small,
-                Some(Icon::Refresh),
-                WalletMsg::CheckNode,
+                "Save",
+                theme::Button::Primary,
+                Size::Medium,
+                None,
+                WalletMsg::SaveNode,
             ),
         ]
-        .spacing(sp::S12),
-    )
-    .into()
+        .spacing(sp::S10)
+        .align_y(Alignment::Center)
+        .into(),
+    );
+    parts.push(
+        ui::helper(format!(
+            "{} {}",
+            node_note(model.node.url.is_some()),
+            // The same rule in a phone's words (docs/DECISIONS.md D32 item
+            // 10 (a)).
+            if model.phone() {
+                "https:// only, or http:// to this phone."
+            } else {
+                "https:// only, or http:// to this computer."
+            }
+        ))
+        .into(),
+    );
+    parts.push(
+        row![
+            tile("Network", network, color::TEXT_PRIMARY, None),
+            tile("Status", state, ink, None),
+        ]
+        .spacing(sp::S12)
+        .into(),
+    );
+    parts.push(
+        row![
+            tile("Tip", tip, color::TEXT_PRIMARY, solved),
+            tile("Middleware sync", sync, sync_ink, None),
+        ]
+        .spacing(sp::S12)
+        .into(),
+    );
+    parts.push(
+        ui::helper(
+            "Sync is the Mesh middleware's view of its own node: whether its last read of \
+             the node's tip finished. It does not say the node is current with the network; \
+             how long ago the tip was solved does.",
+        )
+        .into(),
+    );
+    let check = action(
+        model,
+        "Check now",
+        theme::Button::Secondary,
+        Size::Small,
+        Some(Icon::Refresh),
+        WalletMsg::CheckNode,
+    );
+    parts.push(if model.prefs_held {
+        row![
+            check,
+            action(
+                model,
+                "Forget the node",
+                theme::Button::Secondary,
+                Size::Small,
+                None,
+                Message::ForgetNode,
+            ),
+        ]
+        .spacing(sp::S10)
+        .into()
+    } else {
+        check
+    });
+    ui::card_for(model.compact(), column(parts).spacing(sp::S12)).into()
 }
 
 /// The units amounts are shown in, one segment each. On the desktop they hug
@@ -722,6 +755,16 @@ mod tests {
     #[test]
     fn the_settings_fit_a_phone_of_the_narrowest_width() {
         let model = sample_model(NARROWEST);
+        assert_eq!(fits(screens::view(&model), NARROWEST), Ok(()));
+    }
+
+    #[test]
+    fn the_settings_fit_a_phone_of_the_narrowest_width_with_the_preferences_held() {
+        // The note, and Forget beside Check now, at the narrowest width
+        // (docs/DECISIONS.md D43).
+        let mut model = sample_model(NARROWEST);
+        model.node = NodeState::default();
+        model.prefs_held = true;
         assert_eq!(fits(screens::view(&model), NARROWEST), Ok(()));
     }
 
