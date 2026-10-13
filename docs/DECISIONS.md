@@ -966,6 +966,14 @@ to them.
    under a new name (never overwriting), shows the full path, and offers
    to copy the hex to the clipboard. The artifact is not secret: it is
    the bytes the node is sent.
+
+   *Amended 2026-10-13, to follow the owner's decision of that day in D32
+   item 10 (i): the last sentence above is withdrawn. The artifact is the
+   bytes the node is sent, but while the reservation is open they are the
+   only bytes that can move these funds, as `crates/wallet-core/src/event.rs`
+   says and as the send page and the report tell the person
+   (`crates/app/src/screens/wallet/send.rs`, `report.rs`). The owner had
+   the same claim reworded in Tawara-mobile's comment on copy.*
 6. **Fonts.** Static TTF instances of the renderings' three families,
    bundled in `crates/app/fonts/` with each family's SIL Open Font
    License 1.1 beside them: Poppins Regular, Medium and SemiBold and IBM
@@ -2193,6 +2201,10 @@ on the three conditions D18 left open.
    `crates/wallet-core/src/event.rs`, which calls these bytes "the only bytes
    that can move these funds while the reservation is open".*
 
+   *A note on the amendment above, not part of the owner's words: item (j)'s
+   mark is read only from API 33, and Tawara's minimum is API 26, so on API
+   26 to 32 Tawara's own Copy is unmarked in effect as well.*
+
    *Amended (owner, 2026-10-13), what `Ok` means: `Host::share` returning `Ok`
    says that the platform was asked to show the sheet, not that it was shown.
    A refusal the platform makes later is not reported, since the call has
@@ -2201,7 +2213,9 @@ on the three conditions D18 left open.
    shows reads "Tawara asked the system to open the share sheet", and keeps
    the rest of its sense: Tawara cannot tell whether the bytes were saved
    there, so they still count as not saved and the banner stays. `Host::share`'s
-   documentation says the same.*
+   documentation says the same. This supersedes the paragraph above where it
+   says that the page says the sheet was opened and that `Host::share`
+   returns `Ok` when the sheet was shown.*
 
    **(j) Clipboard protection (decided under the owner's delegation,
    2026-10-12).** Tawara-mobile's copy path marks every copy as sensitive on
