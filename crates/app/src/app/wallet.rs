@@ -2074,7 +2074,7 @@ impl App {
                     self.send(Command::DiscardPlan, Purpose::DiscardPlan);
                 }
             }
-            (Purpose::ConfirmSend | Purpose::Resign, Reply::Sent(sent)) => {
+            (Purpose::ConfirmSend | Purpose::Resign, Reply::Sent(mut sent)) => {
                 // Whatever is shown, the sent page is: it carries the only
                 // copy of the signed bytes (docs/PLAN.md section 4.9).
                 self.model.wallet = Some(sent.view.clone());
@@ -2084,23 +2084,36 @@ impl App {
                     Some(Page::Resign(r)) => r.form.clone(),
                     _ => SpendForm::default(),
                 };
+                // Bytes a re-sign gives again that were saved before are saved
+                // (D38 item 5, as revised on 2026-10-13).
+                let saved = self.model.saved_copy(&sent.artifact_hex).map(Ok);
                 // A re-sign gives the same bytes again, and keeps the place they
                 // hold in the signing history; a new spend takes the next place
-                // (docs/DECISIONS.md D38 item 5).
+                // (D38, as docs/SCREENS.md W6 states the rule).
                 let order = match purpose {
                     Purpose::Resign => self.model.kept_order(&sent.artifact_hex),
                     _ => None,
                 }
                 .unwrap_or_else(|| self.model.next_order());
+                // The page shown is that spend now: its kept copy goes, so that
+                // no banner offers it beside its own page (docs/SCREENS.md W6).
+                // A re-sign whose read of the store failed reports no index, and
+                // keeps the one its kept copy had, for W8's form.
+                let earlier = match purpose {
+                    Purpose::Resign => self
+                        .model
+                        .discard_signed(|s| s.sent.sent.artifact_hex == sent.artifact_hex),
+                    _ => Vec::new(),
+                };
+                if sent.spent_index.is_none() {
+                    sent.spent_index = earlier.iter().find_map(|s| s.sent.sent.spent_index);
+                }
                 self.model.screen = Screen::Wallet(WalletPage {
                     page: Page::Send(SendPage {
                         from,
                         form,
                         stage: SendStage::Sent(Box::new(SentPage {
-                            // Bytes a re-sign gives again that were saved
-                            // before are saved (D38 item 5, as revised on
-                            // 2026-10-13).
-                            saved: self.model.saved_copy(&sent.artifact_hex).map(Ok),
+                            saved,
                             sent,
                             order,
                             resigned: matches!(purpose, Purpose::Resign),

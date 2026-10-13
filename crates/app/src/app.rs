@@ -4098,6 +4098,51 @@ mod tests {
         assert!(app.model.signed[1].sent.resigned);
     }
 
+    #[test]
+    fn a_re_signed_spend_is_not_offered_beside_its_own_page() {
+        // docs/SCREENS.md W6: a re-sign's page takes the place of its spend's
+        // kept copy, so no "Open it" banner offers the spend shown. Left, it is
+        // kept once, and offered again.
+        let (mut app, sent) = just_sent();
+        let from = sent.from;
+        wallet(&mut app, WalletMsg::Open(To::Account(from)));
+        assert_eq!(app.model.unsaved_signed().count(), 1);
+        wallet(&mut app, WalletMsg::Open(To::Resign(from)));
+        let _ = app.on_reply(Purpose::Resign, Reply::Sent(sent.clone()));
+        assert!(sent_shown(&app).is_some_and(|(_, s)| s.resigned && s.unsaved()));
+        assert_eq!(
+            app.model.unsaved_signed().count(),
+            0,
+            "no banner offers the spend its own page shows"
+        );
+        assert!(app.model.signed.is_empty());
+        wallet(&mut app, WalletMsg::Open(To::Dashboard));
+        assert_eq!(kept_bytes(&app), vec![sent.artifact_hex.clone()]);
+        assert_eq!(app.model.unsaved_signed().count(), 1);
+    }
+
+    #[test]
+    fn a_re_sign_that_could_not_read_its_reservation_keeps_the_index_it_had() {
+        // docs/SCREENS.md W8: a re-sign whose read of the store failed reports
+        // no index. The spend keeps the one its sign reported, so the next
+        // re-sign still offers what was typed for it, not an empty form.
+        let (mut app, sent) = just_sent();
+        let from = sent.from;
+        wallet(&mut app, WalletMsg::Open(To::Account(from)));
+        wallet(&mut app, WalletMsg::Open(To::Resign(from)));
+        let mut again = sent.clone();
+        again.spent_index = None;
+        let _ = app.on_reply(Purpose::Resign, Reply::Sent(again));
+        assert!(sent_shown(&app).is_some_and(|(_, s)| s.sent.spent_index == Some(49)));
+        wallet(&mut app, WalletMsg::Open(To::Resign(from)));
+        assert!(
+            matches!(&wallet_page(&app).page,
+                Page::Resign(ResignPage { form, .. }) if *form == spend_typed()),
+            "{:?}",
+            wallet_page(&app).page
+        );
+    }
+
     /// A check's answer that finds `account` in sync.
     fn in_sync_status(account: AccountId) -> Reply {
         Reply::Status {
