@@ -585,8 +585,12 @@ for review or published.
 - [ ] **Google Play** (owner): from the internal testing track of section
   8, the closed test if the account needs one (section 1.2); the Data
   safety form, content rating, target audience and financial features
-  declaration; then production. **(Recommended)** a staged rollout,
-  starting at a small share, so that a fault reaches few people.
+  declaration; then production. Play offers no staged rollout for an app's
+  first publication, so the first release reaches all Google Play users in
+  the countries and regions chosen for production at once (D36, sources 24
+  and 25). The device checks of section 8 are the gate before it.
+  **(Recommended)** for each later update, a staged rollout, starting at a
+  small share, so that a fault reaches few people (D36, source 24).
 - [ ] **Desktop** (owner): a GitHub release on the tag `vX.Y.Z`, made from
   the owner's machine, with the signed installer, the `.dmg`, the
   AppImage, the `.deb`, `SHA256SUMS` and its signature, and release notes

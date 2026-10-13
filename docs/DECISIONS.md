@@ -2600,3 +2600,13 @@ packaging study of 2026-10-12, whose notes are not in the repository.
     packages, are from https://developer.apple.com/forums/thread/130560 and
     https://developer.apple.com/forums/thread/675354 (both checked
     2026-10-13).
+24. Google Play, staged rollouts: "Staged rollouts can only be used for app
+    updates, not when publishing an app for the first time."
+    https://support.google.com/googleplay/android-developer/answer/6346149?hl=en
+    (2026-10-13)
+25. Google Play, the first production release: "If rolling out a first
+    production release, clicking Start rollout to production publishes your
+    app to all Google Play users in your selected countries or regions." and
+    "Rollout percentage options are unavailable for a first release."
+    https://support.google.com/googleplay/android-developer/answer/9859348?hl=en
+    (2026-10-13)
