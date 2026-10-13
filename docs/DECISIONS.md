@@ -2383,7 +2383,11 @@ The GitHub digests were read on 2026-10-13.
   `appimagetool` is run with `--appimage-extract-and-run`, so the build
   needs no FUSE, and with `--runtime-file`, so it downloads nothing at run
   time. `dpkg-deb` and `dpkg-shlibdeps` are Debian's own; `cargo-deb` would
-  add a tool for what a control file and two commands do. An executable
+  add a tool for what a control file and two commands do. `dpkg-shlibdeps`
+  names only the libraries a binary is linked with, and the app also opens
+  several by name at run time (through `x11-dl`, `x11rb`, `xkbcommon-dl` and
+  `wayland-sys` in winit's backends, and through `ash` for `libvulkan` in
+  wgpu), so RELEASE.md section 6.3 names them by hand. An executable
   runs only on systems whose glibc is at least the newest version it
   needs, so the build names a floor, **glibc 2.35** (Ubuntu 22.04's, and
   icm's default), and **fails if the executable needs anything newer**;

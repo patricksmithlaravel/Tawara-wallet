@@ -411,10 +411,21 @@ run.
 - [ ] `.deb`: a tree with `usr/bin/tawara-desktop`, the same desktop entry
   under `usr/share/applications/`, hicolor icons from 16 to 512 pixels, the
   notices under `usr/share/doc/tawara-desktop/`, and `DEBIAN/control`
-  (package `tawara-desktop`, the owner's maintainer line, `Depends` from
-  `dpkg-shlibdeps`); then `dpkg-deb --root-owner-group --build`, in the same
-  container. The package has no maintainer script that touches anyone's
-  home folder.
+  (package `tawara-desktop`, the owner's maintainer line). `Depends` has two
+  parts. The first is the `shlibs:Depends` that `dpkg-shlibdeps -O` prints
+  for the executable, which names only the libraries it is linked with. The
+  second names by hand the libraries the app opens at run time (D36): for an
+  X11 session, `libx11-6`, `libx11-xcb1`, `libxcursor1`, `libxi6` and
+  `libxkbcommon-x11-0`; for a Wayland session, `libwayland-client0`; and for
+  both, `libxkbcommon0`, which the keyboard needs. All of them are `Depends`,
+  since one package serves either session. `Recommends` is `libvulkan1`:
+  without it the app draws with its software renderer. The X11 names are
+  those that `.github/workflows/ci.yml` installs before its start-up check
+  (lines 141 and 142), less `libxrandr2`, which winit does not open;
+  `libx11-6` and `libxkbcommon0` are added because the app opens `libX11`
+  and `libxkbcommon` itself. Then `dpkg-deb --root-owner-group --build`, in
+  the same container. The package has no maintainer script that touches
+  anyone's home folder.
 - [ ] Optional detached GPG signatures (owner, section 1.2).
 
 ### 6.4 Android (App Bundle)
@@ -491,7 +502,12 @@ never had Tawara on them (owner, with delegated help):
   opens with no Gatekeeper warning, on Apple silicon and on Intel.
 - [ ] **Linux:** the `.deb` installs, starts and removes on Ubuntu 22.04
   and 24.04; the AppImage starts on both; `dpkg-deb --info` and
-  `--contents` show what section 6.3 says.
+  `--contents` show what section 6.3 says. In a fresh `ubuntu:22.04`
+  container with only `xvfb`, `xauth` and `mesa-vulkan-drivers` added before
+  the package (the last is the software Vulkan driver that the wgpu launch
+  needs), `ci/liveness.sh` passes on the installed binary. Libraries that
+  those packages pull in cannot show a gap, so the check covers the list only
+  for libraries the container lacks.
 - [ ] **Every desktop package:** the version shown is `X.Y.Z`; a wallet
   made by the previous release, if there is one, opens; the notices are
   where section 4 says.
