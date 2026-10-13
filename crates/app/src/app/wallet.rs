@@ -8,8 +8,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use iced::Task;
+use iced::widget::qr_code;
 use tawara_wallet_core::explorer::{
     BlockAt, BlockDetail, ExplorerRefusal, Found, PendingView, QUEUE_ROWS, Query, TagView,
     TransactionView,
@@ -224,12 +226,52 @@ pub fn remedy(state: &AccountState) -> Option<Remedy> {
     }
 }
 
-/// W2: one account's destination.
+/// W2: one account's destination, and the code that shows it (docs/DECISIONS.md
+/// D41).
 #[derive(Clone, Debug, Default)]
 pub struct ReceivePage {
     pub account: Option<AccountId>,
     /// What the worker said about it, once it has.
     pub view: Option<ReceiveView>,
+    /// The destination as a QR code, built when the worker answers rather than
+    /// when the page is drawn, because the widget borrows the code's data for
+    /// every drawing. `None` until the answer, and when only the hex form is
+    /// known: there is then no destination to encode.
+    pub code: Option<Arc<qr_code::Data>>,
+}
+
+impl ReceivePage {
+    /// The text W2's code encodes: the destination the page prints and nothing
+    /// else (docs/DECISIONS.md D41). With only the hex form known there is no
+    /// text, and so no code.
+    #[must_use]
+    pub fn code_text(view: &ReceiveView) -> Option<&str> {
+        view.destination.as_deref()
+    }
+
+    /// The page once the worker has answered `view` for `account`. The code
+    /// is version 3 at error correction Q (docs/DECISIONS.md D41), which holds
+    /// 32 bytes in byte mode; a destination is at most 31 characters, being the
+    /// 22-byte payload in Base58. A destination that does not encode is drawn
+    /// as no code at all, never as a different one.
+    #[must_use]
+    pub fn answered(account: AccountId, view: ReceiveView) -> ReceivePage {
+        let code = Self::code_text(&view)
+            .and_then(|text| {
+                qr_code::Data::with_version(
+                    text.as_bytes(),
+                    qr_code::Version::Normal(3),
+                    qr_code::ErrorCorrection::Quartile,
+                )
+                .ok()
+            })
+            .map(Arc::new);
+        ReceivePage {
+            account: Some(account),
+            view: Some(view),
+            code,
+        }
+    }
 }
 
 /// W3: a discovery sweep, and adding what it found.
@@ -923,6 +965,7 @@ impl App {
                 Page::Receive(ReceivePage {
                     account: receive,
                     view: None,
+                    code: None,
                 })
             }
             To::AddAccount => Page::AddAccount(AddAccountPage::default()),
@@ -1810,7 +1853,7 @@ impl App {
                 }) = self.wallet_page()
                     && r.account == Some(view.account)
                 {
-                    r.view = Some(view);
+                    *r = ReceivePage::answered(view.account, view);
                 }
             }
             (Purpose::Discover, Reply::Discovered { text, accounts }) => {

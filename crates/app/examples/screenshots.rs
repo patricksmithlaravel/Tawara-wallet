@@ -497,10 +497,10 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         (
             "w2-receive",
             DASHBOARD,
-            on(Page::Receive(ReceivePage {
-                account: Some(accounts[0].id),
-                view: Some(sample::receive_view()),
-            })),
+            on(Page::Receive(ReceivePage::answered(
+                accounts[0].id,
+                sample::receive_view(),
+            ))),
         ),
         (
             "w3-add-account",
