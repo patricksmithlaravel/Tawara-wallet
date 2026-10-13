@@ -1936,12 +1936,13 @@ on the three conditions D18 left open.
    installing it, or by changing the navigation mode while it runs; a
    colour or wallpaper change probably does the same, which is inferred and
    not tested. That this race is behind the failures of CI's x86_64 API 35
-   job is now shown by #12's CI, whose first commit alone fails there with
-   the relaunch line (owner, 2026-10-13; item 10 (k)). The platform's data
-   marks the change as new at API 36. `resourcesUnused`,
-   `TARGET_API=36` and the API 36 emulator image stay in PR B, which would
-   then add `resourcesUnused` to the 19, for the 20 names and `0xd800ffff`
-   above. `resourcesUnused` was not tested. Item 10 (k) gives the order.*
+   job is now shown by Tawara-mobile #12's CI: its first commit alone
+   (8972b85) fails there with the relaunch line (run 38377412659), and its
+   second commit, the fix (333dff7), passes (run 38377605869). The platform's
+   data marks the change as new at API 36. `resourcesUnused`, `TARGET_API=36`
+   and the API 36 emulator image stay in PR B, which would then add
+   `resourcesUnused` to the 19, for the 20 names and `0xd800ffff` above.
+   `resourcesUnused` was not tested. Item 10 (k) gives the order.*
 
    **(j) Android exit after destruction: owner, 2026-10-12.** Check first,
    then act. On an emulator, press Back from the foreground, then repeat
@@ -2376,10 +2377,12 @@ on the three conditions D18 left open.
    same day, which put the fix after #4, and the open question about the
    order. The reason is that #4 hits the same start-up quit, so its Android
    CI cannot pass until the fix is on `main`. #12's CI has also shown the bug
-   on CI's own API 35 image: its first commit alone fails with the relaunch
-   line `wm_relaunch_resume_activity ...,80000000`, and its second commit
-   passes. PR B still comes after #4 (#5 has merged), and still names the 20
-   configChanges, `0xd800ffff`, by adding `resourcesUnused` to the 19.*
+   on CI's own API 35 image: its first commit alone (8972b85) fails with the
+   relaunch line `wm_relaunch_resume_activity ...,80000000`
+   (run 38377412659), and its second commit (333dff7) passes
+   (run 38377605869). PR B still comes after #4 (#5 has merged), and still
+   names the 20 configChanges, `0xd800ffff`, by adding `resourcesUnused` to
+   the 19.*
 
    **(l) CI watched on the open wallet pull request (decided under the owner's
    delegation, 2026-10-12).** Automatic fixing of CI failures is on for the
