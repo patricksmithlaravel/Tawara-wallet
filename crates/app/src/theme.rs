@@ -310,6 +310,37 @@ pub enum Button {
     Bare,
 }
 
+/// A segment of a segmented control or a filter row, drawn as a container
+/// (`ui::segment`): the fill, ink and radius of [`button`]'s
+/// `Button::Segment { selected }` in the state `enabled` says, so that the
+/// two draw the same pixels (docs/DECISIONS.md D32 item 10 (d)).
+pub fn segment(selected: bool, enabled: bool) -> impl Fn(&Theme) -> container::Style {
+    move |_| {
+        let fill = selected.then_some(color::ACCENT);
+        // A disabled segment that is selected keeps its shape and dims to the
+        // raised fill, as `button` dims a filled button.
+        let fill = if !enabled && fill.is_some() {
+            Some(color::BG_RAISED)
+        } else {
+            fill
+        };
+        let ink = if !enabled {
+            color::TEXT_MUTED
+        } else if selected {
+            color::TEXT_ON_ACCENT
+        } else {
+            color::TEXT_SECONDARY
+        };
+        container::Style {
+            background: fill.map(Background::Color),
+            text_color: Some(ink),
+            border: border(0.0, Color::TRANSPARENT, radius::R8),
+            shadow: Shadow::default(),
+            snap: true,
+        }
+    }
+}
+
 /// The style of a [`Button`] variant, in each of iced's states. The frames
 /// define no hover or pressed state except a link's (`design/TOKENS.md`
 /// 1.7); a disabled button keeps its shape and dims to the muted text.

@@ -4,7 +4,7 @@
 //! (docs/SCREENS.md W1, W10).
 
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, row, space};
+use iced::widget::{Id, column, container, row, space};
 use iced::{Alignment, Element, Length, Padding};
 use tawara_wallet_core::explorer::BlockKind;
 use tawara_wallet_core::preferences::AmountUnit;
@@ -14,6 +14,7 @@ use super::{action, activity, copy, destination, frame, kind, name, pair, report
 use crate::app::{Message, Model, ReportKey, To, WalletMsg, WalletPage, minutes};
 use crate::history::{self, Kind};
 use crate::icon::Icon;
+use crate::tap::tap;
 use crate::theme::{self, color, space as sp};
 use crate::ui::{self, Size, t, ty};
 
@@ -22,36 +23,10 @@ pub fn view<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> 
         "Keystore unlocked · auto-locks after {} with nothing done",
         minutes(model.prefs.idle_lock)
     );
-    let actions = vec![
-        action(
-            model,
-            "Refresh",
-            theme::Button::Secondary,
-            Size::Header,
-            Some(Icon::Refresh),
-            Message::Refresh,
-        ),
-        action(
-            model,
-            "Receive",
-            theme::Button::Secondary,
-            Size::Header,
-            Some(Icon::Receive),
-            WalletMsg::Open(To::Receive(None)),
-        ),
-        action(
-            model,
-            "Send",
-            theme::Button::Primary,
-            Size::Header,
-            Some(Icon::Send),
-            WalletMsg::Open(To::Send(None)),
-        ),
-    ];
     let mut body = Vec::new();
     if let Some(wallet) = &model.wallet {
         if let Some(r) = report::notice(wallet) {
-            body.push(report::show(page, ReportKey::Notice, r));
+            body.push(report::show_in(model.compact(), page, ReportKey::Notice, r));
         }
         body.push(pair(
             model,
@@ -63,7 +38,39 @@ pub fn view<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> 
         body.push(accounts(model, page, &wallet.accounts));
         body.push(pair(model, recent(model, page), network(model), 7, 4));
     }
-    frame(model, page, "Wallet", subtitle, actions, body)
+    frame(model, page, "Wallet", subtitle, header_actions(model), body)
+}
+
+/// The page's header buttons. A phone holds Receive and Send as tabs of its
+/// bar, so its header keeps Refresh alone (docs/SCREENS.md, "Compact layout").
+fn header_actions<'a>(model: &Model) -> Vec<Element<'a, Message>> {
+    let mut actions = vec![action(
+        model,
+        "Refresh",
+        theme::Button::Secondary,
+        Size::Header,
+        Some(Icon::Refresh),
+        Message::Refresh,
+    )];
+    if !model.compact() {
+        actions.push(action(
+            model,
+            "Receive",
+            theme::Button::Secondary,
+            Size::Header,
+            Some(Icon::Receive),
+            WalletMsg::Open(To::Receive(None)),
+        ));
+        actions.push(action(
+            model,
+            "Send",
+            theme::Button::Primary,
+            Size::Header,
+            Some(Icon::Send),
+            WalletMsg::Open(To::Send(None)),
+        ));
+    }
+    actions
 }
 
 /// The total, as the 02 hero card sets it (5.22), with the number of
@@ -174,8 +181,16 @@ fn balance<'a>(model: &'a Model, wallet: &'a WalletView) -> Element<'a, Message>
             30.0,
         ));
     }
+    // On a phone the hero is padded 20 rather than 28 by 32, so that its
+    // figures keep the room a 360-pixel window leaves them (docs/SCREENS.md,
+    // "Compact layout").
+    let padding = if model.compact() {
+        Padding::from(sp::S20)
+    } else {
+        Padding::from([sp::S28, sp::S32])
+    };
     container(card.push(chips))
-        .padding(Padding::from([sp::S28, sp::S32]))
+        .padding(padding)
         .width(Length::Fill)
         .style(theme::hero_card)
         .into()
@@ -237,7 +252,8 @@ fn keys<'a>(model: &'a Model, rows: &'a [AccountRow]) -> Element<'a, Message> {
             list = list.push(ui::divider());
         }
     }
-    ui::card(
+    ui::card_for(
+        model.compact(),
         column![
             row![
                 ui::section_label("One-time keys"),
@@ -271,6 +287,9 @@ fn accounts<'a>(
     page: &'a WalletPage,
     rows: &'a [AccountRow],
 ) -> Element<'a, Message> {
+    if model.compact() {
+        return stacked(model, page, rows);
+    }
     const ACCOUNT: u16 = 4;
     const DESTINATION: u16 = 6;
     const BALANCE: u16 = 4;
@@ -413,6 +432,122 @@ fn accounts<'a>(
     .into()
 }
 
+/// The accounts on a phone (docs/SCREENS.md, "Compact layout"): one item per
+/// account, separated by dividers. An item's name and state are on its first
+/// line, its destination under them, and its balance, next key and action on
+/// the last. An item opens its account when the wallet is idle and it is
+/// tapped. It acts on release, so a drag that starts on it scrolls the page
+/// (docs/DECISIONS.md D32 item 10 (d)), and the item's own Copy or Review
+/// button takes its own click.
+fn stacked<'a>(
+    model: &'a Model,
+    page: &'a WalletPage,
+    rows: &'a [AccountRow],
+) -> Element<'a, Message> {
+    let unit = model.prefs.unit;
+    let idle = model.busy.is_none();
+    let mut list = column![].width(Length::Fill);
+    for (n, account) in rows.iter().enumerate() {
+        let shown = destination(account.id);
+        let (word, ink) = status(&account.state);
+        let balance = account
+            .state
+            .balance()
+            .map_or_else(|| "—".to_owned(), |b| ui::amount(b, unit));
+        let act: Element<'a, Message> = match account.state {
+            AccountState::InSync { .. } => copy(page, &shown, "Copy"),
+            _ => action(
+                model,
+                "Review",
+                if ink == color::WARNING {
+                    theme::Button::WarningTonal
+                } else {
+                    theme::Button::Secondary
+                },
+                Size::Small,
+                None,
+                WalletMsg::Open(To::Account(account.id)),
+            ),
+        };
+        let item = tap(container(
+            column![
+                row![
+                    column![
+                        t(name(account.id), ty::TABLE_NAME, color::TEXT_PRIMARY),
+                        t(kind(account), ty::TINY, color::TEXT_MUTED),
+                    ]
+                    .spacing(sp::S2)
+                    .width(Length::Fill),
+                    row![ui::dot(ink, 6.0), t(word, ty::TABLE_BODY, ink)]
+                        .spacing(sp::S6)
+                        .align_y(Alignment::Center),
+                ]
+                .spacing(sp::S12)
+                .align_y(Alignment::Center)
+                .width(Length::Fill),
+                t(shown, ty::MONO_SMALL, color::TEXT_SECONDARY)
+                    .wrapping(Wrapping::WordOrGlyph)
+                    .width(Length::Fill),
+                row![
+                    t(balance, ty::TABLE_AMOUNT, color::TEXT_PRIMARY)
+                        .wrapping(Wrapping::WordOrGlyph),
+                    space().width(Length::Fill),
+                    t(
+                        format!("next key #{}", account.index),
+                        ty::NOTE,
+                        color::TEXT_MUTED,
+                    ),
+                    container(act).id(action_id(n)),
+                ]
+                .spacing(sp::S12)
+                .align_y(Alignment::Center)
+                .width(Length::Fill),
+            ]
+            .spacing(sp::S8)
+            .width(Length::Fill),
+        )
+        .padding(Padding::from([sp::S12, 0.0]))
+        .width(Length::Fill)
+        .id(row_id(n)))
+        .on_tap_maybe(idle.then(|| Message::from(WalletMsg::Open(To::Account(account.id)))));
+        list = list.push(item);
+        if n + 1 < rows.len() {
+            list = list.push(ui::divider());
+        }
+    }
+    ui::card_for(
+        true,
+        column![
+            row![
+                ui::section_label("Accounts"),
+                space().width(Length::Fill),
+                action(
+                    model,
+                    "Add account",
+                    theme::Button::Tonal,
+                    Size::Small,
+                    Some(Icon::Plus),
+                    WalletMsg::Open(To::AddAccount),
+                ),
+            ]
+            .align_y(Alignment::Center),
+            list,
+        ]
+        .spacing(sp::S8),
+    )
+    .into()
+}
+
+/// The ids of account `n`'s row and of its action on a phone. They draw
+/// nothing; the tests find a row and its action where they are drawn.
+fn row_id(n: usize) -> Id {
+    Id::from(format!("account-row-{n}"))
+}
+
+fn action_id(n: usize) -> Id {
+    Id::from(format!("account-action-{n}"))
+}
+
 /// How many of the newest transactions the dashboard lists.
 const RECENT: usize = 4;
 
@@ -427,6 +562,7 @@ fn recent<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> {
         for account in history::pending(&w.accounts) {
             shown += 1;
             list = list.push(line(
+                model.compact(),
                 Icon::Clock,
                 color::WARNING,
                 "Spend settling".to_owned(),
@@ -453,7 +589,14 @@ fn recent<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> {
                 let when =
                     r.tx.time_ms
                         .map_or_else(|| "—".to_owned(), |ms| ui::short_date(ms, model.zone));
+                let mut amount = t(amount, ty::TABLE_AMOUNT, ink);
+                if model.compact() {
+                    // A long amount breaks between its glyphs rather than
+                    // running past the row (docs/SCREENS.md, "Compact layout").
+                    amount = amount.wrapping(Wrapping::WordOrGlyph);
+                }
                 list = list.push(line(
+                    model.compact(),
                     glyph,
                     tint,
                     title,
@@ -466,7 +609,7 @@ fn recent<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> {
                         color::TEXT_MUTED,
                     )
                     .into(),
-                    t(amount, ty::TABLE_AMOUNT, ink).into(),
+                    amount.into(),
                 ));
             }
             if shown == 0 {
@@ -476,7 +619,8 @@ fn recent<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> {
             }
         }
         Some(Err(refusal)) => {
-            list = list.push(report::show(
+            list = list.push(report::show_in(
+                model.compact(),
                 page,
                 ReportKey::Explorer,
                 report::explorer(refusal, "its transaction index"),
@@ -490,7 +634,8 @@ fn recent<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> {
             }));
         }
     }
-    ui::card(
+    ui::card_for(
+        model.compact(),
         column![
             row![
                 ui::section_label("Recent activity"),
@@ -512,6 +657,7 @@ fn recent<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> {
 /// One line of recent activity: a glyph, what it was and when, its state,
 /// and its amount.
 fn line<'a>(
+    compact: bool,
     glyph: Icon,
     tint: iced::Color,
     title: String,
@@ -519,16 +665,33 @@ fn line<'a>(
     state: Element<'a, Message>,
     amount: Element<'a, Message>,
 ) -> Element<'a, Message> {
-    row![
-        container(crate::icon::icon(glyph, 16.0, 2.0, tint))
-            .center(Length::Fixed(36.0))
-            .style(theme::icon_tile(color::BG_RAISED, tint)),
-        column![
-            ui::arrowed(title, ty::ROW_TITLE, color::TEXT_PRIMARY),
-            t(detail, ty::NOTE, color::TEXT_MUTED).wrapping(Wrapping::WordOrGlyph),
+    let icon = container(crate::icon::icon(glyph, 16.0, 2.0, tint))
+        .center(Length::Fixed(36.0))
+        .style(theme::icon_tile(color::BG_RAISED, tint));
+    let text = column![
+        ui::arrowed(title, ty::ROW_TITLE, color::TEXT_PRIMARY),
+        t(detail, ty::NOTE, color::TEXT_MUTED).wrapping(Wrapping::WordOrGlyph),
+    ]
+    .spacing(sp::S2);
+    if compact {
+        // On a phone the amount stands over the state, at the right, and the
+        // title and the detail take what is left (docs/SCREENS.md, "Compact
+        // layout").
+        return row![
+            icon,
+            text.width(Length::Fill),
+            column![amount, state]
+                .spacing(sp::S2)
+                .align_x(Alignment::End),
         ]
-        .spacing(sp::S2)
-        .width(Length::FillPortion(5)),
+        .spacing(sp::S12)
+        .align_y(Alignment::Center)
+        .padding(Padding::from([sp::S8, 0.0]))
+        .into();
+    }
+    row![
+        icon,
+        text.width(Length::FillPortion(5)),
         container(state).width(Length::FillPortion(2)),
         container(amount)
             .width(Length::FillPortion(3))
@@ -646,5 +809,213 @@ fn network(model: &Model) -> Element<'_, Message> {
             }));
         }
     }
-    ui::card(card).into()
+    ui::card_for(model.compact(), card).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use iced::Rectangle;
+    use iced::advanced::widget::Operation;
+    use iced_runtime::user_interface::{Cache, UserInterface};
+    use tawara_wallet_core::preferences::Preferences;
+    use tawara_wallet_core::{Activity, Progress, RequestId, sample};
+
+    use super::*;
+    use crate::app::{Busy, Explored, Level, NARROWEST, Page, Screen};
+    use crate::harness::{
+        Driver, finger_lift, finger_move, finger_press, fits, mouse_move, mouse_press,
+        mouse_release,
+    };
+
+    /// A phone's window tall enough for the first account row to be drawn
+    /// above the foot of the page.
+    const TALL: (u32, u32) = (360, 1200);
+
+    /// The sample store on the wallet page, in a phone 360 logical pixels
+    /// wide: what the screenshot example puts in its model for W1.
+    fn phone() -> Model {
+        let mut model = Model::new(Preferences::default(), None);
+        model.width = NARROWEST;
+        model.screen = Screen::Wallet(WalletPage {
+            page: Page::Dashboard,
+            ..WalletPage::default()
+        });
+        model.wallet = Some(sample::wallet_view());
+        model.activity = read(sample::activity());
+        model.blocks = read(sample::blocks());
+        model.mempool = read(sample::mempool());
+        model
+    }
+
+    /// A read that has answered with `value`.
+    fn read<T>(value: T) -> Explored<T> {
+        Explored {
+            last: Some(Ok(value)),
+            ..Explored::default()
+        }
+    }
+
+    /// The bounds in the window of the container that carries `id`, as
+    /// `root` draws it in a window of `size`, or `None` when no such container
+    /// is drawn. The layout is built by the interface itself, so the bounds are
+    /// those a press would meet.
+    fn bounds_of(root: Element<'_, Message>, size: (u32, u32), id: &Id) -> Option<Rectangle> {
+        struct Find<'a> {
+            id: &'a Id,
+            found: Option<Rectangle>,
+        }
+        impl Operation for Find<'_> {
+            fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+                operate(self);
+            }
+
+            fn container(&mut self, id: Option<&Id>, bounds: Rectangle) {
+                if id == Some(self.id) {
+                    self.found = Some(bounds);
+                }
+            }
+        }
+        let mut renderer = crate::harness::renderer();
+        let bounds = iced::Size::new(size.0 as f32, size.1 as f32);
+        let mut ui = UserInterface::build(root, bounds, Cache::default(), &mut renderer);
+        let mut find = Find { id, found: None };
+        ui.operate(&renderer, &mut find);
+        find.found
+    }
+
+    /// Where account row `n` is drawn on a phone in `TALL`.
+    fn row_at(model: &Model, n: usize) -> Rectangle {
+        bounds_of(crate::screens::view(model), TALL, &row_id(n))
+            .expect("on a phone each account is a row that can be tapped")
+    }
+
+    #[test]
+    fn the_phone_wallet_fits_at_360_in_each_state_the_example_draws() {
+        let mut unreconciled = phone();
+        unreconciled.wallet = Some(sample::unreconciled_view());
+        unreconciled.node.tip = None;
+        unreconciled.node.error = Some("the node did not answer".to_owned());
+        let mut refreshing = phone();
+        refreshing.busy = Some(Busy {
+            id: RequestId::example(),
+            activity: Some(Activity::AskingNode),
+            progress: Some(Progress {
+                account: 1,
+                accounts: 3,
+                position: 0,
+                ceiling: 0,
+            }),
+        });
+        let mut noticed = phone();
+        if let Screen::Wallet(page) = &mut noticed.screen {
+            page.open.insert(ReportKey::Notice, Level::Summary);
+        }
+        for (label, model) in [
+            ("the sample store", phone()),
+            ("unreconciled", unreconciled),
+            ("refreshing", refreshing),
+            ("notice open", noticed),
+        ] {
+            assert_eq!(
+                fits(crate::screens::view(&model), NARROWEST),
+                Ok(()),
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_phone_keeps_refresh_as_its_only_header_action() {
+        // Receive and Send are the phone's tabs, so the header keeps one
+        // button; the desktop keeps all three.
+        assert_eq!(header_actions(&phone()).len(), 1);
+        let mut desktop = phone();
+        desktop.width = 1440.0;
+        assert_eq!(header_actions(&desktop).len(), 3);
+    }
+
+    #[test]
+    fn on_a_phone_each_account_is_a_row_across_the_card_under_the_one_before() {
+        // The card's inner width at 360: 16 pixels of page margin and 16 of
+        // card padding on each side.
+        let inner = NARROWEST - 4.0 * sp::S16;
+        let model = phone();
+        let rows: Vec<Rectangle> = (0..3).map(|n| row_at(&model, n)).collect();
+        for row in &rows {
+            assert!(
+                (row.width - inner).abs() < 0.5,
+                "{row:?} is not {inner} wide"
+            );
+        }
+        for pair in rows.windows(2) {
+            assert!(
+                pair[1].y >= pair[0].y + pair[0].height,
+                "{:?} is not below {:?}",
+                pair[1],
+                pair[0]
+            );
+        }
+    }
+
+    #[test]
+    fn an_account_row_opens_its_account_when_it_is_tapped() {
+        let model = phone();
+        let id = sample::wallet_view().accounts[0].id;
+        let at = row_at(&model, 0);
+        let mut driver = Driver::new(crate::screens::view(&model), TALL);
+        let (messages, _, _) = driver.send(&[
+            mouse_move(at.x + 20.0, at.y + at.height / 2.0),
+            mouse_press(),
+            mouse_release(),
+        ]);
+        assert!(
+            matches!(
+                messages.as_slice(),
+                [Message::Wallet(WalletMsg::Open(To::Account(opened)))] if *opened == id
+            ),
+            "{messages:?}"
+        );
+    }
+
+    #[test]
+    fn a_drag_that_starts_on_an_account_row_scrolls_and_opens_nothing() {
+        let model = phone();
+        let at = row_at(&model, 0);
+        let (x, y) = (at.x + 20.0, at.y + at.height / 2.0);
+        let mut driver = Driver::new(crate::screens::view(&model), TALL);
+        let (messages, statuses, _) = driver.send(&[
+            finger_press(1, x, y),
+            finger_move(1, x, y - 60.0),
+            finger_lift(1, x, y - 60.0),
+        ]);
+        assert!(messages.is_empty(), "the drag opened it: {messages:?}");
+        // The page took the move for a scroll: it is longer than the window,
+        // so a scrollable that moves its content captures the move.
+        assert_eq!(
+            statuses[1],
+            iced::event::Status::Captured,
+            "the page did not scroll with the finger"
+        );
+    }
+
+    #[test]
+    fn the_copy_on_an_account_row_copies_and_opens_nothing() {
+        let model = phone();
+        let id = sample::wallet_view().accounts[0].id;
+        let at = bounds_of(crate::screens::view(&model), TALL, &action_id(0))
+            .expect("on a phone the first account's action is drawn");
+        let mut driver = Driver::new(crate::screens::view(&model), TALL);
+        let (messages, _, _) = driver.send(&[
+            mouse_move(at.x + at.width / 2.0, at.y + at.height / 2.0),
+            mouse_press(),
+            mouse_release(),
+        ]);
+        assert!(
+            matches!(
+                messages.as_slice(),
+                [Message::Wallet(WalletMsg::Copy(text))] if *text == destination(id)
+            ),
+            "{messages:?}"
+        );
+    }
 }

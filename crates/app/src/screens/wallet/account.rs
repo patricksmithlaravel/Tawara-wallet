@@ -5,7 +5,7 @@
 //! purpose (docs/DECISIONS.md D19, D27 item 3).
 
 use iced::widget::text::Wrapping;
-use iced::widget::{column, row};
+use iced::widget::{column, container, row};
 use iced::{Alignment, Element, Length};
 use tawara_wallet_core::view::{AccountRow, AccountState, DivergenceKind, ReservationState};
 
@@ -33,7 +33,8 @@ pub fn view<'a>(
     let unit = model.prefs.unit;
     let shown = destination(account.id);
     let (word, ink) = status(&account.state);
-    let figures = ui::card(
+    let figures = ui::card_for(
+        model.compact(),
         column![
             row![
                 ui::section_label("Destination"),
@@ -64,7 +65,8 @@ pub fn view<'a>(
     );
     let mut body = vec![figures.into(), panel(model, page, account)];
     if let Some((done, text)) = &a.report {
-        body.push(report::show(
+        body.push(report::show_in(
+            model.compact(),
             page,
             ReportKey::Done,
             report::done(*done, account, text),
@@ -207,7 +209,8 @@ fn panel<'a>(
             report: text,
             advance_to,
         } => {
-            let parts = column![report::show(
+            let parts = column![report::show_in(
+                model.compact(),
                 page,
                 ReportKey::Diverged,
                 report::diverged(*kind, text)
@@ -248,11 +251,158 @@ fn panel<'a>(
     };
     let mut panel = column![callout].spacing(sp::S16);
     if !buttons.is_empty() {
-        let mut line = row![].spacing(sp::S10);
-        for b in buttons {
-            line = line.push(b);
+        if model.compact() {
+            // On a phone the buttons wrap onto the next line when the row
+            // is too narrow for them (docs/SCREENS.md, "Compact layout"). Each
+            // sits in a container with an id, so that the tests can find where
+            // it is drawn.
+            let buttons = buttons
+                .into_iter()
+                .enumerate()
+                .map(|(n, b)| Element::from(container(b).id(button_id(n))));
+            panel = panel.push(
+                iced::widget::Row::with_children(buttons)
+                    .spacing(sp::S10)
+                    .wrap()
+                    .vertical_spacing(sp::S10),
+            );
+        } else {
+            let mut line = row![].spacing(sp::S10);
+            for b in buttons {
+                line = line.push(b);
+            }
+            panel = panel.push(line);
         }
-        panel = panel.push(line);
     }
-    ui::card(panel).into()
+    ui::card_for(model.compact(), panel).into()
+}
+
+/// The id of the `n`-th button of a state panel on a phone. It draws nothing:
+/// the tests find where the button is drawn by it.
+fn button_id(n: usize) -> iced::widget::Id {
+    iced::widget::Id::from(format!("account-panel-button-{n}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{AccountPage, Level, NARROWEST, Page, Screen};
+    use crate::harness::fits;
+    use iced::advanced::widget::Operation;
+    use iced_runtime::user_interface::{Cache, UserInterface};
+    use tawara_wallet_core::preferences::Preferences;
+    use tawara_wallet_core::sample;
+    use tawara_wallet_core::view::{AccountId, WalletView};
+
+    /// A phone's window, tall enough that the whole panel is drawn.
+    const TALL: (u32, u32) = (360, 1200);
+
+    /// The bounds in the window of the container that carries `id`, as `root`
+    /// draws it in a window of `size`.
+    fn bounds_of(
+        root: Element<'_, Message>,
+        size: (u32, u32),
+        id: &iced::widget::Id,
+    ) -> iced::Rectangle {
+        struct Find<'a> {
+            id: &'a iced::widget::Id,
+            found: Option<iced::Rectangle>,
+        }
+        impl Operation for Find<'_> {
+            fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+                operate(self);
+            }
+
+            fn container(&mut self, id: Option<&iced::widget::Id>, bounds: iced::Rectangle) {
+                if id == Some(self.id) {
+                    self.found = Some(bounds);
+                }
+            }
+        }
+        let mut renderer = crate::harness::renderer();
+        let bounds = iced::Size::new(size.0 as f32, size.1 as f32);
+        let mut ui = UserInterface::build(root, bounds, Cache::default(), &mut renderer);
+        let mut find = Find { id, found: None };
+        ui.operate(&renderer, &mut find);
+        find.found.expect("the container is drawn")
+    }
+
+    /// The store `wallet` on W7 for `account`, in a phone 360 logical pixels
+    /// wide, with one report of the page opened when `open` is given.
+    fn phone(wallet: WalletView, account: AccountId, open: Option<(ReportKey, Level)>) -> Model {
+        let mut model = Model::new(Preferences::default(), None);
+        model.width = NARROWEST;
+        model.wallet = Some(wallet);
+        let mut page = WalletPage {
+            page: Page::Account(AccountPage {
+                account,
+                report: None,
+            }),
+            ..WalletPage::default()
+        };
+        if let Some((key, level)) = open {
+            page.open.insert(key, level);
+        }
+        model.screen = Screen::Wallet(page);
+        model
+    }
+
+    #[test]
+    fn the_phone_account_pages_fit_at_360_in_each_state_the_example_draws() {
+        let wallet = sample::wallet_view();
+        let accounts = wallet.accounts.clone();
+        // The second account in sync now, and set aside when the wallet opened,
+        // as the example draws it.
+        let mut aside = sample::wallet_view();
+        aside.accounts[1].state = AccountState::InSync {
+            balance: 3_180_000_000_000,
+        };
+        aside.accounts[1].spendable = false;
+        let cases = [
+            ("reconciled", phone(wallet.clone(), accounts[0].id, None)),
+            ("outstanding", phone(wallet.clone(), accounts[1].id, None)),
+            ("set aside", phone(aside, accounts[1].id, None)),
+            ("diverged", phone(wallet.clone(), accounts[2].id, None)),
+            (
+                "diverged, summarized",
+                phone(
+                    wallet.clone(),
+                    accounts[2].id,
+                    Some((ReportKey::Diverged, Level::Summary)),
+                ),
+            ),
+            (
+                "diverged, whole",
+                phone(
+                    wallet.clone(),
+                    accounts[2].id,
+                    Some((ReportKey::Diverged, Level::Full)),
+                ),
+            ),
+        ];
+        for (label, model) in cases {
+            assert_eq!(
+                fits(crate::screens::view(&model), NARROWEST),
+                Ok(()),
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn on_a_phone_the_state_buttons_wrap_onto_a_second_line() {
+        // Outstanding: Settle, Re-sign and Submit saved artifact. The first two
+        // share a line, and the third is too wide for that line at 360, so it
+        // wraps. `fits` cannot see this: a row squeezes a child rather than
+        // pushing it past the edge.
+        let wallet = sample::wallet_view();
+        let model = phone(wallet.clone(), wallet.accounts[1].id, None);
+        let at = |n: usize| bounds_of(crate::screens::view(&model), TALL, &button_id(n));
+        let (first, second, third) = (at(0), at(1), at(2));
+        assert_eq!(second.y, first.y, "Re-sign sits beside Settle");
+        assert!(
+            third.y > first.y,
+            "Submit saved artifact wraps onto a line of its own"
+        );
+    }
 }

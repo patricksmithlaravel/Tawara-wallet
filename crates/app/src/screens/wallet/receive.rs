@@ -3,7 +3,7 @@
 //! (docs/SCREENS.md W2).
 
 use iced::widget::text::Wrapping;
-use iced::widget::{column, row};
+use iced::widget::{column, container, row};
 use iced::{Alignment, Element, Length};
 
 use super::{account_choice, copy, frame, report};
@@ -16,12 +16,14 @@ pub fn view<'a>(
     page: &'a WalletPage,
     r: &'a ReceivePage,
 ) -> Element<'a, Message> {
+    let compact = model.compact();
     let accounts = model
         .wallet
         .as_ref()
         .map_or(&[][..], |w| w.accounts.as_slice());
     let mut body = vec![
-        ui::card(
+        ui::card_for(
+            compact,
             column![
                 ui::section_label("Account"),
                 account_choice(model, accounts.iter().map(|a| a.id), r.account, |id| {
@@ -38,18 +40,33 @@ pub fn view<'a>(
                 .destination
                 .clone()
                 .unwrap_or_else(|| view.account.hex());
+            let text = t(shown.clone(), ty::MONO_WORD, color::TEXT_PRIMARY)
+                .wrapping(Wrapping::WordOrGlyph)
+                .width(Length::Fill);
+            // On a phone Copy sits beneath the destination, at its end, so the
+            // destination keeps the whole width (docs/SCREENS.md, "Compact
+            // layout").
+            let line: Element<'a, Message> = if compact {
+                column![
+                    text,
+                    container(copy(page, &shown, "Copy"))
+                        .width(Length::Fill)
+                        .align_x(Alignment::End),
+                ]
+                .spacing(sp::S8)
+                .into()
+            } else {
+                row![text, copy(page, &shown, "Copy")]
+                    .spacing(sp::S12)
+                    .align_y(Alignment::Center)
+                    .into()
+            };
             body.push(
-                ui::card(
+                ui::card_for(
+                    compact,
                     column![
                         ui::section_label("Destination"),
-                        row![
-                            t(shown.clone(), ty::MONO_WORD, color::TEXT_PRIMARY)
-                                .wrapping(Wrapping::WordOrGlyph)
-                                .width(Length::Fill),
-                            copy(page, &shown, "Copy"),
-                        ]
-                        .spacing(sp::S12)
-                        .align_y(Alignment::Center),
+                        line,
                         t(
                             format!(
                                 "Base58 with its checksum: what a payer types or pastes. At key \
@@ -64,7 +81,8 @@ pub fn view<'a>(
                 )
                 .into(),
             );
-            body.push(report::show(
+            body.push(report::show_in(
+                compact,
                 page,
                 ReportKey::Receive,
                 report::receive(&view.text),
@@ -83,4 +101,29 @@ pub fn view<'a>(
         Vec::new(),
         body,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{NARROWEST, Page, Screen};
+    use crate::harness::fits;
+    use tawara_wallet_core::preferences::Preferences;
+    use tawara_wallet_core::sample;
+
+    #[test]
+    fn the_phone_receive_page_fits_at_360() {
+        let wallet = sample::wallet_view();
+        let mut model = Model::new(Preferences::default(), None);
+        model.width = NARROWEST;
+        model.screen = Screen::Wallet(WalletPage {
+            page: Page::Receive(ReceivePage {
+                account: Some(wallet.accounts[0].id),
+                view: Some(sample::receive_view()),
+            }),
+            ..WalletPage::default()
+        });
+        model.wallet = Some(wallet);
+        assert_eq!(fits(crate::screens::view(&model), NARROWEST), Ok(()));
+    }
 }

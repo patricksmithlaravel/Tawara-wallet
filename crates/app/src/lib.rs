@@ -14,6 +14,10 @@
 //!   application leaves the foreground.
 //! - [`screens`]: every screen, a function of the model alone, so that the
 //!   screenshot example draws any screen from sample data.
+//! - [`paste`]: the Paste button of the compact layout, and a pasted
+//!   recovery phrase's cleaning (docs/DECISIONS.md D32 item 10 (g), (h)).
+//! - [`tap`]: a row or card that acts on release, as a touch scroll needs
+//!   (docs/DECISIONS.md D32 item 10 (d)).
 //! - [`theme`], [`fonts`], [`icon`], [`ui`]: the renderings' tokens, the
 //!   bundled faces, the line icons and the pieces the screens are built
 //!   from.
@@ -23,9 +27,17 @@ pub mod fonts;
 pub mod history;
 pub mod host;
 pub mod icon;
+mod keyboard;
+pub mod paste;
 pub mod screens;
+pub mod tap;
 pub mod theme;
 pub mod ui;
+
+/// The test harness: an interface drawn and driven by hand, for the tests of
+/// the widgets and screens (docs/DECISIONS.md D32 item 10).
+#[cfg(test)]
+mod harness;
 
 /// The application's display name, as the owner gave it.
 pub const DISPLAY_NAME: &str = "Tawara";

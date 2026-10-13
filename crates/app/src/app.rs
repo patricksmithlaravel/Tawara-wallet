@@ -69,9 +69,16 @@ pub struct Model {
     /// The worker stopped: `Some(true)` when it panicked. Nothing more can
     /// be done in this run.
     pub stopped: Option<bool>,
-    /// The window's width in logical pixels: below [`WIDE`], rows of two
-    /// cards stack (docs/DECISIONS.md D27, item 9).
+    /// The window's width in logical pixels. Below [`COMPACT`] the phone
+    /// layout is drawn; from there up, the layouts of docs/DECISIONS.md D27,
+    /// item 9, where rows of two cards stack below [`WIDE`]. A phone starts at
+    /// [`NARROWEST`] until the window reports its size (docs/DECISIONS.md D32
+    /// item 10 (b)).
     pub width: f32,
+    /// What covers the edges of a phone's screen: the system's own UI, and
+    /// the on-screen keyboard (docs/DECISIONS.md D32 item 10 (b)). Zero on
+    /// the desktop, where the root is padded by nothing.
+    pub safe_area: iced::mobile::SafeArea,
     /// The wall clock, in milliseconds since the epoch, moved on each
     /// second: what a block's age is told against.
     pub clock_ms: i64,
@@ -133,6 +140,15 @@ fn now_ms() -> i64 {
 
 /// The narrowest window that shows two cards side by side.
 pub const WIDE: f32 = 1280.0;
+
+/// The width below which the phone layout is drawn: every phone held
+/// upright is narrower, and the desktop's window is never narrower than
+/// [`crate::WINDOW_MIN`]'s 1024 (docs/DECISIONS.md D32 item 10 (b)).
+pub const COMPACT: f32 = 600.0;
+
+/// The narrowest width the phone layout is drawn at (docs/DECISIONS.md D32
+/// item 10 (b)): at it nothing is cut off and nothing scrolls sideways.
+pub const NARROWEST: f32 = 360.0;
 
 /// The command the screen waits on, and what the worker is doing for it.
 #[derive(Clone, Debug)]
@@ -411,11 +427,49 @@ pub enum Message {
     Refresh,
     /// A wallet page (W1 to W9).
     Wallet(WalletMsg),
+    /// A Paste button was tapped: read the platform's clipboard into the
+    /// field beside it (docs/DECISIONS.md D32 item 10 (g)).
+    Paste(PasteInto),
     /// The window opened or changed size: its width.
     Width(f32),
+    /// The safe area changed: what the system covers at each edge, and the
+    /// keyboard's height. Not the person's input, so it does not restart the
+    /// idle period (docs/DECISIONS.md D32 item 10 (b)).
+    SafeArea(iced::mobile::SafeArea),
     /// A second passed: the wall clock, in milliseconds since the epoch.
     /// Not the person's input.
     Tick(i64),
+}
+
+/// The field a Paste button fills (docs/DECISIONS.md D32 item 10 (g)).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PasteInto {
+    /// The destination of row `n` of the spend form (W4, W8).
+    Destination(usize),
+    /// The signed bytes (W9).
+    Artifact,
+    /// The recovery phrase (S6).
+    Phrase,
+}
+
+/// The message that gives `into` the text a Paste button read, `drawn` being
+/// the generation of the field the button was drawn with (see [`Typed`]), or
+/// `None` when the read holds nothing to paste and the field stays as it is.
+/// The text read is wiped once it has been taken.
+fn pasted(into: PasteInto, mut read: String, drawn: u64) -> Option<Message> {
+    let message = match into {
+        PasteInto::Phrase => {
+            let text = crate::paste::phrase(&read);
+            (!text.is_empty()).then_some(Message::PhraseText(Typed { text, drawn }))
+        }
+        PasteInto::Destination(i) => crate::paste::plain(&read)
+            .map(|text| Message::Wallet(WalletMsg::DestinationTo(i, text))),
+        PasteInto::Artifact => {
+            crate::paste::plain(&read).map(|text| Message::Wallet(WalletMsg::ArtifactHex(text)))
+        }
+    };
+    wipe(&mut read);
+    message
 }
 
 /// The screens a message can go to.
@@ -547,6 +601,10 @@ pub struct App {
     pub model: Model,
     worker: Option<Worker>,
     prefs_path: Option<PathBuf>,
+    /// How many times the idle period was started again: what the tests read
+    /// to tell the person's input from what is not, without the wall clock.
+    #[cfg(test)]
+    touches: std::cell::Cell<u64>,
 }
 
 /// Empty a secret field so its text is zeroized, not just dropped:
@@ -628,6 +686,7 @@ impl Model {
             wiped: Arc::default(),
             confined: None,
             width: crate::WINDOW.0,
+            safe_area: iced::mobile::SafeArea::ZERO,
             clock_ms: now_ms(),
             zone: crate::ui::Zone::System,
             activity: Explored::default(),
@@ -652,15 +711,51 @@ impl Model {
             .unwrap_or_default()
     }
 
+    /// Whether the window is narrower than [`COMPACT`]: the phone layout is
+    /// drawn (docs/DECISIONS.md D32 item 10 (b)).
+    #[must_use]
+    pub fn compact(&self) -> bool {
+        self.width < COMPACT
+    }
+
+    /// Whether this application runs in a phone shell, where every store is
+    /// kept in the app's own folder and no folder is chosen (docs/DECISIONS.md
+    /// D32 item 10 (a)).
+    #[must_use]
+    pub(crate) fn phone(&self) -> bool {
+        self.confined.is_some()
+    }
+
+    /// Confine this model to `private_dir`, the app-private folder a phone
+    /// shell keeps out of backups and away from other apps (docs/DECISIONS.md
+    /// D32 items 3 and 7, and item 10 (a)). The folder is no longer chosen: an
+    /// unlock form takes the default folder. It touches no file, so the
+    /// screenshot example can call it.
+    pub fn confine(&mut self, private_dir: PathBuf) {
+        self.confined = Some(private_dir);
+        let dir = self.default_dir_text();
+        if let Screen::Unlock(u) = &mut self.screen {
+            u.dir = dir;
+        }
+    }
+
     /// The store to offer to unlock: the one last opened when it is still
-    /// there, or else the one in the default folder when there is one.
+    /// there, or else the one in the default folder when there is one. A
+    /// phone offers only the default folder: a folder remembered from an
+    /// earlier run is not one it can choose (docs/DECISIONS.md D32 item 10
+    /// (a)).
     fn store_to_open(&self) -> Option<String> {
         // A relative folder means nothing from another working directory;
         // only an absolute one is remembered.
-        let remembered = self.prefs.store.clone().filter(|s| {
-            let s = Path::new(s);
-            s.is_absolute() && tawara_wallet_core::store_exists(s)
-        });
+        let remembered = self
+            .prefs
+            .store
+            .clone()
+            .filter(|_| !self.phone())
+            .filter(|s| {
+                let s = Path::new(s);
+                s.is_absolute() && tawara_wallet_core::store_exists(s)
+            });
         remembered.or_else(|| {
             self.default_dir
                 .as_deref()
@@ -733,19 +828,24 @@ impl Model {
         let root = self.confined.as_deref()?;
         (!within(&store_dir(typed), root)).then(|| {
             format!(
-                "On a phone the store must be inside the app's own folder, {}: the system \
-                 keeps it out of backups and away from other apps. Choose a folder inside it.",
+                "This store is outside the app's own folder, {}. The system keeps that folder \
+                 out of backups and away from other apps, so Tawara does not open a store \
+                 outside it.",
                 root.display()
             )
         })
     }
 
-    /// The unlock screen for `dir`, or the default folder.
+    /// The unlock screen for `dir`, or the default folder. On a phone it is
+    /// always the default folder (docs/DECISIONS.md D32 item 10 (a)).
     fn unlock_screen(&mut self, dir: Option<String>, error: Option<String>, note: Option<String>) {
         let _ = self.leave();
-        let dir = dir
-            .or_else(|| self.store_to_open())
-            .unwrap_or_else(|| self.default_dir_text());
+        let dir = if self.phone() {
+            self.default_dir_text()
+        } else {
+            dir.or_else(|| self.store_to_open())
+                .unwrap_or_else(|| self.default_dir_text())
+        };
         self.screen = Screen::Unlock(UnlockForm {
             dir,
             password: String::new(),
@@ -788,7 +888,22 @@ impl App {
             Some(location::store_dir_in(private_dir)),
             None,
         );
-        app.model.confined = Some(private_dir.to_path_buf());
+        app.model.confine(private_dir.to_path_buf());
+        // Before the window reports its size, a phone is drawn as the
+        // narrowest one: its first frames are already the phone layout
+        // (docs/DECISIONS.md D32 item 10 (b)).
+        app.model.width = NARROWEST;
+        // The first screen again, now that the store is the default folder's
+        // alone: the unlock screen when a store is there, else the start.
+        app.model.screen = match app.model.store_to_open() {
+            Some(dir) => Screen::Unlock(UnlockForm {
+                dir,
+                ..UnlockForm::default()
+            }),
+            None => Screen::Start {
+                choice: StartChoice::Create,
+            },
+        };
         (app, task)
     }
 
@@ -883,6 +998,8 @@ impl App {
                     model,
                     worker: None,
                     prefs_path,
+                    #[cfg(test)]
+                    touches: std::cell::Cell::default(),
                 },
                 None,
             );
@@ -894,6 +1011,8 @@ impl App {
                 waiting: Vec::new(),
             }),
             prefs_path,
+            #[cfg(test)]
+            touches: std::cell::Cell::default(),
         };
         if let Some(url) = app.model.prefs.node.clone() {
             app.send(Command::SetNode { url }, Purpose::SetNode { form: false });
@@ -906,7 +1025,10 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        event::listen_with(person_input)
+        Subscription::batch([
+            event::listen_with(person_input),
+            iced::mobile::safe_area().map(Message::SafeArea),
+        ])
     }
 
     fn send(&mut self, command: Command, purpose: Purpose) -> Option<RequestId> {
@@ -937,6 +1059,8 @@ impl App {
 
     /// The person did something: the idle period starts again.
     fn touch(&self) {
+        #[cfg(test)]
+        self.touches.set(self.touches.get() + 1);
         if let Some(w) = &self.worker {
             w.handle.touch();
         }
@@ -1062,6 +1186,9 @@ impl App {
             Message::ForgetNode => {
                 self.send(Command::ClearNode, Purpose::ClearNode);
             }
+            // A phone chooses no folder: the store is in the app's own one
+            // (docs/DECISIONS.md D32 item 10 (a)).
+            Message::Dir(_) if m.phone() => {}
             Message::Dir(dir) => match &mut m.screen {
                 Screen::NewWallet(f) => {
                     f.synced = sync_note(&dir);
@@ -1156,11 +1283,16 @@ impl App {
                     r.form.error = Some(why);
                 } else if let Screen::Restore(r) = &mut m.screen {
                     r.form.error = None;
+                    // The whole phrase is cleaned as a paste into it is, so
+                    // a phrase typed or pasted one word to a line is read
+                    // word by word (docs/DECISIONS.md D32 item 10 (h)).
+                    let mut phrase = crate::paste::phrase(&r.phrase);
+                    wipe(&mut r.phrase);
                     let command = Command::CreateFromPhrase {
                         dir: store_dir(&r.form.dir),
                         password: SecretText::take(&mut r.form.password),
                         password_again: SecretText::take(&mut r.form.again),
-                        phrase: SecretText::take(&mut r.phrase),
+                        phrase: SecretText::take(&mut phrase),
                     };
                     self.send(command, Purpose::CreateFromPhrase);
                 }
@@ -1208,7 +1340,29 @@ impl App {
                 self.send(Command::Refresh, Purpose::Refresh);
             }
             Message::Wallet(msg) => return self.on_wallet(msg),
+            // The clipboard is read only on the tap, and what it holds
+            // replaces the field's text; an empty or refused read changes
+            // nothing (docs/DECISIONS.md D32 item 10 (g)).
+            Message::Paste(into) => {
+                let drawn = m.drawn();
+                return iced::clipboard::read().and_then(move |read| {
+                    pasted(into, read, drawn).map_or_else(Task::none, Task::done)
+                });
+            }
             Message::Width(width) => m.width = width,
+            // Not the person's input: the idle period is not restarted here.
+            // When the keyboard comes up or grows on a phone, the page is
+            // scrolled so the focused field stands above it, once the page
+            // has been laid out again above the keyboard (docs/DECISIONS.md D32
+            // item 10 (b)).
+            Message::SafeArea(area) => {
+                let rose = area.keyboard > m.safe_area.keyboard;
+                m.safe_area = area;
+                if rose && m.compact() {
+                    return iced::advanced::widget::operate(crate::screens::reveal_focused())
+                        .discard();
+                }
+            }
             Message::Tick(ms) => m.clock_ms = ms,
         }
         Task::none()
@@ -2325,20 +2479,214 @@ mod tests {
     }
 
     #[test]
+    fn the_phone_layout_is_drawn_below_600_and_a_new_model_is_not_compact() {
+        let mut model = Model::new(Preferences::default(), None);
+        assert!(
+            !model.compact(),
+            "a new model starts at the desktop's width"
+        );
+        model.width = 599.9;
+        assert!(model.compact());
+        model.width = 600.0;
+        assert!(!model.compact());
+    }
+
+    #[test]
+    fn a_phone_is_compact_before_the_window_reports_its_size() {
+        let scratch = Scratch::new("hosted-width");
+        let (app, _) = App::hosted(&scratch.0);
+        assert!(app.model.compact(), "the first frames are the phone layout");
+        assert_eq!(app.model.width, NARROWEST);
+        assert!(app.model.phone());
+        assert!(!alone().model.phone(), "the desktop is not confined");
+    }
+
+    #[test]
+    fn the_safe_area_is_stored_and_is_not_the_persons_input() {
+        let area = iced::mobile::SafeArea::new(iced::Padding {
+            top: 47.0,
+            right: 0.0,
+            bottom: 34.0,
+            left: 0.0,
+        })
+        .with_keyboard(336.0);
+        let mut app = alone();
+        let _ = app.update(Message::SafeArea(area));
+        assert_eq!(app.model.safe_area, area);
+
+        // A safe area does not start the idle period again, and the person's
+        // input does: counted where the worker is told, not by the wall clock.
+        let touches = app.touches.get();
+        let _ = app.update(Message::SafeArea(iced::mobile::SafeArea::ZERO));
+        assert_eq!(app.touches.get(), touches, "the safe area is not input");
+        let _ = app.update(Message::Input);
+        assert_eq!(app.touches.get(), touches + 1, "the person's input is");
+
+        // And with a worker: a phrase left alone is dropped by the idle lock,
+        // however many safe areas come meanwhile. The lock is waited for, up
+        // to ten seconds, rather than timed, so a slow machine only makes the
+        // wait longer.
+        let scratch = Scratch::new("safe-area-idle");
+        let prefs = Preferences {
+            idle_lock: Duration::from_millis(400),
+            ..Preferences::default()
+        };
+        let model = Model::new(prefs, Some(scratch.0.join("keystore")));
+        let (mut app, events) = App::start(model, None);
+        let events = events.expect("the worker starts");
+        let _ = app.update(Message::Continue);
+        let _ = app.update(Message::Password(typed(PASSWORD)));
+        let _ = app.update(Message::Again(typed(PASSWORD)));
+        let _ = app.update(Message::CreateWallet);
+        pump(&mut app, &events, |a| {
+            matches!(a.model.screen, Screen::Phrase(_))
+        });
+        let started = Instant::now();
+        while matches!(app.model.screen, Screen::Phrase(_))
+            && started.elapsed() < Duration::from_secs(10)
+        {
+            let _ = app.update(Message::SafeArea(area));
+            std::thread::sleep(Duration::from_millis(50));
+            while let Ok(event) = events.try_recv() {
+                let _ = app.update(Message::Worker(WorkerEvent::new(event)));
+            }
+        }
+        assert!(
+            !matches!(app.model.screen, Screen::Phrase(_)),
+            "the idle lock dropped the phrase: the safe area did not restart it"
+        );
+    }
+
+    #[test]
+    fn what_a_paste_button_reads_goes_to_its_field_and_a_blank_read_changes_nothing() {
+        // docs/DECISIONS.md D32 item 10 (g) and (h): the phrase is cleaned, the
+        // other fields take what iced's paste would insert, and a read with
+        // nothing in it sends nothing.
+        match pasted(PasteInto::Phrase, "abandon\nability\n\table\n".into(), 3) {
+            Some(Message::PhraseText(typed)) => {
+                assert_eq!(typed.text, "abandon ability able");
+                assert_eq!(typed.drawn, 3, "drawn with the field the button was");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            pasted(PasteInto::Destination(1), "3vQB7B6MrGQZaxCuFg4oh\n".into(), 0),
+            Some(Message::Wallet(WalletMsg::DestinationTo(1, to))) if to == "3vQB7B6MrGQZaxCuFg4oh"
+        ));
+        assert!(matches!(
+            pasted(PasteInto::Artifact, "4f2a\n".into(), 0),
+            Some(Message::Wallet(WalletMsg::ArtifactHex(hex))) if hex == "4f2a"
+        ));
+        for into in [
+            PasteInto::Phrase,
+            PasteInto::Destination(0),
+            PasteInto::Artifact,
+        ] {
+            assert!(pasted(into, " \n\t".into(), 0).is_none(), "{into:?}");
+        }
+    }
+
+    #[test]
+    fn a_pasted_phrase_replaces_the_field_and_is_dropped_after_a_move_away() {
+        let mut app = alone();
+        app.model.screen = Screen::Restore(RestoreForm::default());
+        let _ = app.update(Message::PhraseText(typed("abandon")));
+        let Some(message) = pasted(PasteInto::Phrase, PHRASE.replace(' ', "\n"), 0) else {
+            panic!("a phrase was read");
+        };
+        let _ = app.update(message);
+        assert!(matches!(&app.model.screen, Screen::Restore(r) if r.phrase == PHRASE));
+        // A paste read for the field as drawn before the application left the
+        // foreground is not taken.
+        let stale = pasted(PasteInto::Phrase, "abandon".into(), 0).expect("read");
+        app.model.left.fetch_add(1, Ordering::SeqCst);
+        let _ = app.update(stale);
+        assert!(matches!(&app.model.screen, Screen::Restore(r) if r.phrase.is_empty()));
+    }
+
+    #[test]
+    fn the_keyboard_coming_up_on_a_phone_scrolls_to_the_focused_field() {
+        // Only a rise of the keyboard in the compact layout: the operation then
+        // runs over the page laid out above it (docs/DECISIONS.md D32 item 10
+        // (b)).
+        let with = |keyboard: f32| {
+            iced::mobile::SafeArea::new(iced::Padding::ZERO).with_keyboard(keyboard)
+        };
+        let mut phone = alone();
+        phone.model.width = NARROWEST;
+        assert!(phone.update(Message::SafeArea(with(336.0))).units() > 0);
+        assert_eq!(phone.update(Message::SafeArea(with(336.0))).units(), 0);
+        assert_eq!(phone.update(Message::SafeArea(with(0.0))).units(), 0);
+        let mut desktop = alone();
+        assert_eq!(desktop.update(Message::SafeArea(with(336.0))).units(), 0);
+    }
+
+    #[test]
+    fn a_phone_offers_no_remembered_folder_and_starts_on_the_first_screen() {
+        // A folder remembered from an earlier run is not one a phone chooses,
+        // and the default folder holds no store: the start screen.
+        let scratch = Scratch::new("hosted-remembered");
+        std::fs::create_dir_all(&scratch.0).unwrap();
+        let elsewhere = scratch.0.join("elsewhere").join("keystore");
+        let prefs = Preferences {
+            store: Some(elsewhere.display().to_string()),
+            ..Preferences::default()
+        };
+        preferences::save(&scratch.0.join(preferences::FILE_NAME), &prefs).unwrap();
+        let (app, _) = App::hosted(&scratch.0);
+        assert!(
+            matches!(app.model.screen, Screen::Start { .. }),
+            "{:?}",
+            app.model.screen
+        );
+    }
+
+    #[test]
+    fn on_a_phone_the_folder_is_not_chosen_and_the_unlock_form_takes_the_default() {
+        let private = std::env::temp_dir().join("tawara-phone-private");
+        let mut app = alone();
+        app.model.default_dir = Some(private.join("keystore"));
+        app.model.confine(private.clone());
+        let default = private.join("keystore").display().to_string();
+        let _ = app.update(Message::Continue);
+        let _ = app.update(Message::Dir("/somewhere/else".to_owned()));
+        assert!(
+            matches!(&app.model.screen, Screen::NewWallet(f) if f.dir == default),
+            "{:?}",
+            app.model.screen
+        );
+
+        app.model.screen = Screen::Unlock(UnlockForm {
+            dir: "/somewhere/else".to_owned(),
+            ..UnlockForm::default()
+        });
+        app.model.confine(private);
+        assert!(
+            matches!(&app.model.screen, Screen::Unlock(u) if u.dir == default),
+            "{:?}",
+            app.model.screen
+        );
+        let _ = app.update(Message::Dir("/somewhere/else".to_owned()));
+        assert!(
+            matches!(&app.model.screen, Screen::Unlock(u) if u.dir == default),
+            "a phone ignores Dir"
+        );
+    }
+
+    #[test]
     fn on_a_phone_a_store_is_made_or_opened_only_inside_the_private_folder() {
-        // Tawara-mobile#1's third review: the folder field is free, and a
-        // store made elsewhere in the app's container has neither the backup
-        // exclusion nor iOS's file protection.
+        // Tawara-mobile#1's third review: a store made elsewhere in the app's
+        // container has neither the backup exclusion nor iOS's file
+        // protection. A phone chooses no folder (docs/DECISIONS.md D32 item
+        // 10 (a)): the store is in the default folder, and `outside` stays as
+        // a second guard on that folder.
         let scratch = Scratch::new("confined");
         let (mut app, events) = app(&scratch);
         let root = scratch.0.join("private");
         std::fs::create_dir_all(&root).unwrap();
-        app.model.confined = Some(root.clone());
-        let outside = scratch
-            .0
-            .join("SecondWallet/keystore")
-            .display()
-            .to_string();
+        app.model.confine(root.clone());
+        let outside = scratch.0.join("SecondWallet").join("keystore");
+        let inside = root.join("keystore");
         let refused = |app: &App| {
             let error = match &app.model.screen {
                 Screen::NewWallet(f) | Screen::Restore(RestoreForm { form: f, .. }) => {
@@ -2350,38 +2698,45 @@ mod tests {
             assert!(
                 error
                     .as_deref()
-                    .is_some_and(|e| e.contains("inside the app's own folder")),
+                    .is_some_and(|e| e.contains("outside the app's own folder")),
                 "{error:?}"
             );
             assert!(app.model.busy.is_none(), "a command was sent");
         };
 
-        // S3.
+        // S3, the default folder outside: refused, and a folder typed for it
+        // is not taken.
+        app.model.default_dir = Some(outside.clone());
         let _ = app.update(Message::Continue);
-        let _ = app.update(Message::Dir(outside.clone()));
+        let _ = app.update(Message::Dir(inside.display().to_string()));
         let _ = app.update(Message::Password(typed(PASSWORD)));
         let _ = app.update(Message::Again(typed(PASSWORD)));
         let _ = app.update(Message::CreateWallet);
         refused(&app);
         assert!(
-            matches!(&app.model.screen, Screen::NewWallet(f) if f.password == PASSWORD),
-            "what was typed is kept for another folder"
+            matches!(&app.model.screen, Screen::NewWallet(f)
+                if f.password == PASSWORD && f.dir == outside.display().to_string()),
+            "what was typed is kept, and the folder is not changed"
         );
 
-        // S6.
+        // S6, the same.
         let _ = app.update(Message::Go(Go::Start));
         let _ = app.update(Message::Choose(StartChoice::Restore));
         let _ = app.update(Message::Continue);
-        let _ = app.update(Message::Dir(outside.clone()));
         let _ = app.update(Message::Password(typed(PASSWORD)));
         let _ = app.update(Message::Again(typed(PASSWORD)));
         let _ = app.update(Message::PhraseText(typed(PHRASE)));
         let _ = app.update(Message::RestoreWallet);
         refused(&app);
 
-        // Inside: made, and then opened, as anywhere else.
-        let inside = root.join("keystore").display().to_string();
-        let _ = app.update(Message::Dir(inside.clone()));
+        // The default folder inside: made, locked and unlocked, as anywhere.
+        app.model.default_dir = Some(inside.clone());
+        let _ = app.update(Message::Go(Go::Start));
+        let _ = app.update(Message::Choose(StartChoice::Restore));
+        let _ = app.update(Message::Continue);
+        let _ = app.update(Message::Password(typed(PASSWORD)));
+        let _ = app.update(Message::Again(typed(PASSWORD)));
+        let _ = app.update(Message::PhraseText(typed(PHRASE)));
         let _ = app.update(Message::RestoreWallet);
         pump(&mut app, &events, |a| {
             matches!(a.model.screen, Screen::Wallet(_))
@@ -2391,12 +2746,15 @@ mod tests {
             matches!(a.model.screen, Screen::Unlock(_))
         });
 
-        // S7: not outside either.
-        let _ = app.update(Message::Dir(outside));
+        // S7: the default folder, and only that one, is offered.
+        app.model.default_dir = Some(outside);
+        let _ = app.update(Message::Go(Go::Unlock));
         let _ = app.update(Message::Password(typed(PASSWORD)));
         let _ = app.update(Message::UnlockWallet);
         refused(&app);
-        let _ = app.update(Message::Dir(inside));
+        app.model.default_dir = Some(inside);
+        let _ = app.update(Message::Go(Go::Unlock));
+        let _ = app.update(Message::Password(typed(PASSWORD)));
         let _ = app.update(Message::UnlockWallet);
         pump(&mut app, &events, |a| {
             matches!(a.model.screen, Screen::Wallet(_))
@@ -2566,6 +2924,7 @@ mod tests {
             model: Model::new(Preferences::default(), None),
             worker: None,
             prefs_path: None,
+            touches: std::cell::Cell::default(),
         }
     }
 

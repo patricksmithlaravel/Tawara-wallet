@@ -22,9 +22,10 @@ use tawara_wallet_core::view::{
 };
 
 use crate::app::{
-    Back, Busy, Go, Message, Model, Page, ReportKey, Signed, To, WalletMsg, WalletPage,
+    Back, Busy, Go, Message, Model, Page, ReportKey, SentPage, Signed, To, WalletMsg, WalletPage,
 };
 use crate::icon::{self, Icon};
+use crate::tap::tap;
 use crate::theme::{self, color, space as sp};
 use crate::ui::{self, Size, t, ty};
 
@@ -58,6 +59,9 @@ pub fn view<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> 
         Page::Transaction(t) => explorer::transaction(model, page, t),
         Page::Queue(q) => explorer::queue_page(model, page, q),
     };
+    if model.compact() {
+        return compact_frame(model, page, content);
+    }
     row![
         sidebar(model, page),
         rule::vertical(1).style(theme::divider),
@@ -205,6 +209,150 @@ fn network_panel(model: &Model) -> Element<'_, Message> {
     .into()
 }
 
+/// The phone's wallet (docs/SCREENS.md, "Compact layout"): a bar at the top,
+/// the page between margins of 16, and, while the keyboard is not up, a bar at
+/// the foot with the six items (docs/DECISIONS.md D32 item 10 (b)). The page is
+/// a scrollable with [`super::page_id`], so the screenshot example can scroll
+/// it to its end.
+fn compact_frame<'a>(
+    model: &'a Model,
+    page: &'a WalletPage,
+    content: Element<'a, Message>,
+) -> Element<'a, Message> {
+    let scrolled = scrollable(
+        container(content)
+            .padding(Padding {
+                top: sp::S16,
+                right: sp::S16,
+                bottom: sp::S24,
+                left: sp::S16,
+            })
+            .width(Length::Fill),
+    )
+    .id(super::page_id())
+    .style(theme::scroll)
+    .width(Length::Fill)
+    .height(Length::Fill);
+    let mut shell = column![
+        top_bar(model),
+        rule::horizontal(1).style(theme::divider),
+        container(scrolled)
+            .style(theme::page)
+            .width(Length::Fill)
+            .height(Length::Fill),
+    ]
+    .height(Length::Fill);
+    // The keyboard takes the foot of the window: the bar is not drawn under it.
+    if model.safe_area.keyboard <= 0.0 {
+        shell = shell
+            .push(rule::horizontal(1).style(theme::divider))
+            .push(tab_bar(model, page));
+    }
+    shell.into()
+}
+
+/// The phone's top bar (docs/SCREENS.md, "Compact layout"): the wordmark, the
+/// node chip, and Lock.
+fn top_bar(model: &Model) -> Element<'_, Message> {
+    container(
+        row![
+            t("TAWARA", ty::WORDMARK, color::TEXT_PRIMARY),
+            space().width(Length::Fill),
+            node_chip(model),
+            ui::button_with(
+                "Lock",
+                theme::Button::Secondary,
+                Size::Small,
+                Some(Icon::Lock),
+                Some(Message::Lock),
+            ),
+        ]
+        .spacing(sp::S8)
+        .align_y(Alignment::Center),
+    )
+    .padding(Padding::from([0.0, sp::S16]))
+    .width(Length::Fill)
+    .center_y(Length::Fixed(56.0))
+    .style(theme::sidebar)
+    .into()
+}
+
+/// The node chip (docs/SCREENS.md, "Compact layout"): the node's dot and its
+/// chain tip, grouped, or a dash. It goes to the node screen while the wallet
+/// is idle, as the sidebar's "Change node" does.
+fn node_chip(model: &Model) -> Element<'_, Message> {
+    let (dot, tip) = match (&model.node.tip, &model.node.error) {
+        (Some((tip, _)), None) => (color::ACCENT, ui::group(&tip.to_string())),
+        (_, Some(_)) => (color::WARNING, "—".to_owned()),
+        _ => (color::TEXT_MUTED, "—".to_owned()),
+    };
+    iced::widget::button(
+        row![
+            ui::dot(dot, 8.0),
+            t(tip, ty::MONO_SMALL, color::TEXT_PRIMARY)
+        ]
+        .spacing(sp::S8)
+        .align_y(Alignment::Center),
+    )
+    .height(Length::Fixed(36.0))
+    .padding(Padding::from([0.0, sp::S8]))
+    .style(theme::button(theme::Button::Ghost))
+    .on_press_maybe(
+        model
+            .busy
+            .is_none()
+            .then_some(Message::Go(Go::Node(Back::Wallet))),
+    )
+    .into()
+}
+
+/// The phone's bar at the foot (docs/SCREENS.md, "Compact layout"): the six
+/// items of the sidebar, each an icon over its name, sharing the width. They
+/// lead where the sidebar's do, and only while the wallet is idle.
+fn tab_bar<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> {
+    let idle = model.busy.is_none();
+    let here = page.page.nav();
+    let mut items = row![].width(Length::Fill).height(Length::Fill);
+    for (i, (glyph, name, to)) in NAV.into_iter().enumerate() {
+        let active = i == here;
+        let ink = if active {
+            color::ACCENT
+        } else if to.is_some() {
+            color::TEXT_SECONDARY
+        } else {
+            color::TEXT_MUTED
+        };
+        let label_type = if active {
+            ty::NAV_TAB_ACTIVE
+        } else {
+            ty::NAV_TAB
+        };
+        items = items.push(
+            iced::widget::button(
+                container(
+                    column![
+                        icon::icon(glyph, 20.0, 2.0, ink),
+                        ui::label(name, label_type),
+                    ]
+                    .spacing(sp::S4)
+                    .align_x(Alignment::Center),
+                )
+                .center(Length::Fill),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(Padding::ZERO)
+            .style(theme::button(theme::Button::Nav { active }))
+            .on_press_maybe(to.filter(|_| idle).map(|to| WalletMsg::Open(to).into())),
+        );
+    }
+    container(items)
+        .width(Length::Fill)
+        .height(Length::Fixed(56.0))
+        .style(theme::sidebar)
+        .into()
+}
+
 /// A page: its title and subtitle with the page's own controls beside
 /// them, what the worker is doing for it while it waits, the refusal its
 /// last command met, then the page.
@@ -216,24 +364,41 @@ fn frame<'a>(
     actions: Vec<Element<'a, Message>>,
     body: Vec<Element<'a, Message>>,
 ) -> Element<'a, Message> {
-    // The title takes what the controls leave, its subtitle wrapping, so
-    // the controls keep their size at the smallest window.
-    let mut header = row![container(ui::page_header(title, subtitle)).width(Length::Fill)]
-        .spacing(sp::S10)
-        .align_y(Alignment::Center);
-    for action in actions {
-        header = header.push(action);
-    }
-    let mut stack = column![header].spacing(sp::S24);
+    let compact = model.compact();
+    // The title takes what the controls leave, its subtitle wrapping, so the
+    // controls keep their size at the smallest window. On a phone the title
+    // has the width, and the controls wrap beneath it (docs/SCREENS.md,
+    // "Compact layout").
+    let header: Element<'a, Message> = if compact {
+        let mut head = column![ui::page_header(title, subtitle)];
+        if !actions.is_empty() {
+            head = head.push(
+                iced::widget::Row::with_children(actions)
+                    .spacing(sp::S8)
+                    .wrap()
+                    .vertical_spacing(sp::S8),
+            );
+        }
+        head.spacing(sp::S16).into()
+    } else {
+        let mut header = row![container(ui::page_header(title, subtitle)).width(Length::Fill)]
+            .spacing(sp::S10)
+            .align_y(Alignment::Center);
+        for action in actions {
+            header = header.push(action);
+        }
+        header.into()
+    };
+    let mut stack = column![header].spacing(if compact { sp::S16 } else { sp::S24 });
     if let Some(busy) = &model.busy {
-        stack = stack.push(working(busy));
+        stack = stack.push(working(compact, busy));
     }
     for kept in model.unsaved_signed() {
         stack = stack.push(unsaved(model, kept));
     }
     if let Some(e) = &page.error {
         stack = stack.push(match report::refused(e) {
-            Some(r) => report::show(page, ReportKey::Refused, r),
+            Some(r) => report::show_in(compact, page, ReportKey::Refused, r),
             None => ui::refusal(e),
         });
     }
@@ -246,44 +411,57 @@ fn frame<'a>(
 /// A spend signed this run whose page was left before its bytes were saved
 /// (see [`Model::signed`]): a slim banner, with the way back to its page.
 fn unsaved<'a>(model: &Model, kept: &'a Signed) -> Element<'a, Message> {
-    container(
-        row![
-            icon::icon(Icon::Warning, 18.0, 2.0, color::WARNING),
-            column![
-                t(
-                    format!(
-                        "A spend signed from {} is not saved",
-                        name(kept.sent.sent.from)
-                    ),
-                    ty::ROW_TITLE,
-                    color::TEXT_PRIMARY
-                ),
-                t(
-                    "Until it settles, its signed bytes are the only ones that can move the \
-                     reserved funds, and Tawara keeps them only until it closes. Open its page \
-                     to save them.",
-                    ty::BODY_SMALL,
-                    color::TEXT_ON_WARNING_SOFT
-                ),
+    let title = t(
+        format!(
+            "A spend signed from {} is not saved",
+            name(kept.sent.sent.from)
+        ),
+        ty::ROW_TITLE,
+        color::TEXT_PRIMARY,
+    );
+    let body = t(
+        "Until it settles, its signed bytes are the only ones that can move the \
+         reserved funds, and Tawara keeps them only until it closes. Open its page \
+         to save them.",
+        ty::BODY_SMALL,
+        color::TEXT_ON_WARNING_SOFT,
+    );
+    let open = action(
+        model,
+        "Open it",
+        theme::Button::Secondary,
+        Size::Small,
+        None,
+        WalletMsg::ShowSigned(kept.sent.sent.artifact_hex.clone()),
+    );
+    let content: Element<'a, Message> = if model.compact() {
+        column![
+            row![
+                icon::icon(Icon::Warning, 18.0, 2.0, color::WARNING),
+                title.width(Length::Fill),
             ]
-            .spacing(sp::S4)
-            .width(Length::Fill),
-            action(
-                model,
-                "Open it",
-                theme::Button::Secondary,
-                Size::Small,
-                None,
-                WalletMsg::ShowSigned(kept.sent.sent.artifact_hex.clone()),
-            ),
+            .spacing(sp::S12)
+            .align_y(Alignment::Center),
+            body,
+            row![space().width(Length::Fill), open].align_y(Alignment::Center),
         ]
         .spacing(sp::S12)
-        .align_y(Alignment::Center),
-    )
-    .padding([sp::S14, sp::S16])
-    .width(Length::Fill)
-    .style(theme::callout_warning)
-    .into()
+        .into()
+    } else {
+        row![
+            icon::icon(Icon::Warning, 18.0, 2.0, color::WARNING),
+            column![title, body].spacing(sp::S4).width(Length::Fill),
+            open,
+        ]
+        .spacing(sp::S12)
+        .align_y(Alignment::Center)
+        .into()
+    };
+    container(content)
+        .padding([sp::S14, sp::S16])
+        .width(Length::Fill)
+        .style(theme::callout_warning)
+        .into()
 }
 
 /// The stopped screen's spends signed this run (see [`Model::signed`]):
@@ -293,6 +471,7 @@ pub fn kept_after_stop(model: &Model) -> Option<Element<'_, Message>> {
     if model.signed.is_empty() {
         return None;
     }
+    let compact = model.compact();
     let mut list = column![
         ui::section_label("Spends signed in this run"),
         t(
@@ -311,55 +490,80 @@ pub fn kept_after_stop(model: &Model) -> Option<Element<'_, Message>> {
             (None, false) => "Not written to the node's socket".to_owned(),
         };
         let copied = kept.copied;
-        let mut item = column![
-            row![
-                column![
-                    t(name(sent.from), ty::ROW_TITLE, color::TEXT_PRIMARY),
-                    t(what, ty::MONO_SMALL, color::TEXT_MUTED),
-                ]
-                .spacing(sp::S2)
-                .width(Length::Fill),
-                ui::button_with(
-                    "Save artifact",
-                    theme::Button::Primary,
-                    Size::Small,
-                    Some(Icon::Download),
-                    Some(WalletMsg::SaveSigned(sent.artifact_hex.clone()).into()),
-                ),
-                ui::button_with(
-                    if copied { "Copied" } else { "Copy hex" },
-                    theme::Button::Secondary,
-                    Size::Small,
-                    Some(if copied { Icon::Check } else { Icon::Copy }),
-                    Some(WalletMsg::Copy(sent.artifact_hex.clone()).into()),
-                ),
-            ]
-            .spacing(sp::S10)
-            .align_y(Alignment::Center),
+        let details = column![
+            t(name(sent.from), ty::ROW_TITLE, color::TEXT_PRIMARY),
+            t(what, ty::MONO_SMALL, color::TEXT_MUTED),
         ]
-        .spacing(sp::S8);
-        match &kept.sent.saved {
-            Some(Ok(path)) => {
-                item = item.push(
-                    t(
-                        format!("Saved to {}", path.display()),
-                        ty::MONO_SMALL,
-                        color::ACCENT,
-                    )
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                );
-            }
-            Some(Err(e)) => item = item.push(ui::refusal(e)),
-            None => {}
+        .spacing(sp::S2);
+        let save = ui::button_with(
+            "Save artifact",
+            theme::Button::Primary,
+            Size::Small,
+            Some(Icon::Download),
+            Some(WalletMsg::SaveSigned(sent.artifact_hex.clone()).into()),
+        );
+        let copy = ui::button_with(
+            if copied { "Copied" } else { "Copy hex" },
+            theme::Button::Secondary,
+            Size::Small,
+            Some(if copied { Icon::Check } else { Icon::Copy }),
+            Some(WalletMsg::Copy(sent.artifact_hex.clone()).into()),
+        );
+        // On a phone the buttons wrap beneath the details.
+        let line: Element<'_, Message> = if compact {
+            column![
+                details,
+                row![save, copy]
+                    .spacing(sp::S10)
+                    .wrap()
+                    .vertical_spacing(sp::S8),
+            ]
+            .spacing(sp::S8)
+            .into()
+        } else {
+            row![details.width(Length::Fill), save, copy]
+                .spacing(sp::S10)
+                .align_y(Alignment::Center)
+                .into()
+        };
+        let mut item = column![line].spacing(sp::S8);
+        if let Some(note) = saved_note(&kept.sent) {
+            item = item.push(note);
         }
         list = list.push(ui::divider()).push(item);
     }
-    Some(ui::card(list).into())
+    Some(ui::card_for(compact, list).into())
+}
+
+/// What a signed spend's page says once Save artifact has opened a phone's
+/// share sheet: the sheet's outcome is not known, so the spend is still not
+/// saved (docs/DECISIONS.md D32 item 10 (i)).
+const SHARED: &str = "The share sheet was opened with the signed bytes. Tawara cannot tell \
+                      what was done with them there, so this spend still counts as not saved \
+                      until it settles.";
+
+/// What became of Save artifact for a signed spend's page: where the bytes
+/// were written, why they were not, or that the share sheet was opened.
+fn saved_note<'a>(page: &'a SentPage) -> Option<Element<'a, Message>> {
+    match &page.saved {
+        Some(Ok(path)) => Some(
+            t(
+                format!("Saved to {}", path.display()),
+                ty::MONO_SMALL,
+                color::ACCENT,
+            )
+            .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+            .into(),
+        ),
+        Some(Err(e)) => Some(ui::refusal(e)),
+        None if page.shared => Some(t(SHARED, ty::BODY_SMALL, color::TEXT_SECONDARY).into()),
+        None => None,
+    }
 }
 
 /// What the worker is doing for the page (S8's words), how far it has got,
 /// and its Cancel. Until it answers, the page's controls wait.
-fn working(busy: &Busy) -> Element<'_, Message> {
+fn working(compact: bool, busy: &Busy) -> Element<'_, Message> {
     let (title, what) = super::activity(busy);
     let mut text = column![
         t(title, ty::CARD_TITLE, color::TEXT_PRIMARY),
@@ -369,21 +573,25 @@ fn working(busy: &Busy) -> Element<'_, Message> {
     if let Some(detail) = super::progress(busy) {
         text = text.push(detail);
     }
-    ui::card(
-        row![
-            text.width(Length::Fill),
-            ui::button_with(
-                "Cancel",
-                theme::Button::Secondary,
-                Size::Medium,
-                None,
-                Some(Message::Cancel),
-            ),
-        ]
-        .spacing(sp::S24)
-        .align_y(Alignment::Center),
-    )
-    .into()
+    let cancel = ui::button_with(
+        "Cancel",
+        theme::Button::Secondary,
+        Size::Medium,
+        None,
+        Some(Message::Cancel),
+    );
+    // On a phone Cancel sits beneath the progress, not beside it.
+    let inside: Element<'_, Message> = if compact {
+        column![text.width(Length::Fill), cancel]
+            .spacing(sp::S16)
+            .into()
+    } else {
+        row![text.width(Length::Fill), cancel]
+            .spacing(sp::S24)
+            .align_y(Alignment::Center)
+            .into()
+    };
+    ui::card_for(compact, inside).into()
 }
 
 /// Two cards side by side in a wide window, `left` parts of the width to
@@ -404,7 +612,9 @@ fn pair<'a>(
         .spacing(sp::S24)
         .into()
     } else {
-        column![first, second].spacing(sp::S24).into()
+        column![first, second]
+            .spacing(if model.compact() { sp::S16 } else { sp::S24 })
+            .into()
     }
 }
 
@@ -519,39 +729,62 @@ fn account_choice<'a>(
             || "balance not known".to_owned(),
             |b| format!("{} {}", ui::amount(b, unit), ui::unit_name(unit)),
         );
-        let card = container(
-            row![
+        let card = if model.compact() {
+            // The phone: the name, the destination, then the balance and the
+            // next key on one line.
+            container(
                 column![
                     t(name(id), ty::RADIO_TITLE, color::TEXT_PRIMARY),
                     t(destination(id), ty::MONO_TINY, color::TEXT_MUTED)
                         .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                    row![
+                        t(balance, ty::TABLE_AMOUNT, color::TEXT_PRIMARY),
+                        space().width(Length::Fill),
+                        t(
+                            format!("next key #{}", account.index),
+                            ty::NOTE,
+                            color::TEXT_MUTED
+                        ),
+                    ]
+                    .spacing(sp::S12)
+                    .align_y(Alignment::Center),
                 ]
-                .spacing(sp::S2)
-                .width(Length::Fill),
-                column![
-                    t(balance, ty::TABLE_AMOUNT, color::TEXT_PRIMARY),
-                    t(
-                        format!("next key #{}", account.index),
-                        ty::NOTE,
-                        color::TEXT_MUTED
-                    ),
+                .spacing(sp::S4),
+            )
+            .padding(iced::Padding::from([sp::S12, sp::S16]))
+            .width(Length::Fill)
+            .style(theme::radio_card(chosen))
+        } else {
+            container(
+                row![
+                    column![
+                        t(name(id), ty::RADIO_TITLE, color::TEXT_PRIMARY),
+                        t(destination(id), ty::MONO_TINY, color::TEXT_MUTED)
+                            .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                    ]
+                    .spacing(sp::S2)
+                    .width(Length::Fill),
+                    column![
+                        t(balance, ty::TABLE_AMOUNT, color::TEXT_PRIMARY),
+                        t(
+                            format!("next key #{}", account.index),
+                            ty::NOTE,
+                            color::TEXT_MUTED
+                        ),
+                    ]
+                    .spacing(sp::S2)
+                    .align_x(Alignment::End),
                 ]
-                .spacing(sp::S2)
-                .align_x(Alignment::End),
-            ]
-            .spacing(sp::S12)
-            .align_y(Alignment::Center),
-        )
-        .padding(iced::Padding::from([sp::S12, sp::S16]))
-        .width(Length::Fill)
-        .style(theme::radio_card(chosen));
-        list = list.push(
-            iced::widget::button(card)
-                .padding(0)
-                .width(Length::Fill)
-                .style(theme::button(theme::Button::Bare))
-                .on_press_maybe((idle && !chosen).then(|| on_pick(id))),
-        );
+                .spacing(sp::S12)
+                .align_y(Alignment::Center),
+            )
+            .padding(iced::Padding::from([sp::S12, sp::S16]))
+            .width(Length::Fill)
+            .style(theme::radio_card(chosen))
+        };
+        // A row acts on release, so a drag through the list scrolls it
+        // (docs/DECISIONS.md D32 item 10 (d)).
+        list = list.push(tap(card).on_tap_maybe((idle && !chosen).then(|| on_pick(id))));
     }
     list.into()
 }
@@ -579,5 +812,29 @@ mod tests {
     fn destinations_shorten_to_their_ends() {
         assert_eq!(short("9xQmT4vRbN2kWe7HpLsZ3cYdAf"), "9xQmT4…3cYdAf");
         assert_eq!(short("short"), "short");
+    }
+
+    #[test]
+    fn the_phone_shell_fits_in_360_with_nothing_in_its_page() {
+        // The bars and the page's margins at the narrowest width (docs/
+        // DECISIONS.md D32 item 10 (b)): nothing is cut off, nothing scrolls
+        // sideways. The screens' own content has its own checks.
+        use crate::app::{NARROWEST, Page};
+        use tawara_wallet_core::preferences::Preferences;
+        let mut model = Model::new(Preferences::default(), None);
+        model.width = NARROWEST;
+        model.safe_area = iced::mobile::SafeArea::new(iced::Padding {
+            top: 47.0,
+            right: 0.0,
+            bottom: 34.0,
+            left: 0.0,
+        });
+        model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        let page = WalletPage {
+            page: Page::Dashboard,
+            ..WalletPage::default()
+        };
+        let shell = compact_frame(&model, &page, iced::widget::column![].into());
+        assert_eq!(crate::harness::fits(shell, NARROWEST), Ok(()));
     }
 }

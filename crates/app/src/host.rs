@@ -2,7 +2,8 @@
 //! tells it (docs/DECISIONS.md D32). The desktop needs none of this.
 //!
 //! A shell gives the app-private directory, where the store and the
-//! preferences live, the platform's clipboard, and what Android's Back does.
+//! preferences live, the platform's clipboard, its share sheet, and what
+//! Android's Back does.
 //! Copy goes through the shell's own write, not iced's: iced's reaches the
 //! phones at the pin, but it sets none of the protection that
 //! docs/DECISIONS.md D32 item 9 (d) puts in the shell's write. It calls
@@ -21,6 +22,15 @@ pub struct Host {
     pub private_dir: PathBuf,
     /// Puts text on the platform's clipboard.
     pub copy: fn(&str),
+    /// Opens the system's share sheet with a signed spend's bytes: the file's
+    /// name, then the text the desktop's file holds (docs/DECISIONS.md D32
+    /// item 10 (i)). A phone has no Downloads folder for Save artifact to
+    /// write to, and the sheet is how it hands text to Files, a note or a
+    /// message. iOS presents `UIActivityViewController`; Android sends
+    /// `ACTION_SEND` as `text/plain` through `Intent.createChooser`, with the
+    /// name as the subject. The application cannot learn what was done with
+    /// the sheet.
+    pub share: fn(&str, &str),
     /// Android's Back: the application goes to the background, as Android
     /// 12 and later do themselves for a launcher's first activity. It is
     /// never finished. When Android destroys the Activity anyway, the
@@ -32,8 +42,10 @@ pub struct Host {
     pub back: fn(),
 }
 
-/// The shell's clipboard and Back, once a hosted application has started.
+/// The shell's clipboard, share sheet and Back, once a hosted application
+/// has started.
 static COPY: OnceLock<fn(&str)> = OnceLock::new();
+static SHARE: OnceLock<fn(&str, &str)> = OnceLock::new();
 static BACK: OnceLock<fn()> = OnceLock::new();
 
 /// What [`left_foreground`] does: the running worker's lock.
@@ -140,6 +152,7 @@ pub(crate) fn on_leaving(lock: impl Fn() -> Leaving + Send + 'static) {
 
 pub(crate) fn set(host: &Host) {
     let _ = COPY.set(host.copy);
+    let _ = SHARE.set(host.share);
     let _ = BACK.set(host.back);
 }
 
@@ -148,6 +161,12 @@ pub(crate) fn back() {
     if let Some(back) = BACK.get() {
         back();
     }
+}
+
+/// The shell's share sheet, where a shell has one: the desktop has none, and
+/// saves to its Downloads folder.
+pub(crate) fn sharer() -> Option<fn(&str, &str)> {
+    SHARE.get().copied()
 }
 
 /// Puts `text` on the shell's clipboard. `false` when there is no shell's,

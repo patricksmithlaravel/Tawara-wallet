@@ -176,6 +176,11 @@ jobs:
         # drawn there, and the renderer's floating-point and SIMD paths may
         # round differently on another processor (the macOS runner is ARM).
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && runner.os == 'Linux' }}
+        env:
+          # What was drawn is printed into this log when an image differs or is
+          # missing, as base64 between BEGIN and END lines, so the image can be
+          # taken from the log: no artifact is uploaded (docs/DECISIONS.md D13).
+          TAWARA_SCREENSHOTS_PRINT: "1"
         run: |
           cd "$TAWARA"
           cargo run -p tawara-app --example screenshots --locked -- --check
