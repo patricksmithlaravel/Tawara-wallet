@@ -2743,10 +2743,11 @@ item 6's.
    - only the identical saved bytes may be re-submitted, and only under the
      library's conditions: the balance at the source has not moved, and a
      non-zero block-to-live has not passed (library `recon.rs:992-994`;
-     owner's review, 2026-10-13);
+     proposed, for the owner's approval when that PR is made);
    - signing anything else with that key is never allowed, whether or not
-     the reverted spend has expired (library `recon.rs:991-992` and
-     `README.md:339`; owner's review, 2026-10-13);
+     the reverted spend has expired (library `recon.rs:991-992`,
+     `wallet.rs:810-812` and `README.md:339`; proposed, for the owner's
+     approval when that PR is made);
    - no key index moves (owner, 2026-10-13; PLAN 4.9).
 
    What happens to the wallet. Refresh and Check now mark the account
@@ -2788,12 +2789,15 @@ item 6's.
    advance to that index or sign anything with that key. That holds whether
    the reverted spend lands, is re-submitted or expires, because the hazard
    is the signature itself, which already exists. After expiry the signed
-   bytes may never be accepted (library `README.md:339`), but expiry does not
-   undo the private material that the WOTS+ signature exposed. Only the
-   identical saved bytes may be re-submitted, and only while the balance at
-   the source has not moved and a non-zero block-to-live has not passed
-   (library `recon.rs:992-994`; item (b)). Neither store can see the other,
-   so this is recorded here and not enforced.
+   bytes may never be accepted (library `README.md:339`). Expiry does not
+   undo the private material that the WOTS+ signature exposed, so a second
+   signature with that key stays what the library's re-sign guard calls the
+   second-signature-under-one-key catastrophe (library `wallet.rs:810-812`);
+   that step is analysis, not library text. Only the identical saved bytes
+   may be re-submitted, and only while the balance at the source has not
+   moved and a non-zero block-to-live has not passed (library
+   `recon.rs:992-994`; item (b)). Neither store can see the other, so this
+   is recorded here and not enforced.
 
    **Why the answer changed (owner, 2026-10-13).** The earlier answer
    rested on the premise that a reverted settle reopens the reservation. It
