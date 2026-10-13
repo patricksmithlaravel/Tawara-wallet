@@ -109,12 +109,16 @@ fn text_needs(tree: &Tree, out: &mut Vec<(String, f32)>) {
     }
 }
 
-/// The texts whose words run past the right edge of a window `width` wide,
-/// each with its box, the width its words need and its content. The operation
-/// meets each text with its box, and the tree holds each text's paragraph in
-/// the same order, so a box is paired with the next paragraph of the same
-/// content. A paragraph with no box (a checkbox's label, which its own
-/// operation does not report) is passed over. A text squeezed into its box
+/// The texts whose words run past the right edge of a window `width` wide, each
+/// with its box, the width its words need and its content. The operation meets
+/// each text with its box, and the tree holds each text's paragraph in the same
+/// order, so a box is paired with the next paragraph of the same content. A
+/// paragraph with no box (a checkbox's label, which its own operation does not
+/// report) is passed over when a box with its content does not follow; when one
+/// does, as for a checkbox labelled as a later text, the label's paragraph is
+/// paired with that box and the later text is measured by the label's
+/// paragraph, which can differ from its own in size or wrapping. No screen has
+/// a checkbox labelled as another of its texts. A text squeezed into its box
 /// whose words stay inside the window is not reported: a label inside a button
 /// that is narrower than its words is drawn inside the button, and the edge is
 /// what a person cannot see past.

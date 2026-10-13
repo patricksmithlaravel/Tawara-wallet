@@ -39,12 +39,13 @@
 //! - `--phone-width N`: draws the phone's images N logical pixels wide rather
 //!   than 390, for looking at a width, and with `--fit` lays them out at N
 //!   rather than 360. It is refused with `--check`.
-//! - `--fit`: lays every selected phone sample out at 360 by 844 and prints
-//!   `OVERFLOW name: left..right` for each node whose right edge passes 360,
-//!   and for each text whose words do, with its content (ten a sample at most).
-//!   The phone's wallet page is also laid out in nanoMCM. It exits non-zero if
+//! - `--fit`: lays every selected phone sample out 844 tall, at the width
+//!   `--phone-width` gives or else at 360, and prints `OVERFLOW name:
+//!   left..right` for each node whose right edge passes that width, and for
+//!   each text whose words do, with its content (ten a sample at most). The
+//!   phone's wallet page is also laid out in nanoMCM. It exits non-zero if
 //!   there is any, and writes nothing. `--fit --phone-width 390` holds the
-//!   phone set to the width it is drawn at as well.
+//!   phone set to the width it is drawn at.
 //! - The environment variable `TAWARA_SCREENSHOTS_PRINT`: with `--check`,
 //!   prints each image that DIFFERS or is MISSING as base64, between
 //!   `----- BEGIN <name>.png -----` and `----- END <name>.png -----`, so that

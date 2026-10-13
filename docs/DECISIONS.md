@@ -1966,7 +1966,9 @@ on the three conditions D18 left open.
    inside it (`tawara_app::overflow`). Words that end inside the window are not
    reported, even when they are wider than their box. The balance on a phone is
    set to the size its card allows (`dashboard.rs`), so that a nanoMCM amount
-   stays on one line.*
+   stays on one line. The check is of the window's edge only, so a text wider
+   than its card but inside the window passes it; the balance's figure is
+   also held inside its card by a test of its own.*
 
    **(c) Phone screenshots (decided under the owner's delegation,
    2026-10-12).** Every screen drawn for the desktop, except the `narrow-*`

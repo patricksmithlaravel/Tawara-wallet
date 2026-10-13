@@ -111,10 +111,12 @@ The wallet's shell in the compact layout (`crates/app/src/screens/wallet.rs`):
 
 Every screen has a compact form. Tables become stacked rows, cards keep 16
 pixels of padding, and a long token (a destination, a hash, an id, an amount)
-wraps at its glyphs. The balance is the exception: its figure is set at the
-largest size, 56 pixels at most, that keeps its whole amount on one line in its
-card, so a nanoMCM balance is set smaller (the sample's, 12,395,402,118,000, at
-30 pixels at 360; D32 item 10 (b)). Acting on a row or a card is by release, so
+wraps at its glyphs. The balance is the exception: its figure (in MCM, its
+whole part, before the point; the decimals may wrap below it) is set at the
+largest size, 56 pixels at most, that keeps it on one line in its card, so a
+nanoMCM balance is set smaller (the sample's, 12,395,402,118,000, at 30 pixels
+at 360; D32 item 10 (b)). An MCM balance under a million keeps 56; from seven
+whole digits one can be set smaller (4,444,444 at 53 at 360). Acting on a row or a card is by release, so
 a drag that starts on it scrolls the list (D32 item 10 (d)). A drag that starts
 on a button or a field does not scroll the page, since the fork's button and
 field capture the press; on the forms a drag starts on a label or a gap. Beside
