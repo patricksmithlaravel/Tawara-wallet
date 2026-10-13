@@ -2384,7 +2384,9 @@ The GitHub digests were read on 2026-10-13.
   needs no FUSE, and with `--runtime-file`, so it downloads nothing at run
   time. `dpkg-deb` and `dpkg-shlibdeps` are Debian's own; `cargo-deb` would
   add a tool for what a control file and two commands do. `dpkg-shlibdeps`
-  names only the libraries a binary is linked with (source 26), and the app
+  also needs a `debian/control` in its working directory (source 27), so the
+  build gives it a workspace beside the tree. It names only the libraries a
+  binary is linked with (source 26), and the app
   also opens several by name at run time (through `x11-dl`, `x11rb`,
   `xkbcommon-dl` and `wayland-sys` in winit's backends, and through `ash` for
   `libvulkan` in wgpu), so RELEASE.md section 6.3 names them by hand. An
@@ -2618,4 +2620,20 @@ packaging study of 2026-10-12, whose notes are not in the repository.
     With `-O`, it prints the substitution variables, among them
     `shlibs:Depends`, to standard output; `-e` names the executable.
     https://manpages.debian.org/bookworm/dpkg-dev/dpkg-shlibdeps.1.en.html
+    (2026-10-13)
+27. dpkg 1.21.1, `scripts/dpkg-shlibdeps.pl` line 160, `my $control =
+    Dpkg::Control::Info->new();`, reads `debian/control` from the working
+    directory whether or not `-O` is given; line 161 takes its source stanza.
+    In `scripts/Dpkg/Control/Info.pm`, lines 68 and 69 make `debian/control`
+    the default file, lines 108 and 109 require a `Source` field in the first
+    stanza, and lines 115 to 122 require `Package` and `Architecture` fields
+    in each later one. `scripts/Dpkg/Interface/Storable.pm` line 93 opens the
+    file and reports a failure as `cannot read %s`. Line 112 of
+    `dpkg-shlibdeps.pl` matches `-e` as `^-e(.*)$`, so `-e` followed by a
+    space adds an executable with an empty name; for that name no package
+    root is found, and lines 359 to 365 print the warning that `binaries to
+    analyze should already be installed in their package's directory`. The
+    same lines are in Ubuntu 22.04's dpkg-dev 1.21.1ubuntu2.6, checked in a
+    container on 2026-10-13.
+    https://github.com/guillemj/dpkg/blob/1.21.1/scripts/dpkg-shlibdeps.pl#L160
     (2026-10-13)

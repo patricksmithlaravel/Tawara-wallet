@@ -434,10 +434,20 @@ run.
   under `usr/share/applications/`, hicolor icons from 16 to 512 pixels, the
   notices under `usr/share/doc/tawara-desktop/`, and `DEBIAN/control`
   (package `tawara-desktop`, the owner's maintainer line). `Depends` has two
-  parts. The first is the value that `dpkg-shlibdeps -O -e
-  usr/bin/tawara-desktop` prints for the variable `shlibs:Depends`, without
-  the variable's name, which `Depends` cannot hold; it names only the
-  libraries the executable is linked with (D36, source 26). The second names
+  parts. The first is the value that `dpkg-shlibdeps -O` prints for the
+  variable `shlibs:Depends`, without the variable's name, which `Depends`
+  cannot hold; it names only the libraries the executable is linked with
+  (D36, source 26). dpkg-shlibdeps reads `debian/control` from its working
+  directory whether or not `-O` is given (`scripts/dpkg-shlibdeps.pl` line
+  160, dpkg 1.21.1; D36, source 27), so run it in a workspace beside the
+  tree, never in the tree, where a `debian/` directory would be packaged.
+  The workspace's `debian/control` holds `Source: tawara-desktop`, a blank
+  line, then `Package: tawara-desktop` and `Architecture: amd64`, and nothing
+  else; dpkg-shlibdeps rejects a `Package` stanza without `Architecture`.
+  From the workspace, run `dpkg-shlibdeps -O <tree>/usr/bin/tawara-desktop`,
+  where `<tree>` is the tree's path. Do not put `-e` before the path: with a
+  space after it, dpkg-shlibdeps also analyses an executable with an empty
+  name and prints a spurious warning (D36, source 27). The second names
   by hand the libraries the app opens at run time (D36): for an X11 session,
   `libx11-6`, `libx11-xcb1`, `libxcursor1`, `libxi6` and
   `libxkbcommon-x11-0`; for a Wayland session, `libwayland-client0`; and for
