@@ -362,6 +362,10 @@ enum Polls {
 /// reservation, so that an outage does not stop the polls that settle a spend:
 ///
 /// - An account is asked about while its row shows a live reservation.
+/// - A spend signed for an account, by a sign or a re-sign, starts its polls
+///   afresh, whatever they were ([`Watch::signed`]). The reads the signing's
+///   reply carries are noted after that, and the rules below decide the polls
+///   from them.
 /// - It is still asked about while its reads fail and say nothing (the node
 ///   did not answer, or the expiry could not be read; see
 ///   [`AccountState::is_transient`]), once a read showed its reservation live,
@@ -457,6 +461,19 @@ impl Watch {
         for row in &view.accounts {
             self.read_row(row);
         }
+    }
+
+    /// Notes that a spend was signed for `account`, by a sign or a re-sign
+    /// (docs/DECISIONS.md D38 item 2, as [`Watch`] extends it): the account
+    /// holds a reservation from now on, so its polls start afresh, whatever
+    /// they were, with no doubtful poll counted. An unlock that found the
+    /// account in sync ended them, and without this the spend would go
+    /// unpolled through a first read that failed, and through a settle the node
+    /// interrupted. The reads the reply carries are noted after this, as
+    /// [`Watch::read_view`] notes them, so a read that settles the spend or
+    /// shows it dead still ends the polls.
+    pub fn signed(&mut self, account: AccountId) {
+        self.accounts.insert(account, Polls::Asking(0));
     }
 
     /// Forgets every account: the wallet locked, so its next reads start over.
@@ -938,5 +955,41 @@ mod tests {
         watch.read(one, &live);
         watch.clear();
         assert!(!watch.asks(one, &silent));
+    }
+
+    #[test]
+    fn a_spend_signed_starts_its_accounts_polls_whatever_they_were() {
+        let id = AccountId::from_tag([7; 20]);
+        let silent = diverged(DivergenceKind::Unreachable);
+        let unclassified = outstanding(ReservationState::Unclassified);
+        let live = outstanding(ReservationState::Live);
+        // An unlock that finds the account in sync ends its polls, and a failed
+        // read after it does not start them.
+        let mut watch = Watch::default();
+        watch.read(id, &AccountState::InSync { balance: 1 });
+        watch.read(id, &unclassified);
+        assert!(!watch.asks(id, &unclassified));
+        // Signed: the spend's first read fails, and the polls go on through the
+        // outage and the recovery.
+        watch.signed(id);
+        watch.read(id, &unclassified);
+        assert!(watch.asks(id, &unclassified));
+        watch.asked(id, &unclassified);
+        watch.read(id, &silent);
+        assert!(watch.asks(id, &silent));
+        watch.read(id, &live);
+        assert!(watch.asks(id, &live));
+        // A spend in doubt whose polls are spent is asked about again once it
+        // is signed, from a fresh count.
+        let spent_in_doubt = landed();
+        watch.read(id, &spent_in_doubt);
+        for _ in 0..DOUBTFUL_POLLS {
+            assert!(watch.asks(id, &spent_in_doubt));
+            watch.asked(id, &spent_in_doubt);
+        }
+        watch.read(id, &spent_in_doubt);
+        assert!(!watch.asks(id, &spent_in_doubt));
+        watch.signed(id);
+        assert!(watch.asks(id, &spent_in_doubt));
     }
 }

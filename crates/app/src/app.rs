@@ -1250,9 +1250,10 @@ impl App {
     /// wallet whose window is in the foreground, when a minute has passed since
     /// the last poll and nothing else is awaited, those that [`Watch::asks`]
     /// names. An account whose reservation is live is polled. One whose read
-    /// failed is polled once a read showed its reservation live or when the
-    /// store holds a reservation for it, so a wallet opened during an outage
-    /// polls its outstanding spend; an answer of "account not found", and a
+    /// failed is polled once a read showed its reservation live, when the store
+    /// holds a reservation for it, or once a spend was signed for it in this
+    /// run ([`Watch::signed`]), so a wallet opened during an outage polls its
+    /// outstanding spend; an answer of "account not found", and a
     /// landed spend the automatic settle did not make, are polled at most
     /// twice more in a row, after which Refresh, Check now or the Settle button
     /// remain (docs/DECISIONS.md D38 item 2, as [`Watch`] extends it). A dead
@@ -1890,6 +1891,12 @@ impl App {
     /// shows its sent page, so for those the banner waits.
     fn on_reply(&mut self, purpose: Purpose, reply: Reply) -> Task<Message> {
         let settled = settled_in(&reply);
+        // A spend signed now holds a reservation, whatever its account's polls
+        // were before (docs/DECISIONS.md D38 item 2; `Watch::signed`). The reads
+        // the reply carries are noted below, as every reply's are.
+        if let Reply::Sent(sent) = &reply {
+            self.model.watch.signed(sent.from);
+        }
         let task = if purpose.wallet_page() {
             self.on_wallet_reply(purpose, reply)
         } else {
@@ -5532,6 +5539,52 @@ mod tests {
         if let Some(w) = app.worker.as_mut() {
             w.waiting.clear();
         }
+    }
+
+    #[test]
+    fn a_spend_signed_in_this_run_is_polled_whatever_its_account_watched_before() {
+        // An unlock that finds the account in sync ends its polls (docs/DECISIONS.md
+        // D38 item 2). A spend signed after it holds a reservation whose first read
+        // failed, so the account is polled from the sign's reply; a re-sign is
+        // polled the same way.
+        use tawara_wallet_core::view::{AccountState, ReservationState};
+        let mut app = alone();
+        let account = tawara_wallet_core::sample::wallet_view().accounts[0].id;
+        let polled = |app: &App| app.polled_accounts(Instant::now()).contains(&account);
+        let _ = app.on_reply(
+            Purpose::Unlock,
+            Reply::Unlocked(tawara_wallet_core::sample::wallet_view()),
+        );
+        assert!(
+            !polled(&app),
+            "an account an unlock found in sync is not polled"
+        );
+
+        // The sign's reply: its first read could not read the spend's expiry.
+        let mut sent = tawara_wallet_core::sample::sent_view();
+        sent.view.accounts[0].set_state(AccountState::SpendOutstanding {
+            balance: 1,
+            spent_index: 49,
+            reservation: ReservationState::Unclassified,
+        });
+        let _ = app.on_reply(Purpose::ConfirmSend, Reply::Sent(sent.clone()));
+        assert!(polled(&app), "a spend signed in this run is polled");
+
+        // Settled, and in sync again: not polled. Re-signed, with the first read
+        // failing again: polled.
+        let _ = app.on_reply(
+            Purpose::Status,
+            Reply::Status {
+                account,
+                state: AccountState::InSync { balance: 1 },
+                spendable: true,
+                text: "in sync".to_owned(),
+                settled: None,
+            },
+        );
+        assert!(!polled(&app), "a settled account is not polled");
+        let _ = app.on_reply(Purpose::Resign, Reply::Sent(sent));
+        assert!(polled(&app), "a re-sign is polled as a sign is");
     }
 
     #[test]

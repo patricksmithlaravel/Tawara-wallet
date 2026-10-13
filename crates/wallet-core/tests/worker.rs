@@ -2559,6 +2559,102 @@ fn a_wallet_opened_while_the_node_fails_for_the_spend_polls_it() {
     assert!(!watch.asks(account0(), &state));
 }
 
+/// A payment of `nano` from account 0 that may not be included after
+/// `blk_to_live`, the spend `send_expiring_from_account0` makes.
+fn pay_expiring(nano: u64, blk_to_live: u64) -> SpendRequest {
+    SpendRequest {
+        from: account0(),
+        destinations: vec![DestinationInput {
+            to: destination(1),
+            amount: Amount::Nano(nano),
+            reference: String::new(),
+        }],
+        fee: None,
+        blk_to_live,
+    }
+}
+
+#[test]
+fn a_spend_signed_after_an_unlock_in_sync_polls_through_a_failed_read_and_settles() {
+    // D38 item 2: an unlock finds the account in sync, which ends its polls. A
+    // spend signed after that holds a reservation, and its polls
+    // start afresh: the read the sign's reply carries fails, the polls go on
+    // through the outage and the recovery, and the poll that finds the spend
+    // landed settles it on its own.
+    let scratch = Scratch::new("poll-after-sign");
+    let (mut h, start) = funded(&scratch);
+    let mut watch = Watch::default();
+
+    // The unlock: the account reads in sync, and nothing is asked about it.
+    assert!(matches!(h.call(Command::Lock), Reply::Locked));
+    let view = opened(h.unlock(&scratch.store(), PASSWORD));
+    watch.read_view(&view);
+    let state = row_of(&view, account0()).state;
+    assert_eq!(state, AccountState::InSync { balance: FUNDS });
+    assert!(!watch.asks(account0(), &state));
+
+    // The spend's expiry is read, so its signing reads the tip. The node
+    // answers that read, and not the read the reply carries after it.
+    let plan = planned(h.call(Command::PlanSend {
+        spend: pay_expiring(100_000, 1_100),
+    }));
+    h.chain.set_status_down_after(1);
+    let signed = sent(h.call(Command::ConfirmSend { plan: plan.plan }));
+    assert!(signed.submitted);
+    // The interface notes the sign, then the reads its reply carries.
+    watch.signed(signed.from);
+    watch.read_view(&signed.view);
+    let state = row_of(&signed.view, account0()).state;
+    assert!(
+        matches!(
+            &state,
+            AccountState::SpendOutstanding {
+                reservation: ReservationState::Unclassified,
+                spent_index,
+                ..
+            } if *spent_index == start
+        ),
+        "{state:?}"
+    );
+    assert!(
+        watch.asks(account0(), &state),
+        "a spend whose first read fails is polled"
+    );
+
+    // The next poll fails too: the expiry still cannot be read.
+    let (state, _, _) = poll_after(&mut h, &mut watch, &state);
+    assert!(
+        matches!(
+            &state,
+            AccountState::SpendOutstanding {
+                reservation: ReservationState::Unclassified,
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+
+    // The node answers again: the reservation reads live, and is still polled.
+    h.chain.set_status_down(false);
+    let (state, _, _) = poll_after(&mut h, &mut watch, &state);
+    assert!(is_live(&state), "{state:?}");
+
+    // The spend lands: the poll settles it, and nothing is asked about it after.
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    let (state, spendable, settled) = poll_after(&mut h, &mut watch, &state);
+    assert_eq!(
+        state,
+        AccountState::InSync {
+            balance: plan.change_total
+        },
+        "{state:?}"
+    );
+    assert!(spendable);
+    assert_eq!(settled.map(|s| s.account), Some(account0()));
+    assert!(!watch.asks(account0(), &state));
+}
+
 #[test]
 fn the_node_is_chosen_https_or_loopback_only() {
     let mut h = Harness::new();
