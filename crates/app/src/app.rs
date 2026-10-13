@@ -1178,7 +1178,14 @@ impl App {
         self.prefs_held = false;
         match &self.prefs_path {
             Some(path) => preferences::save(path, &self.model.prefs),
-            None => Ok(()),
+            // `boot` finds no folder for the preferences where neither an
+            // absolute XDG_DATA_HOME nor an absolute HOME is set. Nothing can be
+            // written there, so a node forgotten in this run would be back at
+            // the next start: that is a failure to say, not a saved choice
+            // (PR #29's review, P2-1; docs/DECISIONS.md D43).
+            None => Err(std::io::Error::other(
+                "there is no folder for the preferences",
+            )),
         }
     }
 
@@ -5262,6 +5269,59 @@ mod tests {
         assert_eq!(
             preferences::load(&path).node.as_deref(),
             Some("https://other.example")
+        );
+    }
+
+    /// The messages a press on the drawn text `label` produces in a window of
+    /// `size`, as a person presses it: the pointer goes to the middle of the
+    /// text, and the button goes down and comes up there. Panics when `label`
+    /// is not drawn.
+    fn press_drawn(model: &Model, label: &str, size: (u32, u32)) -> Vec<Message> {
+        let mut driver = Driver::new(crate::screens::view(model), size);
+        let at = driver
+            .text_bounds(label)
+            .unwrap_or_else(|| panic!("`{label}` is not drawn"));
+        let (messages, _, _) = driver.send(&[
+            mouse_move(at.center_x(), at.center_y()),
+            mouse_press(),
+            mouse_release(),
+        ]);
+        messages
+    }
+
+    #[test]
+    fn forgetting_the_node_says_so_when_no_folder_was_found_for_the_preferences() {
+        // `boot` passes no path where neither an absolute XDG_DATA_HOME nor an
+        // absolute HOME is set. Nothing can be written there, so a node forgotten
+        // in that run is back at the next start: the node screen, where Forget
+        // was pressed, says so (PR #29's review, P2-1; docs/DECISIONS.md D43).
+        let (mut app, events) = App::start(Model::new(Preferences::default(), None), None);
+        let events = events.expect("the worker starts");
+        pump(&mut app, &events, |a| {
+            !waiting(a).iter().any(|p| p == "SetNode")
+        });
+        app.model.screen = Screen::Node(NodeForm {
+            url: preferences::DEFAULT_NODE.to_owned(),
+            error: None,
+            back: Back::Start,
+        });
+        let messages = press_drawn(&app.model, "Forget the node", (1440, 900));
+        assert!(
+            matches!(messages.as_slice(), [Message::ForgetNode]),
+            "{messages:?}"
+        );
+        for message in messages {
+            let _ = app.update(message);
+        }
+        pump(&mut app, &events, |a| waiting(a).is_empty());
+        assert_eq!(app.model.prefs.node, None, "forgotten for this run");
+        assert!(
+            matches!(
+                &app.model.screen,
+                Screen::Node(f) if f.error.as_deref().is_some_and(|e| e.contains("could not be saved"))
+            ),
+            "{:?}",
+            app.model.screen
         );
     }
 }
