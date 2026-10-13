@@ -479,9 +479,10 @@ pub fn sent(s: &SentView) -> Report<'_> {
          block-to-live are the node's to check.",
     )
     .says(
-        "The signed bytes exist only on this page; the store does not keep them. Save them: \
-         until the spend settles they are the only bytes that can move these funds, and \
-         re-signing needs exactly the same destinations, amounts, references, fee and \
+        "The signed bytes exist only in this run: the store does not keep them. Save them. \
+         Until they are saved, dismissed or the wallet locks, Tawara keeps them here, and if a \
+         reorganisation reverts a settle, a saved copy may be the only way to move these funds. \
+         Re-signing needs exactly the same destinations, amounts, references, fee and \
          block-to-live.",
     )
     .says("Settle from the account's page once the chain has moved, to learn what happened.")

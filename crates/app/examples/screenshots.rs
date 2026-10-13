@@ -509,8 +509,7 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
                 dir: DIR.to_owned(),
                 note: Some(
                     "A signed spend's page was open when the wallet locked. It is kept, with \
-                     the signed bytes, and shown again when this store is unlocked: save the \
-                     bytes then."
+                     the signed bytes, and shown again when this store is unlocked."
                         .to_owned(),
                 ),
                 ..UnlockForm::default()

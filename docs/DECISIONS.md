@@ -2228,7 +2228,8 @@ on the three conditions D18 left open.
    through `Intent.createChooser`, with the file's name as the subject. The
    page then says, as a note and not as a refusal, that the sheet was opened
    and that Tawara cannot tell whether the bytes were saved there, so the
-   spend still counts as not saved and its banner stays until it settles.
+   spend still counts as not saved and its banner stays until the bytes are
+   saved, dismissed or the wallet locks (D38 item 5, as revised on 2026-10-13).
    `Host::share` returns `Ok` when the sheet was shown and `Err` with the
    reason when it was not; a sheet that could not be shown is a refusal, as
    a file that could not be written is on the desktop. `Host::share` is a

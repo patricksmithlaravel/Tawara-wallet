@@ -2,9 +2,10 @@
 //! E4): what each holds, the messages that change it, and what the worker's
 //! answers do to it.
 //!
-//! Nothing here is secret. Destinations, amounts, the library's pages and a
-//! signed spend's bytes are what the node is sent or what the store shows;
-//! the store's key never leaves the worker.
+//! Destinations, amounts and the library's pages are not secret. A signed
+//! spend's bytes are what the node is sent or what the store shows, and the
+//! copies Tawara keeps of them are wiped when they are dropped (see
+//! [`Signed`]); the store's key never leaves the worker.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -27,7 +28,7 @@ use tawara_wallet_core::{
     Command, Discovered, MAX_DESTINATIONS, PlanView, ReceiveView, Reply, SentView,
 };
 
-use super::{App, Message, Model, Purpose, Screen, WalletPage};
+use super::{App, Message, Model, Purpose, Screen, WalletPage, wipe};
 
 /// Which wallet page is shown.
 #[derive(Clone, Debug, Default)]
@@ -336,6 +337,14 @@ pub struct SentPage {
 }
 
 impl SentPage {
+    /// Whether its bytes are in memory only: not saved to a file. The share
+    /// sheet's `Ok` is not a save, so such bytes are still unsaved
+    /// (docs/DECISIONS.md D32 item 10 (i)).
+    #[must_use]
+    pub fn unsaved(&self) -> bool {
+        !matches!(self.saved, Some(Ok(_)))
+    }
+
     /// On a phone, "Save artifact" asked the system to open the share sheet
     /// with the bytes: `saved` holds [`SHARED`]. What was done there is not
     /// known, so the spend still counts as not saved, but nothing was refused,
@@ -492,6 +501,10 @@ pub enum WalletMsg {
     /// Save the bytes of the kept spend whose bytes are these: the stopped
     /// screen's, with no page to show them on.
     SaveSigned(String),
+    /// W6: dismiss the unsaved bytes shown, which are these. They are wiped
+    /// and no longer offered, and the page is left (docs/DECISIONS.md D38
+    /// item 5, as revised on 2026-10-13).
+    DismissSigned(String),
     Settle(AccountId),
     /// W7: reconcile the account now and report.
     Check(AccountId),
@@ -652,7 +665,9 @@ pub struct Signed {
     /// Which of its page's reports were open.
     pub open: BTreeMap<ReportKey, Level>,
     /// A lock closed its page while it was shown: the page comes back as
-    /// it was left once its store is unlocked.
+    /// it was left once its store is unlocked. Only saved bytes are kept over
+    /// a lock: unsaved ones are wiped by it (docs/DECISIONS.md D38 item 5, as
+    /// revised on 2026-10-13).
     pub resume: bool,
     /// Its hex is what the stopped screen last copied.
     pub copied: bool,
@@ -668,7 +683,7 @@ impl Signed {
     /// Whether its bytes are in memory only: not saved to a file.
     #[must_use]
     pub fn unsaved(&self) -> bool {
-        !matches!(self.sent.saved, Some(Ok(_)))
+        self.sent.unsaved()
     }
 
     fn into_page(self) -> WalletPage {
@@ -737,8 +752,7 @@ impl Model {
         sent.sent.view.accounts = Vec::new();
         sent.sent.view.notice = None;
         // A re-signed spend is the same bytes again: one spend, kept once.
-        self.signed
-            .retain(|s| s.sent.sent.artifact_hex != sent.sent.artifact_hex);
+        self.discard_signed(|s| s.sent.sent.artifact_hex == sent.sent.artifact_hex);
         self.signed.push(Signed {
             sent,
             form,
@@ -787,18 +801,83 @@ impl Model {
         }
     }
 
-    /// Forget the kept spends whose account the open store now shows in
-    /// sync: the reservation is settled, and the bytes can move nothing.
+    /// Forget the saved spends whose account the open store now shows in
+    /// sync: the reservation is settled, and the file holds the bytes. An
+    /// unsaved one is kept past that, though its account is in sync, since a
+    /// reorganisation of the chain can revert the settle, and then a saved
+    /// copy may be the only way to move the balance. It goes when it is saved,
+    /// dismissed, or the wallet locks (docs/DECISIONS.md D38 item 5, as
+    /// revised on 2026-10-13).
     pub(super) fn forget_settled(&mut self) {
         let Some(view) = &self.wallet else {
             return;
         };
-        self.signed.retain(|s| {
-            !same_store(s.dir(), &view.dir)
-                || !view.accounts.iter().any(|a| {
-                    a.id == s.sent.sent.from && matches!(a.state, AccountState::InSync { .. })
-                })
+        let dir = view.dir.clone();
+        let synced: Vec<AccountId> = view
+            .accounts
+            .iter()
+            .filter(|a| matches!(a.state, AccountState::InSync { .. }))
+            .map(|a| a.id)
+            .collect();
+        self.discard_signed(|s| {
+            !s.unsaved() && same_store(s.dir(), &dir) && synced.contains(&s.sent.sent.from)
         });
+    }
+
+    /// Dismiss the unsaved bytes `hex` of the open store: they are wiped and
+    /// no longer offered (docs/DECISIONS.md D38 item 5, as revised on
+    /// 2026-10-13). The spend's page, when it is the one shown, is left with
+    /// them. Returns the spends dropped, wiped, for the caller to let go of.
+    pub(super) fn dismiss_signed(&mut self, hex: &str) -> Vec<Signed> {
+        let Some(dir) = self.wallet.as_ref().map(|w| w.dir.clone()) else {
+            return Vec::new();
+        };
+        if self.shown_signed(|s| s.unsaved() && s.sent.artifact_hex == hex) {
+            self.keep_signed(false);
+        }
+        self.discard_signed(|s| {
+            s.unsaved() && same_store(s.dir(), &dir) && s.sent.sent.artifact_hex == hex
+        })
+    }
+
+    /// The wallet locked: every spend whose bytes are not saved is dropped,
+    /// and its bytes wiped, whether its page is shown or kept, since the lock
+    /// closes the store they were signed from (docs/DECISIONS.md D38 item 5,
+    /// as revised on 2026-10-13). A saved spend is not dropped. Returns the
+    /// spends dropped, wiped, for the caller to let go of.
+    pub(super) fn drop_unsaved_at_lock(&mut self) -> Vec<Signed> {
+        if self.shown_signed(SentPage::unsaved) {
+            self.keep_signed(false);
+        }
+        self.discard_signed(Signed::unsaved)
+    }
+
+    /// Whether the page shown is a signed spend's, and `then` holds for it.
+    fn shown_signed(&self, then: impl FnOnce(&SentPage) -> bool) -> bool {
+        match &self.screen {
+            Screen::Wallet(WalletPage {
+                page:
+                    Page::Send(SendPage {
+                        stage: SendStage::Sent(sent),
+                        ..
+                    }),
+                ..
+            }) => then(sent),
+            _ => false,
+        }
+    }
+
+    /// Drop the kept spends that `is_gone` names, wiping their bytes as they
+    /// go. They are returned wiped, for the caller to let go of.
+    fn discard_signed(&mut self, is_gone: impl FnMut(&Signed) -> bool) -> Vec<Signed> {
+        let (mut gone, kept): (Vec<Signed>, Vec<Signed>) = core::mem::take(&mut self.signed)
+            .into_iter()
+            .partition(is_gone);
+        self.signed = kept;
+        for s in &mut gone {
+            wipe(&mut s.sent.sent.artifact_hex);
+        }
+        gone
     }
 
     /// The kept spends from the open store whose bytes are not saved.
@@ -1307,6 +1386,11 @@ impl App {
                 {
                     keep_bytes(downloads.as_deref(), host::share, &mut s.sent);
                 }
+            }
+            WalletMsg::DismissSigned(hex) => {
+                // The dismissal leaves the page shown with the bytes, if it is
+                // that page (see `Model::dismiss_signed`).
+                self.model.dismiss_signed(&hex);
             }
             WalletMsg::Settle(account) => {
                 self.page_error(None);

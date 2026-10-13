@@ -687,29 +687,39 @@ fn sent_page<'a>(model: &'a Model, page: &'a WalletPage, s: &'a SentPage) -> Ele
     } else {
         Step::Failed
     };
+    let mut buttons = vec![
+        action(
+            model,
+            "Save artifact",
+            theme::Button::Primary,
+            Size::Medium,
+            Some(Icon::Download),
+            WalletMsg::SaveArtifact,
+        ),
+        copy(page, &sent.artifact_hex, "Copy hex"),
+    ];
+    // Dismiss drops bytes that are not saved (docs/DECISIONS.md D38 item 5, as
+    // revised on 2026-10-13); saved bytes need no dismissal.
+    if s.unsaved() {
+        buttons.push(action(
+            model,
+            "Dismiss",
+            theme::Button::Secondary,
+            Size::Medium,
+            None,
+            WalletMsg::DismissSigned(sent.artifact_hex.clone()),
+        ));
+    }
     let mut artifact = column![
         ui::section_label("Retry artifact"),
         t(
-            "The signed bytes. The store does not keep them, and while the reservation is \
-             open they are the only bytes that can move these funds: save them before going \
-             further.",
+            "The signed bytes. The store does not keep them. Tawara keeps them until they are \
+             saved, dismissed or the wallet locks, and a reorganisation of the chain can revert \
+             a settle, so save them before going further.",
             ty::BODY_SMALL,
             color::TEXT_SECONDARY,
         ),
-        button_row(
-            compact,
-            vec![
-                action(
-                    model,
-                    "Save artifact",
-                    theme::Button::Primary,
-                    Size::Medium,
-                    Some(Icon::Download),
-                    WalletMsg::SaveArtifact,
-                ),
-                copy(page, &sent.artifact_hex, "Copy hex"),
-            ],
-        ),
+        button_row(compact, buttons),
     ]
     .spacing(sp::S12);
     if let Some(note) = super::saved_note(s) {
