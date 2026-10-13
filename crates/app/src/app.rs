@@ -180,6 +180,10 @@ pub struct NodeState {
 /// Which screen is shown (docs/SCREENS.md).
 #[derive(Debug)]
 pub enum Screen {
+    /// S0, on a phone alone, when the phone's folder holds no store: the
+    /// brand panel and "Get started", which leads to S1 (docs/DECISIONS.md
+    /// D37).
+    Welcome,
     /// S1.
     Start { choice: StartChoice },
     /// S2.
@@ -698,7 +702,7 @@ fn wipe_typed(screen: &mut Screen) {
                 wipe(w);
             }
         }
-        Screen::Start { .. } | Screen::Node(_) | Screen::Wallet(_) => {}
+        Screen::Welcome | Screen::Start { .. } | Screen::Node(_) | Screen::Wallet(_) => {}
     }
 }
 
@@ -794,6 +798,14 @@ impl Model {
     #[must_use]
     pub(crate) fn phone(&self) -> bool {
         self.confined.is_some()
+    }
+
+    /// Whether this is a phone whose own folder already holds a store. That
+    /// store is the only one the phone can open, so S7 is its first screen,
+    /// and S1 and S3 are not offered (docs/DECISIONS.md D37).
+    #[must_use]
+    pub(crate) fn phone_holds_store(&self) -> bool {
+        self.phone() && self.store_to_open().is_some()
     }
 
     /// Confine this model to `private_dir`, the app-private folder a phone
@@ -964,15 +976,14 @@ impl App {
         // (docs/DECISIONS.md D32 item 10 (b)).
         app.model.width = NARROWEST;
         // The first screen again, now that the store is the default folder's
-        // alone: the unlock screen when a store is there, else the start.
+        // alone: the unlock screen when a store is there, else the welcome
+        // screen, which leads to the start (docs/DECISIONS.md D37).
         app.model.screen = match app.model.store_to_open() {
             Some(dir) => Screen::Unlock(UnlockForm {
                 dir,
                 ..UnlockForm::default()
             }),
-            None => Screen::Start {
-                choice: StartChoice::Create,
-            },
+            None => Screen::Welcome,
         };
         (app, task)
     }
@@ -1201,10 +1212,14 @@ impl App {
                 return operation::focus_previous();
             }
             Message::Go(Go::Start) => {
-                let _ = m.leave();
-                m.screen = Screen::Start {
-                    choice: StartChoice::Create,
-                };
+                // On a phone with a store, the start screens are not offered:
+                // S7 is its first screen (docs/DECISIONS.md D37).
+                if !m.phone_holds_store() {
+                    let _ = m.leave();
+                    m.screen = Screen::Start {
+                        choice: StartChoice::Create,
+                    };
+                }
             }
             Message::Go(Go::Unlock) => m.unlock_screen(None, None, None),
             Message::Go(Go::Wallet) => {
@@ -1953,7 +1968,7 @@ impl App {
             Screen::Confirm(p) => p.error = text,
             Screen::Node(f) => f.error = text,
             Screen::Wallet(p) => p.error = text,
-            Screen::Start { .. } | Screen::Phrase(_) => {}
+            Screen::Welcome | Screen::Start { .. } | Screen::Phrase(_) => {}
         }
     }
 }
@@ -2894,7 +2909,7 @@ mod tests {
     #[test]
     fn a_phone_offers_no_remembered_folder_and_starts_on_the_first_screen() {
         // A folder remembered from an earlier run is not one a phone chooses,
-        // and the default folder holds no store: the start screen.
+        // and the default folder holds no store: the welcome screen (S0).
         let scratch = Scratch::new("hosted-remembered");
         std::fs::create_dir_all(&scratch.0).unwrap();
         let elsewhere = scratch.0.join("elsewhere").join("keystore");
@@ -2904,6 +2919,80 @@ mod tests {
         };
         preferences::save(&scratch.0.join(preferences::FILE_NAME), &prefs).unwrap();
         let (app, _) = App::hosted(&scratch.0);
+        assert!(
+            matches!(app.model.screen, Screen::Welcome),
+            "{:?}",
+            app.model.screen
+        );
+    }
+
+    /// The snapshot file of a store, which `tawara_wallet_core::store_exists`
+    /// looks for, as the library's `keystore::occupied` does. The interface
+    /// only checks that the file is there, so a file of this name, empty, is
+    /// enough for these tests: nothing here opens it.
+    const STORE_SNAPSHOT: &str = "accounts.mks";
+
+    #[test]
+    fn a_hosted_phone_with_no_store_starts_on_the_welcome_screen() {
+        // The phone's own folder holds no store: S0 is the first screen, and
+        // its "Get started" leads on to S1 (docs/DECISIONS.md D37).
+        let scratch = Scratch::new("hosted-welcome");
+        let (mut app, _) = App::hosted(&scratch.0);
+        assert!(
+            matches!(app.model.screen, Screen::Welcome),
+            "{:?}",
+            app.model.screen
+        );
+        assert!(!app.model.phone_holds_store());
+        let _ = app.update(Message::Go(Go::Start));
+        assert!(
+            matches!(app.model.screen, Screen::Start { .. }),
+            "{:?}",
+            app.model.screen
+        );
+    }
+
+    #[test]
+    fn a_hosted_phone_with_a_store_opens_on_unlock_and_go_start_does_nothing() {
+        // The phone's own folder holds a store: S7 is its first screen, and
+        // Go::Start leaves it there, so S1 and S3 are not reached
+        // (docs/DECISIONS.md D37).
+        let scratch = Scratch::new("hosted-store");
+        let keystore = scratch.0.join("keystore");
+        std::fs::create_dir_all(&keystore).unwrap();
+        std::fs::write(keystore.join(STORE_SNAPSHOT), b"").unwrap();
+        let folder = keystore.display().to_string();
+        let (mut app, _) = App::hosted(&scratch.0);
+        assert!(app.model.phone_holds_store());
+        assert!(
+            matches!(&app.model.screen, Screen::Unlock(u) if u.dir == folder),
+            "{:?}",
+            app.model.screen
+        );
+        let _ = app.update(Message::Go(Go::Start));
+        assert!(
+            matches!(&app.model.screen, Screen::Unlock(u) if u.dir == folder),
+            "{:?}",
+            app.model.screen
+        );
+    }
+
+    #[test]
+    fn on_the_desktop_go_start_offers_the_start_screen_whatever_store_there_is() {
+        // The desktop is not confined, so no store changes what Go::Start
+        // offers (docs/DECISIONS.md D37).
+        let scratch = Scratch::new("desktop-store");
+        let keystore = scratch.0.join("keystore");
+        std::fs::create_dir_all(&keystore).unwrap();
+        std::fs::write(keystore.join(STORE_SNAPSHOT), b"").unwrap();
+        let mut app = alone();
+        app.model.default_dir = Some(keystore.clone());
+        app.model.screen = Screen::Unlock(UnlockForm {
+            dir: keystore.display().to_string(),
+            ..UnlockForm::default()
+        });
+        assert!(!app.model.phone_holds_store());
+        let _ = app.update(Message::Go(Go::Start));
         assert!(
             matches!(app.model.screen, Screen::Start { .. }),
             "{:?}",

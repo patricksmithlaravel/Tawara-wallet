@@ -1,7 +1,9 @@
-//! First run and unlocking (docs/SCREENS.md S1 to S8): the layout of
+//! First run and unlocking (docs/SCREENS.md S0 to S8): the layout of
 //! rendering 01, the brand panel on the left and the form on the right. On a
 //! phone the brand panel is not drawn: the form is one page under the wordmark
-//! (docs/DECISIONS.md D32 item 10 (b)).
+//! (docs/DECISIONS.md D32 item 10 (b)). The one exception is the welcome
+//! screen, S0, which a phone without a store shows as the brand panel whole,
+//! before S1 (docs/DECISIONS.md D37).
 
 use iced::widget::text::{LineHeight, Wrapping};
 use iced::widget::{checkbox, column, container, row, scrollable, space, text_input};
@@ -22,6 +24,8 @@ use crate::ui::{self, Size, Type, t, ty};
 pub fn view(model: &Model) -> Element<'_, Message> {
     let form: Element<'_, Message> = match (&model.busy, &model.screen) {
         (Some(busy), _) => opening(busy),
+        // S0 is the brand panel whole, on a phone alone (docs/DECISIONS.md D37).
+        (None, Screen::Welcome) => return welcome(),
         (None, Screen::Start { choice }) => start(model, *choice),
         (None, Screen::Node(f)) => node(model, f),
         (None, Screen::NewWallet(f)) => new_wallet(model, f),
@@ -113,9 +117,27 @@ fn phone_block<'a>(
 /// application's own wordmark, the headline and the feature pills. No coin
 /// mark and no pattern (docs/DECISIONS.md D27, item 2).
 fn brand<'a>() -> Element<'a, Message> {
+    container(
+        column![
+            brand_wordmark(ty::WORDMARK_LARGE),
+            space().height(Length::Fill),
+            column![brand_headline(ty::HERO, ty::HERO_ITALIC), brand_pills()].spacing(sp::S24),
+        ]
+        .height(Length::Fill),
+    )
+    .padding(Padding::from([sp::S48, sp::S56]))
+    .width(Length::FillPortion(1))
+    .height(Length::Fill)
+    .style(theme::brand_panel)
+    .into()
+}
+
+/// The application's wordmark over "A wallet for Mochimo", on the brand
+/// field, the name at `name`'s size.
+fn brand_wordmark<'a>(name: Type) -> Element<'a, Message> {
     let ink = color::TEXT_ON_ACCENT;
-    let wordmark = column![
-        t("TAWARA", ty::WORDMARK_LARGE, ink),
+    column![
+        t("TAWARA", name, ink),
         t(
             "A wallet for Mochimo",
             Type {
@@ -125,32 +147,85 @@ fn brand<'a>() -> Element<'a, Message> {
             ink
         ),
     ]
-    .spacing(sp::S2);
-    let headline = column![
-        t("YOUR CRYPTO JOURNEY", ty::HERO, ink)
+    .spacing(sp::S2)
+    .into()
+}
+
+/// The headline on the brand field: its first line in `upright`, its second
+/// in `italic`. Rendering 01 sets both at 52 points; a phone sets them
+/// smaller (`PHONE_HERO`).
+fn brand_headline<'a>(upright: Type, italic: Type) -> Element<'a, Message> {
+    let ink = color::TEXT_ON_ACCENT;
+    column![
+        t("YOUR CRYPTO JOURNEY", upright, ink)
             .line_height(LineHeight::Relative(1.05))
             .width(Length::Fill),
-        t("STARTS WITH US.", ty::HERO_ITALIC, ink).line_height(LineHeight::Relative(1.05)),
-    ];
+        t("STARTS WITH US.", italic, ink).line_height(LineHeight::Relative(1.05)),
+    ]
+    .into()
+}
+
+/// The three feature pills on the brand field, which wrap onto a line of
+/// their own when the width runs out.
+fn brand_pills<'a>() -> Element<'a, Message> {
     let pill = |label| ui::pill(label, ty::PILL, color::BG_APP, color::TEXT_PRIMARY, 36.0);
-    let pills = row![
+    row![
         pill("WOTS+ post-quantum signatures"),
         pill("Perpetual account tags"),
         pill("256 destinations per send"),
     ]
     .spacing(sp::S10)
     .wrap()
-    .vertical_spacing(sp::S10);
+    .vertical_spacing(sp::S10)
+    .into()
+}
+
+/// S0's headline on a phone. At rendering 01's 52 points the second line wraps
+/// at 360 wide, and the screen no longer fits 640 pixels of height with the
+/// wordmark, the pills and the button. At 34 points the second line stays on
+/// one line, and the screen fits (docs/DECISIONS.md D37).
+const PHONE_HERO: Type = Type {
+    font: fonts::DISPLAY_BOLD,
+    size: 34.0,
+};
+
+/// The italic second line of [`PHONE_HERO`].
+const PHONE_HERO_ITALIC: Type = Type {
+    font: fonts::DISPLAY_BOLD_ITALIC,
+    size: 34.0,
+};
+
+/// S0: the welcome screen on a phone alone, when the phone's own folder holds
+/// no store (docs/DECISIONS.md D37). The brand field whole: the wordmark at its
+/// top, and the headline, the pills and "Get started" at its foot, the button
+/// in thumb reach. It does not scroll, and a test of this module checks that
+/// it fits 360 by 640 with the field's 16-pixel margins. The field lies within
+/// the window's safe area, which pads every screen's root (`screens::view`).
+fn welcome<'a>() -> Element<'a, Message> {
+    let page = column![
+        brand_wordmark(ty::WORDMARK_LARGE),
+        space().height(Length::Fill),
+        column![brand_headline(PHONE_HERO, PHONE_HERO_ITALIC), brand_pills()].spacing(sp::S24),
+        // The button is the dark tonal one, not the green primary: the field
+        // is the primary's colour, so a primary button would not show on it.
+        ui::button_with(
+            "Get started",
+            theme::Button::Tonal,
+            Size::Xl,
+            None,
+            Some(Message::Go(Go::Start)),
+        ),
+    ]
+    .spacing(sp::S40);
+    // The field is the window's whole width and height; its margins are the
+    // padding of the page inside it.
     container(
-        column![
-            wordmark,
-            space().height(Length::Fill),
-            column![headline, pills].spacing(sp::S24),
-        ]
-        .height(Length::Fill),
+        container(page)
+            .padding(Padding::from([sp::S24, sp::S16]))
+            .width(Length::Fill)
+            .height(Length::Fill),
     )
-    .padding(Padding::from([sp::S48, sp::S56]))
-    .width(Length::FillPortion(1))
+    .width(Length::Fill)
     .height(Length::Fill)
     .style(theme::brand_panel)
     .into()
@@ -231,7 +306,7 @@ fn node_footer(model: &Model, back: Back) -> Element<'_, Message> {
 /// S1: create or restore (01).
 fn start(model: &Model, choice: StartChoice) -> Element<'_, Message> {
     let compact = model.compact();
-    column![
+    let mut body = column![
         heading(
             "Get started",
             format!(
@@ -269,19 +344,19 @@ fn start(model: &Model, choice: StartChoice) -> Element<'_, Message> {
             None,
             Some(Message::Continue),
         ),
-        ui::link(
-            if model.phone() {
-                "Open the wallet on this phone"
-            } else {
-                "Open a wallet already on this computer"
-            },
+    ]
+    .spacing(sp::S24);
+    // A phone has no link to a store here: the store it holds is the one S7
+    // opens, and the phone is shown this screen only when it holds none
+    // (docs/DECISIONS.md D37).
+    if !model.phone() {
+        body = body.push(ui::link(
+            "Open a wallet already on this computer",
             ty::LINK,
             Message::Go(Go::Unlock),
-        ),
-        node_footer(model, Back::Start),
-    ]
-    .spacing(sp::S24)
-    .into()
+        ));
+    }
+    body.push(node_footer(model, Back::Start)).into()
 }
 
 /// A radio card (5.11). It acts on release, not on press, so that a drag which
@@ -774,20 +849,24 @@ fn unlock<'a>(model: &'a Model, form: &'a UnlockForm) -> Element<'a, Message> {
     if let Some(e) = &form.error {
         body = body.push(ui::refusal(e));
     }
-    body.push(ui::button_with(
+    body = body.push(ui::button_with(
         "Unlock",
         theme::Button::Primary,
         Size::Xl,
         None,
         ready.then_some(Message::UnlockWallet),
-    ))
-    .push(ui::link(
-        "Create or restore a different wallet",
-        ty::LINK,
-        Message::Go(Go::Start),
-    ))
-    .push(node_footer(model, Back::Unlock))
-    .into()
+    ));
+    // On a phone there is no link to a second wallet. The phone's one store is
+    // the one S7 opens, and a new wallet in its folder would be refused only
+    // after its password had been typed (docs/DECISIONS.md D37).
+    if !model.phone() {
+        body = body.push(ui::link(
+            "Create or restore a different wallet",
+            ty::LINK,
+            Message::Go(Go::Start),
+        ));
+    }
+    body.push(node_footer(model, Back::Unlock)).into()
 }
 
 /// S8: the command a store is being made or opened by, waiting its turn or
@@ -846,7 +925,7 @@ mod tests {
         model
     }
 
-    /// Every first-run screen, S1 to S8, drawn on a phone, each with a name to
+    /// Every first-run screen, S0 to S8, drawn on a phone, each with a name to
     /// report it by. S1 is also drawn with the restore card chosen, S7 with a
     /// note and with a refusal, and S8 at each of its three stages.
     fn phone_screens() -> Vec<(&'static str, Model)> {
@@ -889,6 +968,7 @@ mod tests {
             }),
         ));
         vec![
+            ("S0", phone_model(Screen::Welcome)),
             (
                 "S1",
                 phone_model(Screen::Start {
@@ -1062,6 +1142,149 @@ mod tests {
                 "{name}: the page spans the window"
             );
         }
+    }
+
+    /// Whether a window of `size` draws a text that reads `text`.
+    fn shows(model: &Model, size: (f32, f32), text: &str) -> bool {
+        texts(view(model), size)
+            .iter()
+            .any(|(drawn, _)| drawn == text)
+    }
+
+    #[test]
+    fn the_welcome_screen_fits_a_phone_of_360_by_640_without_scrolling() {
+        // S0 is the brand field whole, and it has no page to scroll
+        // (docs/DECISIONS.md D37). Nothing it lays out reaches past the window
+        // at 360 by 640, with no safe area. iced fits each child into the room
+        // its parent gives it, so an overflow shows as a squeezed child rather
+        // than a child past the edge: the button's own size and place are the
+        // check. Its 56 pixels and its 328 are kept, and its foot is the page's
+        // bottom margin, which holds only if everything above it fits, since
+        // the room between the wordmark and the headline takes what is left.
+        let model = named("S0");
+        let bounds = drawn_bounds(view(&model), NARROWEST, 640.0);
+        let past: Vec<Rectangle> = bounds
+            .iter()
+            .copied()
+            .filter(|r| {
+                r.x < -0.5
+                    || r.y < -0.5
+                    || r.x + r.width > NARROWEST + 0.5
+                    || r.y + r.height > 640.0 + 0.5
+            })
+            .collect();
+        assert!(past.is_empty(), "nodes past 360 by 640: {past:?}");
+        let button = bounds
+            .iter()
+            .copied()
+            .find(|r| (r.width - (NARROWEST - 32.0)).abs() < 0.5 && (r.height - 56.0).abs() < 0.5)
+            .expect("the button, at its full size");
+        assert!(
+            (button.y + button.height - (640.0 - 24.0)).abs() < 0.5,
+            "the button does not stand at the foot: {button:?}"
+        );
+        let (_, label) = texts(view(&model), (NARROWEST, 640.0))
+            .into_iter()
+            .find(|(text, _)| text == "Get started")
+            .expect("the button's label");
+        assert!(
+            label.center_y() > button.y && label.center_y() < button.y + button.height,
+            "the label is not in the button: {label:?} in {button:?}"
+        );
+    }
+
+    #[test]
+    fn the_welcome_headline_sets_its_second_line_on_one_line_at_360() {
+        // Its height is one line's, not two (docs/DECISIONS.md D37): a second
+        // line would double it. The line is "STARTS WITH US.", the widest of
+        // the headline, at the phone's 360 with its 16-pixel margins.
+        let model = named("S0");
+        let (_, line) = texts(view(&model), (NARROWEST, 640.0))
+            .into_iter()
+            .find(|(text, _)| text == "STARTS WITH US.")
+            .expect("the headline's second line");
+        assert!(
+            line.height < PHONE_HERO.size * 1.5,
+            "two lines, not one: {line:?}"
+        );
+    }
+
+    #[test]
+    fn the_welcome_screen_draws_the_brand_field_and_get_started_leads_to_s1() {
+        // The parts of rendering 01's brand panel, and the one button. The
+        // button's tap is the start (S1), as the desktop's Continue is not
+        // (docs/DECISIONS.md D37).
+        let model = named("S0");
+        let size = (NARROWEST, 640.0);
+        for part in [
+            "TAWARA",
+            "A wallet for Mochimo",
+            "YOUR CRYPTO JOURNEY",
+            "STARTS WITH US.",
+            "WOTS+ post-quantum signatures",
+            "Perpetual account tags",
+            "256 destinations per send",
+            "Get started",
+        ] {
+            assert!(shows(&model, size, part), "{part} is drawn");
+        }
+        assert!(!shows(&model, size, "Continue"), "S0 has no Continue");
+        let (_, at) = texts(view(&model), size)
+            .into_iter()
+            .find(|(text, _)| text == "Get started")
+            .expect("the button's label");
+        let mut driver = Driver::new(view(&model), (360, 640));
+        let (messages, _, _) = driver.send(&[
+            mouse_move(at.center_x(), at.center_y()),
+            mouse_press(),
+            mouse_release(),
+        ]);
+        assert!(
+            matches!(messages.as_slice(), [Message::Go(Go::Start)]),
+            "{messages:?}"
+        );
+    }
+
+    #[test]
+    fn s1_on_a_phone_offers_no_link_to_a_store_and_the_desktop_keeps_its_link() {
+        // A phone has no store to open from S1: the one it holds is S7's, and
+        // S1 is shown only when it holds none (docs/DECISIONS.md D37). The
+        // desktop keeps its link.
+        let phone = named("S1");
+        let size = (NARROWEST, 844.0);
+        assert!(!shows(&phone, size, "Open the wallet on this phone"));
+        assert!(!shows(
+            &phone,
+            size,
+            "Open a wallet already on this computer"
+        ));
+        let mut desktop = Model::new(Preferences::default(), None);
+        desktop.screen = Screen::Start {
+            choice: StartChoice::Create,
+        };
+        assert!(shows(
+            &desktop,
+            (1440.0, 900.0),
+            "Open a wallet already on this computer"
+        ));
+    }
+
+    #[test]
+    fn s7_on_a_phone_offers_no_link_to_a_second_wallet_and_the_desktop_keeps_its_link() {
+        // The phone's one store is the one S7 opens, and a second wallet in its
+        // folder would be refused only after its password was typed
+        // (docs/DECISIONS.md D37). The desktop keeps the link.
+        let phone = named("S7");
+        let size = (NARROWEST, 844.0);
+        assert!(!shows(&phone, size, "Create or restore a different wallet"));
+        assert!(shows(&phone, size, "Unlock"), "the unlock button is drawn");
+        let mut desktop = Model::new(Preferences::default(), None);
+        desktop.screen = Screen::Unlock(UnlockForm::default());
+        assert!(shows(
+            &desktop,
+            (1440.0, 900.0),
+            "Create or restore a different wallet"
+        ));
     }
 
     #[test]

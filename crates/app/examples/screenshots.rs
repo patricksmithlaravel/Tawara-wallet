@@ -17,9 +17,11 @@
 //! pages again scrolled to their end (`phone-<name>-end.png`), and two with
 //! the keyboard up (`phone-<name>-keyboard.png`), the field typed into
 //! focused and the page scrolled to it as the keyboard's coming up scrolls
-//! it: 63 in all. Every piece of
-//! text names a bundled face (`tawara_app::fonts`), so the pixels do not
-//! depend on the fonts a machine has installed.
+//! it. The phone's welcome screen, S0, has no desktop image: it is drawn only
+//! as `phone-s0-welcome.png` (docs/DECISIONS.md D37), so the phone's images
+//! are 64 in all. Every piece of text names a bundled face
+//! (`tawara_app::fonts`), so the pixels do not depend on the fonts a machine
+//! has installed.
 //!
 //! Flags:
 //!
@@ -812,8 +814,9 @@ fn sample_named(name: &str) -> Model {
 }
 
 /// The phone images at `width` logical pixels across: every desktop sample
-/// but the narrow ones, the long pages scrolled to their end, and two drawn
-/// with the keyboard up (docs/DECISIONS.md D32 item 10 (c)).
+/// but the narrow ones, the phone's welcome screen, which the desktop does not
+/// have, the long pages scrolled to their end, and two drawn with the keyboard
+/// up (docs/DECISIONS.md D32 item 10 (c), D37).
 fn phones(width: u32) -> Vec<Image> {
     let size = (width, PHONE.1);
     let mut out: Vec<Image> = samples()
@@ -827,6 +830,15 @@ fn phones(width: u32) -> Vec<Image> {
             focus: None,
         })
         .collect();
+    // S0 is a phone's screen alone (docs/DECISIONS.md D37), so it has no
+    // desktop image. The sample's phone holds no store, so S0 is its first screen.
+    out.push(Image {
+        name: "phone-s0-welcome".to_owned(),
+        size,
+        model: phone(with(Screen::Welcome), 0.0),
+        to_end: false,
+        focus: None,
+    });
     for name in PHONE_ENDS {
         out.push(Image {
             name: format!("phone-{name}-end"),
