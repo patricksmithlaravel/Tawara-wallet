@@ -1936,8 +1936,9 @@ on the three conditions D18 left open.
    installing it, or by changing the navigation mode while it runs; a
    colour or wallpaper change probably does the same, which is inferred and
    not tested. That this race is behind the failures of CI's x86_64 API 35
-   job is not shown, and the platform's data marks the change as new at API
-   36; the pull request's logging is to show which. `resourcesUnused`,
+   job is now shown by #12's CI, whose first commit alone fails there with
+   the relaunch line (owner, 2026-10-13; item 10 (k)). The platform's data
+   marks the change as new at API 36. `resourcesUnused`,
    `TARGET_API=36` and the API 36 emulator image stay in PR B, which would
    then add `resourcesUnused` to the 19, for the 20 names and `0xd800ffff`
    above. `resourcesUnused` was not tested. Item 10 (k) gives the order.*
@@ -2369,14 +2370,16 @@ on the three conditions D18 left open.
    at once. It names the 20 configChanges, `0xd800ffff`.
 
    *Amended (owner, 2026-10-13): the start-up fix of item 9 (i)'s amendment
-   takes `assetsPaths` out of PR B. The owner's answer placed it in one
-   pull request after Tawara-mobile #4, since both edit
-   `platform/android/tawara.sh`. PR B still comes after #4 (#5 has merged),
-   and still names the 20 configChanges, `0xd800ffff`, by adding
-   `resourcesUnused` to the 19. **Open:** whether the start-up fix may
-   instead merge before #4, with #4 then taking `main` in before it merges,
-   so that main's Android job carries the fix while #4 is still in review.
-   Until the owner says so, the answer stands: after #4.*
+   takes `assetsPaths` out of PR B, into Tawara-mobile PR #12. The order is
+   now (owner, 2026-10-13): #12 merges first, and then Tawara-mobile #4 (the
+   exit check) merges `main`. That replaces the owner's earlier answer of the
+   same day, which put the fix after #4, and the open question about the
+   order. The reason is that #4 hits the same start-up quit, so its Android
+   CI cannot pass until the fix is on `main`. #12's CI has also shown the bug
+   on CI's own API 35 image: its first commit alone fails with the relaunch
+   line `wm_relaunch_resume_activity ...,80000000`, and its second commit
+   passes. PR B still comes after #4 (#5 has merged), and still names the 20
+   configChanges, `0xd800ffff`, by adding `resourcesUnused` to the 19.*
 
    **(l) CI watched on the open wallet pull request (decided under the owner's
    delegation, 2026-10-12).** Automatic fixing of CI failures is on for the
@@ -2796,12 +2799,18 @@ recommended.**
    Receive prints it, with no URI prefix, since none is established for
    Mochimo and the parser would need changing. Never the hex fallback,
    which has no checksum, and never the ledger address.
-3. **How it is drawn (recommended).** Error correction level Q, byte
-   mode, version 3; black modules on a white card with a quiet zone of four
-   modules, since the widget's palette colours come out inverted on
-   Tawara's dark theme; about 296 pixels wide on a phone. On desktop and
-   phone. Receive has no design rendering (01 to 05), so the owner approves
-   its layout by the redrawn `w2-receive.png` and `phone-w2-receive.png`.
+3. **How it is drawn (recommended).** Error correction level Q, version 3.
+   The encoder chooses the mode, byte or alphanumeric, depending on the
+   destination's characters. Black modules on a white card with a quiet
+   zone of four modules, since the widget's palette colours come out
+   inverted on Tawara's dark theme. Each module is 7 logical pixels, so the
+   code is 259 pixels square on a phone at 360 wide, and the same on
+   desktop; 8 would make it 296 pixels wide, more than the 294 a phone's
+   card holds inside its border and padding. The size is listed for the
+   owner's approval through the phone image `phone-w2-receive-end.png`, the
+   one that shows the whole code. Receive has no design rendering (01 to
+   05), so the owner approves its layout by the redrawn `w2-receive.png`,
+   `phone-w2-receive.png` and `phone-w2-receive-end.png`.
 
 OS libraries: none added.
 
