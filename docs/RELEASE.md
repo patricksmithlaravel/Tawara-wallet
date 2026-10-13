@@ -535,9 +535,14 @@ In Tawara-mobile, after the owner items of section 1.2 and Xcode 26.6
   `NSFileProtectionComplete`): `codesign --force --timestamp --sign "Apple
   Distribution: <name> (<team>)" --entitlements <file>` (owner). Read them
   back with `codesign -d --entitlements :-` and compare.
-- [ ] Zip `Payload/Tawara.app` as `Tawara-X.Y.Z+N.ipa` (`ditto -c -k
-  --keepParent`), and run `xcrun altool --validate-app` with the API key
-  (owner).
+- [ ] Put the signed app in `Payload/Tawara.app`, then zip the `Payload`
+  directory, not the app, as `Tawara-X.Y.Z+N.ipa` (D36). From the directory
+  that contains `Payload`, run `ditto -c -k --keepParent Payload
+  Tawara-X.Y.Z+N.ipa`. Zipping `Payload/Tawara.app` instead puts
+  `Tawara.app/` at the root of the archive, with no `Payload/` directory.
+- [ ] Check the archive: `unzip -l Tawara-X.Y.Z+N.ipa |
+  grep -q " Payload/Tawara.app/"` must succeed.
+- [ ] Run `xcrun altool --validate-app` with the API key (owner).
 
 ## 7. Checks on the signed packages
 
