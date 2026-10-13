@@ -3,7 +3,7 @@
 //! transactions from the node's index and the network card
 //! (docs/SCREENS.md W1, W10).
 
-use iced::widget::text::Wrapping;
+use iced::widget::text::{Shaping, Text, Wrapping};
 use iced::widget::{Id, column, container, row, space};
 use iced::{Alignment, Element, Length, Padding};
 use tawara_wallet_core::explorer::BlockKind;
@@ -120,10 +120,19 @@ fn balance<'a>(model: &'a Model, wallet: &'a WalletView) -> Element<'a, Message>
                 }),
             AmountUnit::NanoMcm => (shown.clone(), String::new()),
         };
+        // On a phone the whole figure is set as large as its card lets it stay
+        // on one line, because a figure wider than the card runs past the
+        // window and is cut off (docs/DECISIONS.md D32 item 10 (b)). The
+        // desktop's figure is set as it always was.
+        let size = if model.compact() {
+            figure_size(&whole, balance_room(model.width))
+        } else {
+            ty::BALANCE.size
+        };
         card = card
             .push(
                 row![
-                    t(whole, ty::BALANCE, color::TEXT_PRIMARY),
+                    figure_text(whole, size),
                     t(frac, ty::BALANCE_DECIMALS, color::TEXT_SECONDARY),
                     container(t(ui::unit_name(unit), ty::BALANCE_UNIT, color::ACCENT)).padding(
                         Padding {
@@ -194,6 +203,68 @@ fn balance<'a>(model: &'a Model, wallet: &'a WalletView) -> Element<'a, Message>
         .width(Length::Fill)
         .style(theme::hero_card)
         .into()
+}
+
+/// The balance's figure, `whole`, at `size`. Its glyphs are placed by their
+/// advances alone (basic shaping), which is what [`figure_size`] sums. iced
+/// shapes ASCII text that way unless told otherwise, but the advanced shaping
+/// the `advanced-shaping` feature would make the default applies the face's
+/// kerning, and Montserrat Bold sets a 4 or an 8 further from the comma after
+/// it (4,444,444,444 is nearly 1 per cent wider), which could carry a figure a
+/// few pixels past its room (docs/DECISIONS.md D32 item 10 (b)).
+fn figure_text<'a>(whole: String, size: f32) -> Text<'a> {
+    t(
+        whole,
+        ui::Type {
+            size,
+            ..ty::BALANCE
+        },
+        color::TEXT_PRIMARY,
+    )
+    .shaping(Shaping::Basic)
+}
+
+/// The width a phone's balance figure has at a window `width` logical pixels
+/// wide: the window less the page's margins of 16 and the hero card's padding
+/// of 20 on each side (docs/SCREENS.md, "Compact layout").
+fn balance_room(width: f32) -> f32 {
+    width - 2.0 * (sp::S16 + sp::S20)
+}
+
+/// The size a phone's balance figure is set at: the largest whole size, no
+/// larger than the balance's own, at which `figure` fits `room` on one line.
+/// The width is the sum of the glyphs' advances, which is the width the figure
+/// is drawn at because [`figure_text`] sets it with basic shaping, without
+/// kerning; the drawn width is measured by
+/// `the_longest_amount_in_each_unit_fits_a_phone_card_at_360_and_390`.
+fn figure_size(figure: &str, room: f32) -> f32 {
+    let em: f32 = figure.chars().map(glyph_em).sum();
+    if em <= 0.0 {
+        return ty::BALANCE.size;
+    }
+    (room / em).floor().clamp(1.0, ty::BALANCE.size)
+}
+
+/// A glyph's advance in ems in the balance's face, Montserrat Bold
+/// (`fonts::DISPLAY_BOLD`), read from `crates/app/fonts/Montserrat-Bold.ttf`.
+/// Its figures are proportional, so each digit has its own advance. Any other
+/// glyph is taken at the widest digit's, so that a figure is never sized too
+/// large for the face.
+fn glyph_em(glyph: char) -> f32 {
+    match glyph {
+        '0' => 0.679,
+        '1' => 0.392,
+        '2' => 0.590,
+        '3' => 0.592,
+        '4' => 0.689,
+        '5' => 0.595,
+        '6' => 0.637,
+        '7' => 0.620,
+        '8' => 0.660,
+        '9' => 0.637,
+        ',' => 0.262,
+        _ => 0.689,
+    }
 }
 
 /// The one-time keys (02): each account's next key, and whether it is
@@ -817,7 +888,7 @@ mod tests {
     use iced::Rectangle;
     use iced::advanced::widget::Operation;
     use iced_runtime::user_interface::{Cache, UserInterface};
-    use tawara_wallet_core::preferences::Preferences;
+    use tawara_wallet_core::preferences::{AmountUnit, Preferences};
     use tawara_wallet_core::{Activity, Progress, RequestId, sample};
 
     use super::*;
@@ -925,6 +996,49 @@ mod tests {
     }
 
     #[test]
+    fn the_phone_wallet_fits_at_360_and_390_in_nanomcm() {
+        // In nanoMCM the sample balance, 12,395,402,118,000, is wider at 56 than
+        // the card a 360 window leaves it, so its words run past the window's
+        // edge unless the figure is set smaller (docs/DECISIONS.md D32 item 10
+        // (b)).
+        for width in [NARROWEST, 390.0] {
+            let mut model = phone();
+            model.width = width;
+            model.prefs.unit = AmountUnit::NanoMcm;
+            assert_eq!(
+                fits(crate::screens::view(&model), width),
+                Ok(()),
+                "nanoMCM at {width}"
+            );
+            // The window's edge is not the card's: a figure a little wider
+            // than its card, still inside the window, passes the check above.
+            // So the figure's box is held inside the card, the page's margin
+            // of 16 and the card's padding of 20 in from each side, and is
+            // as wide as its words, which it would not be if they were
+            // squeezed into it.
+            let total = match model.wallet.as_ref().map(WalletView::total) {
+                Some(Total::Whole(sum) | Total::Partial { known: sum, .. }) => sum,
+                other => panic!("the sample shows a figure: {other:?}"),
+            };
+            let figure = ui::amount(total, AmountUnit::NanoMcm);
+            let (_, bounds) = crate::harness::texts(crate::screens::view(&model), (width, 844.0))
+                .into_iter()
+                .find(|(content, _)| *content == figure)
+                .expect("the figure is drawn");
+            let inset = sp::S16 + sp::S20;
+            let needs = natural_width(&figure, figure_size(&figure, balance_room(width)));
+            assert!(
+                bounds.x >= inset - 0.5 && bounds.x + bounds.width <= width - inset + 0.5,
+                "at {width}: the figure's box {bounds:?} passes its card"
+            );
+            assert!(
+                bounds.width + 0.5 >= needs,
+                "at {width}: the figure needs {needs}, more than its box {bounds:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_phone_keeps_refresh_as_its_only_header_action() {
         // Receive and Send are the phone's tabs, so the header keeps one
         // button; the desktop keeps all three.
@@ -1017,5 +1131,82 @@ mod tests {
             ),
             "{messages:?}"
         );
+    }
+
+    /// The width `text` takes in the figure's face at `size`, on one line.
+    /// It is drawn in a window far wider than the figure, so nothing is
+    /// squeezed and the box is the width the words need.
+    fn natural_width(text: &str, size: f32) -> f32 {
+        let figure: Element<'_, ()> = figure_text(text.to_owned(), size).into();
+        crate::harness::texts(figure, (4000.0, 200.0))
+            .into_iter()
+            .find(|(content, _)| content == text)
+            .map(|(_, bounds)| bounds.width)
+            .expect("the figure is drawn")
+    }
+
+    #[test]
+    fn the_longest_amount_in_each_unit_fits_a_phone_card_at_360_and_390() {
+        // The card shows the store's total, a sum of u64 balances held as a
+        // u128 (`Total`): the largest one account holds, u64::MAX, the sum of
+        // two such accounts, and u128::MAX, the largest the total can be, in
+        // each unit. In MCM the figure is the whole part before the point,
+        // which is the widest.
+        let totals = [u128::from(u64::MAX), 2 * u128::from(u64::MAX), u128::MAX];
+        for width in [NARROWEST, 390.0] {
+            let room = balance_room(width);
+            for (unit, total) in [AmountUnit::NanoMcm, AmountUnit::Mcm]
+                .into_iter()
+                .flat_map(|unit| totals.map(|total| (unit, total)))
+            {
+                let shown = ui::amount(total, unit);
+                let whole = match unit {
+                    AmountUnit::Mcm => shown
+                        .split_once('.')
+                        .map_or(shown.as_str(), |(whole, _)| whole)
+                        .to_owned(),
+                    AmountUnit::NanoMcm => shown,
+                };
+                let size = figure_size(&whole, room);
+                assert!(
+                    (1.0..=ty::BALANCE.size).contains(&size),
+                    "{unit:?} {total} at {width}: {size}"
+                );
+                let needs = natural_width(&whole, size);
+                assert!(
+                    needs <= room + 0.5,
+                    "{unit:?} at {width}: {whole} needs {needs} in {room}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_mcm_figure_keeps_the_balances_own_size_on_a_phone() {
+        // 12,395 MCM fits its card at 56, so the MCM images are unchanged. So
+        // does any whole part of up to six digits, of which 444,444 is the
+        // widest; from seven digits a figure can be set smaller, as 4,444,444
+        // is at 360 (docs/SCREENS.md, "Compact layout").
+        for width in [NARROWEST, 390.0] {
+            for whole in ["12,395", "444,444", "999,999"] {
+                assert_eq!(
+                    figure_size(whole, balance_room(width)),
+                    ty::BALANCE.size,
+                    "{whole} at {width}"
+                );
+            }
+        }
+        assert_eq!(figure_size("4,444,444", balance_room(NARROWEST)), 53.0);
+    }
+
+    #[test]
+    fn the_nanomcm_sample_is_set_smaller_so_that_it_stays_on_one_line() {
+        // 12,395,402,118,000 is 520 pixels at 56, and the card has 288 at 360
+        // and 318 at 390.
+        let sample = "12,395,402,118,000";
+        assert_eq!(figure_size(sample, balance_room(NARROWEST)), 30.0);
+        assert_eq!(figure_size(sample, balance_room(390.0)), 34.0);
+        assert!(natural_width(sample, 30.0) <= balance_room(NARROWEST));
+        assert!(natural_width(sample, 34.0) <= balance_room(390.0));
     }
 }

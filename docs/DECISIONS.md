@@ -1959,6 +1959,17 @@ on the three conditions D18 left open.
    range. The owner's narrowest width, 360, is a phone held upright; a
    layout for phones held sideways is left for a later change.
 
+   *Amended 2026-10-12, after the owner's review of the paste change: the
+   screenshot check also reports a text whose words run past the window's edge,
+   measured by the width its paragraph needs. iced can squeeze a text into a box
+   narrower than its words, so the words can pass the edge while the box stays
+   inside it (`tawara_app::overflow`). Words that end inside the window are not
+   reported, even when they are wider than their box. The balance on a phone is
+   set to the size its card allows (`dashboard.rs`), so that a nanoMCM amount
+   stays on one line. The check is of the window's edge only, so a text wider
+   than its card but inside the window passes it; the balance's figure is
+   also held inside its card by a test of its own.*
+
    **(c) Phone screenshots (decided under the owner's delegation,
    2026-10-12).** Every screen drawn for the desktop, except the `narrow-*`
    images of the desktop's smallest window, is also drawn at 390 × 844 logical
@@ -2099,30 +2110,50 @@ on the three conditions D18 left open.
    that starts on a row, Paste, and the keyboard shown again are still to
    be checked by hand.
 
-   **(g) Paste buttons (decided under the owner's delegation, 2026-10-12).**
-   In the compact layout a Paste button stands beside each destination field
-   (W4, W8), the signed-bytes field (W9) and the recovery-phrase field (S6).
-   It reads the platform's clipboard with `iced::clipboard::read`, only on that
-   tap, and what it read replaces what the field held: for a destination or
-   the signed bytes, with the control characters left out, as iced's own
-   paste leaves them out; for the phrase, cleaned as (h) says. An empty or
-   refused read, or one of whitespace alone, changes nothing, and nothing is
-   submitted. The desktop keeps keyboard paste and shows no button
-   (`tawara_app::paste`). Reasons: on a phone iced's fields have no edit
-   menu and paste is reachable only from a hardware keyboard (item 9 (g)),
-   while a destination or a saved transaction is pasted far more often than
-   typed.
+   **(g) Paste buttons (decided under the owner's delegation, 2026-10-12).** In
+   the compact layout a Paste button stands beside each destination field (W4,
+   W8), the signed-bytes field (W9) and the recovery-phrase field (S6). It reads
+   the platform's clipboard with `iced::clipboard::read`, only on that tap, and
+   what it read replaces what the field held: a destination trimmed of the line
+   break and spaces a copy brings at its ends; the signed bytes with every
+   whitespace character removed, so that hex copied in groups or across lines
+   reads as the one run it is; the phrase cleaned as (h) says. The read comes
+   back as a message for the field it was asked for (`Message::Pasted`), so that
+   field's own rules apply to it: a phrase's read carries the generation its
+   field was drawn at, and one that returns after the application has left the
+   foreground is refused and wiped (item 6). A destination's read carries the
+   form it was asked for (W4 from which account, or W8 for which) and how many
+   rows that form had, and is dropped if another form is shown when it comes
+   back, a row was added or removed meanwhile, or the page is waiting on the
+   worker; the signed bytes' read is dropped unless W9 is shown and not waiting.
+   A read can come back late, for instance while iOS asks whether to allow the
+   paste. The read's `Debug` prints nothing of its text. An empty or refused
+   read, or one of whitespace alone, changes nothing, and nothing is submitted.
+   The desktop keeps keyboard paste and shows no button (`tawara_app::paste`).
+   Reasons: on a phone iced's fields have no edit menu and paste is reachable
+   only from a hardware keyboard (item 9 (g)), while a destination or a saved
+   transaction is pasted far more often than typed.
+
+   *Changed (decided under the owner's delegation, 2026-10-12):* as first
+   decided, a destination and the signed bytes kept iced's own paste, with the
+   control characters left out. That joins hex copied across lines, but keeps
+   the spaces of hex copied in groups, which are not hex, and the spaces around
+   a destination. A destination has no whitespace of its own, and the signed
+   bytes are hex, so each is cleaned for what it is.
 
    **(h) Pasted recovery phrases (decided under the owner's delegation,
    2026-10-12).** In the restore field, line breaks, tabs and runs of spaces
    become single spaces and the text is trimmed, before validation, for the
    Paste button and keyboard paste alike. iced's `text_input` drops every
-   control character before any hook sees the paste (item 9 (g)), so the
-   restore field alone is wrapped: the wrapper hands the field a clipboard
-   whose read returns the cleaned text, and iced inserts that at the caret as
-   it would anything pasted. The whole phrase is cleaned the same way before
-   it is sent. Typed text is not changed. Reason: a phrase is usually copied
-   from a list, one word per line, and iced would join the words into one.
+   control character before any hook sees the paste (item 9 (g)), so the restore
+   field alone is wrapped: the wrapper hands the field a clipboard whose read
+   returns the cleaned text, and iced inserts that at the caret as it would
+   anything pasted. A keyboard paste keeps one space for a run at either end
+   rather than trimming it, because it may land between words already typed, and
+   the space it brings is what keeps them apart; the Paste button replaces the
+   field and trims. The whole phrase is cleaned and trimmed before it is sent.
+   Typed text is not changed. Reason: a phrase is usually copied from a list,
+   one word per line, and iced would join the words into one.
 
    **(i) Saving a signed transaction on a phone (decided under the owner's
    delegation, 2026-10-12).** `tawara-app` asks its `Host` to share the signed
@@ -2133,11 +2164,14 @@ on the three conditions D18 left open.
    desktop's file, as text: the hex and a line break. iOS uses
    `UIActivityViewController`; Android uses `ACTION_SEND` (`text/plain`)
    through `Intent.createChooser`, with the file's name as the subject. The
-   page then says the sheet was opened and that Tawara cannot tell what was
-   done with it, so the spend still counts as not saved and its banner stays
-   until it settles. `Host::share` is a field every shell must fill, so a
-   shell moved to a `tawara-app` that has it opens the sheet. Reasons: the
-   share sheet is how a phone hands text to
+   page then says, as a note and not as a refusal, that the sheet was opened
+   and that Tawara cannot tell whether the bytes were saved there, so the
+   spend still counts as not saved and its banner stays until it settles.
+   `Host::share` returns `Ok` when the sheet was shown and `Err` with the
+   reason when it was not; a sheet that could not be shown is a refusal, as
+   a file that could not be written is on the desktop. `Host::share` is a
+   field every shell must fill, so a shell moved to a `tawara-app` that has
+   it opens the sheet. Reasons: the share sheet is how a phone hands text to
    Files, a note or a message; a file on Android would need a `FileProvider`,
    which is Java (D4), or MediaStore's Downloads, which starts at API 29 while
    Tawara's minimum is 26.

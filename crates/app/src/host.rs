@@ -22,15 +22,15 @@ pub struct Host {
     pub private_dir: PathBuf,
     /// Puts text on the platform's clipboard.
     pub copy: fn(&str),
-    /// Opens the system's share sheet with a signed spend's bytes: the file's
-    /// name, then the text the desktop's file holds (docs/DECISIONS.md D32
-    /// item 10 (i)). A phone has no Downloads folder for Save artifact to
-    /// write to, and the sheet is how it hands text to Files, a note or a
-    /// message. iOS presents `UIActivityViewController`; Android sends
-    /// `ACTION_SEND` as `text/plain` through `Intent.createChooser`, with the
-    /// name as the subject. The application cannot learn what was done with
-    /// the sheet.
-    pub share: fn(&str, &str),
+    /// Offers `text` to the system's share sheet, with `name` as the file's
+    /// name or the subject (docs/DECISIONS.md D32 item 10 (i)). A phone has
+    /// no Downloads folder for Save artifact to write to, and the sheet is
+    /// how it hands text to Files, a note or a message. iOS presents
+    /// `UIActivityViewController`; Android sends `ACTION_SEND` as `text/plain`
+    /// through `Intent.createChooser`. `Ok` says only that the sheet was
+    /// shown: the application cannot learn what was done with it. `Err` says
+    /// why it was not shown.
+    pub share: fn(name: &str, text: &str) -> Result<(), String>,
     /// Android's Back: the application goes to the background, as Android
     /// 12 and later do themselves for a launcher's first activity. It is
     /// never finished. When Android destroys the Activity anyway, the
@@ -42,10 +42,13 @@ pub struct Host {
     pub back: fn(),
 }
 
+/// What a shell's share sheet is: [`Host::share`].
+type Sheet = fn(&str, &str) -> Result<(), String>;
+
 /// The shell's clipboard, share sheet and Back, once a hosted application
 /// has started.
 static COPY: OnceLock<fn(&str)> = OnceLock::new();
-static SHARE: OnceLock<fn(&str, &str)> = OnceLock::new();
+static SHARE: OnceLock<Sheet> = OnceLock::new();
 static BACK: OnceLock<fn()> = OnceLock::new();
 
 /// What [`left_foreground`] does: the running worker's lock.
@@ -163,10 +166,11 @@ pub(crate) fn back() {
     }
 }
 
-/// The shell's share sheet, where a shell has one: the desktop has none, and
-/// saves to its Downloads folder.
-pub(crate) fn sharer() -> Option<fn(&str, &str)> {
-    SHARE.get().copied()
+/// The shell's share sheet, where a shell has one: `None` with no shell, as
+/// on the desktop, which saves its file to the Downloads folder instead
+/// (docs/DECISIONS.md D32 item 10 (i)).
+pub(crate) fn share(name: &str, text: &str) -> Option<Result<(), String>> {
+    SHARE.get().map(|sheet| sheet(name, text))
 }
 
 /// Puts `text` on the shell's clipboard. `false` when there is no shell's,

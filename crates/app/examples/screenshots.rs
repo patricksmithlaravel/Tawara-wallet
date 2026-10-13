@@ -37,11 +37,15 @@
 //! - `--except PREFIX`, repeatable: leaves out the samples whose name starts
 //!   with a prefix, for example `--except phone-` for the desktop alone.
 //! - `--phone-width N`: draws the phone's images N logical pixels wide rather
-//!   than 390, for looking at a width. It is refused with `--check`.
-//! - `--fit`: lays every selected phone sample out at 360 by 844 and prints
-//!   `OVERFLOW name: left..right` for each node whose right edge passes 360
-//!   (ten a sample at most). It exits non-zero if there is any, and writes
-//!   nothing.
+//!   than 390, for looking at a width, and with `--fit` lays them out at N
+//!   rather than 360. It is refused with `--check`.
+//! - `--fit`: lays every selected phone sample out 844 tall, at the width
+//!   `--phone-width` gives or else at 360, and prints `OVERFLOW name:
+//!   left..right` for each node whose right edge passes that width, and for
+//!   each text whose words do, with its content (ten a sample at most). The
+//!   phone's wallet page is also laid out in nanoMCM. It exits non-zero if
+//!   there is any, and writes nothing. `--fit --phone-width 390` holds the
+//!   phone set to the width it is drawn at.
 //! - The environment variable `TAWARA_SCREENSHOTS_PRINT`: with `--check`,
 //!   prints each image that DIFFERS or is MISSING as base64, between
 //!   `----- BEGIN <name>.png -----` and `----- END <name>.png -----`, so that
@@ -54,25 +58,24 @@ use std::time::Duration;
 use iced::advanced::renderer::{self, Headless};
 use iced::advanced::widget::operation::scrollable::{self, RelativeOffset};
 use iced::advanced::widget::operation::{Outcome, focusable};
-use iced::advanced::widget::{Id, Operation, Tree};
-use iced::advanced::{clipboard, graphics, layout};
+use iced::advanced::widget::{Id, Operation};
+use iced::advanced::{clipboard, graphics};
 use iced::mouse::Cursor;
 use iced::theme::Base;
-use iced::{Event, Point, Size, window};
+use iced::{Event, Size, window};
 use iced_runtime::user_interface::{Cache, UserInterface};
-use tawara_app::app::NARROWEST;
 use tawara_app::app::{
     AccountPage, ActivityPage, AddAccountPage, Back, BlockPage, Busy, DestinationRow, Explored,
     ExplorerPage, Level, Missed, Model, NodeForm, NodeState, Page, PasswordForm, PhraseState,
-    QueuePage, ReceivePage, RecoveryPage, ReportKey, ResignPage, RestoreForm, Screen, SendPage,
-    SendStage, SentPage, SettingsPage, Signed, SpendForm, StartChoice, SubmitPage, TagPage,
-    TransactionPage, UnlockForm, WalletPage,
+    QueuePage, ReceivePage, RecoveryPage, ReportKey, ResignPage, RestoreForm, SHARED, Screen,
+    SendPage, SendStage, SentPage, SettingsPage, Signed, SpendForm, StartChoice, SubmitPage,
+    TagPage, TransactionPage, UnlockForm, WalletPage,
 };
 use tawara_app::history::Filter;
-use tawara_app::{fonts, screens, theme};
+use tawara_app::{fonts, overflow, screens, theme};
 use tawara_wallet_core::explorer::{BlockAt, IndexState, LedgerRead, Party, TagView};
 use tawara_wallet_core::location::SyncWarning;
-use tawara_wallet_core::preferences::Preferences;
+use tawara_wallet_core::preferences::{AmountUnit, Preferences};
 use tawara_wallet_core::sample;
 use tawara_wallet_core::view::AccountState;
 use tawara_wallet_core::{
@@ -248,7 +251,6 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
             saved: Some(Ok(PathBuf::from(
                 "/home/you/Downloads/tawara-spend-5e5e5e5e5e5e5e5e.hex",
             ))),
-            shared: false,
         })),
     })));
     sent.wallet = Some(sample::sent_view().view);
@@ -258,7 +260,6 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
             sent: sample::sent_view(),
             resigned: false,
             saved: None,
-            shared: false,
         },
         form: typed.clone(),
         open: Default::default(),
@@ -769,8 +770,7 @@ fn phone(mut model: Model, keyboard: f32) -> Model {
                 }),
             ..
         }) if sent.saved.is_some() => {
-            sent.saved = None;
-            sent.shared = true;
+            sent.saved = Some(Err(SHARED.to_owned()));
         }
         _ => {}
     }
@@ -851,6 +851,23 @@ fn phones(width: u32) -> Vec<Image> {
         });
     }
     out
+}
+
+/// The phone's wallet page in nanoMCM, the unit a person can choose in place
+/// of MCM, in a window `width` logical pixels wide. It is laid out by `fit`,
+/// with the phone set, so that the check covers the balance in that unit
+/// (docs/DECISIONS.md D32 item 10 (b)). It is not drawn: the committed images
+/// are of MCM, as the desktop's are.
+fn nanomcm_samples(width: u32) -> Vec<Image> {
+    let mut model = sample_named("w1-wallet");
+    model.prefs.unit = AmountUnit::NanoMcm;
+    vec![Image {
+        name: "phone-w1-wallet-nanomcm".to_owned(),
+        size: (width, PHONE.1),
+        model: phone(model, 0.0),
+        to_end: false,
+        focus: None,
+    }]
 }
 
 /// Whether an image named `name` is among those the command line asks for:
@@ -992,44 +1009,37 @@ fn base64(bytes: &[u8]) -> String {
         .join("\n")
 }
 
-/// The nodes of `model`'s window at `width` logical pixels that pass its
-/// right edge, as `OVERFLOW name: left..right` lines: a node's position is
-/// its parent's plus its own (docs/DECISIONS.md D32 item 10 (b)).
+/// What `model`'s window at `width` logical pixels draws past its right edge,
+/// as `OVERFLOW name: left..right` lines, each text's content after its
+/// extent (docs/DECISIONS.md D32 item 10 (b); `tawara_app::overflow`).
 fn overflow_lines(renderer: &iced::Renderer, name: &str, model: &Model, width: f32) -> Vec<String> {
-    fn walk(node: &layout::Node, origin: Point, width: f32, name: &str, out: &mut Vec<String>) {
-        for child in node.children() {
-            let bounds = child.bounds();
-            let at = Point::new(origin.x + bounds.x, origin.y + bounds.y);
-            if at.x + bounds.width > width + 0.5 {
-                out.push(format!(
-                    "OVERFLOW {name}: {:.1}..{:.1}",
-                    at.x,
-                    at.x + bounds.width
-                ));
+    overflow::past_the_edge(screens::view(model), renderer, width, PHONE.1 as f32)
+        .into_iter()
+        .map(|past| {
+            let (left, right) = (past.bounds.x, past.bounds.x + past.bounds.width);
+            match past.text {
+                Some(text) => format!("OVERFLOW {name}: {left:.1}..{right:.1} {text:?}"),
+                None => format!("OVERFLOW {name}: {left:.1}..{right:.1}"),
             }
-            walk(child, at, width, name, out);
-        }
-    }
-    let mut element = screens::view(model);
-    let mut tree = Tree::new(element.as_widget());
-    let limits = layout::Limits::new(Size::ZERO, Size::new(width, PHONE.1 as f32));
-    let root = element.as_widget_mut().layout(&mut tree, renderer, &limits);
-    let mut out = Vec::new();
-    walk(&root, Point::ORIGIN, width, name, &mut out);
-    out
+        })
+        .collect()
 }
 
-/// The phone images selected, laid out at 360 logical pixels: prints every
-/// overflow (at most ten a sample) and reports whether there was one.
-fn fit(renderer: &iced::Renderer, only: &[String], except: &[String]) -> bool {
+/// The phone images selected, laid out at `width` logical pixels: prints
+/// every overflow (at most ten a sample) and reports whether there was one.
+/// The check is at 360, the narrowest phone (`tawara_app::app::NARROWEST`);
+/// another width is for `--fit --phone-width`.
+fn fit(renderer: &iced::Renderer, only: &[String], except: &[String], width: u32) -> bool {
     let mut failed = false;
-    for image in phones(NARROWEST_PX) {
+    #[allow(clippy::cast_precision_loss)]
+    let logical = width as f32;
+    for image in phones(width).into_iter().chain(nanomcm_samples(width)) {
         if !selected(&image.name, only, except) {
             continue;
         }
         let mut model = image.model;
-        model.width = NARROWEST;
-        for line in overflow_lines(renderer, &image.name, &model, NARROWEST)
+        model.width = logical;
+        for line in overflow_lines(renderer, &image.name, &model, logical)
             .into_iter()
             .take(10)
         {
@@ -1113,7 +1123,8 @@ fn main() -> ExitCode {
     };
     let (only, except) = (&options.only, &options.except);
     if options.fit {
-        return if fit(&renderer, only, except) {
+        let width = options.phone_width.unwrap_or(NARROWEST_PX);
+        return if fit(&renderer, only, except, width) {
             ExitCode::FAILURE
         } else {
             ExitCode::SUCCESS
@@ -1125,7 +1136,7 @@ fn main() -> ExitCode {
     let mut failed = false;
     if options.check {
         // The phone screens are held to 360 logical pixels as well.
-        failed |= fit(&renderer, only, except);
+        failed |= fit(&renderer, only, except, NARROWEST_PX);
     }
     if !options.check
         && let Err(e) = std::fs::create_dir_all(&dir)

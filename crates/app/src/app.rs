@@ -32,9 +32,9 @@ use tawara_wallet_core::{
 
 pub use wallet::{
     AccountPage, ActivityPage, AddAccountPage, BLOCK_ROWS, BlockPage, DestinationRow, Done,
-    ExplorerPage, Level, Missed, Page, QueuePage, ReceivePage, RecoveryPage, Remedy, ReportKey,
-    ResignPage, SendPage, SendStage, SentPage, SettingsPage, Signed, SpendForm, SubmitPage,
-    TagPage, To, TransactionPage, WalletMsg, remedy, spend_request,
+    ExplorerPage, FormOf, Level, Missed, Page, QueuePage, ReceivePage, RecoveryPage, Remedy,
+    ReportKey, ResignPage, SHARED, SendPage, SendStage, SentPage, SettingsPage, Signed, SpendForm,
+    SubmitPage, TagPage, To, TransactionPage, WalletMsg, remedy, spend_request,
 };
 
 /// What the application shows and holds. Plain data, apart from the
@@ -427,9 +427,12 @@ pub enum Message {
     Refresh,
     /// A wallet page (W1 to W9).
     Wallet(WalletMsg),
-    /// A Paste button was tapped: read the platform's clipboard into the
+    /// A Paste button was tapped: the platform's clipboard is read for the
     /// field beside it (docs/DECISIONS.md D32 item 10 (g)).
     Paste(PasteInto),
+    /// What the clipboard held when a Paste button was tapped, for the field
+    /// that button was drawn beside. `None` when the read was refused.
+    Pasted(PasteInto, Option<Clip>),
     /// The window opened or changed size: its width.
     Width(f32),
     /// The safe area changed: what the system covers at each edge, and the
@@ -444,32 +447,84 @@ pub enum Message {
 /// The field a Paste button fills (docs/DECISIONS.md D32 item 10 (g)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PasteInto {
-    /// The destination of row `n` of the spend form (W4, W8).
-    Destination(usize),
+    /// The destination of row `row` of the spend form (W4, W8), drawn on
+    /// `form` when it had `rows` rows, so that a read which comes back once
+    /// another form is shown, or once a row was added or removed, is
+    /// dropped rather than put in another field.
+    Destination {
+        form: FormOf,
+        row: usize,
+        rows: usize,
+    },
     /// The signed bytes (W9).
-    Artifact,
-    /// The recovery phrase (S6).
-    Phrase,
+    SignedBytes,
+    /// The recovery phrase (S6), as its field was drawn at the generation
+    /// `drawn` (see [`Typed`]), so that a read which comes back after the
+    /// application has left the foreground is refused.
+    Phrase { drawn: u64 },
 }
 
-/// The message that gives `into` the text a Paste button read, `drawn` being
-/// the generation of the field the button was drawn with (see [`Typed`]), or
-/// `None` when the read holds nothing to paste and the field stays as it is.
-/// The text read is wiped once it has been taken.
-fn pasted(into: PasteInto, mut read: String, drawn: u64) -> Option<Message> {
+/// The text a Paste button's read took from the clipboard, on its way into
+/// the model. Its `Debug` prints nothing of it, as [`Typed`]'s does: a copied
+/// recovery phrase is a secret, and no message log may show one
+/// (docs/DECISIONS.md D32 item 6).
+#[derive(Clone)]
+pub struct Clip(String);
+
+impl core::fmt::Debug for Clip {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Clip(..)")
+    }
+}
+
+/// The message that gives `into` what a Paste button's read took, or `None`
+/// when the read was refused or holds nothing once it is cleaned, so that the
+/// field stays as it is (docs/DECISIONS.md D32 item 10 (g) and (h)). The text
+/// read is wiped once it has been cleaned.
+fn pasted(into: PasteInto, read: Option<Clip>) -> Option<Message> {
+    let mut read = read?.0;
     let message = match into {
-        PasteInto::Phrase => {
+        PasteInto::Destination { row, .. } => {
+            let to = crate::paste::token(&read);
+            (!to.is_empty()).then_some(Message::Wallet(WalletMsg::DestinationTo(row, to)))
+        }
+        PasteInto::SignedBytes => {
+            let hex = crate::paste::hex(&read);
+            (!hex.is_empty()).then_some(Message::Wallet(WalletMsg::ArtifactHex(hex)))
+        }
+        PasteInto::Phrase { drawn } => {
             let text = crate::paste::phrase(&read);
             (!text.is_empty()).then_some(Message::PhraseText(Typed { text, drawn }))
-        }
-        PasteInto::Destination(i) => crate::paste::plain(&read)
-            .map(|text| Message::Wallet(WalletMsg::DestinationTo(i, text))),
-        PasteInto::Artifact => {
-            crate::paste::plain(&read).map(|text| Message::Wallet(WalletMsg::ArtifactHex(text)))
         }
     };
     wipe(&mut read);
     message
+}
+
+/// Whether a Paste read for `into` may still be put in its field
+/// (docs/DECISIONS.md D32 item 10 (g)). The read can come back late, for
+/// instance while iOS asks whether to allow the paste. A destination's is
+/// taken only while nothing is being done for the page, as the field itself
+/// is, and only by the form and row it was asked for; the signed bytes' only
+/// on W9 while nothing is being done there. A phrase's read is checked by its
+/// generation, as a typed phrase is (item 6).
+fn takes(model: &Model, into: PasteInto) -> bool {
+    let idle = model.busy.is_none();
+    match into {
+        PasteInto::Destination { form, row, rows } => {
+            idle && row < rows && model.form_of() == Some((form, rows))
+        }
+        PasteInto::SignedBytes => {
+            idle && matches!(
+                &model.screen,
+                Screen::Wallet(WalletPage {
+                    page: Page::Submit(_),
+                    ..
+                })
+            )
+        }
+        PasteInto::Phrase { .. } => true,
+    }
 }
 
 /// The screens a message can go to.
@@ -651,6 +706,21 @@ fn wipe_typed(screen: &mut Screen) {
 fn replace(field: &mut String, typed: Typed) {
     wipe(field);
     *field = typed.text;
+}
+
+/// Text typed or pasted for a field that is no longer shown, wiped as the
+/// field's own text would be (docs/PLAN.md section 4.2).
+fn discard(mut typed: Typed) {
+    wipe(&mut typed.text);
+}
+
+/// The recovery phrase as RestoreWallet sends it: the field's text cleaned as
+/// a paste into it is (docs/DECISIONS.md D32 item 10 (h)), and the field
+/// wiped, so that the text as it was typed is not kept.
+fn cleaned_phrase(field: &mut String) -> String {
+    let phrase = crate::paste::phrase(field);
+    wipe(field);
+    phrase
 }
 
 impl Model {
@@ -1116,7 +1186,7 @@ impl App {
         match message {
             Message::Worker(event) => {
                 if let Some(event) = event.take() {
-                    self.on_event(event);
+                    return self.on_event(event);
                 }
             }
             Message::Input => self.touch(),
@@ -1201,29 +1271,28 @@ impl App {
                 Screen::Unlock(u) => u.dir = dir,
                 _ => {}
             },
+            // Text for a field no longer shown, a Paste read that came back
+            // after Back among it, is wiped rather than dropped as it is
+            // (docs/PLAN.md section 4.2).
             Message::Password(typed) => match &mut m.screen {
                 Screen::NewWallet(f) => replace(&mut f.password, typed),
                 Screen::Restore(r) => replace(&mut r.form.password, typed),
                 Screen::Unlock(u) => replace(&mut u.password, typed),
-                _ => {}
+                _ => discard(typed),
             },
             Message::Again(typed) => match &mut m.screen {
                 Screen::NewWallet(f) => replace(&mut f.again, typed),
                 Screen::Restore(r) => replace(&mut r.form.again, typed),
-                _ => {}
+                _ => discard(typed),
             },
-            Message::PhraseText(typed) => {
-                if let Screen::Restore(r) = &mut m.screen {
-                    replace(&mut r.phrase, typed);
-                }
-            }
-            Message::Word(i, typed) => {
-                if let Screen::Confirm(p) = &mut m.screen
-                    && let Some(w) = p.words.get_mut(i)
-                {
-                    replace(w, typed);
-                }
-            }
+            Message::PhraseText(typed) => match &mut m.screen {
+                Screen::Restore(r) => replace(&mut r.phrase, typed),
+                _ => discard(typed),
+            },
+            Message::Word(i, typed) => match &mut m.screen {
+                Screen::Confirm(p) if i < p.words.len() => replace(&mut p.words[i], typed),
+                _ => discard(typed),
+            },
             Message::CreateWallet => {
                 let outside = m.outside();
                 if let (Screen::NewWallet(f), Some(why)) = (&mut m.screen, outside) {
@@ -1283,11 +1352,10 @@ impl App {
                     r.form.error = Some(why);
                 } else if let Screen::Restore(r) = &mut m.screen {
                     r.form.error = None;
-                    // The whole phrase is cleaned as a paste into it is, so
-                    // a phrase typed or pasted one word to a line is read
-                    // word by word (docs/DECISIONS.md D32 item 10 (h)).
-                    let mut phrase = crate::paste::phrase(&r.phrase);
-                    wipe(&mut r.phrase);
+                    // The whole phrase is cleaned as a paste into it is, so a
+                    // phrase typed or pasted one word to a line is read word by
+                    // word (docs/DECISIONS.md D32 item 10 (h)).
+                    let mut phrase = cleaned_phrase(&mut r.phrase);
                     let command = Command::CreateFromPhrase {
                         dir: store_dir(&r.form.dir),
                         password: SecretText::take(&mut r.form.password),
@@ -1340,14 +1408,28 @@ impl App {
                 self.send(Command::Refresh, Purpose::Refresh);
             }
             Message::Wallet(msg) => return self.on_wallet(msg),
-            // The clipboard is read only on the tap, and what it holds
-            // replaces the field's text; an empty or refused read changes
-            // nothing (docs/DECISIONS.md D32 item 10 (g)).
+            // The clipboard is read only on the tap, and the read comes back as
+            // a message for the field the button was drawn beside
+            // (docs/DECISIONS.md D32 item 10 (g)).
             Message::Paste(into) => {
-                let drawn = m.drawn();
-                return iced::clipboard::read().and_then(move |read| {
-                    pasted(into, read, drawn).map_or_else(Task::none, Task::done)
-                });
+                return iced::clipboard::read()
+                    .map(move |read| Message::Pasted(into, read.map(Clip)));
+            }
+            // What the read held is handed on as the message it makes, so the
+            // field's own rules apply to it, a phrase's generation among them
+            // (docs/DECISIONS.md D32 item 6). A read that holds nothing changes
+            // nothing.
+            Message::Pasted(into, read) => {
+                if !takes(m, into) {
+                    if let Some(Clip(mut text)) = read {
+                        wipe(&mut text);
+                    }
+                    return Task::none();
+                }
+                return match pasted(into, read) {
+                    Some(message) => self.update(message),
+                    None => Task::none(),
+                };
             }
             Message::Width(width) => m.width = width,
             // Not the person's input: the idle period is not restarted here.
@@ -1470,7 +1552,7 @@ impl App {
         }
     }
 
-    fn on_event(&mut self, event: Event) {
+    fn on_event(&mut self, event: Event) -> Task<Message> {
         match event {
             Event::Busy { id, activity } => {
                 if let Some(w) = &mut self.worker
@@ -1501,7 +1583,7 @@ impl App {
                     Some(w.waiting.remove(at).1)
                 });
                 if let Some(purpose) = purpose {
-                    self.on_reply(purpose, reply);
+                    return self.on_reply(purpose, reply);
                 }
             }
             Event::Locked { reason } => {
@@ -1529,7 +1611,7 @@ impl App {
                         _ => "when the wallet locked".to_owned(),
                     };
                     self.model.back_to_new_wallet(Some(phrase_discarded(&why)));
-                    return;
+                    return Task::none();
                 }
                 let mut note = match reason {
                     LockReason::Idle => Some(format!(
@@ -1590,6 +1672,7 @@ impl App {
                 self.model.wiped.taken(u64::MAX);
             }
         }
+        Task::none()
     }
 
     /// The worker has stopped (`panicked` when it faulted). Nothing more
@@ -1608,13 +1691,15 @@ impl App {
 
     /// The worker's answer to a command. A spend kept for a reservation the
     /// answer shows settled is forgotten after it (see [`Model::signed`]).
-    fn on_reply(&mut self, purpose: Purpose, reply: Reply) {
-        if purpose.wallet_page() {
-            self.on_wallet_reply(purpose, reply);
+    fn on_reply(&mut self, purpose: Purpose, reply: Reply) -> Task<Message> {
+        let task = if purpose.wallet_page() {
+            self.on_wallet_reply(purpose, reply)
         } else {
             self.answer(purpose, reply);
-        }
+            Task::none()
+        };
         self.model.forget_settled();
+        task
     }
 
     /// An answer to a command a wallet page did not send.
@@ -1914,6 +1999,12 @@ fn person_input(event: IcedEvent, status: event::Status, _: iced::window::Id) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::{Driver, mouse_move, mouse_press, mouse_release};
+    use iced::advanced::widget::Operation;
+    use iced::advanced::widget::operation::scrollable::{RelativeOffset, snap_to};
+    use iced::futures::StreamExt;
+    use iced::{Point, Rectangle};
+    use iced_runtime::Action;
     use std::sync::mpsc::Receiver;
 
     /// The BIP39 all-`abandon` test vector: public, never funded.
@@ -2557,51 +2648,230 @@ mod tests {
         );
     }
 
-    #[test]
-    fn what_a_paste_button_reads_goes_to_its_field_and_a_blank_read_changes_nothing() {
-        // docs/DECISIONS.md D32 item 10 (g) and (h): the phrase is cleaned, the
-        // other fields take what iced's paste would insert, and a read with
-        // nothing in it sends nothing.
-        match pasted(PasteInto::Phrase, "abandon\nability\n\table\n".into(), 3) {
-            Some(Message::PhraseText(typed)) => {
-                assert_eq!(typed.text, "abandon ability able");
-                assert_eq!(typed.drawn, 3, "drawn with the field the button was");
-            }
-            other => panic!("{other:?}"),
-        }
-        assert!(matches!(
-            pasted(PasteInto::Destination(1), "3vQB7B6MrGQZaxCuFg4oh\n".into(), 0),
-            Some(Message::Wallet(WalletMsg::DestinationTo(1, to))) if to == "3vQB7B6MrGQZaxCuFg4oh"
-        ));
-        assert!(matches!(
-            pasted(PasteInto::Artifact, "4f2a\n".into(), 0),
-            Some(Message::Wallet(WalletMsg::ArtifactHex(hex))) if hex == "4f2a"
-        ));
-        for into in [
-            PasteInto::Phrase,
-            PasteInto::Destination(0),
-            PasteInto::Artifact,
-        ] {
-            assert!(pasted(into, " \n\t".into(), 0).is_none(), "{into:?}");
-        }
+    /// W4 from the sample wallet's first account, with nothing typed yet.
+    fn composing() -> Page {
+        Page::Send(SendPage {
+            from: Some(tawara_wallet_core::sample::wallet_view().accounts[0].id),
+            form: SpendForm::default(),
+            stage: SendStage::Compose,
+        })
+    }
+
+    /// What W4's Paste button beside row `row` asks for, as `app` shows it.
+    fn destination(app: &App, row: usize) -> PasteInto {
+        let (form, rows) = app.model.form_of().expect("a spend form is shown");
+        PasteInto::Destination { form, row, rows }
     }
 
     #[test]
-    fn a_pasted_phrase_replaces_the_field_and_is_dropped_after_a_move_away() {
+    fn a_pasted_destination_is_trimmed_into_its_row() {
+        // docs/DECISIONS.md D32 item 10 (g): the line break a copy brings is not
+        // part of the destination.
+        let mut app = on_wallet(composing());
+        let into = destination(&app, 0);
+        let _ = app.update(Message::Pasted(
+            into,
+            Some(Clip("  3vQB7B6MrGQZaxCuFg4oh\n".to_owned())),
+        ));
+        assert!(
+            matches!(
+                &wallet_page(&app).page,
+                Page::Send(s) if s.form.rows[0].to == "3vQB7B6MrGQZaxCuFg4oh"
+            ),
+            "{:?}",
+            wallet_page(&app).page
+        );
+    }
+
+    #[test]
+    fn pasted_signed_bytes_keep_their_hex_and_lose_their_whitespace() {
+        // docs/DECISIONS.md D32 item 10 (g): hex copied in groups, or from a list
+        // with line breaks, is the one run of bytes it is.
+        let mut app = on_wallet(Page::Submit(SubmitPage::default()));
+        let _ = app.update(Message::Pasted(
+            PasteInto::SignedBytes,
+            Some(Clip("4f2a 00ab\r\n\t11cd\n".to_owned())),
+        ));
+        assert!(
+            matches!(&wallet_page(&app).page, Page::Submit(s) if s.hex == "4f2a00ab11cd"),
+            "{:?}",
+            wallet_page(&app).page
+        );
+    }
+
+    #[test]
+    fn a_refused_or_blank_read_changes_nothing() {
+        // docs/DECISIONS.md D32 item 10 (g): an empty or refused read, or one of
+        // whitespace alone, leaves its field as it is.
+        let mut app = on_wallet(composing());
+        let into = destination(&app, 0);
+        for read in [None, Some(" \n ".to_owned())] {
+            let _ = app.update(Message::Pasted(into, read.map(Clip)));
+        }
+        assert!(
+            matches!(&wallet_page(&app).page, Page::Send(s) if s.form.rows[0].to.is_empty()),
+            "{:?}",
+            wallet_page(&app).page
+        );
+
+        let mut app = on_wallet(Page::Submit(SubmitPage::default()));
+        for read in [None, Some(" \n\t".to_owned())] {
+            let _ = app.update(Message::Pasted(PasteInto::SignedBytes, read.map(Clip)));
+        }
+        assert!(
+            matches!(&wallet_page(&app).page, Page::Submit(s) if s.hex.is_empty()),
+            "{:?}",
+            wallet_page(&app).page
+        );
+
+        let mut app = alone();
+        app.model.screen = Screen::Restore(RestoreForm {
+            phrase: PHRASE.to_owned(),
+            ..RestoreForm::default()
+        });
+        let drawn = app.model.drawn();
+        for read in [None, Some(" \n\t ".to_owned())] {
+            let _ = app.update(Message::Pasted(PasteInto::Phrase { drawn }, read.map(Clip)));
+        }
+        assert!(matches!(&app.model.screen, Screen::Restore(r) if r.phrase == PHRASE));
+    }
+
+    #[test]
+    fn a_late_destination_read_goes_only_to_the_form_and_row_it_was_asked_for() {
+        // docs/DECISIONS.md D32 item 10 (g): the read can come back after the
+        // page has changed, for instance while iOS asks whether to allow the
+        // paste. It is dropped then, not put in whatever form is shown.
+        let read = || Some(Clip("3vQB7B6MrGQZaxCuFg4oh".to_owned()));
+        let accounts = tawara_wallet_core::sample::wallet_view().accounts;
+        let empty = |app: &App| match &wallet_page(app).page {
+            Page::Send(s) => s.form.rows.iter().all(|r| r.to.is_empty()),
+            Page::Resign(r) => r.form.rows.iter().all(|r| r.to.is_empty()),
+            other => panic!("expected a spend form, got {other:?}"),
+        };
+
+        // Another account's form.
+        let mut app = on_wallet(composing());
+        let into = destination(&app, 0);
+        if let Screen::Wallet(WalletPage {
+            page: Page::Send(s),
+            ..
+        }) = &mut app.model.screen
+        {
+            s.from = Some(accounts[1].id);
+        }
+        let _ = app.update(Message::Pasted(into, read()));
+        assert!(empty(&app), "another account's form");
+
+        // W8's form, for the same account.
+        let mut app = on_wallet(composing());
+        let into = destination(&app, 0);
+        app.model.screen = Screen::Wallet(WalletPage {
+            page: Page::Resign(ResignPage {
+                account: accounts[0].id,
+                form: SpendForm::default(),
+            }),
+            ..WalletPage::default()
+        });
+        let _ = app.update(Message::Pasted(into, read()));
+        assert!(empty(&app), "the re-sign form");
+
+        // The same form, a row added or removed since.
+        let mut app = on_wallet(composing());
+        wallet(&mut app, WalletMsg::AddDestination);
+        let into = destination(&app, 1);
+        wallet(&mut app, WalletMsg::RemoveDestination(0));
+        let _ = app.update(Message::Pasted(into, read()));
+        assert!(empty(&app), "a row removed");
+
+        // The page busy with the worker, as its fields are then.
+        let mut app = on_wallet(composing());
+        let into = destination(&app, 0);
+        app.model.busy = Some(Busy {
+            id: RequestId::example(),
+            activity: None,
+            progress: None,
+        });
+        let _ = app.update(Message::Pasted(into, read()));
+        assert!(empty(&app), "the page busy");
+        app.model.busy = None;
+        let _ = app.update(Message::Pasted(into, read()));
+        assert!(!empty(&app), "the form and row it was asked for take it");
+    }
+
+    #[test]
+    fn a_late_signed_bytes_read_is_dropped_while_w9_is_busy() {
+        let mut app = on_wallet(Page::Submit(SubmitPage::default()));
+        app.model.busy = Some(Busy {
+            id: RequestId::example(),
+            activity: None,
+            progress: None,
+        });
+        let _ = app.update(Message::Pasted(
+            PasteInto::SignedBytes,
+            Some(Clip("4f2a".to_owned())),
+        ));
+        assert!(
+            matches!(&wallet_page(&app).page, Page::Submit(s) if s.hex.is_empty()),
+            "{:?}",
+            wallet_page(&app).page
+        );
+    }
+
+    #[test]
+    fn a_pasted_phrase_replaces_the_field_cleaned_of_its_line_breaks() {
         let mut app = alone();
         app.model.screen = Screen::Restore(RestoreForm::default());
-        let _ = app.update(Message::PhraseText(typed("abandon")));
-        let Some(message) = pasted(PasteInto::Phrase, PHRASE.replace(' ', "\n"), 0) else {
-            panic!("a phrase was read");
-        };
-        let _ = app.update(message);
+        let drawn = app.model.drawn();
+        let _ = app.update(Message::Pasted(
+            PasteInto::Phrase { drawn },
+            Some(Clip(PHRASE.replace(' ', "\n"))),
+        ));
         assert!(matches!(&app.model.screen, Screen::Restore(r) if r.phrase == PHRASE));
-        // A paste read for the field as drawn before the application left the
-        // foreground is not taken.
-        let stale = pasted(PasteInto::Phrase, "abandon".into(), 0).expect("read");
+    }
+
+    #[test]
+    fn a_pasted_phrase_read_after_a_move_away_is_refused() {
+        // docs/DECISIONS.md D32 item 6: the read was asked for the field as it
+        // was drawn, and the application left the foreground before it came
+        // back. Once the field is drawn again, a paste into it is taken. The
+        // refused text is wiped as well, which a test cannot observe.
+        let mut app = alone();
+        app.model.screen = Screen::Restore(RestoreForm::default());
+        let drawn = app.model.drawn();
         app.model.left.fetch_add(1, Ordering::SeqCst);
-        let _ = app.update(stale);
-        assert!(matches!(&app.model.screen, Screen::Restore(r) if r.phrase.is_empty()));
+        let _ = app.update(Message::Pasted(
+            PasteInto::Phrase { drawn },
+            Some(Clip(PHRASE.replace(' ', "\n"))),
+        ));
+        assert!(
+            matches!(&app.model.screen, Screen::Restore(r) if r.phrase.is_empty()),
+            "a read for the field as it was before the move is refused"
+        );
+        let drawn = app.model.drawn();
+        let _ = app.update(Message::Pasted(
+            PasteInto::Phrase { drawn },
+            Some(Clip(PHRASE.replace(' ', "\n"))),
+        ));
+        assert!(matches!(&app.model.screen, Screen::Restore(r) if r.phrase == PHRASE));
+    }
+
+    #[test]
+    fn the_phrase_sent_is_cleaned_as_a_paste_into_it_would_be_and_the_field_wiped() {
+        // docs/DECISIONS.md D32 item 10 (h): RestoreWallet sends the phrase as a
+        // paste into the field would have left it.
+        let mut field = "abandon\nability\table  about \r\n".to_owned();
+        assert_eq!(cleaned_phrase(&mut field), "abandon ability able about");
+        assert!(field.is_empty());
+    }
+
+    #[test]
+    fn a_pasted_read_is_never_in_a_message_log() {
+        // docs/DECISIONS.md D32 item 6: a copied recovery phrase is a secret.
+        let message = Message::Pasted(
+            PasteInto::Phrase { drawn: 0 },
+            Some(Clip("hunter2-hunter2".to_owned())),
+        );
+        assert!(!format!("{message:?}").contains("hunter2"));
     }
 
     #[test]
@@ -2937,7 +3207,7 @@ mod tests {
             form: PasswordForm::in_dir(made.display().to_string()),
             phrase: String::new(),
         });
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::CreateFromPhrase,
             Reply::Created {
                 dir: made.clone(),
@@ -2995,7 +3265,7 @@ mod tests {
             let mut app = alone();
             app.model.screen = screen;
             app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
-            app.on_event(Event::Stopped { panicked: true });
+            let _ = app.on_event(Event::Stopped { panicked: true });
             assert_eq!(app.model.stopped, Some(true));
             assert!(app.model.wallet.is_none());
             assert!(
@@ -3069,7 +3339,7 @@ mod tests {
         // A refusal that leaves the phrase waiting keeps S5, with why.
         let mut app = alone();
         app.model.screen = confirming();
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::CreateConfirm,
             refusal(RefusalKind::UnsafeDirectory, "unsafe. Nothing was created."),
         );
@@ -3082,7 +3352,7 @@ mod tests {
         // No phrase waiting: the one shown goes, and S3 says why.
         let mut app = alone();
         app.model.screen = confirming();
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::CreateConfirm,
             refusal(
                 RefusalKind::NothingToConfirm,
@@ -3150,7 +3420,7 @@ mod tests {
         let scratch = Scratch::new("artifact");
         let mut app = on_wallet(Page::Receive(ReceivePage::default()));
         let sent = tawara_wallet_core::sample::sent_view();
-        app.on_reply(Purpose::ConfirmSend, Reply::Sent(sent.clone()));
+        let _ = app.on_reply(Purpose::ConfirmSend, Reply::Sent(sent.clone()));
         let p = wallet_page(&app);
         assert!(
             matches!(&p.page, Page::Send(SendPage { stage: SendStage::Sent(s), .. })
@@ -3221,7 +3491,7 @@ mod tests {
             stage: SendStage::Review(Box::new(plan)),
         }));
         let sent = tawara_wallet_core::sample::sent_view();
-        app.on_reply(Purpose::ConfirmSend, Reply::Sent(sent.clone()));
+        let _ = app.on_reply(Purpose::ConfirmSend, Reply::Sent(sent.clone()));
         (app, sent)
     }
 
@@ -3242,7 +3512,7 @@ mod tests {
         // not stop a spend it has started: the spend answers, then the lock.
         let (mut app, sent) = just_sent();
         wallet(&mut app, WalletMsg::Report(ReportKey::Sent, Level::Full));
-        app.on_event(Event::Locked {
+        let _ = app.on_event(Event::Locked {
             reason: LockReason::Asked,
         });
         assert_eq!(app.model.wallet, None);
@@ -3271,14 +3541,14 @@ mod tests {
         // offered there.
         let mut other = tawara_wallet_core::sample::wallet_view();
         other.dir = std::env::temp_dir().join("tawara-another-store");
-        app.on_reply(Purpose::Unlock, Reply::Unlocked(other));
+        let _ = app.on_reply(Purpose::Unlock, Reply::Unlocked(other));
         assert!(matches!(wallet_page(&app).page, Page::Dashboard));
         assert_eq!(app.model.signed.len(), 1);
         assert_eq!(app.model.unsaved_signed().count(), 0);
 
         // Its own store unlocked: the page as it was left, with the bytes
         // and what was typed for them.
-        app.on_reply(Purpose::Unlock, Reply::Unlocked(sent.view.clone()));
+        let _ = app.on_reply(Purpose::Unlock, Reply::Unlocked(sent.view.clone()));
         let (form, s) = sent_shown(&app).expect("the sent page");
         assert_eq!(*form, spend_typed());
         assert_eq!(s.sent.artifact_hex, sent.artifact_hex);
@@ -3292,12 +3562,12 @@ mod tests {
         // Left for another page and then locked: kept and offered, not
         // brought back by the unlock.
         wallet(&mut app, WalletMsg::Open(To::Dashboard));
-        app.on_event(Event::Locked {
+        let _ = app.on_event(Event::Locked {
             reason: LockReason::Idle,
         });
         assert!(matches!(&app.model.screen, Screen::Unlock(u)
             if u.note.as_deref().is_some_and(|n| !n.contains("signed spend"))));
-        app.on_reply(Purpose::Unlock, Reply::Unlocked(sent.view.clone()));
+        let _ = app.on_reply(Purpose::Unlock, Reply::Unlocked(sent.view.clone()));
         assert!(matches!(wallet_page(&app).page, Page::Dashboard));
         assert_eq!(app.model.unsaved_signed().count(), 1);
     }
@@ -3338,7 +3608,7 @@ mod tests {
             Page::Resign(ResignPage { form, .. }) if *form == spend_typed()));
 
         // Re-signed, the same bytes again: kept once, as the newest page.
-        app.on_reply(Purpose::Resign, Reply::Sent(sent.clone()));
+        let _ = app.on_reply(Purpose::Resign, Reply::Sent(sent.clone()));
         assert!(sent_shown(&app).is_some_and(|(_, s)| s.resigned));
         let other = app.model.wallet.as_ref().unwrap().accounts[1].id;
         wallet(&mut app, WalletMsg::Open(To::Resign(other)));
@@ -3349,7 +3619,7 @@ mod tests {
 
         // Settling that finds the spend not landed keeps it; a check that
         // finds the account in sync forgets it.
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Settle,
             Reply::Settled {
                 text: "not landed".to_owned(),
@@ -3357,7 +3627,7 @@ mod tests {
             },
         );
         assert_eq!(app.model.signed.len(), 1);
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Status,
             Reply::Status {
                 account: from,
@@ -3376,7 +3646,7 @@ mod tests {
     fn a_stopped_worker_leaves_the_signed_spends_to_save() {
         let scratch = Scratch::new("stopped-spend");
         let (mut app, sent) = just_sent();
-        app.on_event(Event::Stopped { panicked: true });
+        let _ = app.on_event(Event::Stopped { panicked: true });
         assert_eq!(app.model.stopped, Some(true));
         assert_eq!(app.model.wallet, None);
         assert_eq!(app.model.signed.len(), 1);
@@ -3403,7 +3673,7 @@ mod tests {
             form: SpendForm::default(),
             stage: SendStage::Review(Box::new(plan)),
         }));
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::ConfirmSend,
             Reply::Refused(Refusal {
                 kind: RefusalKind::Library,
@@ -3437,7 +3707,7 @@ mod tests {
             form: form.clone(),
             stage: SendStage::Compose,
         }));
-        app.on_reply(Purpose::PlanSend, Reply::Planned(plan));
+        let _ = app.on_reply(Purpose::PlanSend, Reply::Planned(plan));
         assert!(matches!(
             &wallet_page(&app).page,
             Page::Send(SendPage {
@@ -3455,6 +3725,281 @@ mod tests {
             "{:?}",
             wallet_page(&app).page
         );
+    }
+
+    /// The sample's spend as a person types it: the payees the sample plan
+    /// lays out, with their figures.
+    fn typed_as_planned(plan: &tawara_wallet_core::PlanView) -> SpendForm {
+        SpendForm {
+            rows: plan
+                .destinations
+                .iter()
+                .map(|d| DestinationRow {
+                    to: d.destination.clone(),
+                    amount: tawara_wallet_core::amount::format_mcm(d.amount)
+                        .trim_end_matches('0')
+                        .trim_end_matches('.')
+                        .to_owned(),
+                    reference: d.reference.clone(),
+                })
+                .collect(),
+            ..SpendForm::default()
+        }
+    }
+
+    /// The window operations `task` asks the runtime to run, in order.
+    fn operations(task: Task<Message>) -> Vec<Box<dyn Operation>> {
+        let Some(stream) = iced_runtime::task::into_stream(task) else {
+            return Vec::new();
+        };
+        iced::futures::executor::block_on(stream.collect::<Vec<_>>())
+            .into_iter()
+            .filter_map(|action| match action {
+                Action::Widget(operation) => Some(operation),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_review_starts_at_the_top_of_its_page_on_a_phone_and_on_the_desktop() {
+        // The form is scrolled to its end, and "Review spend" is pressed where
+        // it is drawn. The review drawn over the form then starts at the top
+        // of its page on each layout: the payee is in view, and "Sign & submit"
+        // is not where "Review spend" was pressed (docs/SCREENS.md W5).
+        for (width, size) in [(390.0, (390, 844)), (1440.0, (1440, 600))] {
+            let plan = tawara_wallet_core::sample::plan_view();
+            let mut app = on_wallet(Page::Send(SendPage {
+                from: Some(plan.from),
+                form: typed_as_planned(&plan),
+                stage: SendStage::Compose,
+            }));
+            app.model.width = width;
+            let page = crate::screens::page_id();
+            let (messages, cache, pressed) = {
+                let mut form = Driver::new(crate::screens::view(&app.model), size);
+                form.operate(Box::new(snap_to(
+                    page.clone(),
+                    RelativeOffset {
+                        x: None,
+                        y: Some(1.0),
+                    },
+                )));
+                let (_, scrolled) = form.scroll_of(&page).expect("the form is a page");
+                assert!(scrolled.y > 0.0, "{width}: the form scrolls: {scrolled:?}");
+                let label = form
+                    .text_bounds("Review spend")
+                    .expect("'Review spend' is drawn");
+                let at = Point::new(label.center_x(), label.center_y() - scrolled.y);
+                let (messages, _, _) =
+                    form.send(&[mouse_move(at.x, at.y), mouse_press(), mouse_release()]);
+                (messages, form.into_cache(), at)
+            };
+            assert!(
+                matches!(messages.as_slice(), [Message::Wallet(WalletMsg::Review)]),
+                "{width}: pressing it asks for the review: {messages:?}"
+            );
+            for message in messages {
+                let _ = app.update(message);
+            }
+
+            // The worker lays the plan out. The page is drawn again, with the
+            // state the form kept, and the task the answer returned runs.
+            let task = app.on_reply(Purpose::PlanSend, Reply::Planned(plan.clone()));
+            let mut review = Driver::with_cache(crate::screens::view(&app.model), size, cache);
+            let operations = operations(task);
+            assert_eq!(
+                operations.len(),
+                1,
+                "{width}: entering the review returns a task"
+            );
+            for operation in operations {
+                review.operate(operation);
+            }
+            let (viewport, scroll) = review.scroll_of(&page).expect("the review is a page");
+            assert_eq!(
+                scroll.y, 0.0,
+                "{width}: the review starts at the top of its page"
+            );
+            let payee = review
+                .text_bounds(&plan.destinations[0].destination)
+                .expect("the payee is drawn");
+            let shown = payee.y - scroll.y;
+            assert!(
+                shown >= viewport.y && shown + payee.height <= viewport.y + viewport.height,
+                "{width}: the payee is in view at {shown}, in {viewport:?}"
+            );
+            let sign = review
+                .text_bounds("Sign & submit")
+                .expect("'Sign & submit' is drawn");
+            let sign = Rectangle {
+                y: sign.y - scroll.y,
+                ..sign
+            };
+            assert!(
+                !sign.contains(pressed),
+                "{width}: 'Sign & submit' is not where 'Review spend' was: {sign:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_sent_page_starts_at_the_top_of_its_page_on_a_phone_and_on_the_desktop() {
+        // The review is scrolled to its end, where "Sign & submit" is, and the
+        // spend is signed. The sent page drawn in its place starts at the top
+        // of its page on each layout, with its title in view, rather than at
+        // the review's scroll (docs/SCREENS.md W6).
+        for (width, size) in [(390.0, (390, 844)), (1440.0, (1440, 600))] {
+            let plan = tawara_wallet_core::sample::plan_view();
+            let mut app = on_wallet(Page::Send(SendPage {
+                from: Some(plan.from),
+                form: typed_as_planned(&plan),
+                stage: SendStage::Review(Box::new(plan)),
+            }));
+            app.model.width = width;
+            let page = crate::screens::page_id();
+            let cache = {
+                let mut review = Driver::new(crate::screens::view(&app.model), size);
+                review.operate(Box::new(snap_to(
+                    page.clone(),
+                    RelativeOffset {
+                        x: None,
+                        y: Some(1.0),
+                    },
+                )));
+                let (_, scrolled) = review.scroll_of(&page).expect("the review is a page");
+                assert!(
+                    scrolled.y > 0.0,
+                    "{width}: the review scrolls: {scrolled:?}"
+                );
+                review.into_cache()
+            };
+
+            let sent = tawara_wallet_core::sample::sent_view();
+            let task = app.on_reply(Purpose::ConfirmSend, Reply::Sent(sent));
+            assert!(
+                sent_shown(&app).is_some(),
+                "{width}: the sent page is shown"
+            );
+            let mut shown = Driver::with_cache(crate::screens::view(&app.model), size, cache);
+            // Without the task the sent page would keep the review's scroll,
+            // which is the fault the task is for.
+            let (_, kept) = shown.scroll_of(&page).expect("the sent page is a page");
+            assert!(
+                kept.y > 0.0,
+                "{width}: the sent page is drawn at the review's scroll: {kept:?}"
+            );
+            let operations = operations(task);
+            assert_eq!(
+                operations.len(),
+                1,
+                "{width}: showing the sent page returns a task"
+            );
+            for operation in operations {
+                shown.operate(operation);
+            }
+            let (viewport, scroll) = shown.scroll_of(&page).expect("the sent page is a page");
+            assert_eq!(
+                scroll.y, 0.0,
+                "{width}: the sent page starts at the top of its page"
+            );
+            // The page's title, which the header sets in capitals.
+            let title = shown.text_bounds("SENT").expect("the title is drawn");
+            assert!(
+                title.y >= viewport.y && title.y + title.height <= viewport.y + viewport.height,
+                "{width}: the title is in view at {title:?}, in {viewport:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_form_starts_at_the_top_of_its_page_when_the_review_is_left_for_it() {
+        // The review is scrolled to its end, where "Sign & submit" and "Edit
+        // the spend" are. Whether the signing is refused or the spend is
+        // edited, the form drawn in the review's place starts at the top of
+        // its page on each layout, and a refusal's reason, which the page
+        // shows at its top, is in view (docs/SCREENS.md W4).
+        let refusal = "the balance moved";
+        for refused in [true, false] {
+            for (width, size) in [(390.0, (390, 844)), (1440.0, (1440, 600))] {
+                let plan = tawara_wallet_core::sample::plan_view();
+                let mut app = on_wallet(Page::Send(SendPage {
+                    from: Some(plan.from),
+                    form: typed_as_planned(&plan),
+                    stage: SendStage::Review(Box::new(plan)),
+                }));
+                app.model.width = width;
+                let page = crate::screens::page_id();
+                let cache = {
+                    let mut review = Driver::new(crate::screens::view(&app.model), size);
+                    review.operate(Box::new(snap_to(
+                        page.clone(),
+                        RelativeOffset {
+                            x: None,
+                            y: Some(1.0),
+                        },
+                    )));
+                    let (_, scrolled) = review.scroll_of(&page).expect("the review is a page");
+                    assert!(
+                        scrolled.y > 0.0,
+                        "{width}: the review scrolls: {scrolled:?}"
+                    );
+                    review.into_cache()
+                };
+
+                let task = if refused {
+                    app.on_reply(
+                        Purpose::ConfirmSend,
+                        Reply::Refused(Refusal {
+                            kind: RefusalKind::Library,
+                            text: refusal.to_owned(),
+                        }),
+                    )
+                } else {
+                    app.on_wallet(WalletMsg::Edit)
+                };
+                let how = if refused { "refused" } else { "edited" };
+                assert!(
+                    matches!(
+                        &wallet_page(&app).page,
+                        Page::Send(SendPage {
+                            stage: SendStage::Compose,
+                            ..
+                        })
+                    ),
+                    "{how} at {width}: the form is shown"
+                );
+                let mut form = Driver::with_cache(crate::screens::view(&app.model), size, cache);
+                // Without the task the form would keep the review's scroll,
+                // which is the fault the task is for.
+                let (_, kept) = form.scroll_of(&page).expect("the form is a page");
+                assert!(
+                    kept.y > 0.0,
+                    "{how} at {width}: the form is drawn at the review's scroll: {kept:?}"
+                );
+                let operations = operations(task);
+                assert_eq!(
+                    operations.len(),
+                    1,
+                    "{how} at {width}: showing the form returns a task"
+                );
+                for operation in operations {
+                    form.operate(operation);
+                }
+                let (viewport, scroll) = form.scroll_of(&page).expect("the form is a page");
+                assert_eq!(
+                    scroll.y, 0.0,
+                    "{how} at {width}: the form starts at the top of its page"
+                );
+                if refused {
+                    let why = form.text_bounds(refusal).expect("the refusal is drawn");
+                    assert!(
+                        why.y >= viewport.y && why.y + why.height <= viewport.y + viewport.height,
+                        "{width}: the refusal is in view at {why:?}, in {viewport:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -3493,7 +4038,7 @@ mod tests {
         // A plan laid out after its page was left is forgotten as it comes.
         wallet(&mut app, WalletMsg::Open(To::Dashboard));
         assert_eq!(discards(&app), 2, "the form held no plan");
-        app.on_reply(Purpose::PlanSend, Reply::Planned(plan.clone()));
+        let _ = app.on_reply(Purpose::PlanSend, Reply::Planned(plan.clone()));
         assert_eq!(discards(&app), 3);
         pump(&mut app, &events, |a| discards(a) == 0);
     }
@@ -3540,7 +4085,7 @@ mod tests {
         let accounts = tawara_wallet_core::sample::wallet_view().accounts;
         assert!(accounts[0].spendable && !accounts[1].spendable);
         let checked = |app: &mut App, n: usize, state: AccountState, spendable: bool| {
-            app.on_reply(
+            let _ = app.on_reply(
                 Purpose::Status,
                 Reply::Status {
                     account: accounts[n].id,
@@ -3642,13 +4187,13 @@ mod tests {
         let mut app = on_wallet(Page::Activity(ActivityPage::default()));
         app.model.node.url = Some("https://node.example".to_owned());
         app.model.activity.reading = true;
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Activity,
             Reply::Activity(Ok(tawara_wallet_core::sample::activity())),
         );
         assert!(!app.model.activity.reading);
         assert!(matches!(&app.model.activity.last, Some(Ok(h)) if h.len() == 3));
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Blocks,
             Reply::Blocks(Ok(tawara_wallet_core::sample::blocks())),
         );
@@ -3657,7 +4202,7 @@ mod tests {
         // A refusal that is not the node's answer (a cancel) leaves what
         // was shown.
         app.model.activity.reading = true;
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Activity,
             Reply::Refused(Refusal {
                 kind: RefusalKind::Cancelled,
@@ -3668,7 +4213,7 @@ mod tests {
         assert!(matches!(&app.model.activity.last, Some(Ok(_))));
 
         // A node with no index says so, for every account.
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Activity,
             Reply::Activity(Err(tawara_wallet_core::sample::index_refusal(
                 IndexState::Absent,
@@ -3679,7 +4224,7 @@ mod tests {
         );
 
         // Another node: another index and another chain.
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::SetNode { form: true },
             Reply::NodeSet {
                 url: "https://other.example".to_owned(),
@@ -3689,11 +4234,11 @@ mod tests {
         assert!(app.model.activity.last.is_none() && app.model.blocks.last.is_none());
 
         // The store locked: what the index held for it goes with it.
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Activity,
             Reply::Activity(Ok(tawara_wallet_core::sample::activity())),
         );
-        app.on_event(Event::Locked {
+        let _ = app.on_event(Event::Locked {
             reason: LockReason::Asked,
         });
         assert!(app.model.activity.last.is_none());
@@ -3739,7 +4284,7 @@ mod tests {
             ["Network", "Networks", "Blocks", "Mempool", "Network"]
         );
 
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Network {
                 sent: Instant::now(),
             },
@@ -3759,15 +4304,15 @@ mod tests {
             blockchain: "mochimo".to_owned(),
             network: "mainnet".to_owned(),
         };
-        app.on_reply(Purpose::Networks, Reply::Networks(vec![mainnet.clone()]));
+        let _ = app.on_reply(Purpose::Networks, Reply::Networks(vec![mainnet.clone()]));
         assert_eq!(app.model.node.network, Some(mainnet));
-        app.on_reply(Purpose::Mempool, Reply::Mempool(Ok(sample::mempool())));
+        let _ = app.on_reply(Purpose::Mempool, Reply::Mempool(Ok(sample::mempool())));
         assert!(!app.model.mempool.reading);
         assert!(matches!(&app.model.mempool.last, Some(Ok(m)) if m.waiting == 14));
 
         // A node that stops answering: no tip, so no solve time or sync
         // state either. The network it serves is still the one it said.
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Network {
                 sent: Instant::now(),
             },
@@ -3788,7 +4333,7 @@ mod tests {
         assert!(!waiting(&app)[before..].contains(&"Networks".to_owned()));
 
         // Another node: its own network and its own queue.
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::SetNode { form: true },
             Reply::NodeSet {
                 url: "https://other.example".to_owned(),
@@ -3822,7 +4367,7 @@ mod tests {
         assert_eq!(waiting(&app), ["OlderActivity"], "one read at a time");
 
         // A refusal (a cancel) leaves the rows as they were.
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::OlderActivity,
             Reply::Refused(Refusal {
                 kind: RefusalKind::Cancelled,
@@ -3843,7 +4388,7 @@ mod tests {
         page.text = "the older page".to_owned();
         let rows = histories[0].transactions.len();
         app.model.activity.reading = true;
-        app.on_reply(Purpose::OlderActivity, Reply::Activity(Ok(vec![page])));
+        let _ = app.on_reply(Purpose::OlderActivity, Reply::Activity(Ok(vec![page])));
         assert!(!app.model.activity.reading);
         let Some(Ok(now)) = &app.model.activity.last else {
             panic!("the rows read");
@@ -3889,7 +4434,7 @@ mod tests {
         assert!(matches!(&wallet_page(&app).page,
             Page::Recovery(r) if r.target == Some(paused) && r.reports.is_none()));
 
-        app.on_reply(Purpose::Review, Reply::Reviewed(reports.clone()));
+        let _ = app.on_reply(Purpose::Review, Reply::Reviewed(reports.clone()));
         let p = wallet_page(&app);
         assert!(matches!(&p.page, Page::Recovery(r) if r.reports.as_ref() == Some(&reports)));
         for n in 0..3 {
@@ -3995,7 +4540,7 @@ mod tests {
         // form cleared.
         let mut after = tawara_wallet_core::sample::wallet_view();
         after.accounts[2].state = tawara_wallet_core::view::AccountState::InSync { balance: 1 };
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Reconcile,
             Reply::Reconciled {
                 ok: true,
@@ -4013,7 +4558,7 @@ mod tests {
         // a report that changed folds to its summary and is to be read
         // again.
         assert_eq!(unread(&app), Some(0));
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Status,
             Reply::Status {
                 account: paused,
@@ -4038,7 +4583,7 @@ mod tests {
         );
 
         // Read again: every report is to be opened again.
-        app.on_reply(Purpose::Review, Reply::Reviewed(reports.clone()));
+        let _ = app.on_reply(Purpose::Review, Reply::Reviewed(reports.clone()));
         assert_eq!(unread(&app), Some(3));
     }
 
@@ -4146,7 +4691,7 @@ mod tests {
         };
         let (tx, text) = sample::transaction();
         let mut app = finding(A);
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Find(A),
             Reply::Found(Box::new(Found::Transaction {
                 transaction: tx.clone(),
@@ -4161,7 +4706,7 @@ mod tests {
             other => panic!("expected the transaction, got {other:?}"),
         }
         let mut app = finding(A);
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Find(A),
             Reply::Found(Box::new(Found::Block(Box::new(sample::block())))),
         );
@@ -4174,7 +4719,7 @@ mod tests {
         }
         let mut app = finding(A);
         let (transaction, block) = sample::not_found([1; 32]);
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Find(A),
             Reply::Found(Box::new(Found::Neither {
                 searched: true,
@@ -4192,7 +4737,7 @@ mod tests {
         // The explorer opened afresh since it asked: nothing waits there.
         let mut app = explorer(ExplorerPage::default());
         let (tx, text) = sample::transaction();
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Find(A),
             Reply::Found(Box::new(Found::Transaction {
                 transaction: tx,
@@ -4203,7 +4748,7 @@ mod tests {
         // Another page opened since: the answer has nowhere to go.
         let mut app = on_wallet(Page::Dashboard);
         let (tx, text) = sample::transaction();
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Find(A),
             Reply::Found(Box::new(Found::Transaction {
                 transaction: tx,
@@ -4215,7 +4760,7 @@ mod tests {
         // since: A's answer is not B's, and B's is still taken.
         let mut app = finding(B);
         let (tx, text) = sample::transaction();
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Find(A),
             Reply::Found(Box::new(Found::Transaction {
                 transaction: tx.clone(),
@@ -4226,7 +4771,7 @@ mod tests {
             Page::Explorer(e) => assert_eq!(e.finding, Some(B), "still waiting on B"),
             other => panic!("expected the explorer, got {other:?}"),
         }
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Find(A),
             Reply::Refused(Refusal {
                 kind: RefusalKind::Library,
@@ -4234,7 +4779,7 @@ mod tests {
             }),
         );
         assert!(wallet_page(&app).error.is_none(), "A's refusal is not B's");
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Find(B),
             Reply::Found(Box::new(Found::Transaction {
                 transaction: tx.clone(),
@@ -4256,7 +4801,7 @@ mod tests {
             read: None,
             rows_from: 0,
         }));
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Block(BlockAt::Number(871_171)),
             Reply::Block(Ok(Box::new(sample::block()))),
         );
@@ -4264,7 +4809,7 @@ mod tests {
             matches!(&wallet_page(&app).page, Page::Block(b) if b.read.is_none()),
             "another block's answer"
         );
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Block(BlockAt::Number(871_172)),
             Reply::Block(Ok(Box::new(sample::block()))),
         );
@@ -4293,12 +4838,12 @@ mod tests {
             reading_older: false,
             typed: false,
         }));
-        app.on_reply(Purpose::Tag(payee()), Reply::Tag(Box::new(view.clone())));
+        let _ = app.on_reply(Purpose::Tag(payee()), Reply::Tag(Box::new(view.clone())));
         assert!(
             matches!(&wallet_page(&app).page, Page::Tag(t) if t.read.is_none()),
             "another account's answer"
         );
-        app.on_reply(Purpose::Tag(account), Reply::Tag(Box::new(view)));
+        let _ = app.on_reply(Purpose::Tag(account), Reply::Tag(Box::new(view)));
         // An older page goes below the rows read; a refusal leaves them.
         if let Screen::Wallet(WalletPage {
             page: Page::Tag(t), ..
@@ -4318,7 +4863,7 @@ mod tests {
             other => panic!("expected the account, got {other:?}"),
         };
         let before = rows(&app).0;
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::TagHistory(account),
             Reply::TagHistory(Err(sample::index_refusal(
                 tawara_wallet_core::explorer::IndexState::Unavailable,
@@ -4337,7 +4882,7 @@ mod tests {
             next: before as u64 + 1,
             text: String::new(),
         };
-        app.on_reply(Purpose::TagHistory(account), Reply::TagHistory(Ok(older)));
+        let _ = app.on_reply(Purpose::TagHistory(account), Reply::TagHistory(Ok(older)));
         assert_eq!(rows(&app), (before + 1, false));
         wallet(&mut app, WalletMsg::OpenTagRow(before));
         match &wallet_page(&app).page {
@@ -4355,7 +4900,7 @@ mod tests {
         let mut app = explorer(ExplorerPage::default());
         wallet(&mut app, WalletMsg::Open(To::Queue));
         assert!(matches!(&wallet_page(&app).page, Page::Queue(q) if q.read.is_none()));
-        app.on_reply(Purpose::Queue, Reply::Pending(Ok(sample::queue())));
+        let _ = app.on_reply(Purpose::Queue, Reply::Pending(Ok(sample::queue())));
         match &wallet_page(&app).page {
             Page::Queue(QueuePage { read: Some(Ok(p)) }) => {
                 assert_eq!(p.rows.len(), p.waiting, "every one read whole");
@@ -4374,7 +4919,7 @@ mod tests {
         }
         // The queue's answer goes nowhere once its page is left.
         let mut app = on_wallet(Page::Dashboard);
-        app.on_reply(Purpose::Queue, Reply::Pending(Ok(sample::queue())));
+        let _ = app.on_reply(Purpose::Queue, Reply::Pending(Ok(sample::queue())));
         assert!(matches!(wallet_page(&app).page, Page::Dashboard));
     }
 
@@ -4414,13 +4959,13 @@ mod tests {
         let mut app = alone();
         app.model.clock_ms = 1_234;
         app.model.chain.reading = true;
-        app.on_reply(Purpose::Chain, Reply::Chain(Ok(sample::chain())));
+        let _ = app.on_reply(Purpose::Chain, Reply::Chain(Ok(sample::chain())));
         assert!(!app.model.chain.reading);
         assert_eq!(app.model.chain.read_ms, Some(1_234));
         assert!(matches!(app.model.chain.last, Some(Ok(_))));
-        app.on_reply(Purpose::Pending, Reply::Pending(Ok(sample::pending())));
+        let _ = app.on_reply(Purpose::Pending, Reply::Pending(Ok(sample::pending())));
         assert!(matches!(app.model.pending.last, Some(Ok(_))));
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::SetNode { form: false },
             Reply::NodeSet {
                 url: "https://another.example".to_owned(),

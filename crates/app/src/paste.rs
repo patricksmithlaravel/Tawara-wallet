@@ -1,18 +1,20 @@
-//! Paste on a phone: the Paste button beside the fields a person pastes into,
-//! and the restore field's cleaning of a pasted recovery phrase
-//! (docs/DECISIONS.md D32 item 10 (g) and (h)).
+//! Paste on a phone: the Paste button beside each field a person pastes into,
+//! and the cleaning of what is pasted (docs/DECISIONS.md D32 item 10 (g) and
+//! (h)).
 //!
 //! On a phone iced's fields have no edit menu, so a paste reaches them only
 //! from a hardware keyboard (D32 item 9 (g)). In the compact layout a Paste
 //! button stands beside each destination field (W4, W8), the signed-bytes
 //! field (W9) and the recovery-phrase field (S6). It reads the platform's
 //! clipboard through iced, only on that tap, and what it read replaces what
-//! the field held; an empty or refused read changes nothing.
+//! the field held; an empty or refused read changes nothing. Nothing a paste
+//! brings is ever submitted. The desktop keeps keyboard paste and shows no
+//! button.
 //!
 //! iced's `text_input` drops every control character of a paste before any
 //! hook sees it, so a phrase copied one word to a line would arrive as one
-//! long word. The restore field alone is wrapped in `cleaned`, which hands
-//! the field a clipboard whose read returns the cleaned text.
+//! long word. The recovery-phrase field alone is wrapped in `phrase_paste`,
+//! which hands the field a clipboard whose reads are cleaned by [`spaced`].
 
 use iced::advanced::layout;
 use iced::advanced::renderer;
@@ -25,7 +27,7 @@ use crate::theme;
 use crate::ui;
 
 /// `text` as a recovery phrase is sent and validated: every run of
-/// whitespace, line breaks and tabs among it, made one space, and the ends
+/// whitespace, line breaks and tabs among it made one space, and the ends
 /// trimmed (docs/DECISIONS.md D32 item 10 (h)). The words themselves are not
 /// changed. The result is built in one allocation, so no copy of the phrase
 /// is left behind by a buffer that grew.
@@ -41,38 +43,71 @@ pub fn phrase(text: &str) -> String {
     out
 }
 
-/// What a Paste button's read gives a field other than the phrase: the text
-/// as iced's own paste would insert it, with the control characters left
-/// out, or `None` when nothing but whitespace was read, so that the field
-/// does not change.
+/// `text` as a keyboard paste puts it into the recovery-phrase field: every
+/// run of whitespace, line breaks and tabs among it made one space, as
+/// [`phrase`] does, but a run at either end kept as one space rather than
+/// trimmed. A paste lands at the caret, perhaps between words already typed,
+/// so a space it brings at its ends is what keeps those words apart; the
+/// whole phrase is trimmed when it is sent (docs/DECISIONS.md D32 item 10
+/// (h)). Built in one allocation, as [`phrase`] is.
 #[must_use]
-pub fn plain(text: &str) -> Option<String> {
-    let out: String = text.chars().filter(|c| !c.is_control()).collect();
-    (!out.trim().is_empty()).then_some(out)
+pub fn spaced(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut after_space = false;
+    for c in text.chars() {
+        if !c.is_whitespace() {
+            out.push(c);
+            after_space = false;
+        } else if !after_space {
+            out.push(' ');
+            after_space = true;
+        }
+    }
+    out
 }
 
-/// The Paste button beside a field in the compact layout: disabled when
-/// `on_press` is `None`, as the field beside it is while the page waits.
+/// `text` as a destination is sent: trimmed of the line break a copy brings
+/// and of any space beside it (docs/DECISIONS.md D32 item 10 (g)). Nothing
+/// inside it changes, as a destination has no whitespace of its own.
+#[must_use]
+pub fn token(text: &str) -> String {
+    text.trim().to_owned()
+}
+
+/// `text` as signed bytes are sent: every whitespace character removed, so
+/// that hex copied in groups, or from a list with line breaks, reads as the
+/// one run the bytes are (docs/DECISIONS.md D32 item 10 (g)). Built in one
+/// allocation, as [`phrase`] is.
+#[must_use]
+pub fn hex(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    out.extend(text.chars().filter(|c| !c.is_whitespace()));
+    out
+}
+
+/// The Paste button beside a field in the compact layout (docs/DECISIONS.md
+/// D32 item 10 (g)): disabled when `on_press` is `None`, as the field beside
+/// it is while the page waits.
 pub fn button<'a, M: Clone + 'a>(on_press: Option<M>) -> Element<'a, M> {
     ui::button_with(
         "Paste",
         theme::Button::Secondary,
-        ui::Size::Medium,
+        ui::Size::Small,
         None,
         on_press,
     )
     .into()
 }
 
-/// The clipboard the restore field is handed: its reads come back as
-/// [`phrase`] cleans them, and the text read is wiped. Writes (a copy from
-/// the field, which a secure field refuses anyway) pass through.
-struct Cleaning<'a>(&'a mut dyn Clipboard);
+/// The clipboard a [`PhrasePaste`]'s field is handed. Its reads come back as
+/// [`spaced`] cleans them, and the text read is wiped once it is cleaned.
+/// Writes pass through unchanged.
+struct Normalising<'a>(&'a mut dyn Clipboard);
 
-impl Clipboard for Cleaning<'_> {
+impl Clipboard for Normalising<'_> {
     fn read(&self, kind: clipboard::Kind) -> Option<String> {
         let mut read = self.0.read(kind)?;
-        let cleaned = phrase(&read);
+        let cleaned = spaced(&read);
         wipe(&mut read);
         Some(cleaned)
     }
@@ -82,21 +117,23 @@ impl Clipboard for Cleaning<'_> {
     }
 }
 
-/// `field`, the restore field, with what keyboard paste reads cleaned as
-/// [`phrase`] cleans it before iced inserts it at the caret
-/// (docs/DECISIONS.md D32 item 10 (h)). It draws, lays out and handles
-/// every event as the field does; only the clipboard it is handed differs.
-pub(crate) fn cleaned<'a, M: 'a>(field: impl Into<Element<'a, M>>) -> Element<'a, M> {
-    Element::new(Cleaned {
+/// `field`, the recovery-phrase field, wrapped so that what a keyboard paste
+/// brings is cleaned by [`spaced`] before iced inserts it at the caret
+/// (docs/DECISIONS.md D32 item 10 (h)). The wrapper draws, lays out and
+/// handles every event as the field does; only the clipboard it hands the
+/// field differs.
+pub(crate) fn phrase_paste<'a, M: 'a>(field: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    Element::new(PhrasePaste {
         field: field.into(),
     })
 }
 
-struct Cleaned<'a, M> {
+/// The widget [`phrase_paste`] makes.
+struct PhrasePaste<'a, M> {
     field: Element<'a, M>,
 }
 
-impl<'a, M: 'a> Widget<M, iced::Theme, iced::Renderer> for Cleaned<'a, M> {
+impl<'a, M: 'a> Widget<M, iced::Theme, iced::Renderer> for PhrasePaste<'a, M> {
     fn size(&self) -> Size<Length> {
         self.field.as_widget().size()
     }
@@ -178,7 +215,7 @@ impl<'a, M: 'a> Widget<M, iced::Theme, iced::Renderer> for Cleaned<'a, M> {
             layout,
             cursor,
             renderer,
-            &mut Cleaning(clipboard),
+            &mut Normalising(clipboard),
             shell,
             viewport,
         );
@@ -219,37 +256,19 @@ impl<'a, M: 'a> Widget<M, iced::Theme, iced::Renderer> for Cleaned<'a, M> {
     }
 }
 
+/// Test support for the paste paths, shared with the tests of the
+/// recovery-phrase field in `screens::first_run`.
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::harness::Driver;
+pub(crate) mod support {
+    use iced::Event;
+    use iced::advanced::Clipboard;
+    use iced::advanced::clipboard;
     use iced::keyboard::key::{NativeCode, Physical};
     use iced::keyboard::{self, Key, Location, Modifiers};
-    use iced::widget::text_input;
 
-    #[test]
-    fn a_phrase_has_its_line_breaks_tabs_and_runs_of_spaces_made_single_spaces() {
-        assert_eq!(
-            phrase("  abandon\nability\r\n\table  about\n\nabove \n"),
-            "abandon ability able about above"
-        );
-        assert_eq!(phrase("abandon ability"), "abandon ability", "unchanged");
-        assert_eq!(phrase(" \n\t "), "", "nothing but whitespace");
-    }
-
-    #[test]
-    fn a_plain_paste_keeps_what_iced_would_insert_and_changes_nothing_for_blanks() {
-        assert_eq!(
-            plain("4f2a\n").as_deref(),
-            Some("4f2a"),
-            "the line break a saved artifact ends with is left out"
-        );
-        assert_eq!(plain(" \n\t"), None);
-        assert_eq!(plain(""), None);
-    }
-
-    /// A clipboard that holds `0`.
-    struct Holding(&'static str);
+    /// A clipboard that holds `.0`, as a platform's does after a copy: its
+    /// reads give that text, and its writes are dropped.
+    pub(crate) struct Holding(pub(crate) &'static str);
 
     impl Clipboard for Holding {
         fn read(&self, _kind: clipboard::Kind) -> Option<String> {
@@ -259,51 +278,145 @@ mod tests {
         fn write(&mut self, _kind: clipboard::Kind, _contents: String) {}
     }
 
-    /// The key a paste is made with: V with the platform's command key.
-    fn paste_key() -> Event {
+    /// The events of a paste from the keyboard: the command key goes down,
+    /// and V goes down with it held.
+    pub(crate) fn paste_keys() -> [Event; 2] {
         let v = Key::Character("v".into());
-        Event::Keyboard(keyboard::Event::KeyPressed {
-            key: v.clone(),
-            modified_key: v,
-            physical_key: Physical::Unidentified(NativeCode::Unidentified),
-            location: Location::Standard,
-            modifiers: Modifiers::COMMAND,
-            text: None,
-            repeat: false,
-        })
+        [
+            Event::Keyboard(keyboard::Event::ModifiersChanged(Modifiers::COMMAND)),
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key: v.clone(),
+                modified_key: v,
+                physical_key: Physical::Unidentified(NativeCode::Unidentified),
+                location: Location::Standard,
+                modifiers: Modifiers::COMMAND,
+                text: None,
+                repeat: false,
+            }),
+        ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::support::{Holding, paste_keys};
+    use super::*;
+    use crate::harness::Driver;
+    use iced::widget::text_input;
+
+    #[test]
+    fn a_phrase_has_its_line_breaks_tabs_and_runs_of_spaces_made_single_spaces() {
+        assert_eq!(
+            phrase("  abandon\nability\r\n\table  about\n\nabove \n"),
+            "abandon ability able about above"
+        );
+        assert_eq!(
+            phrase("  a\nb\r\nc\t\td  e \u{a0}f\n"),
+            "a b c d e f",
+            "a no-break space is a space too"
+        );
+        assert_eq!(phrase("abandon ability"), "abandon ability", "unchanged");
+        assert_eq!(phrase(" \n\t "), "", "nothing but whitespace");
     }
 
-    /// What a focused field, empty, publishes when `copied` is pasted into it
-    /// from the keyboard, wrapped in [`cleaned`] or not.
+    #[test]
+    fn a_keyboard_paste_has_its_runs_made_single_spaces_and_keeps_its_ends() {
+        assert_eq!(
+            spaced("  abandon\nability\r\n\table  about\n\nabove \n"),
+            " abandon ability able about above "
+        );
+        assert_eq!(spaced(" ability"), " ability");
+        assert_eq!(spaced("abandon ability"), "abandon ability", "unchanged");
+        assert_eq!(spaced(" \n\t "), " ", "nothing but whitespace");
+        assert_eq!(spaced(""), "");
+    }
+
+    #[test]
+    fn a_destination_is_trimmed_and_nothing_else_changes() {
+        assert_eq!(token("  3vQB7B6MrGQZaxCuFg4oh\n"), "3vQB7B6MrGQZaxCuFg4oh");
+        assert_eq!(token("3vQB7B6MrGQZaxCuFg4oh"), "3vQB7B6MrGQZaxCuFg4oh");
+        assert_eq!(token(" \r\n "), "", "nothing but whitespace");
+    }
+
+    #[test]
+    fn signed_bytes_lose_every_whitespace_character() {
+        assert_eq!(hex("00ab\ncd ef\n"), "00abcdef");
+        assert_eq!(hex("4f 2a\r\n\t"), "4f2a");
+        assert_eq!(hex(" \n "), "");
+    }
+
+    /// What a focused, empty field publishes when `copied` is pasted into it
+    /// from the keyboard, the field wrapped in [`phrase_paste`] or not.
     fn pasted(copied: &'static str, wrapped: bool) -> Vec<String> {
-        let input = text_input("", "").on_input(|text| text);
+        pasted_after("", copied, wrapped)
+    }
+
+    /// What a field holding `typed`, focused with its caret at the end,
+    /// publishes when `copied` is pasted into it from the keyboard.
+    fn pasted_after(typed: &str, copied: &'static str, wrapped: bool) -> Vec<String> {
+        let input = text_input("", typed).on_input(|text| text);
         let field: Element<'_, String> = if wrapped {
-            cleaned(input)
+            phrase_paste(input)
         } else {
             input.into()
         };
         let mut driver = Driver::new(field, (300, 60));
         driver.focus_next();
-        let modifiers = Event::Keyboard(keyboard::Event::ModifiersChanged(Modifiers::COMMAND));
-        driver.send_with(&[modifiers, paste_key()], &mut Holding(copied))
+        driver.send_with(&paste_keys(), &mut Holding(copied))
     }
 
     #[test]
-    fn keyboard_paste_into_the_restore_field_keeps_the_words_apart() {
-        let copied = "abandon\nability\nable\n";
+    fn keyboard_paste_into_the_phrase_field_keeps_the_words_apart() {
+        let copied = "one\ntwo\n\nthree";
         assert_eq!(
             pasted(copied, false),
-            ["abandonabilityable"],
+            ["onetwothree"],
             "iced alone joins the words: the case the wrapper is for"
         );
-        assert_eq!(pasted(copied, true), ["abandon ability able"]);
+        assert_eq!(pasted(copied, true), ["one two three"]);
+    }
+
+    #[test]
+    fn keyboard_paste_after_a_typed_word_keeps_the_space_it_brings() {
+        // A paste lands at the caret, so the space at its start is what keeps
+        // it apart from the word before it, as iced's own paste keeps it.
+        assert_eq!(
+            pasted_after("abandon", " ability", false),
+            ["abandon ability"]
+        );
+        assert_eq!(
+            pasted_after("abandon", " ability", true),
+            ["abandon ability"]
+        );
+        assert_eq!(
+            pasted_after("abandon", "\nability\n", true),
+            ["abandon ability "]
+        );
+    }
+
+    #[test]
+    fn the_field_is_handed_a_clipboard_whose_reads_are_cleaned() {
+        let mut held = Holding("one\ntwo\n\nthree");
+        assert_eq!(
+            Normalising(&mut held)
+                .read(clipboard::Kind::Standard)
+                .as_deref(),
+            Some("one two three")
+        );
+        let mut blank = Holding(" \n\t ");
+        assert_eq!(
+            Normalising(&mut blank)
+                .read(clipboard::Kind::Standard)
+                .as_deref(),
+            Some(" ")
+        );
     }
 
     #[test]
     fn the_wrapper_draws_exactly_what_the_field_draws() {
         let field = || text_input("Recovery phrase", "").width(Length::Fixed(200.0));
         let bare = Driver::<()>::new(field(), (300, 60)).draw();
-        let wrapped = Driver::<()>::new(cleaned(field()), (300, 60)).draw();
+        let wrapped = Driver::<()>::new(phrase_paste(field()), (300, 60)).draw();
         assert!(bare == wrapped, "the wrapper changed the drawing");
     }
 }
