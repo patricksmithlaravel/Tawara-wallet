@@ -2238,3 +2238,119 @@ options put in detail.
 
 Tawara-mobile pins this repository at #13's head until #13 merges; the
 merge keeps that commit reachable, and the pin then moves to `main`.
+
+### D35. Third-party notices: cargo-about 0.9.2, generated and checked in CI
+
+**Proposed, 2026-10-13.** PLAN section 6 asks for the notices to be generated
+in CI, not written by hand. Item 6 lists what is open for the owner. The
+number is fixed: D34 is the threat model's entry and D36 packaging's, each
+added by its own pull request, so each keeps its number whatever order they
+merge in.
+
+1. **Tool and pin.** cargo-about 0.9.2, built from crates.io with
+   `cargo install --locked --features cli cargo-about --version 0.9.2`, in the
+   form cargo-deny is installed in `ci.yml` (D13). Without `--features cli`,
+   cargo installs nothing and still exits 0, so `ci/notices.sh` refuses any
+   other version. Of the tools examined, it is the only one that writes the
+   full licence texts from `Cargo.lock` in one command. cargo-bundle-licenses
+   4.2.0 leaves about a hundred texts as `NOT FOUND`, and cargo-license and
+   `cargo deny list` name the licences without their texts.
+2. **File.** `THIRD-PARTY-NOTICES.txt` at the repository root, in plain text,
+   so that each text reads as its crate carries it. Markdown would reinterpret
+   its characters, and HTML would need escaping. `ci/notices.sh` changes the
+   generated text in two ways and leaves the words of the licences alone, and
+   Tawara-mobile's `ci/notices.sh` does the same, so the rule is one for both
+   repositories:
+   - carriage returns are removed, because both repositories keep text files
+     with LF (`.gitattributes`), and a CRLF copy would be rewritten on commit
+     and could never match the generator again;
+   - the standard MIT text's template line, "Copyright (c) <year> <copyright
+     holders>", is removed with the blank line after it (item 6 (a)). Any
+     other template marker stops the script, since it means a crate has
+     fallen back to a standard text that `about.toml` does not account for.
+3. **Contents** (`about.toml`, `THIRD-PARTY-NOTICES.hbs`). The six desktop
+   targets, x86_64 and aarch64 for Windows, Linux and macOS; every feature;
+   build dependencies; no development-only crates. The accepted licences are
+   deny.toml's ten (D10, D12), with two exceptions, each for named crates
+   only: the Mochimo agreement's `LicenseRef-` identifier for the library and
+   Tawara's crates, as in deny.toml's own exceptions, and OFL-1.1 for
+   tawara-app's fonts (item 6 (d)). `crates/wallet-core/tests/policy.rs` holds
+   the list to deny.toml's and the exceptions to a table. The iced fork (D32
+   item 9), ring 0.17.14, the bundled fonts, the Mochimo agreement and the
+   copyright holders' texts (item 6 (a)) are clarified by the SHA-256 of their
+   files. Each crate is listed with the authors its metadata names, and the
+   file says that they are not necessarily its copyright holders.
+   `ci/notices.sh` appends `LICENSE.md`, because cargo-about 0.9.2 does not
+   print a `LicenseRef-` text.
+4. **CI.** On Linux, after the pinned install, `bash ci/notices.sh --check`
+   fails, with a diff and the regeneration command, if the committed file
+   differs from what `Cargo.lock` gives, so a dependency change comes with its
+   regenerated file. The other hosts build from the same lockfile and do not
+   repeat the check. No action and no artifact (D13, D27 item 1); the tool is
+   built cold on every run, like the rest of the job. The texts that
+   `about.toml` takes from crates' repositories are fetched from
+   raw.githubusercontent.com on every run, so the check needs the network, as
+   the clone and the install already do; if GitHub cannot serve them, the
+   check fails rather than passing on a different file. A clarification file
+   that cannot be read only warns, so the byte comparison is what guards
+   against it. To regenerate, run `bash ci/notices.sh`.
+5. **Packaging.** Any distributed desktop build must ship the file beside the
+   application. This change does not package it; packaging is phase 5 (PLAN
+   section 7) and D36.
+6. **Open, for the owner.**
+   - (a) **Copyright holders.** The MIT, ISC and BSD licences ask for the
+     copyright notice to go with the software. Where a package has no licence
+     file of a name cargo-about reads, it prints the licence's standard text,
+     whose copyright line is a template that names nobody. Before this was
+     fixed, 58 crate versions were printed with that template line, and 62
+     with a text that has no copyright line. `about.toml` now gives 42 of the
+     58 their holder's text, from a file in the package (the 24 windows
+     crates' `license-mit`, libm's `LICENSE.txt`) or from the crate's
+     repository at the commit it was published from (lyon, gpu-alloc,
+     gpu-descriptor, profiling, svg_fmt, malloc_buf, and the objc2 crates up
+     to 0.5), all pinned by SHA-256. The 58th was a second, wrong entry for
+     wayland-protocols-plasma, which is gone. Of the 62, zvariant_utils now
+     takes its repository's text, which names its holders, and cfg_aliases no
+     longer has a second text. What is left:
+     - 60 crate versions publish their MIT text with no copyright line, in
+       the package and in the repository alike (most of dtolnay's, serde's
+       and smol-rs's crates, among others). Their text is printed as
+       published.
+     - 15 crate versions publish no MIT text at all: block 0.1.6, dispatch
+       0.2.0, and madsmtm's objc2 0.6 and framework 0.3 crates. They get the
+       standard text without its template line, under an entry that says so,
+       and the policy test lists them, so that a new one is looked up before
+       it joins them. Ten of them name no author in their metadata either;
+       their repository is named.
+
+     (Recommended) ship these as published, after counsel's review and before
+     first distribution: the notice that MIT asks to keep is the one the
+     holder published, and for these there is none, so any line written here
+     would name a holder the crate does not. The alternative is to ask
+     madsmtm/objc2 and SSheldon's repositories to publish licence files, and
+     for the objc2 framework crates, which are also offered under Apache-2.0
+     and Zlib, to choose Apache-2.0, whose text needs no holder line.
+   - (b) `Iced-Icons.ttf` is compiled into every iced build
+     (`graphics/src/text.rs`) and declares no licence. (Recommended) the owner
+     confirms its licence with iced's upstream and the fontello source before
+     first distribution.
+   - (c) The Fira Sans OFL text (`graphics/fonts/OFL.txt` in the fork) is not
+     in the file. Fira Sans is compiled only with the `fira-sans` features,
+     which are off. If one is switched on, its text must be added by hand, and
+     nothing detects that.
+   - (d) OFL-1.1 is accepted for tawara-app alone, and deny.toml is unchanged.
+     (Recommended) keep it so.
+   - (e) The Mochimo text is appended verbatim. (Recommended) keep it so.
+     Whether that suffices is one of the questions Rep-0's `FORK.md` puts to
+     counsel (D10).
+   - (f) The six desktop targets are (Recommended) until phase 5 fixes the
+     shipped set.
+   - (g) The `LicenseRef-` defect in cargo-about 0.9.2 is not reported
+     upstream. Whether to report it is the owner's call.
+   - (h) wayland-protocols-plasma 0.3.12, which winit's Wayland backend
+     brings into the Linux builds, generates its code from KDE's protocol
+     files. Its package carries them, and most declare LGPL-2.1-or-later;
+     others declare MIT-CMU or BSD-3-Clause. The crate itself declares MIT,
+     and so do deny.toml's view and these notices. (Recommended) the owner
+     puts to counsel whether bindings generated from those files carry their
+     licences, before the first Linux distribution.

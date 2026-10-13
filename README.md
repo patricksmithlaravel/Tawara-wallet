@@ -117,4 +117,7 @@ Android and iOS builds and their checks are in
 Tawara is distributed under the wallet's licence, the Mochimo Cryptocurrency
 Engine License Agreement, version 1.0 ([LICENSE.md](LICENSE.md)), the same
 text as the library's. Third-party dependencies are held to permissive
-licences by [deny.toml](deny.toml).
+licences by [deny.toml](deny.toml). Their licence texts are in
+[THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt), which the Linux CI job
+checks against `Cargo.lock` (docs/DECISIONS.md D35). The other hosts build the
+same lockfile and do not repeat the check.
