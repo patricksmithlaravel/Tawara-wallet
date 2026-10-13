@@ -3416,6 +3416,41 @@ mod tests {
     }
 
     #[test]
+    fn choosing_another_account_on_receive_drops_the_last_accounts_code() {
+        let accounts = tawara_wallet_core::sample::wallet_view().accounts;
+        let (first, second) = (accounts[0].id, accounts[1].id);
+        let answer = |account| tawara_wallet_core::ReceiveView {
+            account,
+            destination: account.destination(),
+            ..tawara_wallet_core::sample::receive_view()
+        };
+        let mut app = on_wallet(Page::Receive(ReceivePage::answered(first, answer(first))));
+        wallet(&mut app, WalletMsg::ReceiveFor(second));
+        let Page::Receive(r) = &wallet_page(&app).page else {
+            unreachable!()
+        };
+        assert_eq!(r.account, Some(second));
+        assert!(r.view.is_none() && r.code.is_none(), "{r:?}");
+
+        // A late answer for the first account is not the page's.
+        let _ = app.on_reply(Purpose::Receive, Reply::Receive(answer(first)));
+        let Page::Receive(r) = &wallet_page(&app).page else {
+            unreachable!()
+        };
+        assert!(r.view.is_none() && r.code.is_none(), "{r:?}");
+
+        let _ = app.on_reply(Purpose::Receive, Reply::Receive(answer(second)));
+        let Page::Receive(r) = &wallet_page(&app).page else {
+            unreachable!()
+        };
+        assert_eq!(r.view.as_ref().map(|v| v.account), Some(second));
+        assert!(
+            r.code.is_some(),
+            "the second account's destination has a code"
+        );
+    }
+
+    #[test]
     fn the_sent_page_is_shown_whatever_is_open_and_its_bytes_save_anew_each_time() {
         let scratch = Scratch::new("artifact");
         let mut app = on_wallet(Page::Receive(ReceivePage::default()));

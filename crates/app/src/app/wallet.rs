@@ -1104,8 +1104,13 @@ impl App {
                     ..
                 }) = self.wallet_page()
                 {
-                    r.account = Some(account);
-                    r.view = None;
+                    // The code goes with the answer it was built from, so a
+                    // new account starts with neither, never with the last
+                    // account's code (docs/DECISIONS.md D41).
+                    *r = ReceivePage {
+                        account: Some(account),
+                        ..ReceivePage::default()
+                    };
                     self.send(Command::Receive { account }, Purpose::Receive);
                 }
             }
