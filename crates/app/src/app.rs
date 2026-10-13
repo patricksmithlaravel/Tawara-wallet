@@ -679,25 +679,61 @@ pub fn wipe(field: &mut String) {
     drop(SecretText::take(field));
 }
 
+/// Why a node the person chose or forgot was not saved.
+#[derive(Debug)]
+enum NotSaved {
+    /// `boot` found no folder for the preferences, so nothing can be written
+    /// in this run, and trying again cannot help (PR #29's review).
+    NoFolder,
+    /// The file could not be written.
+    Write(std::io::Error),
+}
+
 /// The note on S2, or on Settings, when the node was forgotten but that could
-/// not be saved, `e` saying why (docs/DECISIONS.md D43). Provisional wording,
-/// for the owner's approval.
-fn forget_unsaved(e: &std::io::Error) -> String {
-    format!(
-        "The node is forgotten, but that could not be saved ({e}). When Tawara next starts \
-         it may use a node again: forget it again then."
-    )
+/// not be saved (docs/DECISIONS.md D43). With no folder, forgetting it again
+/// cannot help, so the note says what the next start does instead (PR #29's
+/// review). Provisional wording, for the owner's approval.
+fn forget_unsaved(why: &NotSaved) -> String {
+    match why {
+        NotSaved::NoFolder => "The node is forgotten for this run only, because there is no \
+             folder for your settings. The next time Tawara starts, it uses the default node."
+            .to_owned(),
+        NotSaved::Write(e) => format!(
+            "The node is forgotten, but that could not be saved ({e}). When Tawara next starts \
+             it may use a node again: forget it again then."
+        ),
+    }
+}
+
+/// The note on S2, or on Settings, when the node was chosen and is in use but
+/// could not be saved. The next start would use another node, so the person
+/// is told now rather than finding out then (PR #29's review;
+/// docs/DECISIONS.md D43). Provisional wording, for the owner's approval.
+fn choice_unsaved(why: &NotSaved) -> String {
+    match why {
+        NotSaved::NoFolder => "This node is used for this run only, because there is no folder \
+             for your settings. The next time Tawara starts, it uses the default node."
+            .to_owned(),
+        NotSaved::Write(e) => format!(
+            "This node is in use, but it could not be saved ({e}). When Tawara next starts it \
+             may use another node: choose this one again then."
+        ),
+    }
 }
 
 /// The title of the note S2 and Settings draw while the preferences file
-/// could not be read (docs/DECISIONS.md D43). Provisional wording, for the
-/// owner's approval.
-pub const HELD_TITLE: &str = "Preferences could not be read";
+/// could not be read (docs/DECISIONS.md D43). It says "settings", the page's
+/// own name, not a term the person was never shown (PR #29's review).
+/// Provisional wording, for the owner's approval.
+pub const HELD_TITLE: &str = "Your settings could not be read";
 
-/// The body of that note: what is not saved while the file is held, and what
-/// ends it. Provisional wording, for the owner's approval.
-pub const HELD_BODY: &str = "No node is in use, and your other settings are not saved. Choosing or \
-     forgetting a node replaces the file and saves your settings again.";
+/// The body of that note: that no node is in use, not even the default, so
+/// that S2's text about the default is not read as the node in use; what is
+/// not saved while the file is held; and what ends it (PR #29's review).
+/// Provisional wording, for the owner's approval.
+pub const HELD_BODY: &str = "No node is in use, not the default, and your other settings are not \
+     saved. Choosing or forgetting a node saves them again, replacing the file that could not \
+     be read.";
 
 /// S3's note when a recovery phrase was dropped before it was confirmed,
 /// `why` saying when.
@@ -1184,18 +1220,27 @@ impl App {
     /// so it is written even over a file that could not be read, and from
     /// then on the file is written as usual (docs/DECISIONS.md D43). The
     /// caller says when the write failed.
-    fn save_node_choice(&mut self) -> std::io::Result<()> {
+    fn save_node_choice(&mut self) -> Result<(), NotSaved> {
         self.model.prefs_held = false;
         match &self.prefs_path {
-            Some(path) => preferences::save(path, &self.model.prefs),
+            Some(path) => preferences::save(path, &self.model.prefs).map_err(NotSaved::Write),
             // `boot` finds no folder for the preferences where neither an
             // absolute XDG_DATA_HOME nor an absolute HOME is set. Nothing can be
-            // written there, so a node forgotten in this run would be back at
-            // the next start: that is a failure to say, not a saved choice
+            // written there, so a node chosen or forgotten in this run is gone
+            // at the next start: that is a failure to say, not a saved choice
             // (PR #29's review, P2-1; docs/DECISIONS.md D43).
-            None => Err(std::io::Error::other(
-                "there is no folder for the preferences",
-            )),
+            None => Err(NotSaved::NoFolder),
+        }
+    }
+
+    /// Put `note`, about a node choice that was not saved, on the screen the
+    /// choice was made on: the node screen, or Settings, whose page draws its
+    /// error at the top (its node card does not draw the node's error).
+    fn note_unsaved(&mut self, note: String) {
+        match &mut self.model.screen {
+            Screen::Node(f) => f.error = Some(note),
+            Screen::Wallet(p) => p.error = Some(note),
+            _ => self.model.node.error = Some(note),
         }
     }
 
@@ -1778,20 +1823,29 @@ impl App {
                 if let Some(v) = view {
                     m.wallet = Some(v);
                 }
-                if form && let Screen::Node(f) = &m.screen {
-                    let back = f.back;
-                    self.go_back(back);
-                }
+                let back = match &m.screen {
+                    Screen::Node(f) if form => Some(f.back),
+                    _ => None,
+                };
                 // A node the person chose is saved and asked now. At start-up
                 // the node is the one already in the preferences, the default
                 // when none was chosen: nothing changed, so nothing is written,
                 // and nothing is asked until a wallet opens or the person asks
                 // (docs/DECISIONS.md D43).
-                // A chosen node that cannot be saved is the previous one at the
-                // next start, which is a node the person chose too, or the
-                // default, so nothing more is said of it.
+                // A chosen node that cannot be saved may not be the one the
+                // next start uses: with no folder for the preferences, that is
+                // always the default. So the screen it was chosen on stays,
+                // saying so, rather than going back as if it were saved (PR
+                // #29's review).
                 if form {
-                    let _ = self.save_node_choice();
+                    match self.save_node_choice() {
+                        Ok(()) => {
+                            if let Some(back) = back {
+                                self.go_back(back);
+                            }
+                        }
+                        Err(why) => self.note_unsaved(choice_unsaved(&why)),
+                    }
                     self.ask_tip();
                     self.read_activity();
                 }
@@ -1875,23 +1929,33 @@ impl App {
                 if let Some(v) = view {
                     m.wallet = Some(v);
                 }
-                if let Screen::Node(f) = &mut m.screen {
-                    f.url.clear();
+                // The address typed, and what was said of the last try, are
+                // about a node no longer wanted, so both are cleared on the two
+                // screens Forget is drawn on: Settings no longer keeps "Type
+                // the node's address" above a node just forgotten (PR #29's
+                // review).
+                match &mut m.screen {
+                    Screen::Node(f) => {
+                        f.url.clear();
+                        f.error = None;
+                    }
+                    Screen::Wallet(WalletPage {
+                        page: Page::Settings(s),
+                        error,
+                        ..
+                    }) => {
+                        s.node.clear();
+                        *error = None;
+                    }
+                    _ => {}
                 }
                 // A forgotten node must stay forgotten (docs/DECISIONS.md
                 // D43). If that cannot be written, the next start would use
                 // the node from before, or the default, so the screen Forget
-                // was pressed on says so: the node screen, or Settings, whose
-                // page draws its error at the top (not the node's, which
-                // Settings does not draw). The next change that is written
+                // was pressed on says so. The next change that is written
                 // saves `none` with it.
-                if let Err(e) = self.save_node_choice() {
-                    let note = forget_unsaved(&e);
-                    match &mut self.model.screen {
-                        Screen::Node(f) => f.error = Some(note),
-                        Screen::Wallet(p) => p.error = Some(note),
-                        _ => self.model.node.error = Some(note),
-                    }
+                if let Err(why) = self.save_node_choice() {
+                    self.note_unsaved(forget_unsaved(&why));
                 }
             }
             (
@@ -5361,13 +5425,188 @@ mod tests {
         }
         pump(&mut app, &events, |a| waiting(a).is_empty());
         assert_eq!(app.model.prefs.node, None, "forgotten for this run");
+        // Forgetting again cannot help with no folder, so the note does not
+        // say to, and says what the next start does instead (PR #29's review).
         assert!(
             matches!(
                 &app.model.screen,
-                Screen::Node(f) if f.error.as_deref().is_some_and(|e| e.contains("could not be saved"))
+                Screen::Node(f) if f.error.as_deref().is_some_and(|e| {
+                    e.contains("for this run only")
+                        && e.contains("uses the default node")
+                        && !e.contains("again")
+                })
             ),
             "{:?}",
             app.model.screen
+        );
+        assert!(
+            drawn_text(&app.model, (1440, 900))
+                .iter()
+                .any(|t| t.contains("forgotten for this run only")),
+            "the screen draws it"
+        );
+    }
+
+    /// What the worker answers to `SetNode` from a form, given to `app` as
+    /// it comes: the node is set, and it is not asked here, so no test
+    /// reaches the network.
+    fn node_set(app: &mut App, url: &str) {
+        let _ = app.on_reply(
+            Purpose::SetNode { form: true },
+            Reply::NodeSet {
+                url: url.to_owned(),
+                view: None,
+            },
+        );
+    }
+
+    #[test]
+    fn choosing_a_node_says_so_when_no_folder_was_found_for_the_preferences() {
+        // A chosen node that cannot be saved is not the one the next start
+        // uses: with no folder, that is the default. The screen it was chosen
+        // on stays and says so, rather than going back as if it were saved
+        // (PR #29's review; docs/DECISIONS.md D43). `alone` has no path, as
+        // `boot` passes none when it finds no folder.
+        let mut app = alone();
+        app.model.screen = Screen::Node(NodeForm {
+            url: "https://mine.example".to_owned(),
+            error: None,
+            back: Back::Start,
+        });
+        let messages = press_drawn(&app.model, "Use this node", (1440, 900));
+        assert!(
+            matches!(messages.as_slice(), [Message::SaveNode]),
+            "{messages:?}"
+        );
+        for message in messages {
+            let _ = app.update(message);
+        }
+        node_set(&mut app, "https://mine.example");
+        assert_eq!(
+            app.model.node.url.as_deref(),
+            Some("https://mine.example"),
+            "in use for this run"
+        );
+        assert!(
+            matches!(
+                &app.model.screen,
+                Screen::Node(f) if f.error.as_deref().is_some_and(|e| {
+                    e.contains("used for this run only") && e.contains("uses the default node")
+                })
+            ),
+            "{:?}",
+            app.model.screen
+        );
+        assert!(
+            drawn_text(&app.model, (1440, 900))
+                .iter()
+                .any(|t| t.contains("used for this run only")),
+            "the node screen draws it"
+        );
+
+        // Settings' Save says the same, at the top of its page.
+        settings_without_node(&mut app.model);
+        if let Screen::Wallet(WalletPage {
+            page: Page::Settings(s),
+            ..
+        }) = &mut app.model.screen
+        {
+            s.node = "https://other.example".to_owned();
+        }
+        let messages = press_drawn(&app.model, "Save", SETTINGS_WINDOW);
+        assert!(
+            matches!(messages.as_slice(), [Message::Wallet(WalletMsg::SaveNode)]),
+            "{messages:?}"
+        );
+        for message in messages {
+            let _ = app.update(message);
+        }
+        node_set(&mut app, "https://other.example");
+        assert!(
+            drawn_text(&app.model, SETTINGS_WINDOW)
+                .iter()
+                .any(|t| t.contains("used for this run only")),
+            "Settings draws it"
+        );
+    }
+
+    #[test]
+    fn a_saved_choice_goes_back_from_the_node_screen_and_says_nothing() {
+        // The other side of the note above: a choice that is saved goes back
+        // as before, with no note anywhere (PR #29's review).
+        let scratch = Scratch::new("chosen-saved-back");
+        let path = scratch.0.join("preferences");
+        let mut app = alone_saving(Preferences::default(), path.clone());
+        app.model.screen = Screen::Node(NodeForm {
+            url: "https://mine.example".to_owned(),
+            error: None,
+            back: Back::Start,
+        });
+        for message in press_drawn(&app.model, "Use this node", (1440, 900)) {
+            let _ = app.update(message);
+        }
+        node_set(&mut app, "https://mine.example");
+        assert!(
+            matches!(app.model.screen, Screen::Start { .. }),
+            "{:?}",
+            app.model.screen
+        );
+        assert_eq!(app.model.node.error, None);
+        assert_eq!(
+            preferences::load(&path).node.as_deref(),
+            Some("https://mine.example")
+        );
+    }
+
+    #[test]
+    fn forgetting_on_the_node_card_leaves_no_word_of_the_address_before() {
+        // Save with nothing typed says to type an address; a Forget that then
+        // succeeds leaves no such word, nor the address, above a node just
+        // forgotten (PR #29's review).
+        let scratch = Scratch::new("held-forget-stale");
+        let path = scratch.0.join("preferences");
+        std::fs::write(&path, b"node = https://mine.example\n\xff\xfe\n").unwrap();
+        let (mut app, events) = held_app(&path);
+        settings_without_node(&mut app.model);
+        for message in press_drawn(&app.model, "Save", SETTINGS_WINDOW) {
+            let _ = app.update(message);
+        }
+        let said = "Type the node's address, starting https://.";
+        assert!(
+            drawn_text(&app.model, SETTINGS_WINDOW)
+                .iter()
+                .any(|t| t == said),
+            "Save with nothing typed says so"
+        );
+        if let Screen::Wallet(WalletPage {
+            page: Page::Settings(s),
+            ..
+        }) = &mut app.model.screen
+        {
+            s.node = "https://half".to_owned();
+        }
+        for message in press_drawn(&app.model, "Forget the node", SETTINGS_WINDOW) {
+            let _ = app.update(message);
+        }
+        pump(&mut app, &events, |a| waiting(a).is_empty());
+        assert!(!app.model.prefs_held, "the file is no longer held");
+        assert!(
+            matches!(
+                &app.model.screen,
+                Screen::Wallet(WalletPage {
+                    page: Page::Settings(s),
+                    error: None,
+                    ..
+                }) if s.node.is_empty()
+            ),
+            "{:?}",
+            app.model.screen
+        );
+        assert!(
+            !drawn_text(&app.model, SETTINGS_WINDOW)
+                .iter()
+                .any(|t| t == said),
+            "the page no longer says it"
         );
     }
 
@@ -5386,8 +5625,17 @@ mod tests {
         // of none, which is what releases the file (PR #29's review, P2-2;
         // docs/DECISIONS.md D43).
         let drawn = drawn_text(&app.model, (1440, 900));
+        assert!(drawn.iter().any(|t| t == HELD_TITLE), "{drawn:?}");
+        // Its text does not say the wallet uses the default above a note that
+        // says no node is in use (PR #29's review).
         assert!(
-            drawn.iter().any(|t| t == "Preferences could not be read"),
+            drawn
+                .iter()
+                .any(|t| t.starts_with("The wallet uses no node now")),
+            "{drawn:?}"
+        );
+        assert!(
+            !drawn.iter().any(|t| t.starts_with("By default")),
             "{drawn:?}"
         );
         let messages = press_drawn(&app.model, "Forget the node", (1440, 900));
@@ -5415,10 +5663,7 @@ mod tests {
         // Settings says why, and its node card offers Forget as S2 does (PR #29's
         // review, P2-2; docs/DECISIONS.md D43).
         let drawn = drawn_text(&app.model, SETTINGS_WINDOW);
-        assert!(
-            drawn.iter().any(|t| t == "Preferences could not be read"),
-            "{drawn:?}"
-        );
+        assert!(drawn.iter().any(|t| t == HELD_TITLE), "{drawn:?}");
         let messages = press_drawn(&app.model, "Forget the node", SETTINGS_WINDOW);
         assert!(
             matches!(messages.as_slice(), [Message::ForgetNode]),
@@ -5502,5 +5747,16 @@ mod tests {
         assert!(!forget(&app), "Settings with no node set, and nothing held");
         app.model.prefs_held = true;
         assert!(forget(&app), "Settings while the file is held");
+        // A node set is not enough on Settings: its card offers Forget only
+        // as the way out of a held file (PR #29's review).
+        app.model.prefs_held = false;
+        app.model.node.url = Some("https://node.example".to_owned());
+        assert!(
+            drawn_text(&app.model, SETTINGS_WINDOW)
+                .iter()
+                .any(|t| t == "Check now"),
+            "the node card is drawn"
+        );
+        assert!(!forget(&app), "Settings with a node set, and nothing held");
     }
 }

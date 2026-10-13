@@ -390,12 +390,21 @@ fn node<'a>(model: &'a Model, form: &'a NodeForm) -> Element<'a, Message> {
     } else {
         links.into()
     };
+    // With no node in use, after Forget or while the preferences cannot be
+    // read, "by default the wallet uses" would be read as the node in use, and
+    // would contradict the held note, so the text says none is, as Settings'
+    // node card does (PR #29's review; docs/DECISIONS.md D43). Provisional
+    // wording, for the owner's approval.
+    let using = if model.node.url.is_some() {
+        format!("By default the wallet uses {DEFAULT_NODE}; you can choose another node, or none.")
+    } else {
+        format!("The wallet uses no node now; you can choose one. The default is {DEFAULT_NODE}.")
+    };
     let mut body = column![
         heading(
             "Choose a node",
             format!(
-                "By default the wallet uses {DEFAULT_NODE}; you can choose another node, or \
-                 none. Every balance, key index and chain tip the wallet works from comes from \
+                "{using} Every balance, key index and chain tip the wallet works from comes from \
                  the node it uses, so use one you trust. That node learns which tags the wallet \
                  asks about, and so their balances, and when the wallet is used; it can also \
                  learn your network address. Requests to {DEFAULT_NODE} pass through \
