@@ -432,20 +432,22 @@ run.
   under `usr/share/applications/`, hicolor icons from 16 to 512 pixels, the
   notices under `usr/share/doc/tawara-desktop/`, and `DEBIAN/control`
   (package `tawara-desktop`, the owner's maintainer line). `Depends` has two
-  parts. The first is the `shlibs:Depends` that `dpkg-shlibdeps -O` prints
-  for the executable, which names only the libraries it is linked with. The
-  second names by hand the libraries the app opens at run time (D36): for an
-  X11 session, `libx11-6`, `libx11-xcb1`, `libxcursor1`, `libxi6` and
+  parts. The first is the value that `dpkg-shlibdeps -O -e
+  usr/bin/tawara-desktop` prints for the variable `shlibs:Depends`, without
+  the variable's name, which `Depends` cannot hold; it names only the
+  libraries the executable is linked with (D36, source 26). The second names
+  by hand the libraries the app opens at run time (D36): for an X11 session,
+  `libx11-6`, `libx11-xcb1`, `libxcursor1`, `libxi6` and
   `libxkbcommon-x11-0`; for a Wayland session, `libwayland-client0`; and for
   both, `libxkbcommon0`, which the keyboard needs. All of them are `Depends`,
   since one package serves either session. `Recommends` is `libvulkan1`:
   without it the app draws with its software renderer. The X11 names are
   those that `.github/workflows/ci.yml` installs before its start-up check
   (lines 141 and 142), less `libxrandr2`, which winit does not open;
-  `libx11-6` and `libxkbcommon0` are added because the app opens `libX11`
-  and `libxkbcommon` itself. Then `dpkg-deb --root-owner-group --build`, in
-  the same container. The package has no maintainer script that touches
-  anyone's home folder.
+  `libx11-6` and `libxkbcommon0` are added because the app opens `libX11` and
+  `libxkbcommon` itself. Then `dpkg-deb --root-owner-group --build`, in the
+  same container. The package has no maintainer script that touches anyone's
+  home folder.
 - [ ] Optional detached GPG signatures (owner, section 1.2).
 
 ### 6.4 Android (App Bundle)

@@ -2384,24 +2384,24 @@ The GitHub digests were read on 2026-10-13.
   needs no FUSE, and with `--runtime-file`, so it downloads nothing at run
   time. `dpkg-deb` and `dpkg-shlibdeps` are Debian's own; `cargo-deb` would
   add a tool for what a control file and two commands do. `dpkg-shlibdeps`
-  names only the libraries a binary is linked with, and the app also opens
-  several by name at run time (through `x11-dl`, `x11rb`, `xkbcommon-dl` and
-  `wayland-sys` in winit's backends, and through `ash` for `libvulkan` in
-  wgpu), so RELEASE.md section 6.3 names them by hand. An executable
-  runs only on systems whose glibc is at least the newest version it
-  needs, so the build names a floor, **glibc 2.35** (Ubuntu 22.04's, and
-  icm's default), and **fails if the executable needs anything newer**;
-  the release notes state the floor. The build runs in an `ubuntu:22.04`
-  container pinned by digest, on the owner's machine for a release and in
-  the same container in CI. A runner image is not enough: the release is
-  not built in CI, and the newest images move on (Tawara-mobile's Android
-  job already runs on `ubuntu-24.04`, `.github/workflows/mobile.yml` line
-  96, whose glibc is 2.39), while docs/RELEASE.md section 7 tests the
-  packages on Ubuntu 22.04. Inside the container, Rust comes from
-  rustup-init at a pinned version and hash, then the toolchain
-  `rust-toolchain.toml` names. On an Apple silicon Mac the `linux/amd64`
-  container runs under emulation, which is slower and changes nothing
-  about the checks. x86_64 only, for the first release (decision 6).
+  names only the libraries a binary is linked with (source 26), and the app
+  also opens several by name at run time (through `x11-dl`, `x11rb`,
+  `xkbcommon-dl` and `wayland-sys` in winit's backends, and through `ash` for
+  `libvulkan` in wgpu), so RELEASE.md section 6.3 names them by hand. An
+  executable runs only on systems whose glibc is at least the newest version
+  it needs, so the build names a floor, **glibc 2.35** (Ubuntu 22.04's, and
+  icm's default), and **fails if the executable needs anything newer**; the
+  release notes state the floor. The build runs in an `ubuntu:22.04`
+  container pinned by digest, on the owner's machine for a release and in the
+  same container in CI. A runner image is not enough: the release is not
+  built in CI, and the newest images move on (Tawara-mobile's Android job
+  already runs on `ubuntu-24.04`, `.github/workflows/mobile.yml` line 96,
+  whose glibc is 2.39), while docs/RELEASE.md section 7 tests the packages on
+  Ubuntu 22.04. Inside the container, Rust comes from rustup-init at a pinned
+  version and hash, then the toolchain `rust-toolchain.toml` names. On an
+  Apple silicon Mac the `linux/amd64` container runs under emulation, which
+  is slower and changes nothing about the checks. x86_64 only, for the first
+  release (decision 6).
 - **Android: `aapt2` and `bundletool`, no Gradle** (D4; Tawara-mobile's
   script already links with `aapt2`). `aapt2 link --proto-format` writes
   the resources a bundle needs; there is no DEX, as the manifest says
@@ -2612,4 +2612,10 @@ packaging study of 2026-10-12, whose notes are not in the repository.
     app to all Google Play users in your selected countries or regions." and
     "Rollout percentage options are unavailable for a first release."
     https://support.google.com/googleplay/android-developer/answer/9859348?hl=en
+    (2026-10-13)
+26. Debian, dpkg-shlibdeps(1): "For each binary that dpkg-shlibdeps
+    analyzes, it finds out the list of libraries that it's linked with."
+    With `-O`, it prints the substitution variables, among them
+    `shlibs:Depends`, to standard output; `-e` names the executable.
+    https://manpages.debian.org/bookworm/dpkg-dev/dpkg-shlibdeps.1.en.html
     (2026-10-13)
