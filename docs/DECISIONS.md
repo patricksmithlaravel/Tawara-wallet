@@ -1892,6 +1892,60 @@ on the three conditions D18 left open.
    `setAlwaysFinish`, whose binder transaction number differs between Android
    15 builds. The check `exit.runtime` confirms that the setting took.*
 
+   *Amended (owner, 2026-10-13), the exit after Destroy: the check has run on
+   an arm64 API 36 emulator, locally, after the move to the fork's winit, and
+   its facts are these, from Tawara-mobile#4. With the fork's winit, Android's
+   `Destroy` ends the event loop, and `run_in` returns; `exit.destroyed` and
+   `exit.ended` pass 5 of 5. `std::process::exit` then aborted in every run:
+   SIGABRT on Android's renderer threads (`hwuiTask0` and `hwuiTask1`), right
+   after bionic's `FORTIFY: pthread_mutex_lock called on a destroyed mutex`.
+   The fork reported this case in its commit `7a622ab64`. As item 9 (j)
+   prescribes for a reproduced SIGABRT, Tawara-mobile now ends the process with
+   `libc::_exit`, including the early exit on a private-folder failure.
+   android-activity 0.6.1 also says not to call `process::exit` from
+   `android_main` (its `src/lib.rs`, lines 227 to 231). The lock's `Leaving`
+   completed before the exit in 14 of 15 runs; the one exception came when
+   `Destroy` arrived 123 ms after the app went to the background. A bounded
+   wait after `run_in`, which (j) named, cannot help: `Leaving` completes only
+   inside `App::update`, where `Wiped::wiped` is called
+   (`crates/app/src/app.rs:1164`) and `Wiped::taken` is called (lines 1666 and
+   1672) through `on_event` (line 1555), which `update` calls at line 1189. The
+   state they raise is `Wiped` (`crates/app/src/host.rs:103-139`). `run_in`
+   hands `App::update` to `iced::application(...).run()`
+   (`crates/app/src/lib.rs:59-75`), so once winit's loop has ended on
+   `Destroy`, no update runs.*
+
+   *Decided (owner, 2026-10-13): `exit.lock` in Tawara-mobile's emulator check
+   becomes a reported count, not a required gate. Why this is safe: ending the
+   process erases every secret held in its memory, and the library's store
+   writes are single atomic commits (an interrupted write leaves the store
+   fully before or fully after), so an unfinished lock leaves nothing behind.
+   No `tawara-app` change.*
+
+   *A note on the amendment above, not part of the owner's words. The library's
+   claim, as checked: in `mochimo-crypto` at `7cdc2e9`, `Keystore::commit`
+   (`src/keystore/mod.rs:1006`) makes four steps on Unix: write a temporary
+   file, `fsync` it, `rename` it over the store, and `fsync` the directory
+   (lines 1013 to 1016). `persist_settled` commits through it (line 1354). The
+   proof `spend_state_is_never_observed_half_advanced`
+   (`tests/invariants.rs:3532-3534`, `cfg(unix)`) kills a commit at each of
+   those steps, reopens the store, and finds the spend state fully before or
+   fully after. It covers a process that ends, since the store changes only at
+   the `rename`, which is one syscall. It does not reach power loss, an `fsync`
+   that lies, or a rename on a filesystem that does not journal it
+   (`tests/invariants.rs:3489-3493`). The Windows layout has its own proof
+   (`tests/invariants.rs:3831-3833`, `cfg(windows)`), which runs only on a
+   Windows host and was not run for this record. Two qualifications to 'leaves
+   nothing behind'. The lock writes nothing: it drops the session, the pending
+   plan and any phrase (`crates/wallet-core/src/worker.rs:1205-1215`). A commit
+   killed before its `rename` can leave `accounts.mks.tmp` in the store
+   directory, whose header is plaintext metadata and not key material
+   (`src/keystore/medium.rs:228-230`); the next commit or open removes it
+   (`src/keystore/medium.rs:231`, `src/keystore/mod.rs:696`). Process exit also
+   releases the process's memory without overwriting it, so 'erases' means that
+   no process holds the secrets afterwards; it does not mean that they are
+   zeroed.*
+
 10. **Phase 4 (b): the phone layout and its glue. Decided under the owner's
    delegation, 2026-10-12.** On 2026-10-12 the owner asked that the questions
    phase 4 (b)'s studies raised be decided without waiting for them, and that
