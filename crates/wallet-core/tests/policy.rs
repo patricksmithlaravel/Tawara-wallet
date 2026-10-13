@@ -33,9 +33,28 @@ const LIBRARY_GIT: &str = "https://github.com/patricksmithlaravel/mcm-rust-cli-w
 /// The library's package name.
 const LIBRARY: &str = "mochimo-crypto";
 
-/// The owner's fork of iced, the one source iced may come from
-/// (docs/DECISIONS.md D32, item 1).
+/// The owner's fork of iced, the one source iced may come from, and the one
+/// source of the packages the fork ships with, winit and dpi (docs/DECISIONS.md
+/// D32, items 1 and 9).
 const ICED_GIT: &str = "https://github.com/patricksmithlaravel/iced_mobile";
+
+/// The features the `iced` line in the workspace manifest names, in any order.
+/// D27 added `canvas` and `advanced` to the list the workspace line writes out,
+/// beyond iced 0.14.0's own defaults. Each feature turns on code, crates or a platform backend in every build, so a
+/// change to this list needs a decision, recorded in docs/DECISIONS.md first
+/// (D32 item 9). `qr_code` in particular comes only with the owner's approval.
+const ICED_FEATURES: [&str; 10] = [
+    "wgpu",
+    "tiny-skia",
+    "canvas",
+    "advanced",
+    "crisp",
+    "web-colors",
+    "thread-pool",
+    "linux-theme-detection",
+    "x11",
+    "wayland",
+];
 
 /// The library's crate name, as source code names it.
 const LIBRARY_IDENT: &str = "mochimo_crypto";
@@ -1871,9 +1890,37 @@ fn is_iced(name: &str) -> bool {
     name == "iced" || name.starts_with("iced_")
 }
 
+/// Every entry of `manifest`'s `[features]` table that switches on a feature of
+/// an iced crate (`iced/..`, `iced?/..`, `iced_runtime/..`), as the feature's
+/// name and the entry. iced's features are decided once, in the workspace line
+/// (docs/DECISIONS.md D32 item 9), and a crate's own feature would add to them
+/// in every build that turns it on, `default` included.
+fn iced_feature_forwards(manifest: &toml::Table) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    if let Some(feats) = manifest.get("features").and_then(|v| v.as_table()) {
+        for (name, list) in feats {
+            for entry in list
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str())
+            {
+                if let Some((dep, _)) = entry.split_once('/')
+                    && is_iced(dep.strip_suffix('?').unwrap_or(dep))
+                {
+                    out.push((name.clone(), entry.to_owned()));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// iced comes from the owner's fork, every crate of it from one commit named
 /// by its full hash, as the library comes from Rep-1 (docs/DECISIONS.md D32,
 /// item 1): in the workspace's lines, in every crate's, and in the lockfile.
+/// No crate switches on an iced feature from its own `[features]` either, so
+/// the workspace line's list is the whole of what ships (D32 item 9).
 #[test]
 fn iced_comes_from_the_fork_pinned_by_full_commit_hash() {
     let root = workspace_root();
@@ -1938,6 +1985,13 @@ fn iced_comes_from_the_fork_pinned_by_full_commit_hash() {
                 );
             }
         }
+        let forwards = iced_feature_forwards(&crate_manifest);
+        assert!(
+            forwards.is_empty(),
+            "{} switches on iced features from its own [features] ({forwards:?}); iced's \
+             features are decided once, in the workspace line (docs/DECISIONS.md D32 item 9)",
+            manifest_path.display()
+        );
     }
 
     // And the lockfile resolved every iced crate at that commit.
@@ -1953,13 +2007,193 @@ fn iced_comes_from_the_fork_pinned_by_full_commit_hash() {
         })
         .collect();
     assert!(!iced.is_empty(), "Cargo.lock holds no iced crate");
-    let expected = format!("git+{ICED_GIT}?rev={rev}#{rev}");
+    let expected = fork_source(&rev);
     for (name, source) in iced {
         assert_eq!(
             source, expected,
             "Cargo.lock resolved {name} from somewhere other than the pinned commit"
         );
     }
+}
+
+/// The forwarding check above, held to fixed manifests, so that a check that
+/// sees nothing cannot pass every crate.
+#[test]
+fn the_iced_forwarding_check_sees_what_it_must() {
+    let flagged = [
+        "[features]\ndefault = [\"iced/default\"]",
+        "[features]\npicture = [\"iced?/canvas\"]",
+        "[features]\nselect = [\"iced_runtime/selector\"]",
+        "[features]\nphone = [\"serde/std\", \"iced_winit/android-native-activity\"]",
+    ];
+    for source in flagged {
+        let manifest = source.parse::<toml::Table>().expect("test manifest parses");
+        assert_eq!(
+            iced_feature_forwards(&manifest).len(),
+            1,
+            "the check missed an iced feature switched on by a crate: {source}"
+        );
+    }
+    let allowed = [
+        "[package]\nname = \"x\"",
+        "[features]",
+        "[features]\ndefault = []",
+        "[features]\nfast = [\"serde/std\", \"dep:chrono\", \"icedtea/x\"]",
+    ];
+    for source in allowed {
+        let manifest = source.parse::<toml::Table>().expect("test manifest parses");
+        assert!(
+            iced_feature_forwards(&manifest).is_empty(),
+            "the check flagged something that switches on no iced feature: {source}"
+        );
+    }
+}
+
+/// The source Cargo.lock records for a package taken from the fork at `rev`.
+fn fork_source(rev: &str) -> String {
+    format!("git+{ICED_GIT}?rev={rev}#{rev}")
+}
+
+/// The commit the `iced` line of the workspace manifest pins.
+fn iced_rev() -> String {
+    let manifest = read_toml(&workspace_root().join("Cargo.toml"));
+    manifest["workspace"]["dependencies"]["iced"]["rev"]
+        .as_str()
+        .expect("[workspace.dependencies] pins iced by rev")
+        .to_owned()
+}
+
+/// Every package Cargo.lock lists, as its name and its source (empty for a
+/// package with no source, which is a path package).
+fn locked_packages() -> Vec<(String, String)> {
+    let lock = read_toml(&workspace_root().join("Cargo.lock"));
+    lock["package"]
+        .as_array()
+        .expect("Cargo.lock lists packages")
+        .iter()
+        .filter_map(|p| p.as_table())
+        .map(|p| {
+            let name = p["name"].as_str().expect("a package has a name");
+            let source = p.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            (name.to_owned(), source.to_owned())
+        })
+        .collect()
+}
+
+/// Every package Cargo.lock takes from the fork is at the pinned commit, and is
+/// the only package of its name in the lock: the build holds one copy of each
+/// (docs/DECISIONS.md D32 item 9). This reaches winit and dpi, which no
+/// manifest names, and every other package the fork ships.
+#[test]
+fn every_fork_package_is_at_the_pinned_commit_once() {
+    let expected = fork_source(&iced_rev());
+    let fork_prefix = format!("git+{ICED_GIT}");
+    let packages = locked_packages();
+    let from_fork: Vec<&(String, String)> = packages
+        .iter()
+        .filter(|(_, source)| source.starts_with(&fork_prefix))
+        .collect();
+    assert!(
+        !from_fork.is_empty(),
+        "Cargo.lock holds no package from the fork; a check over nothing passes vacuously"
+    );
+    for (name, source) in from_fork {
+        assert_eq!(
+            source, &expected,
+            "Cargo.lock resolved {name} from the fork at another commit than the pinned one"
+        );
+        let copies = packages.iter().filter(|(n, _)| n == name).count();
+        assert_eq!(
+            copies, 1,
+            "Cargo.lock holds {copies} packages named {name}; the build holds one copy of each"
+        );
+    }
+}
+
+/// Cargo.lock holds exactly one winit, and it is the fork's, at the pinned
+/// commit (docs/DECISIONS.md D32 item 9). A second copy would register the same
+/// Objective-C classes twice on iOS, and objc2 panics on the duplicate name.
+#[test]
+fn winit_is_one_package_from_the_fork() {
+    let sources: Vec<String> = locked_packages()
+        .into_iter()
+        .filter(|(name, _)| name == "winit")
+        .map(|(_, source)| source)
+        .collect();
+    assert_eq!(
+        sources,
+        vec![fork_source(&iced_rev())],
+        "Cargo.lock must hold exactly one winit, from the fork at the pinned commit"
+    );
+}
+
+/// No manifest of the wallet workspace names winit as a dependency, under any
+/// name and in any table (docs/DECISIONS.md D32 item 9). winit comes to the
+/// build through iced_winit, from the fork, and a line of its own would be a
+/// second route to a copy of it. The check reads the workspace manifest and the
+/// members under `crates/` only: `spikes/` has its own workspace
+/// (docs/DECISIONS.md D17).
+#[test]
+fn no_manifest_names_winit() {
+    let root_manifest = workspace_root().join("Cargo.toml");
+    let workspace = read_toml(&root_manifest);
+    for (key, value) in workspace["workspace"]["dependencies"]
+        .as_table()
+        .expect("[workspace.dependencies] exists")
+    {
+        assert!(
+            package_name(key, value) != "winit",
+            "{} names winit as `{key}` in [workspace.dependencies]; winit comes from the fork \
+             through iced_winit alone (docs/DECISIONS.md D32 item 9)",
+            root_manifest.display()
+        );
+    }
+    for dir in crate_dirs() {
+        let manifest_path = dir.join("Cargo.toml");
+        let crate_manifest = read_toml(&manifest_path);
+        for (section, deps) in dependency_tables(&crate_manifest) {
+            for (key, value) in deps {
+                assert!(
+                    package_name(key, value) != "winit",
+                    "{} names winit as `{key}` in [{section}]; winit comes from the fork \
+                     through iced_winit alone (docs/DECISIONS.md D32 item 9)",
+                    manifest_path.display()
+                );
+            }
+        }
+    }
+}
+
+/// The `iced` line is taken with `default-features = false` and exactly the
+/// features ICED_FEATURES lists, each once (docs/DECISIONS.md D32 item 9).
+/// Defaults would turn on features nobody chose for this build, and a feature
+/// added or dropped changes what ships.
+#[test]
+fn iced_line_keeps_default_features_off_and_its_listed_features() {
+    let manifest = read_toml(&workspace_root().join("Cargo.toml"));
+    let iced = manifest["workspace"]["dependencies"]["iced"]
+        .as_table()
+        .expect("[workspace.dependencies] names iced as a table");
+    assert_eq!(
+        iced.get("default-features").and_then(|v| v.as_bool()),
+        Some(false),
+        "the iced line must keep default-features = false (docs/DECISIONS.md D32 item 9)"
+    );
+    let mut features: Vec<&str> = iced
+        .get("features")
+        .and_then(|v| v.as_array())
+        .expect("the iced line names its features")
+        .iter()
+        .map(|v| v.as_str().expect("feature names are strings"))
+        .collect();
+    features.sort_unstable();
+    let mut listed = ICED_FEATURES.to_vec();
+    listed.sort_unstable();
+    assert_eq!(
+        features, listed,
+        "the iced line's features differ from ICED_FEATURES; changing them needs a decision \
+         recorded in docs/DECISIONS.md first (D32 item 9)"
+    );
 }
 
 // ---------------------------------------------------------------------------

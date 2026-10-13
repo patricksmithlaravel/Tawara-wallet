@@ -79,6 +79,12 @@ owner's approval) are added by the change that needs them, with
 *Since phase 4, iced comes from the owner's fork at a pinned commit whose
 sources are these releases plus the mobile change (D32, item 1).*
 
+*Amended 2026-10-12: the eight features above are the defaults of iced
+0.14.0 and of the branch commit `71f00e8`, but not of the release Tawara
+now pins, `v0.14.1-mobile.2`. Its defaults add `android-native-activity`,
+`mobile-logger`, `mobile-fira-sans` and `mobile-system-fonts`, which
+`default-features = false` leaves off. See D32 item 9.*
+
 ### D7. The library pin: Rep-1 at `7cdc2e9`
 
 **owner, 2026-10-03.** The owner's instructions for phase 0 named Rep-1's
@@ -225,6 +231,10 @@ entry in `ignore` carries a written reason").
   installed fonts, never node data). `FORK.md` R2-2 measured iced
   as tripping `unmaintained` twice; these are the two. Both are
   re-examined when the iced pin moves.
+  *Amended 2026-10-12: re-examined at the release `v0.14.1-mobile.2`.
+  Both still arrive, now with iced 0.14.1, and both are still needed:
+  removing either makes `cargo deny` fail. deny.toml names the path that
+  reaches each at the pin (D32 item 9 (e)).*
 - **Kept from Rep-1:** `unmaintained = "all"`, `yanked = "deny"`, the
   `digest` 0.11 ban, and the denied features of `ureq`, `argon2` and
   `serde_json`. Feature unification means a crate in the interface's graph
@@ -236,7 +246,12 @@ entry in `ignore` carries a written reason").
   `raw-backend` feature, refused in the resolved graph whatever route would
   turn it on (a crate's `[features]`, a renamed dependency, another crate
   depending on the library).
+  *Amended 2026-10-12: the bans also refuse `winit` as a direct dependency
+  of anything but `iced_winit`, from the fork or from crates.io, so that
+  the build holds the fork's one copy (D32 item 9 (e)).*
 - **Sources:** crates.io, and Rep-1 by git. Nothing else.
+  *Amended 2026-10-12: the iced fork is a second git source, beside Rep-1,
+  pinned by full commit hash (D32, items 1 and 9).*
 - **Wildcards:** a registry dependency with a `*` requirement is denied.
   `allow-wildcard-paths` admits, for the four unpublished crates, every
   dependency that does not come from a registry: the path dependencies
@@ -380,6 +395,23 @@ loaded by a `mod` inside a `#[test]` function. Four more tests hold
 the detectors to fixed cases, the walk to a crate laid out on disk where the
 answer is known, and its refusals to what it cannot read, so a detector that
 sees nothing cannot pass.
+
+*Amended 2026-10-12: four checks are added for the iced fork (D32 item 9
+(e)). Every `Cargo.lock` package from the fork is at the pinned commit and
+is the only package of its name, which reaches `winit` and `dpi`; the lock
+holds exactly one `winit`, the fork's; no manifest of the workspace names
+`winit`, under any name or in any table; and the `iced` line keeps
+`default-features = false` and exactly its ten listed features. The
+existing check that every crate takes iced from the workspace's lines now
+also refuses a crate's `[features]` entry that switches on a feature of an
+iced crate (`iced/default`, `iced_runtime/selector`), which would add to
+that list in every build that turns it on; a fixture test holds that
+refusal to fixed manifests. Each was seen to fail on a broken copy:
+`winit` from crates.io, `dpi` at another commit, a second `dpi`, `winit`
+named in `app`, in `desktop`'s dev-dependencies under another name and in
+`[workspace.dependencies]`, `default-features = false` removed, a feature
+removed, and `iced/default`, `iced/unconditional-rendering` and
+`iced_runtime/selector` switched on from `app`'s `[features]`.*
 
 ### D16. Edition 2024
 
@@ -1417,6 +1449,10 @@ on the three conditions D18 left open.
    The lockfile names the crates by the branch's own versions (0.14.1, and
    0.14.2 for `iced_widget`). The fixes are offered to iced upstream;
    when a release carries them, the pin returns to crates.io.
+   *Amended 2026-10-12: Tawara now pins the fork's release
+   `v0.14.1-mobile.2`, `d4ab3a057db96162b087a27dd0752a3b15abfa6b`, not the
+   branch `tawara/0.14-mobile`. The return to crates.io above is
+   superseded: later moves go only to fork tags (D32 item 9 (a)).*
 2. **Text entry is checked on real phones on phase 4's own builds**
    (D18 condition 1; the owner's choice). Before the phase's last part
    merges, the owner runs the device steps on its Android build (arm64)
@@ -1574,6 +1610,15 @@ on the three conditions D18 left open.
    beta at this writing). They are reviewed again at release readiness
    (phase 5): if UIScene is still missing then, an iOS release built with
    a newer SDK waits on it, and plan D3's fallback is put to the owner.
+
+   *Amended (decided under the owner's delegation, 2026-10-12): the sentence
+   above that says an Android activity destroyed while its process lives
+   cannot start again no longer holds at the new pin, `v0.14.1-mobile.2`. The
+   fork's winit patch (`android-exit-on-destroy`) lets the event loop be
+   created again in the same process: the loop ends on `Destroy`, and
+   dropping it allows a new one, so a new activity can run its own
+   `android_main`. Tawara still ends the process after `Destroy`, since a
+   same-process restart would need the rebuilding that item 9 (d) declines.*
 
    **UIScene: owner, 2026-10-06.** What TN3187 warned of was measured on
    phase 4's own build, on a Mac with Xcode 27. Linked with the iOS 27
@@ -1832,6 +1877,13 @@ on the three conditions D18 left open.
    unchanged. A test that sends the app to the background and kills it from
    Recents cannot settle this, as the lock already runs by then.
 
+   *Added (decided under the owner's delegation, 2026-10-12; Tawara-mobile#4):
+   the repeat with "Don't keep activities" on is made by writing the setting
+   and rebooting the emulator. ActivityManagerService reads the setting into
+   its runtime field only at boot, and no shell command calls
+   `setAlwaysFinish`, whose binder transaction number differs between Android
+   15 builds. The check `exit.runtime` confirms that the setting took.*
+
 ### D33. The mobile wallet in its own repository
 
 **owner, 2026-10-06.** Until now the plan kept the Android and iOS entry
@@ -1859,6 +1911,8 @@ options put in detail.
    the commit this workspace pins (D32 item 1), so the build holds one
    copy of each iced crate. A policy test there holds its pins to full
    hashes and its lockfile to one iced commit.
+   *Amended 2026-10-12: the commit this workspace pins is now the fork's
+   release `v0.14.1-mobile.2`; see D32 item 9 (a).*
 4. **The record stays here.** Decisions, the plan and the screens remain
    in this repository's `docs/`; Tawara-mobile's README points to them.
 5. **The open pull requests.** #13 (phase 4 (a)) keeps its shared part
@@ -1867,6 +1921,8 @@ options put in detail.
    part moves to Tawara-mobile as that repository's first pull request.
    #14 (the scene work in the shell) is closed; the scene support is in
    the iced fork, and the manifest and its checks are in Tawara-mobile.
+   *Amended 2026-10-12: the fork's pin is now the release
+   `v0.14.1-mobile.2`, not 71f00e8; see D32 item 9.*
 
 Tawara-mobile pins this repository at #13's head until #13 merges; the
 merge keeps that commit reachable, and the pin then moves to `main`.

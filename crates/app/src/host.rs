@@ -2,10 +2,11 @@
 //! tells it (docs/DECISIONS.md D32). The desktop needs none of this.
 //!
 //! A shell gives the app-private directory, where the store and the
-//! preferences live, and the platform's clipboard, which iced's does not
-//! reach on Android or iOS (docs/spikes/P1-REPORT.md), and what Android's
-//! Back does. It calls [`left_foreground`] when the system takes the
-//! application off the screen.
+//! preferences live, the platform's clipboard, and what Android's Back does.
+//! Copy goes through the shell's own write, not iced's: iced's reaches the
+//! phones at the pin, but it sets none of the protection that
+//! docs/DECISIONS.md D32 item 9 (d) puts in the shell's write. It calls
+//! [`left_foreground`] when the system takes the application off the screen.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
@@ -22,8 +23,12 @@ pub struct Host {
     pub copy: fn(&str),
     /// Android's Back: the application goes to the background, as Android
     /// 12 and later do themselves for a launcher's first activity. It is
-    /// never finished, since winit cannot start it again in the same
-    /// process (docs/spikes/P1-REPORT.md, A18).
+    /// never finished. When Android destroys the Activity anyway, the
+    /// process still ends after Destroy, because a restart in the same
+    /// process would need the Activity's handles, the host statics and
+    /// FLAG_SECURE rebuilt (docs/DECISIONS.md D32 item 9 (d)). The fork's
+    /// winit can build its event loop again, so that choice is Tawara's,
+    /// not winit's.
     pub back: fn(),
 }
 

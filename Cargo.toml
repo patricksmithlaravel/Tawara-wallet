@@ -48,37 +48,50 @@ repository = "https://github.com/patricksmithlaravel/Tawara-wallet"
 mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-windows", rev = "7cdc2e986319d508e4c197a4ba44220dd49a5b1d", default-features = false, features = ["native", "mesh-https"] }
 
 # THE TOOLKIT (docs/PLAN.md D2): iced 0.14, FROM THE OWNER'S FORK, PINNED BY
-# FULL COMMIT HASH (docs/DECISIONS.md D6, D32 item 1).
+# FULL COMMIT HASH (docs/DECISIONS.md D6, D32 items 1 and 9).
 #
-# `patricksmithlaravel/iced_mobile`, branch `tawara/0.14-mobile`, at 71f00e8:
-# iced's own `0.14` branch at 38237dd, whose sources are, crate for crate,
-# the crates.io releases this workspace was built on until now (iced 0.14.0,
-# iced_widget 0.14.2, iced_winit and iced_tiny_skia 0.14.1, the rest
-# 0.14.0; the lockfile names them by the branch's own versions, 0.14.1 and
-# iced_widget 0.14.2), and two commits on top: iced_winit compiling and
-# running on Android and iOS, with `on_lifecycle`, the hook the mobile
-# shells lock the wallet from (0b02176; D17, D32); and iOS windows put in
-# UIKit's window scene, which an app linked with the iOS 27 SDK needs
-# (71f00e8; D32 item 8). Every iced crate comes from that one commit, the
-# desktop's included, so the build holds one copy of each. The mobile
-# shells live in `patricksmithlaravel/Tawara-mobile` (D33), which takes
-# `tawara-app` from this repository and iced from the same commit. Moving
-# iced is a change to `rev` here, on both lines below, and to nothing
-# else; `crates/wallet-core/tests/policy.rs` holds them to it, and deny.toml
-# admits this one git source beside the library's. When an iced release
-# carries the change, these lines return to crates.io.
+# `patricksmithlaravel/iced_mobile` at d4ab3a0, the fork's release tag
+# `v0.14.1-mobile.2`, on its main line. The fork starts from iced's own `0.14`
+# branch at 38237dd, whose sources are, crate for crate, the crates.io releases
+# this workspace was built on until now (iced 0.14.0, iced_widget 0.14.2,
+# iced_winit and iced_tiny_skia 0.14.1, the rest 0.14.0; the lockfile names the
+# fork's crates by the fork's own versions, 0.14.1 and iced_widget 0.14.2, as
+# it did at 71f00e8), and carries the fork's commits on top. Two of those are the two commits that 71f00e8, the
+# previous pin, adds to 38237dd: iced_winit compiling and running on Android
+# and iOS, with `on_lifecycle`, the hook the mobile shells lock the wallet from
+# (0b02176; D17, D32); and iOS windows put in UIKit's window scene, which an
+# app linked with the iOS 27 SDK needs (71f00e8; D32 item 8).
+#
+# The owner chose this release on 2026-10-12, in place of 71f00e8 (D32 item 9).
+# A tag does not move, the fork's framework code had settled by it, and it
+# carries the system clipboard and the safe-area and keyboard insets on phones,
+# which phase 4 (b) builds on. Its winit and dpi are the fork's vendored copies
+# in `vendor/winit`, on every target, in place of crates.io's: winit is
+# 0.30.13, and dpi is 0.1.1, back from crates.io's 0.1.2. Every iced crate
+# comes from that one commit, the desktop's included, so the build holds one
+# copy of each. The mobile shells live in `patricksmithlaravel/Tawara-mobile`
+# (D33), which must take `tawara-app` from this repository and iced from the
+# same commit (D33, items 2 and 3). Moving iced is a change to `rev` here, on
+# both lines below, and to nothing else, and only to a release tag of the fork
+# (`v*-mobile.*`), by its full hash; these lines no longer return to crates.io
+# when an iced release carries the change (D32 item 9 (a)).
+# `crates/wallet-core/tests/policy.rs` holds them to it, and deny.toml admits
+# this one git source beside the library's.
 #
 # The features are iced 0.14.0's own defaults, written out so that what
 # ships is a list in this file rather than whatever iced's default becomes:
 # `wgpu` and `tiny-skia` (the pure-Rust software renderer, D2), `crisp`,
 # `web-colors`, `thread-pool`, and on Linux `x11`, `wayland` and
-# `linux-theme-detection`. Two are added for phase 3 (docs/DECISIONS.md
+# `linux-theme-detection`. The release's own defaults add four for phones
+# (`android-native-activity`, `mobile-logger`, `mobile-fira-sans` and
+# `mobile-system-fonts`), which `default-features = false` leaves off here
+# (D6, D32 item 9). Two are added for phase 3 (docs/DECISIONS.md
 # D27): `canvas`, which draws the line icons from the renderings' path data
 # (six crates, `lyon` and its parts, where `svg` would add 35), and
 # `advanced`, which adds no crate and opens the renderer's headless
 # screenshot (`Headless`) to the screenshot example. `qr_code` comes only
 # with the owner's approval, with deny.toml run against the result.
-iced = { git = "https://github.com/patricksmithlaravel/iced_mobile", rev = "71f00e8475815532b25e7e07083abb73bd845cde", default-features = false, features = [
+iced = { git = "https://github.com/patricksmithlaravel/iced_mobile", rev = "d4ab3a057db96162b087a27dd0752a3b15abfa6b", default-features = false, features = [
     "wgpu",
     "tiny-skia",
     "canvas",
@@ -99,11 +112,12 @@ iced = { git = "https://github.com/patricksmithlaravel/iced_mobile", rev = "71f0
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 
 # The screenshot example only (docs/DECISIONS.md D27, item 1), as
-# dev-dependencies of `tawara-app`; neither reaches a shipped build.
-# `iced_runtime` is iced's own (already in every build, from the same commit)
-# and gives the example `UserInterface`, which iced does not re-export;
-# `png` writes and reads the images.
-iced_runtime = { git = "https://github.com/patricksmithlaravel/iced_mobile", rev = "71f00e8475815532b25e7e07083abb73bd845cde" }
+# dev-dependencies of `tawara-app`, so they add no crate to a shipped build.
+# `iced_runtime` is iced's own, at the same full hash as `iced` above, and
+# already in every build of the interface (D32 item 9); it gives the example
+# `UserInterface`, which iced does not re-export. `png` writes and reads the
+# images.
+iced_runtime = { git = "https://github.com/patricksmithlaravel/iced_mobile", rev = "d4ab3a057db96162b087a27dd0752a3b15abfa6b" }
 png = "0.18"
 
 tawara-wallet-core = { path = "crates/wallet-core" }
