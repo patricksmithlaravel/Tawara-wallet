@@ -2711,6 +2711,54 @@ fn a_re_sign_is_for_the_spend_whose_reservation_is_open_and_the_library_refuses_
 }
 
 #[test]
+fn a_sign_reports_its_reservation_though_the_read_after_it_settles_the_spend() {
+    // D38 items 1 and 5: the spend lands before the read that follows its
+    // submit, and that read settles it, closing the reservation. The index the
+    // reply reports was read before that, so it is still the key the spend was
+    // signed with.
+    let scratch = Scratch::new("sign-index-settled");
+    let (mut h, start) = funded(&scratch);
+    let plan = planned(h.call(Command::PlanSend {
+        spend: pay(destination(1), Amount::Nano(100_000)),
+    }));
+    h.chain
+        .land_on_submit(tag(0), address(0, start + 1), plan.change_total);
+    let s = sent(h.call(Command::ConfirmSend { plan: plan.plan }));
+    assert!(s.submitted);
+    assert_eq!(settled_ids(&s.view), vec![account0()]);
+    assert_eq!(
+        row_of(&s.view, account0()).state,
+        AccountState::InSync {
+            balance: plan.change_total
+        }
+    );
+    assert_eq!(s.spent_index, Some(start));
+}
+
+#[test]
+fn a_re_sign_reports_its_reservation_though_the_read_after_it_settles_the_spend() {
+    // As for a sign: the re-signed bytes land before the read that follows
+    // their submit, and that read settles them. The reply still names the
+    // reservation's index.
+    let scratch = Scratch::new("resign-index-settled");
+    let (mut h, start) = funded(&scratch);
+    let spend = pay(destination(1), Amount::Nano(100_000));
+    let plan = planned(h.call(Command::PlanSend {
+        spend: spend.clone(),
+    }));
+    let first = sent(h.call(Command::ConfirmSend { plan: plan.plan }));
+    assert_eq!(first.spent_index, Some(start));
+    assert!(first.view.settled.is_empty());
+    h.chain
+        .land_on_submit(tag(0), address(0, start + 1), plan.change_total);
+    let again = sent(h.call(Command::Resign { spend }));
+    assert!(again.submitted);
+    assert_eq!(again.artifact_hex, first.artifact_hex);
+    assert_eq!(settled_ids(&again.view), vec![account0()]);
+    assert_eq!(again.spent_index, Some(start));
+}
+
+#[test]
 fn the_node_is_chosen_https_or_loopback_only() {
     let mut h = Harness::new();
     let none = refusal(h.call(Command::NetworkStatus));

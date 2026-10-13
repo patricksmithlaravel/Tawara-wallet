@@ -121,6 +121,9 @@ struct State {
     /// rest: one account reads `ChainUnreachable` and the others reconcile.
     silent_for: BTreeSet<Tag>,
     refuse_submits: bool,
+    /// What the ledger holds once the next submit is taken, from
+    /// [`Chain::land_on_submit`]: the spend lands before any read after it.
+    land_on_submit: Option<(Tag, Address, u64)>,
     submits: Vec<Vec<u8>>,
     calls: usize,
     gate: Option<Gate>,
@@ -329,6 +332,13 @@ impl Chain {
 
     pub fn refuse_submits(&self, refuse: bool) {
         self.0.lock().expect("chain").refuse_submits = refuse;
+    }
+
+    /// The next submit the node takes lands at once: the ledger then holds
+    /// `tag` at `address` with `balance`, so the read that follows the submit
+    /// finds the spend landed. A refused submit lands nothing.
+    pub fn land_on_submit(&self, tag: Tag, address: Address, balance: u64) {
+        self.0.lock().expect("chain").land_on_submit = Some((tag, address, balance));
     }
 
     /// Every wire image posted to `/construction/submit`.
@@ -668,6 +678,9 @@ impl Transport for Chain {
                         op: "write",
                         kind: TransportKind::Io(std::io::ErrorKind::BrokenPipe),
                     });
+                }
+                if let Some((tag, address, balance)) = s.land_on_submit.take() {
+                    s.ledger.insert(tag, (address, balance));
                 }
                 let tx = mochimo_crypto::tx::wire::Transaction::from_wire(&wire)?;
                 Ok(format!(r#"{{"transaction_identifier":{{"hash":"{}"}}}}"#, hex_of(&tx.id_digest())).into_bytes())

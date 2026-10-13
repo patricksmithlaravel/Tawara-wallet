@@ -2179,6 +2179,9 @@ impl<C: Connect> Worker<C> {
             Ok(s) => s,
             Err(e) => return Reply::Refused(library(e)),
         };
+        // Read before the read after the sign can settle the reservation away
+        // (D38 item 1; the worker test
+        // `a_sign_reports_its_reservation_though_the_read_after_it_settles_the_spend`).
         let spent_index = reserved_index(w.wallet.store(), &tag);
         let wire = signed.wire();
         let submitted = w.wallet.submit(&signed);
@@ -2369,7 +2372,9 @@ impl<C: Connect> Worker<C> {
             };
         };
         let page = text::page(w.wallet.diverged(), outcome);
-        // Read before the read after the re-sign can settle the reservation away.
+        // Read before the read after the re-sign can settle the reservation away
+        // (D38 item 1; the worker test
+        // `a_re_sign_reports_its_reservation_though_the_read_after_it_settles_the_spend`).
         let spent_index = reserved_index(w.wallet.store(), &tag);
         self.refresh_one(id, &tag);
         let Some(view) = self.view() else {
