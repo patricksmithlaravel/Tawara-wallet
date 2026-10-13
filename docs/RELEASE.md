@@ -413,12 +413,22 @@ run.
 
 - [ ] Build in an `ubuntu:22.04` container pinned by its digest, which the
   script records, on the owner's machine: `docker run --platform linux/amd64
-  ubuntu:22.04@sha256:<digest>`, with rustup-init at a pinned version
-  checked against its recorded SHA-256, then the toolchain
-  `rust-toolchain.toml` names, then `cargo build --release --locked -p
-  tawara-desktop`. On an Apple silicon Mac the container runs under
-  emulation, which is slower and changes nothing about the checks. x86_64
-  only, for the first release (D36).
+  ubuntu:22.04@sha256:<digest>`. The image has no C compiler, no `curl` and
+  no `dpkg-dev`, so first run `apt-get update`, then `apt-get install -y
+  --no-install-recommends ca-certificates curl gcc libc6-dev dpkg-dev`
+  (D36). `curl` and `ca-certificates` fetch rustup-init. `gcc` and
+  `libc6-dev` give `cc`, which `cargo` links the executable with and
+  `ring`'s build compiles its C with. `dpkg-dev` holds `dpkg-shlibdeps`, for
+  the `.deb` below. No `-dev` library package is needed, because the app
+  opens its display and Vulkan libraries at run time (D36). Then rustup-init
+  at a pinned version checked against its recorded SHA-256, then the
+  toolchain `rust-toolchain.toml` names, then `cargo build --release
+  --locked -p tawara-desktop`. If `rustc` is killed with signal 9, the
+  container ran out of memory: that happened in an 8 GiB Docker VM with 14
+  processors, where `CARGO_BUILD_JOBS=4` then built it; the job count
+  changes only how many crates compile at once. On an Apple silicon Mac the
+  container runs under emulation, which is slower and changes nothing about
+  the checks. x86_64 only, for the first release (D36).
 - [ ] **The glibc floor is 2.35**, Ubuntu 22.04's and icm's default (D36).
   The script reads the highest `GLIBC_` symbol version the executable needs
   and **fails if it is above 2.35**; the release notes state the floor.
@@ -437,26 +447,34 @@ run.
   parts. The first is the value that `dpkg-shlibdeps -O` prints for the
   variable `shlibs:Depends`, without the variable's name, which `Depends`
   cannot hold; it names only the libraries the executable is linked with
-  (D36, source 26). dpkg-shlibdeps reads `debian/control` from its working
+  (D36, source 26). `dpkg-shlibdeps` reads `debian/control` from its working
   directory whether or not `-O` is given (`scripts/dpkg-shlibdeps.pl` line
   160, dpkg 1.21.1; D36, source 27), so run it in a workspace beside the
-  tree, never in the tree, where a `debian/` directory would be packaged.
-  The workspace's `debian/control` holds `Source: tawara-desktop`, a blank
-  line, then `Package: tawara-desktop` and `Architecture: amd64`, and nothing
-  else; dpkg-shlibdeps rejects a `Package` stanza without `Architecture`.
-  From the workspace, run `dpkg-shlibdeps -O <tree>/usr/bin/tawara-desktop`,
-  where `<tree>` is the tree's path. Do not put `-e` before the path: with a
-  space after it, dpkg-shlibdeps also analyses an executable with an empty
-  name and prints a spurious warning (D36, source 27). The second names
-  by hand the libraries the app opens at run time (D36): for an X11 session,
-  `libx11-6`, `libx11-xcb1`, `libxcursor1`, `libxi6` and
-  `libxkbcommon-x11-0`; for a Wayland session, `libwayland-client0`; and for
-  both, `libxkbcommon0`, which the keyboard needs. All of them are `Depends`,
-  since one package serves either session. `Recommends` is `libvulkan1`:
-  without it the app draws with its software renderer. The X11 names are
-  those that `.github/workflows/ci.yml` installs before its start-up check
-  (lines 141 and 142), less `libxrandr2`, which winit does not open;
-  `libx11-6` and `libxkbcommon0` are added because the app opens `libX11` and
+  tree, never in the tree, where a `debian/` directory would be packaged. In
+  an empty workspace directory, where `<tree>` is the tree's path:
+
+  ```sh
+  mkdir -p debian
+  printf 'Source: tawara-desktop\n\nPackage: tawara-desktop\nArchitecture: amd64\n' > debian/control
+  dpkg-shlibdeps -O <tree>/usr/bin/tawara-desktop
+  ```
+
+  The workspace's `debian/control` is a `Source` stanza, a blank line, then
+  one `Package` stanza, and nothing else; `dpkg-shlibdeps` rejects a
+  `Package` stanza without `Architecture`. Give the path bare. With a space
+  after `-e`, as in `-e <path>`, `dpkg-shlibdeps` also analyses an
+  executable with an empty name and prints a spurious warning (D36, source
+  27); the attached form `-e<path>` does not, but the bare path needs no
+  `-e` at all. The second part of `Depends` names by hand the libraries the
+  app opens at run time (D36): for an X11 session, `libx11-6`,
+  `libx11-xcb1`, `libxcursor1`, `libxi6` and `libxkbcommon-x11-0`; for a
+  Wayland session, `libwayland-client0`; and for both, `libxkbcommon0`,
+  which the keyboard needs. All of them are `Depends`, since one package
+  serves either session. `Recommends` is `libvulkan1`: without it the app
+  draws with its software renderer. The X11 names are those that
+  `.github/workflows/ci.yml` installs before its start-up check (lines 141
+  and 142), less `libxrandr2`, which winit does not open; `libx11-6` and
+  `libxkbcommon0` are added because the app opens `libX11` and
   `libxkbcommon` itself. Then `dpkg-deb --root-owner-group --build`, in the
   same container. The package has no maintainer script that touches anyone's
   home folder.

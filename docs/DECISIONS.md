@@ -2305,7 +2305,7 @@ packaging job builds the same packages unsigned (below), with the same pins.
 | Windows | per-user `-setup.exe`, x86_64 | NSIS 3.13; `rc.exe` (icon and version information) and `signtool` from the Windows SDK | NSIS: the 3.13 zip (source 15), checked against a SHA-256 recorded in the script, trusted on first use (below); the SDK on the owner's Windows machine and on the `windows-2025` image |
 | macOS | universal `Tawara.app` in a `.dmg` | Xcode 26.6: `lipo`, `iconutil`, `codesign`, `hdiutil`, `notarytool`, `stapler` | `/Applications/Xcode_26.6.app`, installed beside Xcode 27 on the owner's Mac, and the same path on the `macos-26` image (source 22: Xcode 26.6, build 17F113, with the iOS 26.5 SDK); chosen with `DEVELOPER_DIR` |
 | Linux | AppImage, x86_64 | `appimagetool` 1.9.1 and the type 2 runtime 20251108 | `curl` from their GitHub releases (sources 20 and 21), each checked against `ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0` and `2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d`, which are icm's pins and GitHub's own digests for those files |
-| Linux | `.deb`, x86_64 | `dpkg-deb --root-owner-group`, `dpkg-shlibdeps` | Ubuntu 22.04's `dpkg-dev`, in the `ubuntu:22.04` container the build runs in, pinned by digest |
+| Linux | `.deb`, x86_64 | `dpkg-deb --root-owner-group`, `dpkg-shlibdeps` | Ubuntu 22.04's `dpkg-dev`, installed with `apt-get` (docs/RELEASE.md section 6.3) in the `ubuntu:22.04` container the build runs in, pinned by digest |
 | Android | App Bundle (`.aab`) | build-tools 36.0.0 (`aapt2 link --proto-format`), `platforms/android-36`, NDK 29.0.14206865, `bundletool` 1.18.3, `jarsigner` from a JDK 17 or later | `sdkmanager` at those versions; `bundletool` by `curl` (source 19), checked against `a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29`, icm's pin and GitHub's digest |
 | iOS | `.ipa` for App Store Connect | Xcode 26.6: `actool`, `codesign`, `plutil`, `ditto`, `vtool`; `xcrun altool` to validate and upload | as macOS |
 
@@ -2386,24 +2386,27 @@ The GitHub digests were read on 2026-10-13.
   add a tool for what a control file and two commands do. `dpkg-shlibdeps`
   also needs a `debian/control` in its working directory (source 27), so the
   build gives it a workspace beside the tree. It names only the libraries a
-  binary is linked with (source 26), and the app
-  also opens several by name at run time (through `x11-dl`, `x11rb`,
-  `xkbcommon-dl` and `wayland-sys` in winit's backends, and through `ash` for
-  `libvulkan` in wgpu), so RELEASE.md section 6.3 names them by hand. An
-  executable runs only on systems whose glibc is at least the newest version
-  it needs, so the build names a floor, **glibc 2.35** (Ubuntu 22.04's, and
-  icm's default), and **fails if the executable needs anything newer**; the
-  release notes state the floor. The build runs in an `ubuntu:22.04`
-  container pinned by digest, on the owner's machine for a release and in the
-  same container in CI. A runner image is not enough: the release is not
-  built in CI, and the newest images move on (Tawara-mobile's Android job
-  already runs on `ubuntu-24.04`, `.github/workflows/mobile.yml` line 96,
-  whose glibc is 2.39), while docs/RELEASE.md section 7 tests the packages on
-  Ubuntu 22.04. Inside the container, Rust comes from rustup-init at a pinned
-  version and hash, then the toolchain `rust-toolchain.toml` names. On an
-  Apple silicon Mac the `linux/amd64` container runs under emulation, which
-  is slower and changes nothing about the checks. x86_64 only, for the first
-  release (decision 6).
+  binary is linked with (source 26), and the app also opens several by name
+  at run time (through `x11-dl`, `x11rb`, `xkbcommon-dl` and `wayland-sys`
+  in winit's backends, and through `ash` for `libvulkan` in wgpu), so
+  RELEASE.md section 6.3 names them by hand. An executable runs only on
+  systems whose glibc is at least the newest version it needs, so the build
+  names a floor, **glibc 2.35** (Ubuntu 22.04's, and icm's default), and
+  **fails if the executable needs anything newer**; the release notes state
+  the floor. The build runs in an `ubuntu:22.04` container pinned by digest,
+  on the owner's machine for a release and in the same container in CI. A
+  runner image is not enough: the release is not built in CI, and the newest
+  images move on (Tawara-mobile's Android job already runs on
+  `ubuntu-24.04`, `.github/workflows/mobile.yml` line 96, whose glibc is
+  2.39), while docs/RELEASE.md section 7 tests the packages on Ubuntu 22.04.
+  The image carries neither a C compiler nor `dpkg-dev`, so the build first
+  installs `gcc`, `libc6-dev` and `dpkg-dev` from Ubuntu 22.04's archive,
+  with `curl` and `ca-certificates` to fetch rustup-init; it needs no `-dev`
+  library package, since the libraries named above are opened at run time.
+  Then Rust comes from rustup-init at a pinned version and hash, then the
+  toolchain `rust-toolchain.toml` names. On an Apple silicon Mac the
+  `linux/amd64` container runs under emulation, which is slower and changes
+  nothing about the checks. x86_64 only, for the first release (decision 6).
 - **Android: `aapt2` and `bundletool`, no Gradle** (D4; Tawara-mobile's
   script already links with `aapt2`). `aapt2 link --proto-format` writes
   the resources a bundle needs; there is no DEX, as the manifest says
