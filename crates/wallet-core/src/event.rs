@@ -326,8 +326,8 @@ pub struct SentView {
     /// the reservation it holds (`AccountState::SpendOutstanding::spent_index`
     /// while that reservation is open). A re-sign is for the spend that holds
     /// the account's open reservation, so the interface finds the spend by it
-    /// (docs/DECISIONS.md D38 item 5). `None` only when the store could not say
-    /// which reservation it holds.
+    /// (D38, as docs/SCREENS.md W8 states the rule). `None` only when the store
+    /// could not say which reservation it holds.
     pub spent_index: Option<u32>,
     /// Whether the node's socket took the bytes. **A socket write, not a
     /// verdict**: whether the spend landed is settling's question.

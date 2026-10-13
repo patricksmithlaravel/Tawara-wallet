@@ -2657,10 +2657,11 @@ fn a_spend_signed_after_an_unlock_in_sync_polls_through_a_failed_read_and_settle
 
 #[test]
 fn a_re_sign_is_for_the_spend_whose_reservation_is_open_and_the_library_refuses_another() {
-    // D38 item 5: spend A is signed and lands, and its settle leaves the next key
-    // to spend B, with other parameters. The reservation open is B's: the library
-    // re-signs B's parameters and refuses A's, so the spend a re-sign is offered
-    // must be the one whose sign reply names the reservation's key index.
+    // D38, as docs/SCREENS.md W8 states the rule: spend A is signed and lands, and
+    // its settle leaves the next key to spend B, with other parameters. The
+    // reservation open is B's: the library re-signs B's parameters and refuses A's,
+    // so the spend a re-sign is offered must be the one whose sign reply names the
+    // reservation's key index.
     let scratch = Scratch::new("resign-holds");
     let (mut h, start) = funded(&scratch);
     let a = pay(destination(1), Amount::Nano(100_000));
@@ -2712,10 +2713,10 @@ fn a_re_sign_is_for_the_spend_whose_reservation_is_open_and_the_library_refuses_
 
 #[test]
 fn a_sign_reports_its_reservation_though_the_read_after_it_settles_the_spend() {
-    // D38 items 1 and 5: the spend lands before the read that follows its
-    // submit, and that read settles it, closing the reservation. The index the
-    // reply reports was read before that, so it is still the key the spend was
-    // signed with.
+    // D38 item 1, and docs/SCREENS.md W8: the spend lands before the read that
+    // follows its submit, and that read settles it, closing the reservation.
+    // The index the reply reports was read before that, so it is still the key
+    // the spend was signed with.
     let scratch = Scratch::new("sign-index-settled");
     let (mut h, start) = funded(&scratch);
     let plan = planned(h.call(Command::PlanSend {

@@ -251,8 +251,9 @@ impl AccountState {
 
     /// The one-time key index of the reservation the state says is open: an
     /// outstanding or a landed spend's `spent_index`, the index that spend was
-    /// signed with (docs/DECISIONS.md D38 item 5). `None` for a state that does
-    /// not say which reservation it holds, as an unexplained one does not.
+    /// signed with (D38, as docs/SCREENS.md W8 states the rule). `None` for a
+    /// state that does not say which reservation it holds, as an unexplained
+    /// one does not.
     #[must_use]
     pub fn reserved_index(&self) -> Option<u32> {
         match self {
@@ -365,8 +366,9 @@ impl Read {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Polls {
     /// Polled, with the number of polls sent about it while its read left
-    /// the spend in doubt, since its last live read. A silent read neither
-    /// adds to it nor starts it over.
+    /// the spend in doubt, since its last live read or sign
+    /// ([`Watch::signed`]). A silent read neither adds to it nor starts it
+    /// over.
     Asking(u8),
     /// A read ended its polls, and only a live read starts them again.
     Ended,
@@ -479,14 +481,14 @@ impl Watch {
     }
 
     /// Notes that a spend was signed for `account`, by a sign or a re-sign
-    /// (docs/DECISIONS.md D38 item 2, as [`Watch`] extends it): the account
-    /// holds a reservation from now on, so its polls start afresh, whatever
-    /// they were, with no doubtful poll counted. An unlock that found the
-    /// account in sync ended them, and without this the spend would go
-    /// unpolled through a first read that failed, and through a settle the node
-    /// interrupted. The reads the reply carries are noted after this, as
-    /// [`Watch::read_view`] notes them, so a read that settles the spend or
-    /// shows it dead still ends the polls.
+    /// (docs/DECISIONS.md D38 item 2, as [`Watch`] and docs/SCREENS.md W7
+    /// extend it): the account holds a reservation from now on, so its polls
+    /// start afresh, whatever they were, with no doubtful poll counted. An
+    /// unlock that found the account in sync ended them, and without this the
+    /// spend would go unpolled through a first read that failed, and through a
+    /// settle the node interrupted. The reads the reply carries are noted after
+    /// this, as [`Watch::read_view`] notes them, so a read that settles the
+    /// spend or shows it dead still ends the polls.
     pub fn signed(&mut self, account: AccountId) {
         self.accounts.insert(account, Polls::Asking(0));
     }

@@ -1897,9 +1897,10 @@ impl App {
     /// shows its sent page, so for those the banner waits.
     fn on_reply(&mut self, purpose: Purpose, reply: Reply) -> Task<Message> {
         let settled = settled_in(&reply);
-        // A spend signed now holds a reservation, whatever its account's polls
-        // were before (docs/DECISIONS.md D38 item 2; `Watch::signed`). The reads
-        // the reply carries are noted below, as every reply's are.
+        // A spend signed now holds a reservation, whatever its account's polls were
+        // before (docs/DECISIONS.md D38 item 2, as docs/SCREENS.md W7 extends it;
+        // `Watch::signed`). The reads the reply carries are noted below, as every
+        // reply's are.
         if let Reply::Sent(sent) = &reply {
             self.model.watch.signed(sent.from);
         }
@@ -4018,12 +4019,13 @@ mod tests {
 
     #[test]
     fn a_re_sign_offers_the_spend_its_reservation_holds_and_leaving_pages_keeps_the_order() {
-        // D38 item 5: the first spend is left unsaved and settles, and the second,
-        // with other parameters, holds the account's reservation. Reopening the
-        // first, and then the account's page, reorders nothing, and the re-sign
-        // offers the second's parameters. The library accepts those for its
-        // reservation, as `a_re_sign_is_for_the_spend_whose_reservation_is_open`
-        // shows in the worker's tests.
+        // D38, as docs/SCREENS.md W6 and W8 state the rules: the first spend is left
+        // unsaved and settles, and the second, with other parameters, holds the
+        // account's reservation. Reopening the first, and then the account's page,
+        // reorders nothing, and the re-sign offers the second's parameters. The library
+        // accepts those for its reservation, as the worker test
+        // `a_re_sign_is_for_the_spend_whose_reservation_is_open_and_the_library_refuses_another`
+        // shows.
         let (mut app, first, second) = two_spends(second_form());
         let from = first.from;
         let both = vec![first.artifact_hex.clone(), second.artifact_hex.clone()];
@@ -4042,10 +4044,10 @@ mod tests {
 
     #[test]
     fn a_re_sign_offers_nothing_once_the_spend_holding_the_reservation_is_dismissed() {
-        // D38 item 5: the second spend holds the account's reservation, and is
-        // dismissed, its bytes wiped. The first is another spend, still kept: the
-        // re-sign offers nothing for the reservation, not the first spend's
-        // parameters, which the library would refuse.
+        // D38, as docs/SCREENS.md W8 states the rule: the second spend holds the
+        // account's reservation, and is dismissed, its bytes wiped. The first is
+        // another spend, still kept: the re-sign offers nothing for the reservation,
+        // not the first spend's parameters, which the library would refuse.
         let (mut app, first, second) = two_spends(second_form());
         wallet(
             &mut app,
@@ -4063,8 +4065,9 @@ mod tests {
 
     #[test]
     fn a_re_sign_keeps_the_place_its_spend_holds_in_the_signing_order() {
-        // D38 item 5: a re-sign gives the same bytes again, so its spend keeps the
-        // place it held, though a spend of another account was signed after it.
+        // D38, as docs/SCREENS.md W6 states the rule: a re-sign gives the same bytes
+        // again, so its spend keeps the place it held, though a spend of another
+        // account was signed after it.
         use tawara_wallet_core::view::{AccountState, ReservationState};
         let (mut app, first, second) = two_spends(second_form());
         let other = app.model.wallet.as_ref().map(|w| w.accounts[1].id);

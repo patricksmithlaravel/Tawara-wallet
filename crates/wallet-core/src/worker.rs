@@ -1009,7 +1009,7 @@ fn reserved_in(store: &Keystore<Disk>, tag: &Tag) -> bool {
 /// the key the spend holding it was signed with (`AccountView::pending`). A
 /// store that cannot be read for the tag says none. A sign's reply carries it,
 /// read before the read after the sign can settle the reservation away
-/// (docs/DECISIONS.md D38 item 5).
+/// (D38, as docs/SCREENS.md W8 states the rule).
 fn reserved_index(store: &Keystore<Disk>, tag: &Tag) -> Option<u32> {
     match store.view(tag) {
         Ok(Some(view)) => view.pending.map(|pending| pending.spent_index.get()),

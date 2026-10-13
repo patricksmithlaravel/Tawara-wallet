@@ -329,7 +329,8 @@ pub struct SentPage {
     pub sent: SentView,
     /// The spend's place in the run's signing history, which [`Model::signed`]
     /// keeps its spends in: a re-sign gives the same bytes again, and keeps the
-    /// place of the spend it re-signs (docs/DECISIONS.md D38 item 5).
+    /// place of the spend it re-signs (D38, as docs/SCREENS.md W6 states the
+    /// rule).
     pub order: u64,
     /// Re-signed (W8) rather than signed for the first time.
     pub resigned: bool,
@@ -779,7 +780,7 @@ impl Model {
         self.discard_signed(|s| s.sent.sent.artifact_hex == sent.sent.artifact_hex);
         // Kept at the place the spend holds in the signing history, so that
         // leaving a page, or showing it again, never reorders the spends kept
-        // (docs/DECISIONS.md D38 item 5).
+        // (D38, as docs/SCREENS.md W6 states the rule).
         let at = self.signed.partition_point(|s| s.sent.order < sent.order);
         self.signed.insert(
             at,
@@ -806,7 +807,7 @@ impl Model {
 
     /// The place in the signing history of the kept spend with the bytes `hex`,
     /// if one is kept: a re-sign gives the same bytes again, and keeps the place
-    /// (docs/DECISIONS.md D38 item 5).
+    /// (D38, as docs/SCREENS.md W6 states the rule).
     pub(super) fn kept_order(&self, hex: &str) -> Option<u64> {
         self.signed
             .iter()
@@ -815,7 +816,7 @@ impl Model {
     }
 
     /// The place the next spend signed in this run takes in the signing
-    /// history (docs/DECISIONS.md D38 item 5).
+    /// history (D38, as docs/SCREENS.md W6 states the rule).
     pub(super) fn next_order(&mut self) -> u64 {
         let order = self.next_signing;
         self.next_signing += 1;
@@ -951,11 +952,11 @@ impl Model {
     }
 
     /// What was typed for the kept spend that holds the account's open
-    /// reservation, in the open store (docs/DECISIONS.md D38 item 5, W8): the
-    /// spend whose one-time key index is the reservation's. Another spend of
-    /// the account is not offered for it, however recent, since the library
-    /// would refuse its parameters. `None` when no kept spend holds that
-    /// reservation, and when the account's state does not say which
+    /// reservation, in the open store (D38, as docs/SCREENS.md W8 states the
+    /// rule): the spend whose one-time key index is the reservation's. Another
+    /// spend of the account is not offered for it, however recent, since the
+    /// library would refuse its parameters. `None` when no kept spend holds
+    /// that reservation, and when the account's state does not say which
     /// reservation is open.
     fn kept_form(&self, account: AccountId) -> Option<SpendForm> {
         let view = self.wallet.as_ref()?;
