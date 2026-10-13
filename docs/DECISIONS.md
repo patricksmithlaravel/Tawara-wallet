@@ -2614,7 +2614,8 @@ S1 to S8 change with the work. OS libraries: none added.
 ### D38. Spends settle automatically
 
 **proposed; the direction, and items 5 and 6, decided by the owner on
-2026-10-13, item 5 now to be confirmed on corrected facts; the rest
+2026-10-13. Item 5 was REVISED by the owner the same day, and its item (b)
+is wanted for a later PR. Item 2's additions are proposed; the rest
 recommended.** Until now only W7's Settle button calls
 the library's `Wallet::settle_if_landed`, from the worker's `settle()`
 (`crates/wallet-core/src/worker.rs:2040`), and Refresh, Check now and
@@ -2646,12 +2647,35 @@ item 6's.
    covers the common case. D31 item 6 keeps the explorer off timers; this
    poll asks only about an open reservation, and is not the explorer's.
    Without it, a settle waits for the next Refresh, Check now or unlock.
+
+   **Additions (proposed; recommended; the owner may revisit).** The rule
+   above polls only an account whose reservation is live. As built in PR
+   #30 (`view::Watch`; docs/SCREENS.md's W7 row states the whole rule):
+   - a read that says nothing, because the node does not answer or the
+     expiry cannot be read, keeps the polls going;
+   - a wallet opened during such an outage polls a reservation the store
+     holds, from its first read;
+   - a read in doubt is "account not found", which the node also answers
+     for a failed lookup, or a spend that has landed and not yet been
+     settled. At most two more polls follow such a read in a row, and the
+     third such read in a row ends the polls. A silent read between them
+     neither counts nor restarts the count, and a poll counts when it is
+     sent;
+   - the polls end on a read that shows the account in sync, the
+     reservation dead or unrecorded, or a divergence for the person to
+     look at; they stay ended until a read shows the reservation live
+     again;
+   - a lock (on a phone, a move to the background), a stopped worker and
+     a view that omits the account clear the watch. A poll is not the
+     person's input (D24), so it does not hold the idle lock back.
 3. **What the person sees (recommended).** The existing banner, "Settled:
    the account can spend again" (`report::done`), with the library's page
    one step away (D28). W6's Settle step follows the account's state.
    **Open:** where the banner sits, the W7 panel and the copy for a dead
-   reservation are new wording, for the owner's approval. So is W7's copy
-   for a settle that a reorganisation reverted (item 5). Its summary says
+   reservation are new wording, for the owner's approval. So are W7's copy
+   for a settle that a reorganisation reverted, the copy for signed bytes
+   kept after a settle, and the dismiss control item 5 names, which does
+   not exist yet. Its summary says
    spending is paused and the other accounts are unaffected, and its causes
    are a spend not landed, a store moved ahead and another chain
    (`crates/app/src/screens/wallet/report.rs:241`, `:266-275`). None of them
@@ -2663,14 +2687,18 @@ item 6's.
    is hidden on a dead reservation, whose present copy promises a
    resolution that cannot come: a dead reservation whose chain still shows
    the spent address never settles.
-5. **Signed bytes are forgotten on settle (owner, 2026-10-13; to be
-   confirmed, see the second Open point below).** Today's rule stays:
-   unsaved signed bytes are dropped on the first read that finds the account
-   in sync (`forget_settled`, `crates/app/src/app/wallet.rs:769-770`). The
-   alternative put to the owner, keeping them until the person saves or
-   dismisses them or the wallet locks, was not taken. What this leaves,
-   recorded so that it is not forgotten: an automatic settle can come before
-   the person has seen the bytes.
+5. **REVISED (owner, 2026-10-13): signed bytes are kept until saved,
+   dismissed or locked.** Unsaved signed bytes are kept until the person
+   saves them, dismisses them, or the wallet locks, and not until the first
+   read that finds the account in sync. That first-read rule is the code's
+   rule today (`forget_settled`, `crates/app/src/app/wallet.rs:769-770`,
+   called from `crates/app/src/app.rs:1701`); it is not changed in this PR.
+   The bytes live in memory only and nothing is written to disk, so a
+   restart also loses them. This replaces the owner's earlier answer of the
+   same day, to forget them on settle. That answer rested on the wrong
+   premise that a reverted settle reopens the reservation, as the corrected
+   facts below show. No dismiss control exists today; that control and its
+   copy are new wording (item 3).
 
    If a reorganisation of the chain then reverts the settle, the reservation
    is not reopened: `persist_settled` closes it and keeps only the settle's
@@ -2702,8 +2730,20 @@ item 6's.
    artifact is offered only for an open reservation
    (`crates/app/src/screens/wallet/account.rs:187-191`), and the
    acknowledged advance writes nothing for a chain behind the store (library
-   `cli/reconcile.rs:272-281`). **Open:** whether a diverged account should
-   offer it is for the owner.
+   `cli/reconcile.rs:272-281`).
+
+   **(b) Wanted (owner, 2026-10-13), in a later PR, not this one.** A
+   diverged account one key behind, with a retained settle, should offer
+   Submit saved artifact, and accept only a saved copy whose digest
+   matches the retained one. It moves no key index (PLAN 4.9). The
+   constraints below are provisional, for the owner's approval when that
+   PR is made:
+   - only for an account one key behind, with a retained settle;
+   - only a saved copy whose digest matches the retained digest;
+   - no key index moves (PLAN 4.9);
+   - the library's own conditions hold: the balance at the source has
+     not moved, and the block-to-live has not passed (library
+     `recon.rs:986-1000`).
 
    What happens to the wallet. Refresh and Check now mark the account
    diverged and leave an open wallet open. `Wallet::open`, though, refuses a
@@ -2745,22 +2785,29 @@ item 6's.
    be re-submitted. Neither store can see the other, so this is recorded
    here and not enforced.
 
-   **Open:** the owner decided this item on the premise that a revert
-   reopens the reservation, which the text above retracts. On the corrected
-   facts the risk is larger: there is no Re-sign after a revert, no command
-   rebuilds the bytes (library `recon.rs:995-996`), and a copy the person
-   saved is the only way the library names to move the balance before the
-   spend lands. The library's full report, one step away in Tawara
+   **Why the answer changed (owner, 2026-10-13).** The earlier answer
+   rested on the premise that a reverted settle reopens the reservation. It
+   does not. Re-sign is refused after a revert, and no command rebuilds the
+   bytes (library `recon.rs:995-996`), so a copy held outside the store is
+   the only way the library names to move the balance before the spend
+   lands. The library's full report, one step away in Tawara
    (`crates/app/src/screens/wallet/report.rs:318`,
    `crates/app/src/app/wallet.rs:1302-1314`), says to keep any copy of the
-   artifact (library `recon.rs:999-1000`), while Tawara drops unsaved bytes
-   on the first reply that shows the account in sync
-   (`crates/app/src/app.rs:1701`, `crates/app/src/app/wallet.rs:770-780`).
-   Keeping them until they are saved or dismissed or the wallet locks, the
-   alternative put before, does not cover a reorg that comes later. The
-   question for the owner is therefore whether to confirm forget-on-settle,
-   or to keep unsaved bytes until the balance at the source has moved or a
-   non-zero block-to-live has passed.
+   artifact (library `recon.rs:999-1000`). The revised rule keeps the bytes
+   until the person saves or dismisses them or the wallet locks. The other
+   option put to the owner, keeping them until the balance at the source has
+   moved or a non-zero block-to-live has passed, was not taken. Those are the
+   library's conditions for re-submitting a saved copy, which item (b) uses;
+   they do not decide how long the bytes are kept.
+
+   Two consequences, for the owner to confirm. First, a lock releases unsaved
+   bytes. Today the code keeps them across a lock: `keep_signed` and
+   `bring_back_signed` (`crates/app/src/app/wallet.rs:713` and `:752`) hold a
+   spend's page through a lock and show it again on unlock, as W6 and S7 say.
+   While the reservation is open, Re-sign (W8) can sign the spend again.
+   Second, a revert after the bytes have gone, through a lock or a dismissal
+   with no save, finds no copy in the store, and the account is then as the
+   paragraphs above describe.
 6. **The narrow lock case is accepted, with no library change (owner,
    2026-10-13).** D19 says every walk takes a cancel, and D24 says a walk
    never holds the lock back. The library's `settle_if_landed` reconciles
@@ -2791,7 +2838,10 @@ Records that change with the work: docs/SCREENS.md's rows for a
 reservation not settled and for a spend between submission and settlement
 (lines 25 and 28), which say "settle", and its W1, W6 and W7 rows; W7's
 row adds that an account set aside at open may settle without a press and
-rejoins on Refresh. OS libraries: none added.
+rejoins on Refresh. Item 5's revision changes W6's row, which keeps a
+spend's page until its account is in sync again and across a lock, and
+the S7 row that says a lock keeps such a page. (b), when built, changes
+W7's and W9's rows. OS libraries: none added.
 
 ### D39. The phone's main screen
 
@@ -2966,7 +3016,8 @@ nothing for `camera2ndk`.
 ### D43. A default node: `https://api.mochimo.org`
 
 **proposed; the default decided by the owner on 2026-10-13; the safeguards
-recommended; the operator and the threat model's acceptance open.**
+recommended; item 6's rules proposed, for the owner to revisit; the operator
+and the threat model's acceptance open.**
 
 1. **The default (owner, 2026-10-13).** `https://api.mochimo.org` is
    chosen in advance on desktop and phone, and the person can change it to
@@ -3014,6 +3065,29 @@ recommended; the operator and the threat model's acceptance open.**
    in PR #22's docs/RELEASE.md, which say the app talks only to the node
    the person chooses. The certificate's renewal, due by 2026-11-23, is
    tracked, and the chain checked again on each platform after it.
+6. **A file that cannot be read, and a choice that cannot be saved (proposed;
+   recommended; the owner may revisit).** PR #29's finding 7 asked for these
+   rules to be recorded here, since items 1 to 5 cover the default and
+   `node = none` only. The copy the person sees is PR #29's wording list,
+   which is provisional and for the owner's approval.
+   - A preferences file that cannot be read (a folder at its path, or bytes
+     that are not text) gives no node, not the default. The wallet uses no
+     node until the person chooses one or forgets it. A missing file still
+     gives the default.
+   - While the file cannot be read, an ordinary change (the unit, the
+     auto-lock period, the store last opened) does not write over it.
+     Choosing a node, or forgetting it, does, since that is the person's
+     choice.
+   - While the file cannot be read, Forget is offered on S2, beside Back,
+     and on Settings' node card, beside Check now, each with a note. S2
+     also offers Forget when a node is set; Settings offers it only in
+     that state. A Forget that succeeds clears any address or error left
+     on the page.
+   - A choice or a forget that cannot be saved is said on the screen it
+     was made on, and that screen does not go back as if the choice were
+     saved. With no folder for the preferences, the node is used, or
+     forgotten, for this run only, and the note says that the next start
+     uses the default.
 
 No library change. OS libraries: none added.
 
