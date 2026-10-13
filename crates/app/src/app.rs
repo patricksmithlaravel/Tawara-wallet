@@ -3652,6 +3652,96 @@ mod tests {
     }
 
     #[test]
+    fn the_form_starts_at_the_top_of_its_page_when_the_review_is_left_for_it() {
+        // The review is scrolled to its end, where "Sign & submit" and "Edit
+        // the spend" are. Whether the signing is refused or the spend is
+        // edited, the form drawn in the review's place starts at the top of
+        // its page on each layout, and a refusal's reason, which the page
+        // shows at its top, is in view (docs/SCREENS.md W4).
+        let refusal = "the balance moved";
+        for refused in [true, false] {
+            for (width, size) in [(390.0, (390, 844)), (1440.0, (1440, 600))] {
+                let plan = tawara_wallet_core::sample::plan_view();
+                let mut app = on_wallet(Page::Send(SendPage {
+                    from: Some(plan.from),
+                    form: typed_as_planned(&plan),
+                    stage: SendStage::Review(Box::new(plan)),
+                }));
+                app.model.width = width;
+                let page = crate::screens::page_id();
+                let cache = {
+                    let mut review = Driver::new(crate::screens::view(&app.model), size);
+                    review.operate(Box::new(snap_to(
+                        page.clone(),
+                        RelativeOffset {
+                            x: None,
+                            y: Some(1.0),
+                        },
+                    )));
+                    let (_, scrolled) = review.scroll_of(&page).expect("the review is a page");
+                    assert!(
+                        scrolled.y > 0.0,
+                        "{width}: the review scrolls: {scrolled:?}"
+                    );
+                    review.into_cache()
+                };
+
+                let task = if refused {
+                    app.on_reply(
+                        Purpose::ConfirmSend,
+                        Reply::Refused(Refusal {
+                            kind: RefusalKind::Library,
+                            text: refusal.to_owned(),
+                        }),
+                    )
+                } else {
+                    app.on_wallet(WalletMsg::Edit)
+                };
+                let how = if refused { "refused" } else { "edited" };
+                assert!(
+                    matches!(
+                        &wallet_page(&app).page,
+                        Page::Send(SendPage {
+                            stage: SendStage::Compose,
+                            ..
+                        })
+                    ),
+                    "{how} at {width}: the form is shown"
+                );
+                let mut form = Driver::with_cache(crate::screens::view(&app.model), size, cache);
+                // Without the task the form would keep the review's scroll,
+                // which is the fault the task is for.
+                let (_, kept) = form.scroll_of(&page).expect("the form is a page");
+                assert!(
+                    kept.y > 0.0,
+                    "{how} at {width}: the form is drawn at the review's scroll: {kept:?}"
+                );
+                let operations = operations(task);
+                assert_eq!(
+                    operations.len(),
+                    1,
+                    "{how} at {width}: showing the form returns a task"
+                );
+                for operation in operations {
+                    form.operate(operation);
+                }
+                let (viewport, scroll) = form.scroll_of(&page).expect("the form is a page");
+                assert_eq!(
+                    scroll.y, 0.0,
+                    "{how} at {width}: the form starts at the top of its page"
+                );
+                if refused {
+                    let why = form.text_bounds(refusal).expect("the refusal is drawn");
+                    assert!(
+                        why.y >= viewport.y && why.y + why.height <= viewport.y + viewport.height,
+                        "{width}: the refusal is in view at {why:?}, in {viewport:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_plan_is_forgotten_when_its_review_is_left() {
         let scratch = Scratch::new("discard");
         let (mut app, events) = app(&scratch);

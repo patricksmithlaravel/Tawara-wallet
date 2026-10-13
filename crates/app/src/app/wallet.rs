@@ -1146,6 +1146,11 @@ impl App {
                 }) = self.wallet_page()
                 {
                     s.stage = SendStage::Compose;
+                    // The form starts at the top of its page. Drawn in the
+                    // review's place, it would otherwise open at the review's
+                    // scroll rather than at its first destination
+                    // (docs/SCREENS.md W4).
+                    return crate::screens::page_top();
                 }
             }
             WalletMsg::Sign => {
@@ -1822,6 +1827,11 @@ impl App {
                 {
                     s.stage = SendStage::Compose;
                     *error = Some(r.text);
+                    // The form starts at the top of its page, where why is
+                    // shown. Drawn in the review's place, it would otherwise
+                    // open at the review's scroll, near "Sign & submit", with
+                    // the refusal out of view above it (docs/SCREENS.md W4).
+                    return crate::screens::page_top();
                 }
             }
             (Purpose::Settle, Reply::Settled { text, view }) => {
