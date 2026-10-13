@@ -966,6 +966,14 @@ to them.
    under a new name (never overwriting), shows the full path, and offers
    to copy the hex to the clipboard. The artifact is not secret: it is
    the bytes the node is sent.
+
+   *Amended 2026-10-13, to follow the owner's decision of that day in D32
+   item 10 (i): the last sentence above is withdrawn. The artifact is the
+   bytes the node is sent, but while the reservation is open they are the
+   only bytes that can move these funds, as `crates/wallet-core/src/event.rs`
+   says and as the send page and the report tell the person
+   (`crates/app/src/screens/wallet/send.rs`, `report.rs`). The owner had
+   the same claim reworded in Tawara-mobile's comment on copy.*
 6. **Fonts.** Static TTF instances of the renderings' three families,
    bundled in `crates/app/fonts/` with each family's SIL Open Font
    License 1.1 beside them: Poppins Regular, Medium and SemiBold and IBM
@@ -2175,6 +2183,39 @@ on the three conditions D18 left open.
    Files, a note or a message; a file on Android would need a `FileProvider`,
    which is Java (D4), or MediaStore's Downloads, which starts at API 29 while
    Tawara's minimum is 26.
+
+   *Amended (owner, 2026-10-13), the Android chooser: the owner accepts the
+   share sheet on Android, as decided on Tawara-mobile PR #8, with an exception
+   to item 4's `FLAG_SECURE`. Android's chooser is the system's own window,
+   which `FLAG_SECURE` does not cover: a screenshot taken while it was up
+   showed the chooser's preview of the signed transaction's text over Tawara's
+   black window. The chooser also offers a "Copy text" action
+   (`com.android.intentresolver:id/copy`) whose copy Tawara cannot mark
+   sensitive. Tawara sets no option that removes either. A file through a
+   `FileProvider` would avoid the preview, but D4 rules it out. The exception
+   holds only for the sheet's lifetime, which begins only when the person
+   presses Save artifact to hand these same bytes to another app; Tawara's own
+   Copy, marked sensitive as item (j) says, remains. The comment on copy in
+   Tawara-mobile's `crates/mobile/src/android.rs`, from its PR #7, calls a
+   signed spend "not secret". It is reworded to match
+   `crates/wallet-core/src/event.rs`, which calls these bytes "the only bytes
+   that can move these funds while the reservation is open".*
+
+   *A note on the amendment above, not part of the owner's words: item (j)'s
+   mark is read only from API 33, and Tawara's minimum is API 26, so on API
+   26 to 32 Tawara's own Copy is unmarked in effect as well.*
+
+   *Amended (owner, 2026-10-13), what `Ok` means: `Host::share` returning `Ok`
+   says that the platform was asked to show the sheet, not that it was shown.
+   A refusal the platform makes later is not reported, since the call has
+   already returned. On the simulator, UIKit presents the sheet 2.4 s after the
+   call on a first press and 0.6 s after it on a second. The note the page
+   shows reads "Tawara asked the system to open the share sheet", and keeps
+   the rest of its sense: Tawara cannot tell whether the bytes were saved
+   there, so they still count as not saved and the banner stays. `Host::share`'s
+   documentation says the same. This supersedes the paragraph above where it
+   says that the page says the sheet was opened and that `Host::share`
+   returns `Ok` when the sheet was shown.*
 
    **(j) Clipboard protection (decided under the owner's delegation,
    2026-10-12).** Tawara-mobile's copy path marks every copy as sensitive on

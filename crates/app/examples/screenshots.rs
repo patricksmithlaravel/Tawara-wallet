@@ -761,7 +761,7 @@ fn phone(mut model: Model, keyboard: f32) -> Model {
                 keystore.display()
             );
         }
-        // A phone has no Downloads folder: Save artifact opened the share sheet.
+        // A phone has no Downloads folder: Save artifact asked for the share sheet.
         Screen::Wallet(WalletPage {
             page:
                 Page::Send(SendPage {
