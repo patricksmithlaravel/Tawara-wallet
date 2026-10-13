@@ -2176,6 +2176,33 @@ on the three conditions D18 left open.
    which is Java (D4), or MediaStore's Downloads, which starts at API 29 while
    Tawara's minimum is 26.
 
+   *Amended (owner, 2026-10-13), the Android chooser: the owner accepts the
+   share sheet on Android, as decided on Tawara-mobile PR #8, with an exception
+   to item 4's `FLAG_SECURE`. Android's chooser is the system's own window,
+   which `FLAG_SECURE` does not cover: a screenshot taken while it was up
+   showed the chooser's preview of the signed transaction's text over Tawara's
+   black window. The chooser also offers a "Copy text" action
+   (`com.android.intentresolver:id/copy`) whose copy Tawara cannot mark
+   sensitive. Tawara sets no option that removes either. A file through a
+   `FileProvider` would avoid the preview, but D4 rules it out. The exception
+   holds only for the sheet's lifetime, which begins only when the person
+   presses Save artifact to hand these same bytes to another app; Tawara's own
+   Copy, marked sensitive as item (j) says, remains. The comment on copy in
+   Tawara-mobile's `crates/mobile/src/android.rs`, from its PR #7, calls a
+   signed spend "not secret". It is reworded to match
+   `crates/wallet-core/src/event.rs`, which calls these bytes "the only bytes
+   that can move these funds while the reservation is open".*
+
+   *Amended (owner, 2026-10-13), what `Ok` means: `Host::share` returning `Ok`
+   says that the platform was asked to show the sheet, not that it was shown.
+   A refusal the platform makes later is not reported, since the call has
+   already returned. On the simulator, UIKit presents the sheet 2.4 s after the
+   call on a first press and 0.6 s after it on a second. The note the page
+   shows reads "Tawara asked the system to open the share sheet", and keeps
+   the rest of its sense: Tawara cannot tell whether the bytes were saved
+   there, so they still count as not saved and the banner stays. `Host::share`'s
+   documentation says the same.*
+
    **(j) Clipboard protection (decided under the owner's delegation,
    2026-10-12).** Tawara-mobile's copy path marks every copy as sensitive on
    Android (`ClipDescription` extras `android.content.extra.IS_SENSITIVE` set
