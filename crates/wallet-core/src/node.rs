@@ -4,8 +4,10 @@
 //! - **A node is chosen, and the person keeps the choice.** A person who has
 //!   not chosen one is given [`crate::preferences::DEFAULT_NODE`]
 //!   (docs/DECISIONS.md D43), and a node they chose, or forgot, is never
-//!   replaced by it. Until a node is chosen, the worker opens a store without
-//!   reconciling it and says why; the application asks no node at start-up.
+//!   replaced by it. While no node is set, which is after the person forgets
+//!   it or when a remembered one cannot be used, the worker opens a store
+//!   without reconciling it and says why. The application asks no node at
+//!   start-up.
 //! - **TLS is required.** `https://` is accepted, and `http://` only to the
 //!   loopback interface (`127.0.0.0/8`, `::1`, `localhost`): the node's
 //!   answers drive reconciliation and the amounts a spend is built from, and

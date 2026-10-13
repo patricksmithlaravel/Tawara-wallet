@@ -394,6 +394,28 @@ fn keystore(model: &Model) -> Element<'_, Message> {
     .into()
 }
 
+/// What the node card says of the default node and of what a node learns
+/// (docs/DECISIONS.md D43), as S2 says it. With no node set, after the
+/// person forgot it, nothing is asked, so it does not speak of "the node it
+/// uses". Provisional wording, for the owner's approval.
+fn node_note(set: bool) -> String {
+    if set {
+        format!(
+            "By default the wallet uses {DEFAULT_NODE}; you can choose another node, or none. \
+             The node it uses learns which tags the wallet asks about, and so their balances, \
+             and when the wallet is used; it can also learn your network address. Requests to \
+             {DEFAULT_NODE} pass through Cloudflare, which can read them and sees your network \
+             address."
+        )
+    } else {
+        format!(
+            "No node is set, so the wallet asks none until you choose one. The default is \
+             {DEFAULT_NODE}, and requests to it pass through Cloudflare, which can read them \
+             and sees your network address."
+        )
+    }
+}
+
 /// The node (05): its address, the network it serves, whether it answers,
 /// its tip and when that was solved, and the Mesh middleware's own sync
 /// state.
@@ -482,10 +504,8 @@ fn node<'a>(model: &'a Model, s: &'a SettingsPage) -> Element<'a, Message> {
             .spacing(sp::S10)
             .align_y(Alignment::Center),
             ui::helper(format!(
-                "By default the wallet uses {DEFAULT_NODE}, and another node only if you choose \
-                 one. The node it uses sees the wallet's tags and balances, your network address \
-                 and when the wallet uses it. Requests to {DEFAULT_NODE} also pass through \
-                 Cloudflare, which can read them. {}",
+                "{} {}",
+                node_note(model.node.url.is_some()),
                 // The same rule in a phone's words (docs/DECISIONS.md D32 item
                 // 10 (a)).
                 if model.phone() {
@@ -769,5 +789,44 @@ mod tests {
                 "`{label}` is drawn over two lines: {lines:?}"
             );
         }
+    }
+
+    /// The texts `model` draws, in a window 1440 by 1160.
+    fn drawn(model: &Model) -> Vec<String> {
+        let mut renderer = crate::harness::renderer();
+        let mut ui = iced_runtime::user_interface::UserInterface::build(
+            screens::view(model),
+            iced::Size::new(1440.0, 1160.0),
+            iced_runtime::user_interface::Cache::default(),
+            &mut renderer,
+        );
+        let mut texts = Texts::default();
+        ui.operate(&renderer, &mut texts);
+        texts.0.into_iter().map(|(text, _)| text).collect()
+    }
+
+    #[test]
+    fn the_node_card_speaks_of_the_node_it_uses_only_when_one_is_set() {
+        // A node is set: what it learns, and Cloudflare in front of the
+        // default (docs/DECISIONS.md D43).
+        let set = drawn(&sample_model(1440.0));
+        assert!(
+            set.iter()
+                .any(|t| t.contains("The node it uses learns") && t.contains("Cloudflare")),
+            "{set:?}"
+        );
+        // Forgotten: no node is asked, and the card says that instead.
+        let mut model = sample_model(1440.0);
+        model.node = NodeState::default();
+        let none = drawn(&model);
+        assert!(
+            !none.iter().any(|t| t.contains("The node it uses")),
+            "{none:?}"
+        );
+        assert!(
+            none.iter()
+                .any(|t| t.contains("No node is set") && t.contains(DEFAULT_NODE)),
+            "{none:?}"
+        );
     }
 }

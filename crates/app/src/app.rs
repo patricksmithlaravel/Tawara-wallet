@@ -659,6 +659,12 @@ pub struct App {
     pub model: Model,
     worker: Option<Worker>,
     prefs_path: Option<PathBuf>,
+    /// The preferences file was there at start-up but could not be read. It
+    /// may hold a node the person chose, or `none` for one they forgot, so
+    /// it is not written over for an ordinary change, such as the unit or
+    /// the store last opened: only once the person chooses or forgets a node
+    /// again (docs/DECISIONS.md D43).
+    prefs_held: bool,
     /// How many times the idle period was started again: what the tests read
     /// to tell the person's input from what is not, without the wall clock.
     #[cfg(test)]
@@ -670,6 +676,16 @@ pub struct App {
 /// field empty (docs/PLAN.md section 4.2).
 pub fn wipe(field: &mut String) {
     drop(SecretText::take(field));
+}
+
+/// S2's note when the node was forgotten but that could not be saved, `e`
+/// saying why (docs/DECISIONS.md D43). Provisional wording, for the owner's
+/// approval.
+fn forget_unsaved(e: &std::io::Error) -> String {
+    format!(
+        "The node is forgotten, but that could not be saved ({e}). When Tawara next starts \
+         it may use a node again: forget it again then."
+    )
 }
 
 /// S3's note when a recovery phrase was dropped before it was confirmed,
@@ -1007,13 +1023,13 @@ impl App {
         default_dir: Option<PathBuf>,
         downloads: Option<PathBuf>,
     ) -> (App, Task<Message>) {
-        let prefs = prefs_path
-            .as_deref()
-            .map(preferences::load)
-            .unwrap_or_default();
+        let loaded = prefs_path.as_deref().map(preferences::load_checked);
+        let held = loaded.as_ref().is_some_and(|l| l.unreadable);
+        let prefs = loaded.map(|l| l.prefs).unwrap_or_default();
         let mut model = Model::new(prefs, default_dir);
         model.downloads = downloads;
         let (mut app, events) = App::start(model, prefs_path);
+        app.prefs_held = held;
         let Some(events) = events else {
             return (app, Task::none());
         };
@@ -1071,6 +1087,7 @@ impl App {
                     model,
                     worker: None,
                     prefs_path,
+                    prefs_held: false,
                     #[cfg(test)]
                     touches: std::cell::Cell::default(),
                 },
@@ -1084,6 +1101,7 @@ impl App {
                 waiting: Vec::new(),
             }),
             prefs_path,
+            prefs_held: false,
             #[cfg(test)]
             touches: std::cell::Cell::default(),
         };
@@ -1139,11 +1157,28 @@ impl App {
         }
     }
 
+    /// Save an ordinary change. A preference that cannot be written is lost
+    /// at the next start, and nothing else depends on it; it is written with
+    /// the next change that is. Nothing is written over a file that could
+    /// not be read (`prefs_held`).
     fn save_prefs(&self) {
+        if self.prefs_held {
+            return;
+        }
         if let Some(path) = &self.prefs_path {
-            // A preference that cannot be written is lost at the next start,
-            // and nothing else depends on it.
             let _ = preferences::save(path, &self.model.prefs);
+        }
+    }
+
+    /// Save the node the person just chose or forgot. That is theirs to say,
+    /// so it is written even over a file that could not be read, and from
+    /// then on the file is written as usual (docs/DECISIONS.md D43). The
+    /// caller says when the write failed.
+    fn save_node_choice(&mut self) -> std::io::Result<()> {
+        self.prefs_held = false;
+        match &self.prefs_path {
+            Some(path) => preferences::save(path, &self.model.prefs),
+            None => Ok(()),
         }
     }
 
@@ -1735,8 +1770,11 @@ impl App {
                 // when none was chosen: nothing changed, so nothing is written,
                 // and nothing is asked until a wallet opens or the person asks
                 // (docs/DECISIONS.md D43).
+                // A chosen node that cannot be saved is the previous one at the
+                // next start, which is a node the person chose too, or the
+                // default, so nothing more is said of it.
                 if form {
-                    self.save_prefs();
+                    let _ = self.save_node_choice();
                     self.ask_tip();
                     self.read_activity();
                 }
@@ -1823,7 +1861,18 @@ impl App {
                 if let Screen::Node(f) = &mut m.screen {
                     f.url.clear();
                 }
-                self.save_prefs();
+                // A forgotten node must stay forgotten (docs/DECISIONS.md
+                // D43). If that cannot be written, the next start would use
+                // the node from before, or the default, so the node screen,
+                // where Forget is, says so. The next change that is written
+                // saves `none` with it.
+                if let Err(e) = self.save_node_choice() {
+                    let note = Some(forget_unsaved(&e));
+                    match &mut self.model.screen {
+                        Screen::Node(f) => f.error = note,
+                        _ => self.model.node.error = note,
+                    }
+                }
             }
             (
                 Purpose::Network { sent },
@@ -3214,6 +3263,7 @@ mod tests {
             model: Model::new(Preferences::default(), None),
             worker: None,
             prefs_path: None,
+            prefs_held: false,
             touches: std::cell::Cell::default(),
         }
     }
@@ -5002,6 +5052,7 @@ mod tests {
             model: Model::new(prefs, None),
             worker: None,
             prefs_path: Some(path),
+            prefs_held: false,
             touches: std::cell::Cell::default(),
         }
     }
@@ -5136,5 +5187,81 @@ mod tests {
         );
         assert_eq!(app.model.prefs.node, None, "forgotten, not the default");
         assert_eq!(preferences::load(&path).node, None);
+    }
+
+    #[test]
+    fn forgetting_the_node_says_so_when_it_could_not_be_saved() {
+        let scratch = Scratch::new("forget-unsaved");
+        // A folder where the file should be: nothing can be written there.
+        let path = scratch.0.join("preferences");
+        std::fs::create_dir_all(&path).unwrap();
+        let mut app = alone_saving(Preferences::default(), path);
+        app.model.screen = Screen::Node(NodeForm {
+            url: preferences::DEFAULT_NODE.to_owned(),
+            error: None,
+            back: Back::Start,
+        });
+        let _ = app.on_reply(Purpose::ClearNode, Reply::NodeCleared { view: None });
+        assert_eq!(app.model.prefs.node, None, "forgotten for this run");
+        assert!(
+            matches!(
+                &app.model.screen,
+                Screen::Node(f) if f.url.is_empty()
+                    && f.error.as_deref().is_some_and(|e| e.contains("could not be saved"))
+            ),
+            "{:?}",
+            app.model.screen
+        );
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_kept_until_a_node_is_chosen_or_forgotten() {
+        let scratch = Scratch::new("prefs-held");
+        let path = scratch.0.join("preferences");
+        let bytes = b"node = https://mine.example\n\xff\xfe\n".to_vec();
+        std::fs::write(&path, &bytes).unwrap();
+        // As `begin` starts: no node, and the file held.
+        let loaded = preferences::load_checked(&path);
+        assert!(loaded.unreadable);
+        let mut app = alone_saving(loaded.prefs, path.clone());
+        app.prefs_held = loaded.unreadable;
+        assert_eq!(app.model.prefs.node, None, "not the default");
+        // Ordinary changes are not written over it.
+        app.remember(&scratch.0.join("keystore"));
+        app.model.prefs.unit = preferences::AmountUnit::NanoMcm;
+        app.save_prefs();
+        assert_eq!(std::fs::read(&path).unwrap(), bytes, "the file is kept");
+        // Forgetting the node is the person's word: it is written, with the
+        // changes made since, and the file is written as usual from then on.
+        let _ = app.on_reply(Purpose::ClearNode, Reply::NodeCleared { view: None });
+        let back = preferences::load_checked(&path);
+        assert!(!back.unreadable);
+        assert_eq!(back.prefs.node, None);
+        assert_eq!(back.prefs.unit, preferences::AmountUnit::NanoMcm);
+        assert!(back.prefs.store.is_some());
+        app.model.prefs.unit = preferences::AmountUnit::Mcm;
+        app.save_prefs();
+        assert_eq!(preferences::load(&path).unit, preferences::AmountUnit::Mcm);
+    }
+
+    #[test]
+    fn choosing_a_node_writes_over_a_file_that_cannot_be_read() {
+        let scratch = Scratch::new("prefs-held-chosen");
+        let path = scratch.0.join("preferences");
+        std::fs::write(&path, b"\xff\xfe\n").unwrap();
+        let loaded = preferences::load_checked(&path);
+        let mut app = alone_saving(loaded.prefs, path.clone());
+        app.prefs_held = loaded.unreadable;
+        let _ = app.on_reply(
+            Purpose::SetNode { form: true },
+            Reply::NodeSet {
+                url: "https://other.example".to_owned(),
+                view: None,
+            },
+        );
+        assert_eq!(
+            preferences::load(&path).node.as_deref(),
+            Some("https://other.example")
+        );
     }
 }

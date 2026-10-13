@@ -90,11 +90,11 @@ software rendering, for example in a virtual machine, run it with
 The store goes, by default, under `%LOCALAPPDATA%\Tawara` on Windows,
 `~/Library/Application Support/Tawara` on macOS and
 `$XDG_DATA_HOME/tawara` (or `~/.local/share/tawara`) on Linux
-(docs/DECISIONS.md D21). The wallet uses the node
-`https://api.mochimo.org` until another is chosen, on the node screen or
-in Settings, or the node is forgotten. It asks the node nothing at
-start-up, only once a wallet is opened or the person asks
-(docs/DECISIONS.md D43). Requests to that node pass through Cloudflare.
+(docs/DECISIONS.md D21). Unless the person chooses another node or
+forgets the node, on the node screen or in Settings, the wallet uses
+`https://api.mochimo.org`, and requests to it pass through Cloudflare.
+Nothing is asked of the node at start-up: only once a wallet is opened,
+or when the person asks (docs/DECISIONS.md D43).
 
 ## Developing
 

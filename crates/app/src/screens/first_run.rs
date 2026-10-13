@@ -181,14 +181,21 @@ fn heading<'a>(
 }
 
 /// The node footer (5.23): which node the wallet asks, and a way to change
-/// it. On a phone the URL takes a line of its own, broken at its glyphs when
+/// it. A node not asked yet, as the default is until a wallet opens
+/// (docs/DECISIONS.md D43), is drawn muted and says so, apart from one that
+/// answered. On a phone the URL takes a line of its own, broken at its glyphs when
 /// it is long, so that a long address cannot push the link off the edge
 /// (docs/SCREENS.md, "Compact layout").
 fn node_footer(model: &Model, back: Back) -> Element<'_, Message> {
-    let (dot, label, url) = match (&model.node.url, &model.node.error) {
-        (Some(url), None) => (color::ACCENT, "Mesh API node", url.as_str()),
-        (Some(url), Some(_)) => (color::WARNING, "Mesh API node, not answering", url.as_str()),
-        (None, _) => (color::TEXT_MUTED, "No node chosen", ""),
+    let (dot, label, url) = match (&model.node.url, &model.node.tip, &model.node.error) {
+        (Some(url), Some(_), None) => (color::ACCENT, "Mesh API node", url.as_str()),
+        (Some(url), None, None) => (
+            color::TEXT_MUTED,
+            "Mesh API node, not asked yet",
+            url.as_str(),
+        ),
+        (Some(url), _, Some(_)) => (color::WARNING, "Mesh API node, not answering", url.as_str()),
+        (None, ..) => (color::TEXT_MUTED, "No node chosen", ""),
     };
     let change = if model.node.url.is_some() {
         "Change node"
@@ -384,11 +391,12 @@ fn node<'a>(model: &'a Model, form: &'a NodeForm) -> Element<'a, Message> {
         heading(
             "Choose a node",
             format!(
-                "By default the wallet uses {DEFAULT_NODE}, and another node only if you choose \
-                 one. Every balance, key index and chain tip the wallet works from comes from the \
-                 node it uses, so use one you trust. That node sees the wallet's tags and \
-                 balances, your network address and when the wallet uses it. Requests to \
-                 {DEFAULT_NODE} also pass through Cloudflare, which can read them. https:// is \
+                "By default the wallet uses {DEFAULT_NODE}; you can choose another node, or \
+                 none. Every balance, key index and chain tip the wallet works from comes from \
+                 the node it uses, so use one you trust. That node learns which tags the wallet \
+                 asks about, and so their balances, and when the wallet is used; it can also \
+                 learn your network address. Requests to {DEFAULT_NODE} pass through \
+                 Cloudflare, which can read them and sees your network address. https:// is \
                  required; http:// is accepted only to this {}.",
                 place(model)
             ),
@@ -1253,6 +1261,42 @@ mod tests {
                 ),
                 "{messages:?}"
             );
+        }
+    }
+
+    #[test]
+    fn a_node_not_asked_yet_is_not_drawn_as_one_that_answered() {
+        // At start-up the default node is set and asked nothing until a wallet
+        // opens (docs/DECISIONS.md D43): S1 and S7 must not draw it as a node
+        // that answered. Each label is drawn whole, and only its own.
+        let labels = [
+            "Mesh API node",
+            "Mesh API node, not asked yet",
+            "Mesh API node, not answering",
+        ];
+        let answered = Some((871_173, std::time::Duration::from_millis(42)));
+        let failed = Some("the node did not answer".to_owned());
+        for (screen, tip, error, label) in [
+            ("S1", None, None, labels[1]),
+            ("S7", None, None, labels[1]),
+            ("S1", answered, None, labels[0]),
+            ("S1", None, failed.clone(), labels[2]),
+            ("S1", answered, failed, labels[2]),
+        ] {
+            let mut model = named(screen);
+            model.node.tip = tip;
+            model.node.error = error;
+            let drawn: Vec<String> = texts(view(&model), (NARROWEST, 1400.0))
+                .into_iter()
+                .map(|(text, _)| text)
+                .collect();
+            for other in labels {
+                assert_eq!(
+                    drawn.iter().any(|t| t == other),
+                    other == label,
+                    "{screen}, tip {tip:?}: `{other}` in {drawn:?}"
+                );
+            }
         }
     }
 }

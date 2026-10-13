@@ -21,15 +21,19 @@ pub const FILE_NAME: &str = "preferences";
 /// The node a person who has not chosen one is given, so that the wallet
 /// works for someone who does not know what a node is (docs/DECISIONS.md
 /// D43). It is the default of [`Preferences::node`] and no more: a node the
-/// person chose, or [`NO_NODE`] for one they forgot, is kept, and nothing
-/// puts this default back over either.
+/// person chose, or [`FORGOTTEN_NODE`] for one they forgot, is kept, and
+/// nothing puts this default back over either. It is never written to the
+/// file, so that a person who has not chosen keeps following the default if
+/// a later version changes it (a new host, or a compromised one).
 pub const DEFAULT_NODE: &str = "https://api.mochimo.org";
 
 /// The word the preferences file holds for no node, as the person leaves it
 /// by forgetting the node (docs/DECISIONS.md D43). A node line that is
 /// absent or empty means [`DEFAULT_NODE`], not no node, so forgetting needs
-/// a word of its own, and that word survives a restart.
-pub const NO_NODE: &str = "none";
+/// a word of its own, and that word survives a restart. It is named apart
+/// from the worker's notice for a store opened with no node, which says
+/// something else.
+pub const FORGOTTEN_NODE: &str = "none";
 
 /// The auto-lock periods offered, in minutes (docs/DECISIONS.md D24, D27
 /// item 10). There is no "never": an unlocked store holds the seed.
@@ -103,7 +107,7 @@ pub fn parse(text: &str) -> Preferences {
             // as (docs/DECISIONS.md D43).
             "node" => match value {
                 "" => {}
-                NO_NODE => out.node = None,
+                FORGOTTEN_NODE => out.node = None,
                 node => out.node = Some(node.to_owned()),
             },
             "store" if !value.is_empty() => out.store = Some(value.to_owned()),
@@ -134,11 +138,16 @@ pub fn render(prefs: &Preferences) -> String {
     );
     // One line each: a line break would end the value and start a new key.
     let one_line = |s: &str| -> String { s.chars().filter(|c| !c.is_control()).collect() };
-    // A forgotten node is written as `none`: an absent line reads back as the
-    // default node (docs/DECISIONS.md D43).
-    match &prefs.node {
+    // A forgotten node is written as `none`, since an absent line reads back
+    // as the default node. The default itself is not written: a file that
+    // named it would hold it as a choice, and a later version's default would
+    // never reach the person who had not chosen (docs/DECISIONS.md D43). A
+    // person who types the default's own address is following the default,
+    // and is written as one who did.
+    match prefs.node.as_deref() {
+        Some(DEFAULT_NODE) => {}
         Some(node) => out.push_str(&format!("node = {}\n", one_line(node))),
-        None => out.push_str(&format!("node = {NO_NODE}\n")),
+        None => out.push_str(&format!("node = {FORGOTTEN_NODE}\n")),
     }
     if let Some(store) = &prefs.store {
         out.push_str(&format!("store = {}\n", one_line(store)));
@@ -154,21 +163,49 @@ pub fn render(prefs: &Preferences) -> String {
     out
 }
 
-/// The preferences in `path`, or the defaults when it does not exist.
-///
-/// A file that is there but cannot be read gives the defaults with no
-/// node, not [`DEFAULT_NODE`]: it may hold a node the person chose, or
-/// `none` for one they forgot, and the default must never take the place
-/// of either (docs/DECISIONS.md D43). With no node the wallet says so, and
-/// the person can choose again.
+/// The preferences in `path`, or the defaults when it does not exist. See
+/// [`load_checked`] for a file that is there but cannot be read.
 #[must_use]
 pub fn load(path: &Path) -> Preferences {
+    load_checked(path).prefs
+}
+
+/// What [`load_checked`] read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Loaded {
+    /// The preferences to start with.
+    pub prefs: Preferences,
+    /// The file is there but could not be read. It may hold a node the
+    /// person chose, or `none` for one they forgot, so the caller should not
+    /// write over it for an ordinary change (docs/DECISIONS.md D43): only
+    /// once the person chooses or forgets a node again.
+    pub unreadable: bool,
+}
+
+/// The preferences in `path`, and whether a file there could not be read.
+///
+/// A file that does not exist gives the defaults, with [`DEFAULT_NODE`]. A
+/// file that is there but cannot be read gives the defaults with no node:
+/// the default must never take the place of a node the person chose, or of
+/// one they forgot (docs/DECISIONS.md D43). With no node the wallet says
+/// so, and the person can choose again.
+#[must_use]
+pub fn load_checked(path: &Path) -> Loaded {
     match std::fs::read_to_string(path) {
-        Ok(text) => parse(&text),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Preferences::default(),
-        Err(_) => Preferences {
-            node: None,
-            ..Preferences::default()
+        Ok(text) => Loaded {
+            prefs: parse(&text),
+            unreadable: false,
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Loaded {
+            prefs: Preferences::default(),
+            unreadable: false,
+        },
+        Err(_) => Loaded {
+            prefs: Preferences {
+                node: None,
+                ..Preferences::default()
+            },
+            unreadable: true,
         },
     }
 }
@@ -300,16 +337,47 @@ mod tests {
         std::fs::write(&binary, b"node = none\n\xff\xfe\n").unwrap();
         for path in [&folder, &binary] {
             assert_eq!(
-                load(path),
-                Preferences {
-                    node: None,
-                    ..Preferences::default()
+                load_checked(path),
+                Loaded {
+                    prefs: Preferences {
+                        node: None,
+                        ..Preferences::default()
+                    },
+                    unreadable: true,
                 },
                 "{}",
                 path.display()
             );
         }
+        assert!(
+            !load_checked(&dir.join("missing")).unreadable,
+            "a file that is not there is not unreadable"
+        );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_default_node_is_not_written() {
+        // Nothing chosen: no node line, so a later default reaches the person.
+        let text = render(&Preferences::default());
+        assert!(!text.contains("node"), "{text}");
+        assert_eq!(parse(&text), Preferences::default());
+        // A file from before, naming the default, reads as the default and
+        // is written again without it.
+        let named = parse(&format!("node = {DEFAULT_NODE}\n"));
+        assert_eq!(named, Preferences::default());
+        assert!(!render(&named).contains("node"));
+        // A node the person chose, and a forgotten one, are still written.
+        let chosen = Preferences {
+            node: Some("https://mine.example".into()),
+            ..Preferences::default()
+        };
+        assert!(render(&chosen).contains("node = https://mine.example\n"));
+        let forgotten = Preferences {
+            node: None,
+            ..Preferences::default()
+        };
+        assert!(render(&forgotten).contains("node = none\n"));
     }
 
     #[test]
