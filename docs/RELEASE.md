@@ -497,9 +497,12 @@ never had Tawara on them (owner, with delegated help):
   they were; SmartScreen's prompt, if any, names the certificate's
   subject. A new certificate has no reputation yet, so a prompt on the
   first releases is expected.
-- [ ] **macOS:** `spctl -a -vvv -t install` on the image and `codesign
-  --verify --deep --strict` on the app; a copy downloaded through a browser
-  opens with no Gatekeeper warning, on Apple silicon and on Intel.
+- [ ] **macOS:** `spctl -a -vvv -t open --context context:primary-signature`
+  on the image, which must print `accepted` and
+  `source=Notarized Developer ID` (D36, source 23); `-t install` assesses
+  installer packages, not images. `codesign --verify --deep --strict` on the
+  app; a copy downloaded through a browser opens with no Gatekeeper warning,
+  on Apple silicon and on Intel.
 - [ ] **Linux:** the `.deb` installs, starts and removes on Ubuntu 22.04
   and 24.04; the AppImage starts on both; `dpkg-deb --info` and
   `--contents` show what section 6.3 says. In a fresh `ubuntu:22.04`

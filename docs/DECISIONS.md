@@ -2592,3 +2592,11 @@ packaging study of 2026-10-12, whose notes are not in the repository.
     SDK.
     https://github.com/actions/runner-images/blob/main/images/macos/macos-26-Readme.md
     (2026-10-13)
+23. Apple, Technical Note TN2206, "macOS Code Signing In Depth", section
+    "Signing Disk Images": a disk image's signature is assessed with
+    `spctl -a -t open --context context:primary-signature`.
+    https://developer.apple.com/library/archive/technotes/tn2206/
+    (2026-10-13). The notarised output, and `-t install` for installer
+    packages, are from https://developer.apple.com/forums/thread/130560 and
+    https://developer.apple.com/forums/thread/675354 (both checked
+    2026-10-13).
