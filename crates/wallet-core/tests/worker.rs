@@ -1730,6 +1730,112 @@ fn an_account_set_aside_at_open_settles_and_rejoins_once_it_reconciles() {
     }));
 }
 
+/// docs/DECISIONS.md D38 item 5: a reorganisation that reverts a settle
+/// does not reopen the reservation. The library keeps only the settled
+/// block, so every read that reconciles the account reports it one key
+/// behind the store, with the block and no index to advance to; Re-sign has
+/// no reservation to read, the acknowledged advance writes nothing, and a
+/// store with no other account will not start. Pinned here because the
+/// library's own test covers only its report, and the docs describe what
+/// Tawara does with it.
+#[test]
+fn a_reverted_settle_leaves_the_account_behind_with_no_way_to_advance() {
+    let scratch = Scratch::new("reverted");
+    let dir = scratch.store();
+    let (mut h, start) = funded(&scratch);
+    let request = pay(destination(1), Amount::Nano(100_000));
+    let plan = planned(h.call(Command::PlanSend {
+        spend: request.clone(),
+    }));
+    let _ = sent(h.call(Command::ConfirmSend { plan: plan.plan }));
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    match h.call(Command::Settle {
+        account: account0(),
+    }) {
+        Reply::Settled { view, text } => assert_eq!(view.accounts[0].index, start + 1, "{text}"),
+        other => panic!("expected the settlement, got {other:?}"),
+    }
+
+    // The block that showed the spend is reverted: the chain holds the
+    // account at the key it spent from, with the balance it had.
+    h.chain.hold(tag(0), address(0, start), FUNDS);
+    let settle = format!("This store recorded a SETTLE at index {start}");
+    let behind = |state: &AccountState| match state {
+        AccountState::Diverged {
+            kind: DivergenceKind::Behind { gap: 1 },
+            report,
+            advance_to: None,
+        } => report.contains(&settle),
+        _ => false,
+    };
+
+    let view = opened(h.call(Command::Refresh));
+    assert!(view.opened, "Refresh leaves an open wallet open: {view:?}");
+    let row = &view.accounts[0];
+    assert!(behind(&row.state), "Refresh: {:?}", row.state);
+    assert!(!row.spendable);
+    assert_eq!(row.index, start + 1, "nothing moved the store back");
+
+    match h.call(Command::Status {
+        account: account0(),
+        scan_to: None,
+    }) {
+        Reply::Status {
+            state,
+            spendable,
+            text,
+            ..
+        } => {
+            assert!(behind(&state), "Check now: {state:?}");
+            assert!(!spendable);
+            assert!(
+                text.contains("THIS BUILD HAS NO COMMAND THAT TURNS THE RETAINED BLOCK"),
+                "{text}"
+            );
+        }
+        other => panic!("expected the report, got {other:?}"),
+    }
+
+    // No reservation is open, so there is nothing to re-sign.
+    let submits = h.chain.submits().len();
+    let _ = refusal(h.call(Command::Resign { spend: request }));
+    assert_eq!(h.chain.submits().len(), submits, "nothing more was sent");
+
+    // Its only account diverged, so the store will not start.
+    assert!(matches!(h.call(Command::Lock), Reply::Locked));
+    assert_eq!(h.wait_locked(Duration::from_secs(5)), LockReason::Asked);
+    let view = opened(h.unlock(&dir, PASSWORD));
+    assert!(!view.opened, "{view:?}");
+    let notice = view.notice.clone().expect("the refusal page");
+    assert_eq!(notice.kind, NoticeKind::WillNotStart);
+    assert!(
+        behind(&view.accounts[0].state),
+        "{:?}",
+        view.accounts[0].state
+    );
+
+    // The acknowledged advance names no index for a chain behind the store:
+    // asked to go to the chain's key, it writes nothing.
+    match h.call(Command::Reconcile {
+        account: account0(),
+        advance_to: start,
+    }) {
+        Reply::Reconciled {
+            ok,
+            advanced_to,
+            text,
+            opened: Ok(view),
+        } => {
+            assert!(!ok, "{text}");
+            assert_eq!(advanced_to, None, "{text}");
+            assert!(!view.opened);
+            assert_eq!(view.accounts[0].index, start + 1);
+        }
+        other => panic!("expected the refused advance, got {other:?}"),
+    }
+}
+
 // ------------------------------------------------- teardown, failed reopen
 
 #[test]
