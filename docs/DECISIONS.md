@@ -2661,10 +2661,37 @@ item 6's.
    `crates/app/src/app/wallet.rs:769-770`). The alternative put to the
    owner, keeping them until the person saves or dismisses them or the
    wallet locks, was not taken. What this leaves, recorded so that it is
-   not forgotten: an automatic settle can come before the person has seen
-   the bytes, and if a reorganisation of the chain reverts the settle, the
-   reservation is open again and those were the only bytes that could move
-   the funds (D27 item 5's amendment of 2026-10-13).
+   not forgotten: an automatic settle can come before the person has seen the
+   bytes. If a reorganisation of the chain then reverts the settle, the
+   reservation is not reopened: `persist_settled` closes it and keeps only
+   the settle's digest, index and, where recorded, figures (library at
+   `7cdc2e9`, `keystore/mod.rs:1332-1363`), so the bytes are not in the
+   store. The account is then diverged, not reserved. The chain holds it at
+   the settled key's address, one index behind the store's, and the next read
+   that reconciles it reports `IndexMismatch` with that block (library
+   `recon.rs:1546-1558`). Re-sign is refused, since `resign_pending` needs a
+   reconciled account and an open reservation (library `wallet.rs:738-740`).
+   The library's report names two causes it cannot tell apart: a reorg that
+   reverted the settle, or a settle taken on the single observation the
+   settle rule permits, where the spend may yet land. For a chain behind the
+   store, the report's action is to wait for the spend to land and reconcile
+   again; if it never lands, the difference is permanent, and advancing local
+   state backwards is never a remedy (library `recon.rs:962-964`). It also
+   says that a copy the person saved outside the store can be re-submitted
+   while the balance at the source has not moved and a non-zero block-to-live
+   has not passed, and that this build has no command that turns the retained
+   block back into those bytes (library `recon.rs:986-1000`). Tawara offers
+   no route to such a copy from this account: Submit saved artifact is
+   offered only for an open reservation
+   (`crates/app/src/screens/wallet/account.rs:188-190`). **Open:** whether a
+   diverged account should offer it is for the owner. Nothing in Tawara moves
+   a key index to clear the divergence (PLAN 4.9): the acknowledged advance
+   names no index for a chain behind the store (library `recon.rs:865-873`
+   and `:1149`, and `cli/reconcile.rs:273`), the recovery page offers no
+   remedy for it (`crates/app/src/app/wallet.rs:213-225`), and restore writes
+   nothing for an account the store already holds (library
+   `cli/restore.rs:163-168`). D27 item 5's amendment holds only while the
+   reservation is open.
 6. **The narrow lock case is accepted, with no library change (owner,
    2026-10-13).** D19 says every walk takes a cancel, and D24 says a walk
    never holds the lock back. The library's `settle_if_landed` reconciles
@@ -2684,9 +2711,10 @@ item 6's.
    proposed unless the owner asks.
 7. **Recorded risks.** The node's answers are not authenticated, and the
    library settles on one observation. A reorganisation that reverts a
-   settle is caught only at the next open (`IndexMismatch`), with no path
-   to acknowledge it. The poll adds traffic to the node, and with D43's
-   default node that traffic reaches its operator and Cloudflare (T28,
+   settle is caught by the next read that reconciles the account (Refresh,
+   Check now or the next open), as `IndexMismatch`, with no path to
+   acknowledge it (item 5). The poll adds traffic to the node, and with
+   D43's default node that traffic reaches its operator and Cloudflare (T28,
    PR #21).
 
 Records that change with the work: docs/SCREENS.md's rows for a
