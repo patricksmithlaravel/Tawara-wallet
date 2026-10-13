@@ -549,6 +549,19 @@ for review or published.
   Transporter, then to TestFlight; the first `.aab` by hand in Play Console
   to the internal testing track, which enrols Play App Signing (section
   1.2). These deliver exactly the builds of section 6.
+- [ ] **The Play closed test's timing** (owner), if the account needs one
+  (section 1.2). The test can start only after the app's setup in Play
+  Console. Production access is applied for when 12 testers have been
+  opted in for the preceding 14 days, and Google's review of that
+  application usually takes seven days or less (D36, source 7). With the
+  closed test in section 9, the first Play release comes at least 14 days,
+  plus that review, after this section's gate. To shorten the wait, the
+  owner may start the closed test from the build uploaded above while the
+  device checks run, so that its testers hold a build whose checks have
+  not yet passed. Play Console is first asked whether a closed-track
+  release is reviewed. If it is, that release is a submission for review,
+  which this section's gate forbids until the checks pass, and starting
+  early then needs the owner's exception in writing in docs/DECISIONS.md.
 - [ ] **Run the device checks** (owner) on an arm64 Android phone and an
   iPhone (D32 item 2), from those testing builds. The list is the threat
   model's section 5.2 (D34), V1 to V17; if it changes before the release,
@@ -602,15 +615,17 @@ for review or published.
   the person's keys on the device and talks only to the node they choose)
   and how to reach a screen without funds; submit for review, with manual
   release, so that the release happens when the other platforms are ready.
-- [ ] **Google Play** (owner): from the internal testing track of section
-  8, the closed test if the account needs one (section 1.2); the Data
-  safety form, content rating, target audience and financial features
-  declaration; then production. Play offers no staged rollout for an app's
-  first publication, so the first release reaches all Google Play users in
-  the countries and regions chosen for production at once (D36, sources 24
-  and 25). The device checks of section 8 are the gate before it.
-  **(Recommended)** for each later update, a staged rollout, starting at a
-  small share, so that a fault reaches few people (D36, source 24).
+- [ ] **Google Play** (owner): from the internal testing track of section 8,
+  the app's setup in Play Console, among it the Data safety form, content
+  rating, target audience and financial features declaration, which the
+  closed test needs first; the closed test if the account needs one (section
+  1.2), unless the owner started it in section 8; then production. Play
+  offers no staged rollout for an app's first publication, so the first
+  release reaches all Google Play users in the countries and regions chosen
+  for production at once (D36, sources 24 and 25). The device checks of
+  section 8 are the gate before it. **(Recommended)** for each later update,
+  a staged rollout, starting at a small share, so that a fault reaches few
+  people (D36, source 24).
 - [ ] **Desktop** (owner): a GitHub release on the tag `vX.Y.Z`, made from
   the owner's machine, with the signed installer, the `.dmg`, the
   AppImage, the `.deb`, `SHA256SUMS` and its signature, and release notes

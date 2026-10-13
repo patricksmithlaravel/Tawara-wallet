@@ -2543,7 +2543,10 @@ packaging study of 2026-10-12, whose notes are not in the repository.
    (2026-10-13)
 7. Google Play testing for new personal accounts: personal accounts created
    after 2023-11-13 run a closed test with at least 12 testers opted in for
-   14 days; organisation accounts are not mentioned.
+   14 days; organisation accounts are not mentioned. The test starts after
+   the app's setup, the testers "must have been opted in continuously for
+   the preceding 14 days" when production access is applied for, and the
+   review of that application "usually takes seven days or less".
    https://support.google.com/googleplay/android-developer/answer/14151465
    (2026-10-13)
 8. Google Play registration: US$25 once, identity verification.
