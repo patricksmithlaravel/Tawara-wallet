@@ -427,7 +427,9 @@ run.
   `Exec=tawara-desktop`), the icon at 256 pixels, and the notices; then
   `appimagetool --appimage-extract-and-run --runtime-file <the pinned
   runtime>` with appimagetool 1.9.1, each checked against its SHA-256
-  before it runs.
+  before it runs. The AppImage bundles no libraries, so it needs from the
+  system those the `.deb` below names by hand; the release notes list them
+  (section 9).
 - [ ] `.deb`: a tree with `usr/bin/tawara-desktop`, the same desktop entry
   under `usr/share/applications/`, hicolor icons from 16 to 512 pixels, the
   notices under `usr/share/doc/tawara-desktop/`, and `DEBIAN/control`
@@ -532,7 +534,10 @@ never had Tawara on them (owner, with delegated help):
   the package (the last is the software Vulkan driver that the wgpu launch
   needs), `ci/liveness.sh` passes on the installed binary. Libraries that
   those packages pull in cannot show a gap, so the check covers the list only
-  for libraries the container lacks.
+  for libraries the container lacks. The AppImage gets the same check: in
+  another fresh container with the same three packages and the `.deb`'s
+  hand list installed by name, extract it with `--appimage-extract`, and
+  `ci/liveness.sh` passes on the executable inside it.
 - [ ] **Every desktop package:** the version shown is `X.Y.Z`; a wallet
   made by the previous release, if there is one, opens; the notices are
   where section 4 says.
@@ -631,7 +636,8 @@ for review or published.
 - [ ] **Desktop** (owner): a GitHub release on the tag `vX.Y.Z`, made from
   the owner's machine, with the signed installer, the `.dmg`, the
   AppImage, the `.deb`, `SHA256SUMS` and its signature, and release notes
-  that state the version, the glibc floor (2.35), the minimum macOS and
+  that state the version, the glibc floor (2.35), the libraries the
+  AppImage needs from the system (section 6.3), the minimum macOS and
   Windows versions, the source links above, and that the program is not an
   official product of the cryptocurrency. CI uploads nothing (D13).
 - [ ] **Release notes** (delegated draft, owner approval): what changed, the
