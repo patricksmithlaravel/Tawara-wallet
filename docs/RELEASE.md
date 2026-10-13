@@ -213,8 +213,9 @@ following before section 6 starts.
 
 PLAN sections 3 and 7 make docs/THREAT_MODEL.md (D34) a condition of any
 release. Its section 6 lists what must be closed, or accepted by the owner in
-writing in docs/DECISIONS.md, first. In summary, with the threat model's own
-identifiers:
+writing in docs/DECISIONS.md, before any release. Items that need a built
+package or a device close at section 8's gate; the rest close at section 3's
+gate, before the tag. In summary, with the threat model's own identifiers:
 
 - [ ] **Every device check, V1 to V17** (its section 5.2), run on the
   builds to be released and recorded: section 8 here (owner).
@@ -244,8 +245,9 @@ threat model's wins and this summary is corrected.
 ## 3. The commits to release
 
 - [ ] **The threat model on `main`** (delegated, owner's review):
-  docs/THREAT_MODEL.md merged (D34), and its section 6 closed as section 2
-  here records.
+  docs/THREAT_MODEL.md merged (D34), and each item of its section 6 that
+  needs no built package or a device closed, as section 2 here records. The
+  rest close at section 8's gate, before anything is submitted or published.
 - [ ] **Fork pin settled** (delegated): no iced fork move is in flight.
   A move during a release is its own pull request with D32 item 9 (a)'s
   checks, never part of the release.
@@ -530,6 +532,10 @@ for review or published.
   (the threat model's section 6, item 1). Any other failure is fixed, or
   accepted by the owner in writing in docs/DECISIONS.md, before that
   release goes on.
+- [ ] **The threat model's section 6, for the items that need a build or a
+  device** (delegated, then owner): each is closed, or accepted in writing in
+  docs/DECISIONS.md, before anything is submitted for review or published
+  (section 9).
 - [ ] **When a check fails and is fixed** (delegated, then owner): the fix
   is a new commit, through a pull request, and the release goes back to
   section 3 for it. A fix in this repository takes a new version, since
