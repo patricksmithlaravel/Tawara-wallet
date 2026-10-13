@@ -530,19 +530,30 @@ In Tawara-mobile, after the owner items of section 1.2 and Xcode 26.6
   the binary's imports); the `DT` keys of the Xcode in use; the App
   Store profile as `embedded.mobileprovision`; and the notices. Check with
   `plutil -lint` and the scene-manifest check `tawara.sh` makes.
-- [ ] Sign with the entitlements file (application identifier, team,
-  `get-task-allow` false, `com.apple.developer.default-data-protection`
-  `NSFileProtectionComplete`): `codesign --force --timestamp --sign "Apple
-  Distribution: <name> (<team>)" --entitlements <file>` (owner). Read them
-  back with `codesign -d --entitlements :-` and compare.
+- [ ] Sign the bundle with the entitlements file (application identifier,
+  team, `get-task-allow` false,
+  `com.apple.developer.default-data-protection` `NSFileProtectionComplete`):
+  `codesign --force --timestamp --sign "Apple Distribution: <name>
+  (<team>)" --entitlements <file> Tawara.app` (owner), naming the bundle as
+  `tawara.sh` does. Read them back with
+  `codesign -d --entitlements :- Tawara.app` and compare.
 - [ ] Put the signed app in `Payload/Tawara.app`, then zip the `Payload`
   directory, not the app, as `Tawara-X.Y.Z+N.ipa` (D36). From the directory
-  that contains `Payload`, run `ditto -c -k --keepParent Payload
-  Tawara-X.Y.Z+N.ipa`. Zipping `Payload/Tawara.app` instead puts
-  `Tawara.app/` at the root of the archive, with no `Payload/` directory.
-- [ ] Check the archive: `unzip -l Tawara-X.Y.Z+N.ipa |
-  grep -q " Payload/Tawara.app/"` must succeed.
-- [ ] Run `xcrun altool --validate-app` with the API key (owner).
+  that contains `Payload`, run `ditto -c -k --noextattr --norsrc --noqtn
+  --keepParent Payload Tawara-X.Y.Z+N.ipa`. Zipping `Payload/Tawara.app`
+  instead puts `Tawara.app/` at the root of the archive, with no
+  `Payload/` directory. Without `--norsrc` and `--noextattr`, ditto writes
+  an AppleDouble `._` entry for each file or folder that carries an
+  extended attribute, and App Store Connect has refused an upload over a
+  `._` path (D36, source 28).
+- [ ] Check the archive. Both must succeed, also under `set -o pipefail`,
+  so neither uses `grep -q`, which can close the pipe before `unzip` is
+  done:
+  `unzip -l Tawara-X.Y.Z+N.ipa | grep " Payload/Tawara.app/" >/dev/null`
+  and
+  `! unzip -l Tawara-X.Y.Z+N.ipa | grep -E "(^| |/)\._" >/dev/null`.
+- [ ] Validate `Tawara-X.Y.Z+N.ipa`: `xcrun altool --validate-app -f
+  Tawara-X.Y.Z+N.ipa -t ios` with the API key (owner).
 
 ## 7. Checks on the signed packages
 
