@@ -6,6 +6,7 @@
 //! report text. The interface reads these and never a library type.
 
 use core::fmt;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use mochimo_crypto::account::AccountKind as LibraryKind;
@@ -188,6 +189,26 @@ impl AccountState {
             AccountState::Diverged { .. } | AccountState::NotReconciled => None,
         }
     }
+
+    /// Whether this state is what a read leaves when it failed transiently,
+    /// rather than what the node showed: the node did not answer for the
+    /// account, or the expiry of an outstanding spend could not be read. Such
+    /// a read says nothing about whether the spend has landed or can still
+    /// land, so the polls that wait for it carry on (docs/DECISIONS.md D38
+    /// item 2, and [`Watch`]).
+    #[must_use]
+    pub fn is_transient(&self) -> bool {
+        matches!(
+            self,
+            AccountState::Diverged {
+                kind: DivergenceKind::Unreachable,
+                ..
+            } | AccountState::SpendOutstanding {
+                reservation: ReservationState::Unclassified,
+                ..
+            }
+        )
+    }
 }
 
 /// What reconciliation found for an account it could not explain, as the
@@ -234,6 +255,72 @@ impl DivergenceKind {
             Divergence::NoMasterForDerivedAccount { .. } => DivergenceKind::NoMaster,
             Divergence::CannotReconcile { .. } => DivergenceKind::Failed,
         }
+    }
+}
+
+/// The accounts a poll asks the node about (docs/DECISIONS.md D38 item 2), as
+/// the reads so far say. An account is asked about while its row shows a live
+/// reservation. It is also asked about while its read fails transiently (see
+/// [`AccountState::is_transient`]), for as long as its last good read showed a
+/// live reservation: a node that did not answer for a minute must not stop the
+/// polls that settle the spend once it answers. Any other read drops it: the
+/// spend landed, the account settled, the reservation is dead, or the account
+/// diverged for another reason. A lock drops every account ([`Watch::clear`]),
+/// and a view drops the accounts it does not hold. A poll is never the
+/// person's input (docs/DECISIONS.md D24), so nothing here restarts the idle
+/// period.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Watch {
+    /// The accounts whose last good read showed a live reservation.
+    live: BTreeSet<AccountId>,
+}
+
+impl Watch {
+    /// Whether a poll asks the node about `account`, whose row shows `state`.
+    #[must_use]
+    pub fn asks(&self, account: AccountId, state: &AccountState) -> bool {
+        match state {
+            AccountState::SpendOutstanding {
+                reservation: ReservationState::Live,
+                ..
+            } => true,
+            _ => state.is_transient() && self.live.contains(&account),
+        }
+    }
+
+    /// Notes a read of `account` that showed `state`. A live reservation starts
+    /// the account's polls. A transient failure, and `NotReconciled` (nothing
+    /// has asked the node about the account), leave them as they were. Any
+    /// other state ends them.
+    pub fn read(&mut self, account: AccountId, state: &AccountState) {
+        match state {
+            AccountState::SpendOutstanding {
+                reservation: ReservationState::Live,
+                ..
+            } => {
+                self.live.insert(account);
+            }
+            _ if state.is_transient() => {}
+            AccountState::NotReconciled => {}
+            _ => {
+                self.live.remove(&account);
+            }
+        }
+    }
+
+    /// Notes each row of `view` as a read (see [`Watch::read`]), and forgets
+    /// the accounts the view does not hold.
+    pub fn read_view(&mut self, view: &WalletView) {
+        self.live
+            .retain(|id| view.accounts.iter().any(|row| row.id == *id));
+        for row in &view.accounts {
+            self.read(row.id, &row.state);
+        }
+    }
+
+    /// Forgets every account: the wallet locked, so its next reads start over.
+    pub fn clear(&mut self) {
+        self.live.clear();
     }
 }
 
@@ -438,5 +525,121 @@ mod tests {
         let mut none = view;
         none.accounts.retain(|a| a.state.balance().is_none());
         assert_eq!(none.total(), Total::Unknown);
+    }
+
+    #[test]
+    fn a_watch_asks_through_transient_reads_after_a_live_one_and_stops_on_any_other() {
+        let id = AccountId::from_tag([7; 20]);
+        let outstanding = |reservation| AccountState::SpendOutstanding {
+            balance: 1,
+            spent_index: 2,
+            reservation,
+        };
+        let live = outstanding(ReservationState::Live);
+        let silent = AccountState::Diverged {
+            kind: DivergenceKind::Unreachable,
+            report: "no answer".to_owned(),
+            advance_to: None,
+        };
+        let unclassified = outstanding(ReservationState::Unclassified);
+        // A live reservation is asked about whatever the reads said before.
+        assert!(Watch::default().asks(id, &live));
+        // An account never read live is not asked about because a read failed.
+        let mut watch = Watch::default();
+        assert!(!watch.asks(id, &silent));
+        assert!(!watch.asks(id, &unclassified));
+        // A live read asks, and each transient read after it keeps asking.
+        watch.read(id, &live);
+        watch.read(id, &silent);
+        assert!(watch.asks(id, &silent));
+        watch.read(id, &unclassified);
+        assert!(watch.asks(id, &unclassified));
+        // A read that asked no node says nothing either way.
+        watch.read(id, &AccountState::NotReconciled);
+        assert!(watch.asks(id, &silent));
+        // Any other read drops the account, and a transient read after it does
+        // not bring it back.
+        let others = [
+            outstanding(ReservationState::Dead {
+                balance_moved: true,
+                expired: false,
+            }),
+            outstanding(ReservationState::Dead {
+                balance_moved: false,
+                expired: true,
+            }),
+            outstanding(ReservationState::Unrecorded),
+            AccountState::SpendLanded {
+                balance: 1,
+                spent_index: 2,
+                settled_index: 3,
+            },
+            AccountState::InSync { balance: 1 },
+            AccountState::Diverged {
+                kind: DivergenceKind::ReservationUnexplained,
+                report: "unexplained".to_owned(),
+                advance_to: None,
+            },
+            AccountState::Diverged {
+                kind: DivergenceKind::NotFound,
+                report: "not found".to_owned(),
+                advance_to: None,
+            },
+        ];
+        for other in others {
+            let mut watch = Watch::default();
+            watch.read(id, &live);
+            watch.read(id, &other);
+            watch.read(id, &silent);
+            assert!(!watch.asks(id, &silent), "{other:?}");
+            assert!(!watch.asks(id, &unclassified), "{other:?}");
+        }
+    }
+
+    #[test]
+    fn a_watch_reads_each_row_of_a_view_and_forgets_what_the_view_leaves_out_or_a_lock() {
+        let row = |n: u8, state| AccountRow {
+            id: AccountId::from_tag([n; 20]),
+            kind: AccountKind::Derived,
+            index: 0,
+            state,
+            spendable: false,
+            number: None,
+        };
+        let live = AccountState::SpendOutstanding {
+            balance: 1,
+            spent_index: 2,
+            reservation: ReservationState::Live,
+        };
+        let silent = AccountState::Diverged {
+            kind: DivergenceKind::Unreachable,
+            report: "no answer".to_owned(),
+            advance_to: None,
+        };
+        let (one, two) = (AccountId::from_tag([1; 20]), AccountId::from_tag([2; 20]));
+        let mut view = WalletView {
+            dir: PathBuf::new(),
+            accounts: vec![row(1, live.clone()), row(2, live.clone())],
+            opened: true,
+            notice: None,
+            settled: Vec::new(),
+        };
+        let mut watch = Watch::default();
+        watch.read_view(&view);
+        assert!(watch.asks(one, &silent));
+        assert!(watch.asks(two, &silent));
+        // A view that leaves an account out forgets it, so a later silent read
+        // of it does not ask.
+        view.accounts.retain(|r| r.id == one);
+        watch.read_view(&view);
+        assert!(watch.asks(one, &silent));
+        view.accounts = vec![row(2, silent.clone())];
+        watch.read_view(&view);
+        assert!(!watch.asks(one, &silent));
+        assert!(!watch.asks(two, &silent));
+        // A lock forgets every account.
+        watch.read(one, &live);
+        watch.clear();
+        assert!(!watch.asks(one, &silent));
     }
 }

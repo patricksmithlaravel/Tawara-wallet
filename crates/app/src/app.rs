@@ -25,9 +25,7 @@ use tawara_wallet_core::explorer::{
 };
 use tawara_wallet_core::location::{self, Environment, Platform};
 use tawara_wallet_core::preferences::{self, Preferences};
-use tawara_wallet_core::view::{
-    AccountId, AccountState, ReservationState, SettledAccount, WalletView,
-};
+use tawara_wallet_core::view::{AccountId, SettledAccount, WalletView, Watch};
 use tawara_wallet_core::{
     Activity, Command, Config, Event, HttpsNode, LockReason, NetworkName, PhraseForDisplay,
     Progress, Refusal, RefusalKind, Reply, RequestId, SecretText, SyncState, WorkerHandle,
@@ -40,8 +38,9 @@ pub use wallet::{
     SubmitPage, TagPage, To, TransactionPage, WalletMsg, remedy, spend_request,
 };
 
-/// How often a poll asks the node about an account whose reservation is live
-/// and outstanding (docs/DECISIONS.md D38 item 2).
+/// How often a poll asks the node about an account [`Watch::asks`] names: one
+/// whose reservation is live and outstanding, or whose reads have failed
+/// transiently since a read showed it live (docs/DECISIONS.md D38 item 2).
 const POLL_EVERY: Duration = Duration::from_secs(60);
 
 /// The accounts the worker settled on its own in answering with `reply`
@@ -117,11 +116,14 @@ pub struct Model {
     /// The settlements the worker reported while no page of their account was
     /// shown: each one's banner waits for that page (docs/DECISIONS.md D38).
     settled_waiting: BTreeMap<AccountId, String>,
-    /// When the last poll of a live reservation was sent, so that the polls
-    /// come once a minute (docs/DECISIONS.md D38 item 2). A monotonic clock,
+    /// When the last poll was sent, so that the polls come once a minute
+    /// (docs/DECISIONS.md D38 item 2). A monotonic clock,
     /// not `clock_ms`: a wall clock set back would hold the polls back by as
     /// much.
     polled_at: Option<Instant>,
+    /// The accounts a poll asks the node about, as the reads so far say
+    /// (docs/DECISIONS.md D38 item 2; [`Watch`]). A lock empties it.
+    watch: Watch,
     /// Whether the window has the system's focus, as its last focus event
     /// said; a window starts with it. A poll asks only while it does, since
     /// D38 item 2 polls only in the foreground: a desktop window left behind
@@ -642,7 +644,7 @@ enum Purpose {
     Find([u8; 32]),
     /// The node's whole queue, for its own page.
     Queue,
-    /// An account with a live reservation, asked about once a minute: a
+    /// An account the poll asks about once a minute (`Watch::asks`): a
     /// settlement it finds is the worker's own, and a refusal says nothing
     /// (docs/DECISIONS.md D38).
     Poll,
@@ -815,6 +817,7 @@ impl Model {
             clock_ms: now_ms(),
             settled_waiting: BTreeMap::new(),
             polled_at: None,
+            watch: Watch::default(),
             foreground: true,
             zone: crate::ui::Zone::System,
             activity: Explored::default(),
@@ -1194,16 +1197,18 @@ impl App {
         }
     }
 
-    /// Asks the node about each account with a live reservation that is still
-    /// outstanding, once a minute, while a wallet is open and its window is in
-    /// the foreground (docs/DECISIONS.md D38 item 2). The worker's own read
-    /// settles an account whose chain shows the change key, and the answer is
-    /// shown as a settlement's banner when it does. A poll is not the person's
-    /// input, so it does not restart the idle period (D24). Nothing shows for
-    /// a poll that is refused or unanswered: the next one asks again. On the
-    /// desktop a window that loses the focus asks nothing until it has it
-    /// again. On a phone a move to the background locks the wallet, and a lock
-    /// leaves nothing open to poll (docs/DECISIONS.md D32 item 6).
+    /// Asks the node about each account that [`Watch::asks`] names, once a
+    /// minute, while a wallet is open and its window is in the foreground
+    /// (docs/DECISIONS.md D38 item 2): an account whose reservation is live and
+    /// outstanding, and one whose read failed transiently after such a read.
+    /// The worker's own read settles an account whose chain shows the change
+    /// key, and the answer is shown as a settlement's banner when it does. A
+    /// poll is not the person's input, so it does not restart the idle period
+    /// (D24). Nothing shows for a poll that is refused or unanswered: the next
+    /// one asks again. On the desktop a window that loses the focus asks
+    /// nothing until it has it again. On a phone a move to the background locks
+    /// the wallet, which leaves nothing open to poll and forgets which accounts
+    /// were polled (docs/DECISIONS.md D32 item 6).
     fn poll(&mut self, now: Instant) {
         let accounts = self.polled_accounts(now);
         if accounts.is_empty() {
@@ -1221,15 +1226,17 @@ impl App {
         }
     }
 
-    /// The accounts a poll asks about at `now` (see [`App::poll`]): those
-    /// whose reservation is live and still outstanding, in an open wallet
-    /// whose window is in the foreground, when a minute has passed since the
-    /// last poll and nothing else is awaited. Dead reservations and diverged
-    /// accounts are never polled: a dead reservation never settles, and a
-    /// diverged account is for the person to look at, not for a timer to walk
-    /// the chain for (docs/DECISIONS.md D19, D38). A landed spend is not
-    /// polled either: the read that found it settled it, or failed and left
-    /// it for Refresh, Check now or the Settle button.
+    /// The accounts a poll asks about at `now` (see [`App::poll`]): in an open
+    /// wallet whose window is in the foreground, when a minute has passed since
+    /// the last poll and nothing else is awaited, those that [`Watch::asks`]
+    /// names. An account whose reservation is live is polled, and one whose
+    /// read failed transiently is polled only after a read that showed its
+    /// reservation live (docs/DECISIONS.md D38 item 2). A dead reservation is
+    /// never polled, since it never settles. A diverged account that is not
+    /// failing transiently is not polled either: it is for the person to look
+    /// at, not for a timer to walk the chain for (docs/DECISIONS.md D19, D38).
+    /// A landed spend is not polled either: the read that found it settled it,
+    /// or failed and left it for Refresh, Check now or the Settle button.
     fn polled_accounts(&self, now: Instant) -> Vec<AccountId> {
         let m = &self.model;
         let due = m
@@ -1252,15 +1259,7 @@ impl App {
         wallet
             .accounts
             .iter()
-            .filter(|a| {
-                matches!(
-                    a.state,
-                    AccountState::SpendOutstanding {
-                        reservation: ReservationState::Live,
-                        ..
-                    }
-                )
-            })
+            .filter(|a| m.watch.asks(a.id, &a.state))
             .map(|a| a.id)
             .collect()
     }
@@ -1574,8 +1573,8 @@ impl App {
                         .discard();
                 }
             }
-            // The clock's second is what a poll of a live reservation waits for
-            // (docs/DECISIONS.md D38). It is not the person's input.
+            // The clock's second is what a poll waits for (docs/DECISIONS.md D38).
+            // It is not the person's input.
             Message::Tick(ms) => {
                 m.clock_ms = ms;
                 self.poll(Instant::now());
@@ -1732,6 +1731,9 @@ impl App {
                 // settlement's banner that waited for a page of the store
                 // (docs/DECISIONS.md D38).
                 self.model.settled_waiting.clear();
+                // The polls of the store close with it: an unlock starts from
+                // its own reads (docs/DECISIONS.md D38 item 2).
+                self.model.watch.clear();
                 self.model.activity = Explored::default();
                 // With no store open, the lock dropped a recovery phrase
                 // waiting to be confirmed (wallet-core's `Event::Locked`):
@@ -1824,6 +1826,7 @@ impl App {
         drop(m.leave());
         m.busy = None;
         m.wallet = None;
+        m.watch.clear();
         self.worker = None;
     }
 
@@ -1846,6 +1849,12 @@ impl App {
             self.model.show_settled(settled);
         }
         self.model.forget_settled();
+        // The reads the answer carries are noted here, whatever page sent the
+        // command, so that the next poll asks about what they left
+        // (docs/DECISIONS.md D38 item 2).
+        if let Some(view) = &self.model.wallet {
+            self.model.watch.read_view(view);
+        }
         task
     }
 
@@ -5220,8 +5229,8 @@ mod tests {
     }
 
     #[test]
-    fn a_poll_asks_only_about_a_live_reservation_and_stops_on_lock() {
-        use tawara_wallet_core::view::{AccountState, DivergenceKind};
+    fn a_poll_asks_about_a_live_reservation_and_stops_on_lock() {
+        use tawara_wallet_core::view::{AccountState, DivergenceKind, ReservationState};
         let scratch = Scratch::new("poll-stops");
         let (mut app, _events) = app(&scratch);
         let account = live_account();
@@ -5264,7 +5273,7 @@ mod tests {
             ),
             ("in sync", AccountState::InSync { balance: 1 }, vec![]),
             (
-                "diverged",
+                "diverged, never read live",
                 AccountState::Diverged {
                     kind: DivergenceKind::Unreachable,
                     report: "no answer".to_owned(),
@@ -5299,6 +5308,125 @@ mod tests {
         assert!(
             !app.waiting_on(|p| matches!(p, Purpose::Poll)),
             "nothing is sent"
+        );
+    }
+
+    #[test]
+    fn a_poll_keeps_asking_through_transient_failures_after_a_live_read_and_drops_on_any_other() {
+        use tawara_wallet_core::view::{
+            AccountState, DivergenceKind, ReservationState, SettledAccount,
+        };
+        let scratch = Scratch::new("poll-watch");
+        let (mut app, _events) = app(&scratch);
+        let account = live_account();
+        app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        let touched = app.touches.get();
+        let outstanding = |reservation: ReservationState| AccountState::SpendOutstanding {
+            balance: 3_180_000_000_000,
+            spent_index: 6,
+            reservation,
+        };
+        let live = outstanding(ReservationState::Live);
+        let silent = AccountState::Diverged {
+            kind: DivergenceKind::Unreachable,
+            report: "no answer".to_owned(),
+            advance_to: None,
+        };
+        // The worker's answer to a poll of the account, taken as the app takes it.
+        let answer = |app: &mut App, state: AccountState, settled: Option<SettledAccount>| {
+            let _ = app.on_reply(
+                Purpose::Poll,
+                Reply::Status {
+                    account,
+                    state,
+                    spendable: false,
+                    text: "checked".to_owned(),
+                    settled,
+                },
+            );
+        };
+        // Whether the next tick sends a poll: the last one's time is forgotten,
+        // so that a poll is due, and its answer is taken.
+        let polls = |app: &mut App| {
+            app.model.polled_at = None;
+            answered(app);
+            let _ = app.update(Message::Tick(now_ms()));
+            let sent = app.waiting_on(|p| matches!(p, Purpose::Poll));
+            answered(app);
+            sent
+        };
+        // The first read the app takes of the account shows its reservation live,
+        // as every read that opens or answers for the wallet does.
+        answer(&mut app, live.clone(), None);
+        assert!(polls(&mut app), "a live reservation is polled");
+
+        // The node does not answer for the account, and is asked again.
+        answer(&mut app, silent.clone(), None);
+        assert!(
+            polls(&mut app),
+            "a node that does not answer does not stop the polls"
+        );
+        // The expiry cannot be read, and is asked again.
+        answer(&mut app, outstanding(ReservationState::Unclassified), None);
+        assert!(
+            polls(&mut app),
+            "an expiry that cannot be read does not stop the polls"
+        );
+        // The reservation is live again.
+        answer(&mut app, live.clone(), None);
+        assert!(polls(&mut app));
+
+        // A real divergence ends the polls, and a node that then does not
+        // answer does not restart them.
+        answer(
+            &mut app,
+            AccountState::Diverged {
+                kind: DivergenceKind::ReservationUnexplained,
+                report: "unexplained".to_owned(),
+                advance_to: None,
+            },
+            None,
+        );
+        assert!(!polls(&mut app), "a divergence is not polled");
+        answer(&mut app, silent.clone(), None);
+        assert!(!polls(&mut app), "nor is a node that then does not answer");
+        // A live read starts them again.
+        answer(&mut app, live.clone(), None);
+        assert!(polls(&mut app));
+
+        // The spend lands and the poll settles it: nothing is polled afterwards.
+        answer(
+            &mut app,
+            AccountState::InSync {
+                balance: 3_180_000_000_000,
+            },
+            Some(SettledAccount {
+                account,
+                text: "settled: the library's page".to_owned(),
+            }),
+        );
+        assert!(!polls(&mut app), "a settled account is not polled");
+        answer(&mut app, silent.clone(), None);
+        assert!(!polls(&mut app));
+
+        // A lock forgets the polls, and the next unlock starts from its reads.
+        answer(&mut app, live.clone(), None);
+        assert!(polls(&mut app));
+        let _ = app.on_event(Event::Locked {
+            reason: LockReason::Background,
+        });
+        assert!(app.model.wallet.is_none());
+        let mut wallet = tawara_wallet_core::sample::wallet_view();
+        wallet.accounts[1].state = silent.clone();
+        let _ = app.on_reply(Purpose::Refresh, Reply::Wallet(wallet));
+        assert!(
+            !polls(&mut app),
+            "a node that does not answer after a lock does not restart the polls"
+        );
+        assert_eq!(
+            app.touches.get(),
+            touched,
+            "a poll is not the person's input"
         );
     }
 

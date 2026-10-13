@@ -18,7 +18,7 @@ use tawara_wallet_core::location::{Environment, Platform, default_store_dir};
 use tawara_wallet_core::spend::{Amount, DestinationInput, SpendInputError, SpendRequest};
 use tawara_wallet_core::view::{
     AccountId, AccountRow, AccountState, DivergenceKind, NoticeKind, ReservationState,
-    SettledAccount, Total, WalletView,
+    SettledAccount, Total, WalletView, Watch,
 };
 use tawara_wallet_core::{
     Activity, CONFIRM_POSITIONS, Command, Config, DISCOVER_MAX_TO, Event, LockReason,
@@ -2125,6 +2125,238 @@ fn status_reports_an_account_without_refusing() {
     );
     let view = opened(h.call(Command::Refresh));
     assert!(view.accounts[0].spendable, "{view:?}");
+}
+
+/// A spend from account 0 that may not be included after `blk_to_live`,
+/// planned and confirmed. Its reservation records that block, so a read of the
+/// spend asks the node for the tip, and a tip below the block leaves the
+/// reservation live.
+fn send_expiring_from_account0(h: &mut Harness, nano: u64, blk_to_live: u64) -> PlanView {
+    let plan = planned(h.call(Command::PlanSend {
+        spend: SpendRequest {
+            from: account0(),
+            destinations: vec![DestinationInput {
+                to: destination(1),
+                amount: Amount::Nano(nano),
+                reference: String::new(),
+            }],
+            fee: None,
+            blk_to_live,
+        },
+    }));
+    let s = sent(h.call(Command::ConfirmSend { plan: plan.plan }));
+    assert!(s.submitted);
+    plan
+}
+
+/// One poll of account 0, as the interface asks it: the worker's
+/// `Reply::Status`, with its state noted in `watch`. Returns the state, whether
+/// the account spends, and the settlement the read made, if it made one.
+fn poll_account0(
+    h: &mut Harness,
+    watch: &mut Watch,
+) -> (AccountState, bool, Option<SettledAccount>) {
+    match h.call(Command::Status {
+        account: account0(),
+        scan_to: None,
+    }) {
+        Reply::Status {
+            account,
+            state,
+            spendable,
+            settled,
+            ..
+        } => {
+            assert_eq!(account, account0());
+            watch.read(account, &state);
+            (state, spendable, settled)
+        }
+        other => panic!("expected a status, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_poll_keeps_asking_through_transient_failures_and_settles_the_landed_spend() {
+    // D38 item 2: a node that does not answer, and an expiry that cannot be
+    // read, leave an outstanding spend polled, so that the poll after the
+    // outage finds it landed and settles it on its own.
+    let scratch = Scratch::new("poll-transient");
+    let (mut h, start) = funded(&scratch);
+    let plan = send_expiring_from_account0(&mut h, 100_000, 1_100);
+    let mut watch = Watch::default();
+
+    let (state, spendable, settled) = poll_account0(&mut h, &mut watch);
+    assert!(
+        matches!(
+            state,
+            AccountState::SpendOutstanding {
+                reservation: ReservationState::Live,
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+    assert!(!spendable);
+    assert_eq!(settled, None);
+    assert!(watch.asks(account0(), &state));
+
+    // The node does not answer for the account: diverged for this read, and
+    // still asked about.
+    h.chain.set_unreachable(true);
+    let (state, spendable, settled) = poll_account0(&mut h, &mut watch);
+    assert!(
+        matches!(
+            state,
+            AccountState::Diverged {
+                kind: DivergenceKind::Unreachable,
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+    assert!(!spendable);
+    assert_eq!(settled, None);
+    assert!(
+        watch.asks(account0(), &state),
+        "a node that does not answer does not stop the polls"
+    );
+
+    // The node answers the ledger but not its status, so the expiry cannot be
+    // read: the reservation is unclassified, and still asked about.
+    h.chain.set_unreachable(false);
+    h.chain.set_status_down(true);
+    let (state, _, _) = poll_account0(&mut h, &mut watch);
+    assert!(
+        matches!(
+            state,
+            AccountState::SpendOutstanding {
+                reservation: ReservationState::Unclassified,
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+    assert!(watch.asks(account0(), &state));
+
+    // Recovery: the expiry reads as live again.
+    h.chain.set_status_down(false);
+    let (state, _, _) = poll_account0(&mut h, &mut watch);
+    assert!(
+        matches!(
+            state,
+            AccountState::SpendOutstanding {
+                reservation: ReservationState::Live,
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+    assert!(watch.asks(account0(), &state));
+
+    // The spend lands. The poll that finds the change key settles it on its
+    // own (D38), and nothing is asked about the account afterwards.
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    let (state, spendable, settled) = poll_account0(&mut h, &mut watch);
+    assert_eq!(
+        state,
+        AccountState::InSync {
+            balance: plan.change_total
+        },
+        "{state:?}"
+    );
+    assert!(spendable);
+    let settled = settled.expect("the landed spend settles on this poll");
+    assert_eq!(settled.account, account0());
+    assert!(settled.text.starts_with("settled:"), "{}", settled.text);
+    h.chain.set_unreachable(true);
+    let (state, _, _) = poll_account0(&mut h, &mut watch);
+    assert!(
+        matches!(
+            state,
+            AccountState::Diverged {
+                kind: DivergenceKind::Unreachable,
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+    assert!(
+        !watch.asks(account0(), &state),
+        "a settled account is not asked about"
+    );
+}
+
+#[test]
+fn a_poll_stops_asking_once_a_read_shows_the_reservation_dead() {
+    // D38 item 2: a dead reservation never settles, so it is not polled, and a
+    // node that then fails does not bring the polls back.
+    let scratch = Scratch::new("poll-dead");
+    let (mut h, start) = funded(&scratch);
+    send_expiring_from_account0(&mut h, 100_000, 1_100);
+    let mut watch = Watch::default();
+    let (state, _, _) = poll_account0(&mut h, &mut watch);
+    assert!(watch.asks(account0(), &state));
+
+    // The balance moved on the spent key: the reservation is dead.
+    h.chain.hold(tag(0), address(0, start), FUNDS + 1);
+    let (state, _, _) = poll_account0(&mut h, &mut watch);
+    assert!(
+        matches!(
+            state,
+            AccountState::SpendOutstanding {
+                reservation: ReservationState::Dead {
+                    balance_moved: true,
+                    ..
+                },
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+    assert!(!watch.asks(account0(), &state));
+
+    h.chain.set_unreachable(true);
+    let (state, _, _) = poll_account0(&mut h, &mut watch);
+    assert!(
+        matches!(
+            state,
+            AccountState::Diverged {
+                kind: DivergenceKind::Unreachable,
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+    assert!(!watch.asks(account0(), &state));
+}
+
+#[test]
+fn a_poll_stops_asking_once_a_read_shows_an_unexplained_reservation() {
+    // D38 item 2: a real divergence is for the person to look at, not for a
+    // timer to walk the chain for.
+    let scratch = Scratch::new("poll-diverged");
+    let (mut h, start) = funded(&scratch);
+    send_expiring_from_account0(&mut h, 100_000, 1_100);
+    let mut watch = Watch::default();
+    let (state, _, _) = poll_account0(&mut h, &mut watch);
+    assert!(watch.asks(account0(), &state));
+
+    // The node holds the account at neither the key that signed nor the change
+    // key.
+    h.chain.hold(tag(0), address(0, start + 5), FUNDS);
+    let (state, _, _) = poll_account0(&mut h, &mut watch);
+    assert!(
+        matches!(
+            state,
+            AccountState::Diverged {
+                kind: DivergenceKind::ReservationUnexplained,
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+    assert!(!watch.asks(account0(), &state));
 }
 
 #[test]

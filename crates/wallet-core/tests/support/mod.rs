@@ -109,6 +109,10 @@ struct State {
     ledger: BTreeMap<Tag, (Address, u64)>,
     tip: u64,
     unreachable: bool,
+    /// `/network/status` is not answered, so the tip cannot be read and the
+    /// expiry of an outstanding spend cannot be checked (the library's
+    /// `Expiry::Unreadable`).
+    status_down: bool,
     refuse_submits: bool,
     submits: Vec<Vec<u8>>,
     calls: usize,
@@ -290,6 +294,11 @@ impl Chain {
         self.0.lock().expect("chain").unreachable = unreachable;
     }
 
+    /// The node answers the ledger but not its status: a read of the tip fails.
+    pub fn set_status_down(&self, down: bool) {
+        self.0.lock().expect("chain").status_down = down;
+    }
+
     pub fn refuse_submits(&self, refuse: bool) {
         self.0.lock().expect("chain").refuse_submits = refuse;
     }
@@ -461,6 +470,10 @@ impl Transport for Chain {
         let req: serde_json::Value =
             serde_json::from_slice(body).map_err(|_| mesh("test: request json"))?;
         match path {
+            "/network/status" if s.status_down => Err(Error::Transport {
+                op: "status",
+                kind: TransportKind::Io(std::io::ErrorKind::TimedOut),
+            }),
             "/network/status" => Ok(serde_json::json!({
                 "current_block_identifier": { "index": s.tip, "hash": format!("0x{}", "ab".repeat(32)) },
                 "current_block_timestamp": s.tip * 60_000,
