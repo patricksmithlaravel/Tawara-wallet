@@ -540,6 +540,9 @@ pub enum Go {
 #[derive(Clone, Copy, Debug)]
 enum Purpose {
     /// `SetNode`: from the node screen when `form`, at start-up otherwise.
+    /// At start-up nothing is written, and nothing is asked of the node it
+    /// sets: its tip waits for a wallet to open, or for Check now or Refresh
+    /// (docs/DECISIONS.md D43).
     SetNode {
         form: bool,
     },
@@ -1727,9 +1730,16 @@ impl App {
                     let back = f.back;
                     self.go_back(back);
                 }
-                self.save_prefs();
-                self.ask_tip();
-                self.read_activity();
+                // A node the person chose is saved and asked now. At start-up
+                // the node is the one already in the preferences, the default
+                // when none was chosen: nothing changed, so nothing is written,
+                // and nothing is asked until a wallet opens or the person asks
+                // (docs/DECISIONS.md D43).
+                if form {
+                    self.save_prefs();
+                    self.ask_tip();
+                    self.read_activity();
+                }
             }
             // From the node screen, or from Settings' node card.
             (Purpose::SetNode { form: true }, Reply::Refused(r)) => {
@@ -2035,10 +2045,16 @@ mod tests {
         }
     }
 
-    /// An application over a real worker, no node chosen, with its default
-    /// store in `scratch`.
+    /// An application over a real worker, with its default store in
+    /// `scratch`. Its preferences say `none`, not the default node: a test
+    /// that opens or reads a wallet must not reach a real node, and the
+    /// default is tested where it is chosen (docs/DECISIONS.md D43).
     fn app(scratch: &Scratch) -> (App, Receiver<Event>) {
-        let model = Model::new(Preferences::default(), Some(scratch.0.join("keystore")));
+        let prefs = Preferences {
+            node: None,
+            ..Preferences::default()
+        };
+        let model = Model::new(prefs, Some(scratch.0.join("keystore")));
         let (app, events) = App::start(model, None);
         (app, events.expect("the worker starts"))
     }
@@ -2199,6 +2215,8 @@ mod tests {
         pump(&mut app, &events, |a| a.model.busy.is_none());
         assert_eq!(waiting(&app, tips), 1, "one tip, once the refresh answered");
         pump(&mut app, &events, |a| waiting(a, tips) == 0);
+        // No node from here on, as the worker's: this test's application starts
+        // with none (see `app`), so the wallet below is opened with no node.
         app.model.node = NodeState::default();
 
         let _ = app.update(Message::Lock);
@@ -3157,6 +3175,8 @@ mod tests {
             ("S7", Screen::Unlock(UnlockForm::default()), 2),
         ];
         for (name, screen, fields) in forms {
+            // Each form starts from a fresh first run, which has the default node
+            // chosen (docs/DECISIONS.md D43); a form's own fields are what is counted.
             let mut model = Model::new(Preferences::default(), None);
             model.screen = screen;
             let mut ui = UserInterface::build(
@@ -4973,5 +4993,148 @@ mod tests {
             },
         );
         assert!(app.model.chain.last.is_none() && app.model.pending.last.is_none());
+    }
+
+    /// The application over `prefs`, saving to `path`, with no worker: the
+    /// replies it is handed are all it does.
+    fn alone_saving(prefs: Preferences, path: PathBuf) -> App {
+        App {
+            model: Model::new(prefs, None),
+            worker: None,
+            prefs_path: Some(path),
+            touches: std::cell::Cell::default(),
+        }
+    }
+
+    #[test]
+    fn a_fresh_start_chooses_the_default_node_and_asks_it_nothing() {
+        // The worker is given the default. Setting it reads nothing: building a
+        // node's transport opens no socket, and the start-up answer asks for no
+        // tip, network, index or queue (docs/DECISIONS.md D43).
+        let (mut app, events) = App::start(Model::new(Preferences::default(), None), None);
+        let events = events.expect("the worker starts");
+        assert_eq!(
+            app.model.node.url.as_deref(),
+            Some(preferences::DEFAULT_NODE)
+        );
+        pump(&mut app, &events, |a| {
+            !waiting(a).iter().any(|p| p == "SetNode")
+        });
+        assert_eq!(
+            app.model.node.url.as_deref(),
+            Some(preferences::DEFAULT_NODE)
+        );
+        assert!(
+            waiting(&app).is_empty(),
+            "start-up asks the node nothing: {:?}",
+            waiting(&app)
+        );
+        assert!(app.model.node.tip.is_none() && app.model.node.network.is_none());
+    }
+
+    #[test]
+    fn nothing_is_asked_of_the_remembered_node_at_start_up() {
+        // On loopback, so that a broken rule reaches nothing beyond this
+        // machine. The rule does not depend on the address.
+        let loopback = "http://127.0.0.1:9";
+        let prefs = Preferences {
+            node: Some(loopback.to_owned()),
+            ..Preferences::default()
+        };
+        let (mut app, events) = App::start(Model::new(prefs, None), None);
+        let events = events.expect("the worker starts");
+        pump(&mut app, &events, |a| {
+            !waiting(a).iter().any(|p| p == "SetNode")
+        });
+        assert_eq!(app.model.node.url.as_deref(), Some(loopback));
+        assert!(
+            waiting(&app).is_empty(),
+            "start-up asks the node nothing: {:?}",
+            waiting(&app)
+        );
+        // Check now asks it, and its answers come back.
+        app.ask_tip();
+        assert!(waiting(&app).iter().any(|p| p == "Network"));
+        pump(&mut app, &events, |a| waiting(a).is_empty());
+    }
+
+    #[test]
+    fn forgetting_the_node_is_kept_across_a_restart() {
+        let scratch = Scratch::new("forget-node");
+        let path = scratch.0.join("preferences");
+        // The first start: the default is chosen, asked nothing, and nothing
+        // is written.
+        let (mut app, events) =
+            App::start(Model::new(Preferences::default(), None), Some(path.clone()));
+        let events = events.expect("the worker starts");
+        pump(&mut app, &events, |a| {
+            !waiting(a).iter().any(|p| p == "SetNode")
+        });
+        assert!(!path.exists(), "nothing is written at start-up");
+        // Forgotten: the worker drops the node, and the choice is saved.
+        let _ = app.update(Message::ForgetNode);
+        pump(&mut app, &events, |a| waiting(a).is_empty());
+        assert_eq!(app.model.node.url, None);
+        assert_eq!(preferences::load(&path).node, None, "saved as none");
+        // The next start reads it back: no node is set, so none is asked.
+        let (next, _events) = App::start(
+            Model::new(preferences::load(&path), None),
+            Some(path.clone()),
+        );
+        assert_eq!(next.model.node.url, None);
+        assert!(waiting(&next).is_empty(), "no node, so nothing is asked");
+    }
+
+    #[test]
+    fn a_chosen_node_is_saved_and_a_start_up_node_is_not_written() {
+        let scratch = Scratch::new("chosen-node");
+        let path = scratch.0.join("preferences");
+        let mut app = alone_saving(Preferences::default(), path.clone());
+        // Start-up sets the default, which is what the preferences hold: nothing
+        // changed, so nothing is written.
+        let _ = app.on_reply(
+            Purpose::SetNode { form: false },
+            Reply::NodeSet {
+                url: preferences::DEFAULT_NODE.to_owned(),
+                view: None,
+            },
+        );
+        assert!(!path.exists(), "a start-up node is not written");
+        // The person chooses another: it is saved, and read back.
+        let _ = app.on_reply(
+            Purpose::SetNode { form: true },
+            Reply::NodeSet {
+                url: "https://other.example".to_owned(),
+                view: None,
+            },
+        );
+        assert_eq!(
+            preferences::load(&path).node.as_deref(),
+            Some("https://other.example")
+        );
+        // The person forgets it: saved as none, and not replaced by the default.
+        let _ = app.on_reply(Purpose::ClearNode, Reply::NodeCleared { view: None });
+        assert_eq!(app.model.prefs.node, None);
+        assert_eq!(preferences::load(&path).node, None);
+    }
+
+    #[test]
+    fn a_remembered_node_the_worker_refuses_is_forgotten_not_replaced() {
+        let scratch = Scratch::new("refused-node");
+        let path = scratch.0.join("preferences");
+        let prefs = Preferences {
+            node: Some("http://plain.example".to_owned()),
+            ..Preferences::default()
+        };
+        let mut app = alone_saving(prefs, path.clone());
+        let _ = app.on_reply(
+            Purpose::SetNode { form: false },
+            Reply::Refused(Refusal {
+                kind: RefusalKind::NodeRefused,
+                text: "plaintext".to_owned(),
+            }),
+        );
+        assert_eq!(app.model.prefs.node, None, "forgotten, not the default");
+        assert_eq!(preferences::load(&path).node, None);
     }
 }

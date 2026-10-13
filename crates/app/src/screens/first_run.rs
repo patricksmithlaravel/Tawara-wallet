@@ -6,6 +6,7 @@
 use iced::widget::text::{LineHeight, Wrapping};
 use iced::widget::{checkbox, column, container, row, scrollable, space, text_input};
 use iced::{Alignment, Element, Length, Padding};
+use tawara_wallet_core::preferences::DEFAULT_NODE;
 use tawara_wallet_core::{MIN_PASSWORD_LEN, SCHEME_WARNING};
 
 use crate::app::{
@@ -383,9 +384,12 @@ fn node<'a>(model: &'a Model, form: &'a NodeForm) -> Element<'a, Message> {
         heading(
             "Choose a node",
             format!(
-                "There is no default node: you choose whom to trust. Every balance, key index \
-                 and chain tip the wallet works from comes from this node, so use one you \
-                 trust. https:// is required; http:// is accepted only to this {}.",
+                "By default the wallet uses {DEFAULT_NODE}, and another node only if you choose \
+                 one. Every balance, key index and chain tip the wallet works from comes from the \
+                 node it uses, so use one you trust. That node sees the wallet's tags and \
+                 balances, your network address and when the wallet uses it. Requests to \
+                 {DEFAULT_NODE} also pass through Cloudflare, which can read them. https:// is \
+                 required; http:// is accepted only to this {}.",
                 place(model)
             ),
         ),

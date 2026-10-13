@@ -18,6 +18,19 @@ use crate::location::{Environment, NoDefaultLocation, Platform, default_store_di
 /// The file's name in the application's folder.
 pub const FILE_NAME: &str = "preferences";
 
+/// The node a person who has not chosen one is given, so that the wallet
+/// works for someone who does not know what a node is (docs/DECISIONS.md
+/// D43). It is the default of [`Preferences::node`] and no more: a node the
+/// person chose, or [`NO_NODE`] for one they forgot, is kept, and nothing
+/// puts this default back over either.
+pub const DEFAULT_NODE: &str = "https://api.mochimo.org";
+
+/// The word the preferences file holds for no node, as the person leaves it
+/// by forgetting the node (docs/DECISIONS.md D43). A node line that is
+/// absent or empty means [`DEFAULT_NODE`], not no node, so forgetting needs
+/// a word of its own, and that word survives a restart.
+pub const NO_NODE: &str = "none";
+
 /// The auto-lock periods offered, in minutes (docs/DECISIONS.md D24, D27
 /// item 10). There is no "never": an unlocked store holds the seed.
 pub const IDLE_LOCK_MINUTES: [u64; 5] = [1, 2, 5, 10, 15];
@@ -35,8 +48,10 @@ pub enum AmountUnit {
 /// What is remembered.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Preferences {
-    /// The node last chosen, as typed. The worker checks it again when it is
-    /// set (`Command::SetNode`), so a stored value is never trusted.
+    /// The node last chosen, as typed, or `None` when the person forgot it.
+    /// It starts as [`DEFAULT_NODE`] (docs/DECISIONS.md D43). The worker
+    /// checks it again when it is set (`Command::SetNode`), so a stored value
+    /// is never trusted.
     pub node: Option<String>,
     /// The folder of the store last made or opened, as an absolute path, so
     /// the application offers to unlock it at the next start wherever it
@@ -51,7 +66,7 @@ pub struct Preferences {
 impl Default for Preferences {
     fn default() -> Preferences {
         Preferences {
-            node: None,
+            node: Some(DEFAULT_NODE.to_owned()),
             store: None,
             unit: AmountUnit::Mcm,
             idle_lock: crate::DEFAULT_IDLE_LOCK,
@@ -83,7 +98,14 @@ pub fn parse(text: &str) -> Preferences {
         };
         let value = value.trim();
         match key.trim() {
-            "node" if !value.is_empty() => out.node = Some(value.to_owned()),
+            // An empty value is not a node, so the default stands, as for any
+            // line not understood. `none` is what a forgotten node is written
+            // as (docs/DECISIONS.md D43).
+            "node" => match value {
+                "" => {}
+                NO_NODE => out.node = None,
+                node => out.node = Some(node.to_owned()),
+            },
             "store" if !value.is_empty() => out.store = Some(value.to_owned()),
             "unit" => match value {
                 "mcm" => out.unit = AmountUnit::Mcm,
@@ -112,8 +134,11 @@ pub fn render(prefs: &Preferences) -> String {
     );
     // One line each: a line break would end the value and start a new key.
     let one_line = |s: &str| -> String { s.chars().filter(|c| !c.is_control()).collect() };
-    if let Some(node) = &prefs.node {
-        out.push_str(&format!("node = {}\n", one_line(node)));
+    // A forgotten node is written as `none`: an absent line reads back as the
+    // default node (docs/DECISIONS.md D43).
+    match &prefs.node {
+        Some(node) => out.push_str(&format!("node = {}\n", one_line(node))),
+        None => out.push_str(&format!("node = {NO_NODE}\n")),
     }
     if let Some(store) = &prefs.store {
         out.push_str(&format!("store = {}\n", one_line(store)));
@@ -181,12 +206,74 @@ mod tests {
     }
 
     #[test]
-    fn what_is_not_understood_keeps_the_default() {
+    fn what_is_not_understood_keeps_the_defaults() {
         let prefs = parse(
-            "garbage\nnode =\nunit = parsecs\nauto-lock-minutes = 0\nauto-lock-minutes = \
+            "garbage\nunit = parsecs\nauto-lock-minutes = 0\nauto-lock-minutes = \
              never\nauto-lock-minutes = 7\ncolour = green\n",
         );
         assert_eq!(prefs, Preferences::default());
+    }
+
+    #[test]
+    fn a_fresh_start_chooses_the_default_node() {
+        assert_eq!(Preferences::default().node.as_deref(), Some(DEFAULT_NODE));
+        assert_eq!(parse(""), Preferences::default(), "no file is the defaults");
+        assert_eq!(
+            parse("unit = nanomcm\n").node.as_deref(),
+            Some(DEFAULT_NODE),
+            "a file with no node line chooses the default node"
+        );
+    }
+
+    #[test]
+    fn an_empty_node_line_keeps_the_default_node_and_is_not_none() {
+        for text in ["node =\n", "node =    \n"] {
+            assert_eq!(parse(text).node.as_deref(), Some(DEFAULT_NODE), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn none_is_no_node_and_reads_back_as_none() {
+        assert_eq!(parse("node = none\n").node, None);
+        let forgotten = Preferences {
+            node: None,
+            ..Preferences::default()
+        };
+        let text = render(&forgotten);
+        assert!(text.contains("node = none\n"), "{text}");
+        assert_eq!(parse(&text), forgotten);
+    }
+
+    #[test]
+    fn a_chosen_node_is_kept_and_is_not_the_default() {
+        let chosen = parse("node = https://mine.example\n");
+        assert_eq!(chosen.node.as_deref(), Some("https://mine.example"));
+        assert_eq!(parse(&render(&chosen)), chosen);
+    }
+
+    #[test]
+    fn forgetting_the_node_survives_a_restart() {
+        let dir = std::env::temp_dir().join(format!("tawara-prefs-forget-{}", std::process::id()));
+        let path = dir.join("app").join(FILE_NAME);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            load(&path).node.as_deref(),
+            Some(DEFAULT_NODE),
+            "until the person chooses, the default is in use"
+        );
+        let forgotten = Preferences {
+            node: None,
+            ..Preferences::default()
+        };
+        save(&path, &forgotten).unwrap();
+        assert_eq!(load(&path).node, None, "the next start still has no node");
+        let chosen = Preferences {
+            node: Some("https://mine.example".into()),
+            ..Preferences::default()
+        };
+        save(&path, &chosen).unwrap();
+        assert_eq!(load(&path), chosen, "a node chosen after it persists");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

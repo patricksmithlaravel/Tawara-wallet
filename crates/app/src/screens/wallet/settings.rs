@@ -19,7 +19,7 @@
 use iced::widget::text::Wrapping;
 use iced::widget::{Row, column, container, row, space, text_input};
 use iced::{Alignment, Element, Length, Padding};
-use tawara_wallet_core::preferences::{AmountUnit, IDLE_LOCK_MINUTES};
+use tawara_wallet_core::preferences::{AmountUnit, DEFAULT_NODE, IDLE_LOCK_MINUTES};
 use tawara_wallet_core::view::{AccountRow, AccountState, DivergenceKind};
 
 use super::{action, frame, kind, name, pair, status};
@@ -481,13 +481,19 @@ fn node<'a>(model: &'a Model, s: &'a SettingsPage) -> Element<'a, Message> {
             ]
             .spacing(sp::S10)
             .align_y(Alignment::Center),
-            ui::helper(if model.phone() {
+            ui::helper(format!(
+                "By default the wallet uses {DEFAULT_NODE}, and another node only if you choose \
+                 one. The node it uses sees the wallet's tags and balances, your network address \
+                 and when the wallet uses it. Requests to {DEFAULT_NODE} also pass through \
+                 Cloudflare, which can read them. {}",
                 // The same rule in a phone's words (docs/DECISIONS.md D32 item
                 // 10 (a)).
-                "https:// only, or http:// to this phone. There is no default node."
-            } else {
-                "https:// only, or http:// to this computer. There is no default node."
-            }),
+                if model.phone() {
+                    "https:// only, or http:// to this phone."
+                } else {
+                    "https:// only, or http:// to this computer."
+                }
+            )),
             row![
                 tile("Network", network, color::TEXT_PRIMARY, None),
                 tile("Status", state, ink, None),
