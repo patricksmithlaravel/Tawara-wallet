@@ -1,0 +1,614 @@
+# Release checklist
+
+The steps from a green `main` to Tawara in people's hands, in the order they
+are done. docs/PLAN.md section 7 makes this checklist a condition of phase 5;
+D36 in docs/DECISIONS.md proposes the tools it uses. It covers both
+repositories: this one, which builds the desktop packages, and
+[Tawara-mobile](https://github.com/patricksmithlaravel/Tawara-mobile), which
+builds the phone packages from `tawara-app` pinned here (D33). The threat
+model is D34 (docs/THREAT_MODEL.md); the third-party notices are D35.
+
+Each step says who does it. **Owner** steps are decisions, accounts, keys and
+device checks that only the owner can supply (D32 item 2). **Delegated**
+steps are engineering work done through pull requests the owner reviews. A
+step that does not apply to a release says why in that release's record
+(section 11).
+
+The store, licence and tool facts here are cited to the numbered sources in
+D36's source list ("D36, source N"), each with its address and the date it
+was checked. Stores change their rules every year, so each is confirmed in
+App Store Connect or Play Console before the step that depends on it.
+
+Section 1 is long-running and starts first: certificates, store accounts and
+counsel's answers take weeks (PLAN section 6, "Lead time").
+
+## 1. Owner prerequisites
+
+### 1.1 The proposals to decide
+
+D36 is a proposal, not yet a decision. Its owner-decision list (D36, "What
+the owner decides") holds every choice in it that is the owner's to make,
+each with a recommendation:
+
+- [ ] **The tools**, which depart from PLAN section 6's "one packaging tool"
+  (owner).
+- [ ] **NSIS rather than WiX** for the Windows installer, or WiX 7 under
+  its fee terms (owner).
+- [ ] **The installed executable's name**, `tawara-desktop` (owner; D9,
+  and the threat model's section 6, item 8, which the owner closes).
+- [ ] **Signing and publishing on the owner's machines only**, with CI
+  building unsigned packages (owner).
+- [ ] **What the first release covers**: macOS 11.0 and later as one
+  universal binary; Windows x86_64 only; Linux x86_64 only, with glibc 2.35
+  as the floor (owner).
+- [ ] **The identifiers D8 does not yet name**: the macOS bundle identifier
+  and the Linux desktop entry's name (owner).
+- [ ] **Prebuilt tool downloads**, pinned by hash, where D13 builds
+  cargo-deny from source; and trust on first use for NSIS (owner).
+
+### 1.2 Accounts, certificates and keys
+
+Nothing can be signed or submitted without these. None of them is ever put
+in the repository or in CI (D13, D36).
+
+- [ ] **Apple Developer Program, enrolled as an organisation** (owner).
+  App Review guideline 3.1.5(i) reads "Apps may facilitate virtual currency
+  storage, provided they are offered by developers enrolled as an
+  organization" (D36, source 1). Enrolment as an organisation needs a legal
+  entity and its D-U-N-S number, which Dun & Bradstreet issues, a public
+  website on the organisation's domain, and an Account Holder with authority
+  to bind it (D36, source 2). The fee is US$99 a year (D36, source 5).
+  Confirm with App Review that Tawara falls under that guideline before
+  enrolling.
+- [ ] **Apple identifiers and certificates** (owner), once enrolled:
+  - the App ID `com.patricksmithlaravel.tawara` (D8) with the Data
+    Protection capability set to Complete Protection, which the app's
+    entitlement asks for (D32 item 3);
+  - an Apple Distribution certificate and an App Store provisioning profile
+    for that App ID (iOS);
+  - a Developer ID Application certificate (macOS);
+  - the App Store Connect app record for the bundle identifier;
+  - an App Store Connect Team API key with the App Manager role, used by
+    `altool` for uploads and by `notarytool` for notarisation (D36, source
+    4);
+  - a `notarytool` keychain profile made from that key on the Mac that
+    notarises (`xcrun notarytool store-credentials`). Keychain profiles do
+    not move between machines.
+- [ ] **Google Play Console** (owner): the account (US$25 once, with
+  identity verification; D36, source 8); the app, created for
+  `com.patricksmithlaravel.tawara`; and an upload keystore, generated with
+  `keytool`, kept with an offline backup. Personal accounts created after
+  2023-11-13 must run a closed test with at least 12 testers, opted in for
+  14 days, before they may publish to production (D36, source 7). That page
+  says nothing about organisation accounts, so whether an organisation
+  account avoids the test is **confirmed in Play Console before the owner
+  chooses the account type**.
+- [ ] **Play App Signing** (owner): enrolled at the first upload, so that
+  Google holds the app signing key and the owner holds only the upload key.
+  A lost upload key can then be reset in Play Console instead of ending the
+  listing (D36, source 9).
+- [ ] **Windows code-signing certificate** (owner): an OV or EV
+  certificate from a public certification authority. Its key is on the
+  authority's hardware token (required since 2023-06-01; D36, source 18),
+  so signing happens on a Windows machine that holds the token, with the
+  Windows SDK's `signtool` and the authority's RFC 3161 timestamp address.
+  The name Windows shows to people is the certificate's subject, not D8's
+  publisher string; the owner confirms that the two agree, or which one the
+  installer names.
+- [ ] **Linux** (owner): the maintainer name and address for the `.deb`'s
+  control file, and a GPG key if the packages and the checksum file are to
+  carry detached signatures. **(Recommended)** sign the checksum file.
+- [ ] **The app icon** (owner): Tawara's own mark, not the coin mark (D27
+  item 2), as a square PNG of at least 1024 pixels. iOS needs it opaque at
+  1024; Play's listing needs 512; the desktop icons are made from it.
+- [ ] **Store listing material** (owner): the descriptions; a privacy
+  policy address (App Store Connect requires one for every app); the App
+  Store's privacy answers and Play's Data safety form; Play's content
+  rating and target audience; Play's feature graphic (1024 by 500);
+  screenshots of at least two phone screens per store. The committed
+  screenshots (D27 item 1) are a starting point. The privacy answers rest
+  on what the code does, which was checked at this repository's 389f731 and
+  Tawara-mobile's 587329c: the only network client is the library's `ureq`
+  transport, opened in `crates/wallet-core/src/node.rs` to the node address
+  the person enters; no other address is compiled in outside tests and
+  examples; and Tawara-mobile's crates open no connection of their own. So
+  the app sends only the requests the person makes to the node they choose,
+  and has no analytics or crash reporting of its own. **The check is
+  repeated at the release tags** (section 5.4) before the answers are given.
+- [ ] **Store rules for a wallet** (owner): Play's financial features
+  declaration, and its policy on cryptocurrency software wallets, which a
+  secondary summary reports to exempt non-custodial wallets from its
+  licensing rules (D36, source 12); confirm both in Play Console. Tawara
+  holds no one's keys but the person's own, on their own device.
+- [ ] **Export compliance** (owner, with counsel): Apple asks whether the
+  app uses encryption beyond the exempt kinds, and the answer is written
+  into the bundle as `ITSAppUsesNonExemptEncryption`. Tawara signs with
+  the library's keys, encrypts its store under a password, and talks to the
+  node over HTTPS, or plain HTTP to a loopback address (D22).
+  **(Recommended)** put the question to counsel together with section 1.3's
+  two.
+
+### 1.3 The two licence questions in FORK.md
+
+PLAN section 6 and D10 require both to be answered by counsel before first
+distribution. They are in `FORK.md`'s Licence section, in Rep-0
+(`patricksmithlaravel/mcm-rust-cli-wallet`, PLAN section 1); this repository
+points to it and does not restate the licence's terms. The summary below is
+an engineering reading, not legal advice.
+
+- [ ] **Question 1** (owner, counsel): whether `mochimo-crypto` is Original
+  Software or Covered Software under the agreement's section 1. The answer
+  decides which part of section 3.2 governs distributing an executable built
+  on it.
+- [ ] **Question 2** (owner, counsel): whether distributing the executable
+  under the agreement itself, rather than sublicensing it, leaves the
+  grant-back in section 3.2(a)(ii)(1) untriggered, as its text reads.
+- [ ] Both answers recorded in docs/DECISIONS.md, with their date, before
+  any package is published (delegated, once the owner has them).
+- [ ] FORK.md reads the source-availability obligation as owed whichever
+  answer counsel gives; section 9 checks it for every package.
+- [ ] The application is still not branded as an official product of the
+  cryptocurrency (PLAN section 6; D27 item 2): no coin mark in the app, the
+  icon, the listings or the screenshots (owner, at review).
+
+### 1.4 Moving people from the older wallets
+
+- [ ] **Decide whether the release must import the older wallets' `.mcm`
+  stores** (owner; D23 item 6). The library has no such import, so neither
+  has Tawara. If it is a goal, the change is proposed for Rep-0 in
+  docs/LIBRARY-PROPOSALS.md, made there, merged down into Rep-1, and taken
+  here by moving the library's `rev` (D1), all before the release.
+  **(Recommended)** decide before the first release, and say in the
+  listings either way whether people can bring an existing wallet.
+
+### 1.5 Android target API 36
+
+- [ ] **Tawara-mobile targets API 36** (delegated; D32 item 9 (i), PR B,
+  made after Tawara-mobile #4 and #5 under item 10 (k)). Google Play has
+  required target API 36 for new apps and app updates since 2026-08-31,
+  and offers an extension to 2026-11-01 on request (D36, source 6). The
+  page does not say whether a new app can have the extension; this
+  checklist assumes it cannot, which is an inference, so the first upload
+  targets 36. PR B sets `TARGET_API=36`, pins the compile jar to
+  `platforms/android-36`, uses the android-36 emulator image, and adds
+  `assetsPaths` and `resourcesUnused` to `configChanges`, which `aapt2 dump
+  xmltree` must then read as `0xd800ffff`. Confirm the rule in Play Console
+  first (owner).
+
+### 1.6 The machines that build and sign
+
+Every package is built on the owner's machines (section 6). Each needs the
+following before section 6 starts.
+
+- [ ] **Xcode 26.6 beside Xcode 27** (owner) on the Mac that builds the
+  macOS and iOS packages, installed as `/Applications/Xcode_26.6.app`, the
+  path the `macos-26` runner image uses (D36, source 22). The owner's Mac
+  has only Xcode 27.0 (27A266a), with the iOS 27.0 SDK, and D32 item 8
+  records that an app linked with the iOS 27 SDK is stopped at launch
+  without a scene. The release commands select 26.6 with `DEVELOPER_DIR`,
+  so the Mac's default Xcode is left alone.
+- [ ] **A container runtime** (owner) for the Linux build: Docker or Podman,
+  able to run `linux/amd64` images (section 6.3).
+- [ ] **A Windows machine** (owner) with the code-signing token, the Windows
+  SDK (`signtool`, `rc.exe`), Rust at the version `rust-toolchain.toml`
+  names, and NSIS 3.13 from the pinned download (section 6.1).
+- [ ] **The Android SDK** (owner) with build-tools 36.0.0,
+  `platforms/android-36`, NDK 29.0.14206865 and a JDK 17 or later.
+- [ ] **Tawara-mobile's scripts made to run on the owner's Mac** (delegated,
+  before section 6.4; each is a change to Tawara-mobile at origin/main
+  587329c):
+  - the NDK's toolchain path chosen from the host.
+    `platform/android/tawara.sh` line 48 fixes `prebuilt/linux-x86_64`, and
+    the NDK on the owner's Mac has only `prebuilt/darwin-x86_64`;
+  - the emulator check on a port and an AVD name of its own. The script's
+    `SERIAL` is `emulator-5554` (line 27), the port the owner's own emulator
+    uses, and line 183 runs `avdmanager create avd --force -n tawara`, which
+    would overwrite any AVD of that name. The release script uses another
+    port and a name made for the run, never `--force`, and deletes only the
+    AVD it created;
+  - the `apt-get` step skipped off Linux, and an arm64-v8a system image on
+    an Apple silicon Mac, where the x86_64 image does not run.
+
+## 2. The threat model's must-close items
+
+PLAN sections 3 and 7 make docs/THREAT_MODEL.md (D34) a condition of any
+release. Its section 6 lists what must be closed, or accepted by the owner in
+writing in docs/DECISIONS.md, first. In summary, with the threat model's own
+identifiers:
+
+- [ ] **Every device check, V1 to V17** (its section 5.2), run on the
+  builds to be released and recorded: section 8 here (owner).
+- [ ] **G6**, the Android exit after `Destroy`, checked at the release's pin
+  and acted on as D32 item 9 (j) says (delegated, then owner).
+- [ ] **G17**, a working save path on phones: Tawara-mobile #8 (the share
+  sheet) merged, with its pin on this repository's `main` (delegated).
+- [ ] **C1**, the records on what an interrupted send can leave (D19
+  against D28 and D32 item 6), made to agree, in words the owner approves
+  (owner).
+- [ ] **G4 and C7**, the typed-secret fields' plain `String`s against PLAN
+  4.2's "at once": fixed, or the deviation recorded (owner).
+- [ ] **G1, G2, G10, G12 and G24**, the owner's decisions on the
+  two-wallets warning, the desktop's phrase on screen, accessibility,
+  clearing a pasted phrase, and the application's wording (owner).
+- [ ] **Its section 5.4**: each residual risk accepted, or a control added
+  (owner).
+- [ ] **Phase 5's own items** (its item 8): signed packages, notices, the
+  counsel questions, the executable's name, this checklist, target API 36,
+  and UIScene re-checked with the Xcode that builds the upload (D32 item
+  8): the signed build launches on the newest iOS and on iOS 16.
+
+The threat model also lists items that may follow the first release if the
+owner agrees; they do not block it. If its list and this summary differ, the
+threat model's wins and this summary is corrected.
+
+## 3. The commits to release
+
+- [ ] **The threat model on `main`** (delegated, owner's review):
+  docs/THREAT_MODEL.md merged (D34), and its section 6 closed as section 2
+  here records.
+- [ ] **Fork pin settled** (delegated): no iced fork move is in flight.
+  A move during a release is its own pull request with D32 item 9 (a)'s
+  checks, never part of the release.
+- [ ] **This repository's `main` is green** on all three hosts, the Linux
+  screenshot step and the liveness step included (delegated).
+- [ ] **Tawara-mobile pins the commit being released** (delegated): its
+  `tawara-app` `rev` is this repository's release commit, by full hash
+  (D33), with every Tawara-mobile check green on it. The phones and the
+  desktop then ship the same screens and the same refusals.
+- [ ] **Notices merged** in both repositories (D35; section 4).
+- [ ] **Packaging scripts merged** (delegated; D36): `packaging/` here,
+  `platform/android/release.sh` and `platform/ios/release.sh` in
+  Tawara-mobile with section 1.6's changes, and the packaging job green on
+  each.
+
+## 4. Third-party notices
+
+PLAN section 6 asks for the notices to be generated in CI, not by hand. D35
+records how; it is merged in both repositories before the first release.
+
+- [ ] **Generated, and checked in CI** (delegated): `THIRD-PARTY-NOTICES.txt`
+  at each repository's root is written by `ci/notices.sh` with cargo-about
+  0.9.2 from `about.toml` and the lockfile, followed by `LICENSE.md`; CI
+  regenerates it and fails on one differing byte. It covers every desktop
+  target, build dependencies included, and the three bundled font families
+  under the SIL Open Font License (D27 item 6).
+- [ ] **In every package** (delegated; the packaging scripts place it, with
+  `LICENSE.md`):
+  - Windows: beside `tawara-desktop.exe` in the install folder;
+  - macOS: `Tawara.app/Contents/Resources/`;
+  - `.deb`: `/usr/share/doc/tawara-desktop/`; AppImage: in the AppDir
+    beside the executable;
+  - Android: the bundle's `assets/`;
+  - iOS: the root of `Tawara.app`.
+- [ ] **Shown to people** (owner): a file inside a phone app cannot be
+  opened by the person using it. **(Recommended)** a Licences page in
+  Settings that draws the same file, with wording the owner approves.
+
+That the file is current at the tag is section 5.3.
+
+## 5. Version numbers, notices at the tag, and tags
+
+Done in this order, so that the notices name exactly what the tagged commit
+builds.
+
+### 5.1 The version
+
+- [ ] **Choose the version** (owner): `X.Y.Z`, set in each repository's
+  `[workspace.package] version` (both are `0.1.0` at this writing). The two
+  must be equal for a release made from one wallet commit; Tawara-mobile's
+  release script compares its own version with the `tawara-app` version in
+  its `Cargo.lock` and fails if they differ (delegated). It becomes the
+  desktop's displayed version, Android's `versionName` and iOS's
+  `CFBundleShortVersionString`.
+
+### 5.2 The build number
+
+- [ ] **Raise the build number** (delegated): one integer in
+  Tawara-mobile, raised by one for every upload to either store and never
+  reused, because both stores refuse a build number they have seen. It
+  becomes Android's `versionCode` and iOS's `CFBundleVersion`, replacing the
+  development bundle's literal `1`. A rebuilt upload of the same version
+  takes a new build number. The desktop has no build number.
+
+### 5.3 Notices current
+
+- [ ] **Regenerated after the last lockfile change** (delegated), the
+  version change of 5.1 included, with `bash ci/notices.sh` in each
+  repository, committed, and the notices check green on that commit. The
+  tag goes on that commit, or on a later one that leaves the lockfile as it
+  is.
+
+### 5.4 Tags
+
+- [ ] **Tag** (owner), after the commit passes sections 3 and 5.3 and
+  before any package is built, so that every package is built from a tag:
+  - this repository: an annotated tag `vX.Y.Z` on the release commit;
+  - Tawara-mobile: an annotated tag `vX.Y.Z+N` (N the build number) on the
+    commit each upload is built from.
+  Tags are never moved or deleted, as the fork's are not (D32 item 9 (a));
+  a mistake is fixed by a new version or build number. The tag message
+  names the library's `rev`, the fork's `rev`, and for Tawara-mobile the
+  wallet commit it pins.
+- [ ] **The network check of section 1.2 repeated at the tags** (delegated),
+  before the store privacy answers are given.
+
+## 6. Build and sign, per target
+
+Each package is built from the tag on the owner's machines (section 1.6),
+where the keys are, with the tools and versions D36 pins; nothing is signed
+in CI (D13, D36). Every Rust build uses `--locked` and the release profile
+D11 restates. The scripts named are D36's; the commands below are what they
+run.
+
+### 6.1 Windows (`tawara-desktop`, NSIS installer)
+
+- [ ] Build: `cargo build --release --locked -p tawara-desktop --target
+  x86_64-pc-windows-msvc`, with the static C runtime given on the command
+  line (`--config 'target.x86_64-pc-windows-msvc.rustflags=["-C",
+  "target-feature=+crt-static"]'`), so the installer needs no Visual C++
+  runtime (D36). x86_64 only, for the first release (D36).
+- [ ] The executable carries the icon and version information:
+  `FileVersion` `X.Y.Z.0` (the fourth field is 0, since the desktop has no
+  build number) and `ProductVersion` `X.Y.Z`.
+- [ ] Sign the executable before it goes into the installer: `signtool sign
+  /fd sha256 /tr <the CA's timestamp address> /td sha256` with the token
+  present (owner).
+- [ ] Build the installer with NSIS 3.13, its download checked against the
+  SHA-256 recorded in the script (D36), with `SetCompressor zlib`: per user,
+  into `%LOCALAPPDATA%\Programs\Tawara`, a Start menu entry named "Tawara",
+  an uninstaller, and an entry in Installed apps. The uninstaller removes
+  the program's own files only and **never the wallet's store or
+  preferences**: the store holds the key index the library only moves
+  forward, and PLAN 4.9 lets nothing in Tawara delete it. The uninstaller is
+  signed through NSIS's `!uninstfinalize`, then the installer itself
+  (owner).
+- [ ] `signtool verify /pa /v` on the executable, the uninstaller and the
+  installer.
+
+### 6.2 macOS (`Tawara.app` in a `.dmg`)
+
+- [ ] With `DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer`,
+  build both halves with `cargo build --release --locked -p tawara-desktop`
+  for `aarch64-apple-darwin` and `x86_64-apple-darwin`, with
+  `MACOSX_DEPLOYMENT_TARGET=11.0`, and join them with `lipo -create`.
+- [ ] Assemble `Tawara.app`: `Contents/MacOS/tawara-desktop`, an
+  `Info.plist` (bundle identifier `com.patricksmithlaravel.tawara`, as D36
+  proposes for D8; `CFBundleShortVersionString` `X.Y.Z`;
+  `LSMinimumSystemVersion` 11.0), an `AppIcon.icns` made with `iconutil`,
+  and the notices (section 4).
+- [ ] Sign the app: `codesign --force --options runtime --timestamp --sign
+  "Developer ID Application: <name> (<team>)"`, with no entitlements
+  (owner).
+- [ ] Make the image with `hdiutil create` from a folder holding the app and
+  a link to `/Applications`; sign the `.dmg` the same way (owner).
+- [ ] Notarise: `xcrun notarytool submit Tawara-X.Y.Z.dmg --keychain-profile
+  <profile> --wait`; on a refusal, `xcrun notarytool log <id>` says why
+  (owner).
+- [ ] Staple the ticket to the image, the outermost container: `xcrun
+  stapler staple` then `xcrun stapler validate` (owner).
+
+### 6.3 Linux (AppImage and `.deb`)
+
+- [ ] Build in an `ubuntu:22.04` container pinned by its digest, which the
+  script records, on the owner's machine: `docker run --platform linux/amd64
+  ubuntu:22.04@sha256:<digest>`, with rustup-init at a pinned version
+  checked against its recorded SHA-256, then the toolchain
+  `rust-toolchain.toml` names, then `cargo build --release --locked -p
+  tawara-desktop`. On an Apple silicon Mac the container runs under
+  emulation, which is slower and changes nothing about the checks. x86_64
+  only, for the first release (D36).
+- [ ] **The glibc floor is 2.35**, Ubuntu 22.04's and icm's default (D36).
+  The script reads the highest `GLIBC_` symbol version the executable needs
+  and **fails if it is above 2.35**; the release notes state the floor.
+- [ ] AppImage: an AppDir with `AppRun`, the desktop entry
+  `com.patricksmithlaravel.tawara.desktop` (`Name=Tawara`,
+  `Exec=tawara-desktop`), the icon at 256 pixels, and the notices; then
+  `appimagetool --appimage-extract-and-run --runtime-file <the pinned
+  runtime>` with appimagetool 1.9.1, each checked against its SHA-256
+  before it runs.
+- [ ] `.deb`: a tree with `usr/bin/tawara-desktop`, the same desktop entry
+  under `usr/share/applications/`, hicolor icons from 16 to 512 pixels, the
+  notices under `usr/share/doc/tawara-desktop/`, and `DEBIAN/control`
+  (package `tawara-desktop`, the owner's maintainer line, `Depends` from
+  `dpkg-shlibdeps`); then `dpkg-deb --root-owner-group --build`, in the same
+  container. The package has no maintainer script that touches anyone's
+  home folder.
+- [ ] Optional detached GPG signatures (owner, section 1.2).
+
+### 6.4 Android (App Bundle)
+
+In Tawara-mobile, after sections 1.5 and 1.6.
+
+- [ ] Build `libtawara_mobile.so` for `aarch64-linux-android` and
+  `x86_64-linux-android` with NDK 29.0.14206865, as `tawara.sh build`
+  does, with its checks: `ANativeActivity_onCreate` exported and 16 KB
+  `LOAD` alignment.
+- [ ] Link the manifest and resources with build-tools 36.0.0's `aapt2 link
+  --proto-format` against `platforms/android-36/android.jar`, with
+  `--min-sdk-version 26 --target-sdk-version 36`, `--version-code` the build
+  number and `--version-name` the version, and **without** `--debug-mode`.
+- [ ] Lay out the base module (manifest, resources, `lib/<abi>/`, the
+  notices under `assets/`) and run `bundletool build-bundle` with
+  bundletool 1.18.3, its configuration asking for 16 KB alignment
+  (`PAGE_ALIGNMENT_16K`); then `bundletool validate`.
+- [ ] Sign with the upload key: `jarsigner -keystore <upload keystore>
+  Tawara-X.Y.Z+N.aab <alias>` (owner). `apksigner` cannot sign a bundle
+  (D36, source 10).
+- [ ] Check what was built: `bundletool dump manifest` shows `targetSdk` 36,
+  the build number, no `debuggable`, `allowBackup` false, the backup rules,
+  and `configChanges` `0xd800ffff`; then `bundletool build-apks --mode
+  universal` with a throwaway key, and the emulator checks on that APK, on
+  the port and AVD the run creates (section 1.6), which it deletes
+  afterwards.
+
+### 6.5 iOS (`.ipa`)
+
+In Tawara-mobile, after the owner items of section 1.2 and Xcode 26.6
+(section 1.6).
+
+- [ ] Every command below runs with
+  `DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer`.
+- [ ] Build the device binary: `cargo build --locked --release --bin tawara
+  --target aarch64-apple-ios` with `IPHONEOS_DEPLOYMENT_TARGET=16.0`, as
+  `tawara.sh device` does, with its platform check.
+- [ ] **Check the SDK the binary is linked with** before anything is
+  signed: `xcrun vtool -show-build` on the binary must report an `sdk` of
+  26.x. A 27 there means the wrong Xcode built it, and the app would stop at
+  launch (D32 item 8); the script fails.
+- [ ] Assemble `Tawara.app` from `Info.plist.in` as `tawara.sh` does, and
+  add what the store needs: `CFBundleVersion` the build number;
+  `ITSAppUsesNonExemptEncryption` from section 1.2's answer; the icon
+  compiled into `Assets.car` with `xcrun actool`, and `CFBundleIcons`;
+  `PrivacyInfo.xcprivacy`, with a reason for each required-reason API the
+  binary uses (likely file timestamps, disk space, and the system boot time
+  that the monotonic clock behind Rust's `Instant` reads; confirmed against
+  the binary's imports); the `DT` keys of the Xcode in use; the App
+  Store profile as `embedded.mobileprovision`; and the notices. Check with
+  `plutil -lint` and the scene-manifest check `tawara.sh` makes.
+- [ ] Sign with the entitlements file (application identifier, team,
+  `get-task-allow` false, `com.apple.developer.default-data-protection`
+  `NSFileProtectionComplete`): `codesign --force --timestamp --sign "Apple
+  Distribution: <name> (<team>)" --entitlements <file>` (owner). Read them
+  back with `codesign -d --entitlements :-` and compare.
+- [ ] Zip `Payload/Tawara.app` as `Tawara-X.Y.Z+N.ipa` (`ditto -c -k
+  --keepParent`), and run `xcrun altool --validate-app` with the API key
+  (owner).
+
+## 7. Checks on the signed packages
+
+Before anything is submitted or published, on clean machines that have
+never had Tawara on them (owner, with delegated help):
+
+- [ ] **Windows:** install without an administrator prompt; the Start menu
+  entry starts the app; uninstall leaves the store and preferences where
+  they were; SmartScreen's prompt, if any, names the certificate's
+  subject. A new certificate has no reputation yet, so a prompt on the
+  first releases is expected.
+- [ ] **macOS:** `spctl -a -vvv -t install` on the image and `codesign
+  --verify --deep --strict` on the app; a copy downloaded through a browser
+  opens with no Gatekeeper warning, on Apple silicon and on Intel.
+- [ ] **Linux:** the `.deb` installs, starts and removes on Ubuntu 22.04
+  and 24.04; the AppImage starts on both; `dpkg-deb --info` and
+  `--contents` show what section 6.3 says.
+- [ ] **Every desktop package:** the version shown is `X.Y.Z`; a wallet
+  made by the previous release, if there is one, opens; the notices are
+  where section 4 says.
+- [ ] **Checksums:** a `SHA256SUMS` file listing every desktop package,
+  signed if section 1.2 provided a key.
+
+## 8. Device checks on the release builds
+
+The gate between the signed packages and publishing. No check has yet run
+on a physical phone, and these must run on the builds to be released, so
+they come here, after the packages exist and before anything is submitted
+for review or published.
+
+- [ ] **Upload the phone builds for testing** (owner): the `.ipa` to App
+  Store Connect with `xcrun altool --upload-app` and the API key, or with
+  Transporter, then to TestFlight; the first `.aab` by hand in Play Console
+  to the internal testing track, which enrols Play App Signing (section
+  1.2). These deliver exactly the builds of section 6.
+- [ ] **Run the device checks** (owner) on an arm64 Android phone and an
+  iPhone (D32 item 2), from those testing builds. The list is the threat
+  model's section 5.2 (D34), V1 to V17; if it changes before the release,
+  its list is the one run:
+  - V1 text entry and keyboard learning; V2 `FLAG_SECURE` from the first
+    frame; V3 the Android share chooser; V4 the Android exit after
+    `Destroy`, first on the emulator at the release's pin, then on the
+    phone; V5 iOS data protection, on the signed build; V6 the iOS app
+    switcher's snapshot; V7 TalkBack and VoiceOver; V8 the library on a
+    phone's file system; V9 the first gesture after launch, and touch;
+    V10 the background lock;
+  - V11 backup and transfer leave the store out; V12 the app starts on
+    arm64; V13 a kill mid-send, and split screen; V14 the copy mark on
+    Android; V15 hardware-keyboard copy and cut; V16 the first screen on
+    an iPhone SE; V17 drawing, speed and memory on a phone.
+- [ ] **Record each result** in docs/DECISIONS.md, with the build number it
+  ran on (delegated, from the owner's notes).
+- [ ] **What blocks.** A failure of V1, V2, V5 or V6, or of the footer link
+  or Paste in V9, blocks the phone release it concerns until it is fixed
+  (the threat model's section 6, item 1). Any other failure is fixed, or
+  accepted by the owner in writing in docs/DECISIONS.md, before that
+  release goes on.
+- [ ] **When a check fails and is fixed** (delegated, then owner): the fix
+  is a new commit, through a pull request, and the release goes back to
+  section 3 for it. A fix in this repository takes a new version, since
+  `vX.Y.Z` is never moved (section 5.4), and new desktop packages too; a
+  fix in Tawara-mobile alone takes a new build number and the tag
+  `vX.Y.Z+N` for it. Sections 5 to 8 then run again for every package the
+  new commit changes, and every device check runs again on the new builds,
+  not only the one that failed.
+
+## 9. Store submissions and publishing
+
+- [ ] **Source available for every package** (delegated, owner's review):
+  FORK.md reads the licence's source-availability obligation as owed
+  whichever answer counsel gives (section 1.3). Before publishing, check
+  that each source is public, and link all four from the GitHub release,
+  the release notes and each store listing:
+  - this repository at `vX.Y.Z`;
+  - Tawara-mobile at `vX.Y.Z+N`;
+  - the library, Rep-1 (`patricksmithlaravel/mcm-rust-cli-windows`), at
+    the `rev` the tag pins;
+  - the iced fork (`patricksmithlaravel/iced_mobile`) at the tag it pins.
+- [ ] **App Store** (owner): the build already in App Store Connect from
+  section 8; answer export compliance; complete the privacy answers; write
+  review notes that say what the app is (a wallet for Mochimo that holds
+  the person's keys on the device and talks only to the node they choose)
+  and how to reach a screen without funds; submit for review, with manual
+  release, so that the release happens when the other platforms are ready.
+- [ ] **Google Play** (owner): from the internal testing track of section
+  8, the closed test if the account needs one (section 1.2); the Data
+  safety form, content rating, target audience and financial features
+  declaration; then production. **(Recommended)** a staged rollout,
+  starting at a small share, so that a fault reaches few people.
+- [ ] **Desktop** (owner): a GitHub release on the tag `vX.Y.Z`, made from
+  the owner's machine, with the signed installer, the `.dmg`, the
+  AppImage, the `.deb`, `SHA256SUMS` and its signature, and release notes
+  that state the version, the glibc floor (2.35), the minimum macOS and
+  Windows versions, the source links above, and that the program is not an
+  official product of the cryptocurrency. CI uploads nothing (D13).
+- [ ] **Release notes** (delegated draft, owner approval): what changed, the
+  library's and the fork's `rev`, and anything a person must do; the same
+  substance in each store's "what's new".
+
+## 10. After release
+
+- [ ] **What people get is what was built** (delegated): download each
+  desktop package from the GitHub release and compare it with
+  `SHA256SUMS`; install each phone app from its production listing and
+  check the version and build number.
+- [ ] **Records** (delegated): an entry in docs/DECISIONS.md for the
+  release (section 11).
+- [ ] **Reports** (owner): Play Console's Android vitals and App Store
+  Connect's crash reports, which come only from people who share
+  diagnostics with Apple or Google; the app sends nothing of its own
+  (section 1.2's check).
+- [ ] **Dates that recur** (owner, with a reminder for each):
+  - Play raises the required target API from time to time; the current
+    rule took effect on 2026-08-31 (D36, source 6). Read Play's target API
+    page before each release and after each new Android version;
+  - Apple raises the SDK required for uploads; the current rule, Xcode 26
+    and the iOS 26 SDK, took effect on 2026-04-28 (D36, source 3). Read
+    Apple's upcoming requirements page before each release. A rule that
+    requires the iOS 27 SDK needs the scene work of D32 item 8 first, and
+    the UIScene re-check of section 2 runs again;
+  - the Apple Distribution certificate, the Developer ID certificate, the
+    provisioning profile, the API key and the Windows certificate each
+    expire, and a renewal well before is cheaper than a lapsed signature;
+  - the upload keystore's backup is checked to open.
+- [ ] **Next version** (delegated): the next release's work starts from
+  this checklist again, and any step it found wrong is corrected here in
+  the same pull request as the fix.
+
+## 11. The release record
+
+Each release adds to docs/DECISIONS.md, under the phase it ships in:
+
+- the version, the build number, and the tags in both repositories;
+- the commits: this repository's, Tawara-mobile's, the library's `rev` and
+  the iced fork's `rev`;
+- the version of every tool D36 pins, as used, and the Xcode build;
+- the SHA-256 of every published package;
+- the device check results of section 8, or where they are recorded;
+- each step of this checklist that did not apply, and why.

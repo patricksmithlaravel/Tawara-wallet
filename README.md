@@ -38,6 +38,7 @@ design/
 docs/
   PLAN.md               the approved plan
   DECISIONS.md          every decision and deviation, with its reason
+  RELEASE.md            the release checklist, in order (phase 5)
   LIBRARY-PROPOSALS.md  changes to the library proposed for Rep-0
 ```
 
