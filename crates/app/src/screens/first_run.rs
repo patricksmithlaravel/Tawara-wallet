@@ -218,7 +218,9 @@ const PHONE_HERO_ITALIC: Type = Type {
 /// top, and the headline, the pills and "Get started" at its foot, the button
 /// in thumb reach. It does not scroll, and a test of this module checks that
 /// it fits 360 by 640 with the field's 16-pixel margins. The field lies within
-/// the window's safe area, which pads every screen's root (`screens::view`).
+/// the window's safe area, which pads every screen's root (`screens::view`),
+/// and the strips the safe area leaves are coloured as the field is, so the
+/// green reaches the window's edges.
 fn welcome<'a>() -> Element<'a, Message> {
     let page = column![
         brand_wordmark(ty::WORDMARK_LARGE),
@@ -1611,6 +1613,34 @@ mod tests {
         for (name, model, size, insets) in cases {
             let problems = fits_the_viewport(crate::screens::view(&model), size, insets);
             assert!(problems.is_empty(), "{name}: {problems:#?}");
+        }
+    }
+
+    #[test]
+    fn the_welcome_screen_fits_each_phone_the_plan_names_between_its_insets() {
+        // docs/DECISIONS.md D37: S0 does not scroll, and each of its words is
+        // within the part of the window a person sees, at 360 by 640, 360 by
+        // 800 and 390 by 844, between the phone's insets as the shell reports
+        // them. iced fits a child into the room its parent gives it, so a
+        // screen too tall shows as a squeezed child, not as a word past the
+        // inset: the button keeps its full size, and its foot is the page's
+        // bottom margin above the bottom inset, which holds only if everything
+        // above it fits.
+        for (width, height) in [(360.0, 640.0), (360.0, 800.0), (390.0, 844.0)] {
+            let mut model = phone_model(Screen::Welcome);
+            model.width = width;
+            model.safe_area = SafeArea::new(PHONE_INSETS);
+            let problems =
+                fits_the_viewport(crate::screens::view(&model), (width, height), PHONE_INSETS);
+            assert!(problems.is_empty(), "{width} by {height}: {problems:#?}");
+            let button = drawn_bounds(crate::screens::view(&model), width, height)
+                .into_iter()
+                .find(|r| (r.width - (width - 32.0)).abs() < 0.5 && (r.height - 56.0).abs() < 0.5)
+                .unwrap_or_else(|| panic!("{width} by {height}: the button, at its full size"));
+            assert!(
+                (button.y + button.height - (height - PHONE_INSETS.bottom - 24.0)).abs() < 0.5,
+                "{width} by {height}: the button does not stand at the foot: {button:?}"
+            );
         }
     }
 

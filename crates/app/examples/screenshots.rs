@@ -44,9 +44,9 @@
 //!   rather than 360. It is refused with `--check`.
 //! - `--fit`: lays every selected phone sample out at its own height (844,
 //!   or 640 for the two short frames), at the width `--phone-width` gives or
-//!   else at 360, and prints `OVERFLOW name:
-//!   left..right` for each node whose right edge passes that width, and for
-//!   each text whose words do, with its content (ten a sample at most). The
+//!   else at 360, and prints `OVERFLOW name: left..right` for each node
+//!   whose right edge passes that width, and for each text whose words do,
+//!   with its content (ten a sample at most). The
 //!   phone's wallet page is also laid out in nanoMCM. It exits non-zero if
 //!   there is any, and writes nothing. `--fit --phone-width 390` holds the
 //!   phone set to the width it is drawn at.

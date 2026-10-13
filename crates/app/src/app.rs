@@ -1927,19 +1927,19 @@ impl App {
     fn go_back(&mut self, back: Back) {
         let m = &mut self.model;
         match back {
-            Back::Start => {
-                m.screen = Screen::Start {
-                    choice: StartChoice::Create,
-                };
+            Back::Wallet if m.wallet.is_some() => {
+                m.screen = Screen::Wallet(WalletPage::default());
             }
             Back::Unlock => m.unlock_screen(None, None, None),
-            Back::Wallet => {
-                m.screen = if m.wallet.is_some() {
-                    Screen::Wallet(WalletPage::default())
-                } else {
-                    Screen::Start {
-                        choice: StartChoice::Create,
-                    }
+            // A phone that holds a store is not offered the start screens,
+            // whichever way back leads there: its first screen is S7
+            // (docs/DECISIONS.md D37).
+            Back::Start | Back::Wallet if m.phone_holds_store() => {
+                m.unlock_screen(None, None, None);
+            }
+            Back::Start | Back::Wallet => {
+                m.screen = Screen::Start {
+                    choice: StartChoice::Create,
                 };
             }
         }
@@ -2987,6 +2987,28 @@ mod tests {
             "{:?}",
             app.model.screen
         );
+    }
+
+    #[test]
+    fn a_hosted_phone_with_a_store_goes_back_from_the_node_to_unlock_not_to_the_start() {
+        // Back from S2 leads to S1 only where S1 is offered: a phone that holds
+        // a store goes back to S7, whichever screen S2 was opened from
+        // (docs/DECISIONS.md D37).
+        let scratch = Scratch::new("hosted-store-back");
+        let keystore = scratch.0.join("keystore");
+        std::fs::create_dir_all(&keystore).unwrap();
+        std::fs::write(keystore.join(STORE_SNAPSHOT), b"").unwrap();
+        let folder = keystore.display().to_string();
+        let (mut app, _) = App::hosted(&scratch.0);
+        for back in [Back::Start, Back::Wallet] {
+            app.model.screen = Screen::Node(NodeForm::default());
+            app.go_back(back);
+            assert!(
+                matches!(&app.model.screen, Screen::Unlock(u) if u.dir == folder),
+                "{back:?}: {:?}",
+                app.model.screen
+            );
+        }
     }
 
     #[test]
