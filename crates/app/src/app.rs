@@ -314,6 +314,10 @@ pub struct PhraseState {
     pub positions: [usize; 3],
     /// The person said they wrote it down.
     pub written: bool,
+    /// The person pressed "Show the phrase" (docs/DECISIONS.md D44). On a phone
+    /// too short for the library's warning and the phrase on one frame, the
+    /// warning comes first, on its own, and the words only after this.
+    pub shown: bool,
     pub words: [String; 3],
     pub error: Option<String>,
 }
@@ -419,6 +423,8 @@ pub enum Message {
     Word(usize, Typed),
     CreateWallet,
     Written(bool),
+    /// S4's "Show the phrase" (docs/DECISIONS.md D44).
+    ShowPhrase,
     ToConfirm,
     BackToPhrase,
     StartOver,
@@ -1328,6 +1334,11 @@ impl App {
                     p.written = yes;
                 }
             }
+            Message::ShowPhrase => {
+                if let Screen::Phrase(p) = &mut m.screen {
+                    p.shown = true;
+                }
+            }
             Message::ToConfirm => {
                 if matches!(&m.screen, Screen::Phrase(p) if p.written)
                     && let Screen::Phrase(p) = m.leave()
@@ -1866,6 +1877,7 @@ impl App {
                     dir,
                     positions: confirm_positions,
                     written: false,
+                    shown: false,
                     words: Default::default(),
                     error: None,
                 });
@@ -3230,6 +3242,7 @@ mod tests {
                     dir: String::new(),
                     positions: tawara_wallet_core::CONFIRM_POSITIONS,
                     written: true,
+                    shown: true,
                     words: Default::default(),
                     error: None,
                 }),
@@ -3327,6 +3340,7 @@ mod tests {
                 dir: String::new(),
                 positions: tawara_wallet_core::CONFIRM_POSITIONS,
                 written: true,
+                shown: true,
                 words: ["abandon".into(), "abandon".into(), String::new()],
                 error: None,
             }),
@@ -3335,6 +3349,7 @@ mod tests {
                 dir: String::new(),
                 positions: tawara_wallet_core::CONFIRM_POSITIONS,
                 written: false,
+                shown: false,
                 words: Default::default(),
                 error: None,
             }),
@@ -3414,6 +3429,7 @@ mod tests {
                 dir: "/a/chosen/folder".to_owned(),
                 positions: tawara_wallet_core::CONFIRM_POSITIONS,
                 written: true,
+                shown: true,
                 words: Default::default(),
                 error: None,
             })
@@ -3461,6 +3477,39 @@ mod tests {
     }
 
     #[test]
+    fn show_the_phrase_marks_the_words_shown_and_only_on_the_phrase() {
+        // docs/DECISIONS.md D44: "Show the phrase" moves a short phone past the
+        // library's warning. It changes nothing else, and does nothing on any
+        // other screen.
+        let mut app = alone();
+        app.model.screen = Screen::Phrase(PhraseState {
+            phrase: PhraseForDisplay::example(),
+            dir: "/a/chosen/folder".to_owned(),
+            positions: tawara_wallet_core::CONFIRM_POSITIONS,
+            written: false,
+            words: Default::default(),
+            error: None,
+            shown: false,
+        });
+        let _ = app.update(Message::ShowPhrase);
+        assert!(
+            matches!(&app.model.screen, Screen::Phrase(p) if p.shown && !p.written),
+            "{:?}",
+            app.model.screen
+        );
+
+        app.model.screen = Screen::Start {
+            choice: StartChoice::Create,
+        };
+        let _ = app.update(Message::ShowPhrase);
+        assert!(
+            matches!(app.model.screen, Screen::Start { .. }),
+            "{:?}",
+            app.model.screen
+        );
+    }
+
+    #[test]
     fn starting_over_keeps_the_folder_chosen() {
         let mut app = alone();
         app.model.screen = Screen::Confirm(PhraseState {
@@ -3468,6 +3517,7 @@ mod tests {
             dir: "/a/chosen/folder".to_owned(),
             positions: tawara_wallet_core::CONFIRM_POSITIONS,
             written: true,
+            shown: true,
             words: Default::default(),
             error: None,
         });
