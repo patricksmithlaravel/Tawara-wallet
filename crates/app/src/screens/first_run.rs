@@ -460,8 +460,13 @@ fn radio_mark<'a>(selected: bool) -> Element<'a, Message> {
 /// S2: choose the node.
 fn node<'a>(model: &'a Model, form: &'a NodeForm) -> Element<'a, Message> {
     let back = match form.back {
-        Back::Start => Go::Start,
         Back::Unlock => Go::Unlock,
+        Back::Wallet if model.wallet.is_some() => Go::Wallet,
+        // A phone that holds a store is not offered the start screens, so its
+        // way back leads to S7, as `App::go_back`'s does; a link to S1 there
+        // would do nothing (docs/DECISIONS.md D37).
+        Back::Start | Back::Wallet if model.phone_holds_store() => Go::Unlock,
+        Back::Start => Go::Start,
         Back::Wallet => Go::Wallet,
     };
     let mut links = row![ui::link("Back", ty::LINK, Message::Go(back))].spacing(sp::S24);

@@ -2944,49 +2944,76 @@ mod tests {
     /// enough for these tests: nothing here opens it.
     const STORE_SNAPSHOT: &str = "accounts.mks";
 
+    /// The app-private folders the two phones' shells give `App::hosted`, as
+    /// paths under a scratch folder: Android's `no_backup`, beside the app's
+    /// `files`, and iOS's `Library/Application Support/Tawara` in the app's
+    /// container, whose name has a space in it (Tawara-mobile's
+    /// `crates/mobile/src/android.rs` and `ios.rs`). The store is looked for
+    /// in a `keystore` folder inside either.
+    const PHONE_LAYOUTS: [&str; 2] = [
+        "data/user/0/com.patricksmithlaravel.tawara/no_backup",
+        "var/mobile/Containers/Data/Application/0A1B2C3D/Library/Application Support/Tawara",
+    ];
+
+    /// A phone's private folder in `layout` under `scratch`, holding a store
+    /// when `store` says so, and the store's folder as S7 names it.
+    fn phone_folder(scratch: &Scratch, layout: &str, store: bool) -> (PathBuf, String) {
+        let private = scratch.0.join(layout);
+        let keystore = private.join("keystore");
+        std::fs::create_dir_all(&private).unwrap();
+        if store {
+            std::fs::create_dir_all(&keystore).unwrap();
+            std::fs::write(keystore.join(STORE_SNAPSHOT), b"").unwrap();
+        }
+        (private, keystore.display().to_string())
+    }
+
     #[test]
     fn a_hosted_phone_with_no_store_starts_on_the_welcome_screen() {
         // The phone's own folder holds no store: S0 is the first screen, and
-        // its "Get started" leads on to S1 (docs/DECISIONS.md D37).
+        // its "Get started" leads on to S1 (docs/DECISIONS.md D37), in either
+        // phone's folder layout.
         let scratch = Scratch::new("hosted-welcome");
-        let (mut app, _) = App::hosted(&scratch.0);
-        assert!(
-            matches!(app.model.screen, Screen::Welcome),
-            "{:?}",
-            app.model.screen
-        );
-        assert!(!app.model.phone_holds_store());
-        let _ = app.update(Message::Go(Go::Start));
-        assert!(
-            matches!(app.model.screen, Screen::Start { .. }),
-            "{:?}",
-            app.model.screen
-        );
+        for layout in PHONE_LAYOUTS {
+            let (private, _) = phone_folder(&scratch, layout, false);
+            let (mut app, _) = App::hosted(&private);
+            assert!(
+                matches!(app.model.screen, Screen::Welcome),
+                "{layout}: {:?}",
+                app.model.screen
+            );
+            assert!(!app.model.phone_holds_store(), "{layout}");
+            let _ = app.update(Message::Go(Go::Start));
+            assert!(
+                matches!(app.model.screen, Screen::Start { .. }),
+                "{layout}: {:?}",
+                app.model.screen
+            );
+        }
     }
 
     #[test]
     fn a_hosted_phone_with_a_store_opens_on_unlock_and_go_start_does_nothing() {
         // The phone's own folder holds a store: S7 is its first screen, and
         // Go::Start leaves it there, so S1 and S3 are not reached
-        // (docs/DECISIONS.md D37).
+        // (docs/DECISIONS.md D37), in either phone's folder layout.
         let scratch = Scratch::new("hosted-store");
-        let keystore = scratch.0.join("keystore");
-        std::fs::create_dir_all(&keystore).unwrap();
-        std::fs::write(keystore.join(STORE_SNAPSHOT), b"").unwrap();
-        let folder = keystore.display().to_string();
-        let (mut app, _) = App::hosted(&scratch.0);
-        assert!(app.model.phone_holds_store());
-        assert!(
-            matches!(&app.model.screen, Screen::Unlock(u) if u.dir == folder),
-            "{:?}",
-            app.model.screen
-        );
-        let _ = app.update(Message::Go(Go::Start));
-        assert!(
-            matches!(&app.model.screen, Screen::Unlock(u) if u.dir == folder),
-            "{:?}",
-            app.model.screen
-        );
+        for layout in PHONE_LAYOUTS {
+            let (private, folder) = phone_folder(&scratch, layout, true);
+            let (mut app, _) = App::hosted(&private);
+            assert!(app.model.phone_holds_store(), "{layout}");
+            assert!(
+                matches!(&app.model.screen, Screen::Unlock(u) if u.dir == folder),
+                "{layout}: {:?}",
+                app.model.screen
+            );
+            let _ = app.update(Message::Go(Go::Start));
+            assert!(
+                matches!(&app.model.screen, Screen::Unlock(u) if u.dir == folder),
+                "{layout}: {:?}",
+                app.model.screen
+            );
+        }
     }
 
     #[test]
@@ -2995,11 +3022,8 @@ mod tests {
         // a store goes back to S7, whichever screen S2 was opened from
         // (docs/DECISIONS.md D37).
         let scratch = Scratch::new("hosted-store-back");
-        let keystore = scratch.0.join("keystore");
-        std::fs::create_dir_all(&keystore).unwrap();
-        std::fs::write(keystore.join(STORE_SNAPSHOT), b"").unwrap();
-        let folder = keystore.display().to_string();
-        let (mut app, _) = App::hosted(&scratch.0);
+        let (private, folder) = phone_folder(&scratch, PHONE_LAYOUTS[0], true);
+        let (mut app, _) = App::hosted(&private);
         for back in [Back::Start, Back::Wallet] {
             app.model.screen = Screen::Node(NodeForm::default());
             app.go_back(back);
@@ -3009,6 +3033,55 @@ mod tests {
                 app.model.screen
             );
         }
+    }
+
+    /// What a tap on S2's "Back" sends, for a node screen opened from `back`.
+    fn node_back_link(app: &mut App, back: Back, size: (u32, u32)) -> Vec<Message> {
+        app.model.screen = Screen::Node(NodeForm {
+            url: String::new(),
+            error: None,
+            back,
+        });
+        let mut screen = Driver::new(crate::screens::view(&app.model), size);
+        let at = screen.text_bounds("Back").expect("'Back' is drawn");
+        let (messages, _, _) = screen.send(&[
+            mouse_move(at.center_x(), at.center_y()),
+            mouse_press(),
+            mouse_release(),
+        ]);
+        messages
+    }
+
+    #[test]
+    fn s2s_back_link_leads_a_phone_with_a_store_to_unlock_and_the_desktop_to_the_start() {
+        // The link S2 draws leads where `go_back` does: on a phone that holds a
+        // store, to S7, since a link to S1 would do nothing there; on the
+        // desktop, to S1 as before (docs/DECISIONS.md D37).
+        let scratch = Scratch::new("hosted-store-link");
+        let (private, folder) = phone_folder(&scratch, PHONE_LAYOUTS[1], true);
+        let (mut phone, _) = App::hosted(&private);
+        for back in [Back::Start, Back::Wallet] {
+            let messages = node_back_link(&mut phone, back, (360, 844));
+            assert!(
+                matches!(messages.as_slice(), [Message::Go(Go::Unlock)]),
+                "{back:?}: {messages:?}"
+            );
+            for message in messages {
+                let _ = phone.update(message);
+            }
+            assert!(
+                matches!(&phone.model.screen, Screen::Unlock(u) if u.dir == folder),
+                "{back:?}: {:?}",
+                phone.model.screen
+            );
+        }
+
+        let mut desktop = alone();
+        let messages = node_back_link(&mut desktop, Back::Start, (1440, 900));
+        assert!(
+            matches!(messages.as_slice(), [Message::Go(Go::Start)]),
+            "{messages:?}"
+        );
     }
 
     #[test]
