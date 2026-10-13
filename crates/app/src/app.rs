@@ -3634,6 +3634,7 @@ mod tests {
                 state: tawara_wallet_core::view::AccountState::InSync { balance: 5 },
                 spendable: true,
                 text: "in sync".to_owned(),
+                settled: None,
             },
         );
         assert!(app.model.signed.is_empty());
@@ -4092,6 +4093,7 @@ mod tests {
                     state,
                     spendable,
                     text: "checked".to_owned(),
+                    settled: None,
                 },
             );
             app.model.wallet.as_ref().unwrap().accounts[n].clone()
@@ -4565,6 +4567,7 @@ mod tests {
                 state: tawara_wallet_core::view::AccountState::InSync { balance: 1 },
                 spendable: false,
                 text: "found".to_owned(),
+                settled: None,
             },
         );
         assert!(matches!(&wallet_page(&app).page,

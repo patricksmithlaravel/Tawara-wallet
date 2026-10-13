@@ -17,7 +17,7 @@ use crate::explorer::{
 use crate::node::{NetworkName, SyncState};
 use crate::secret::PhraseForDisplay;
 use crate::spend::SpendInputError;
-use crate::view::{AccountId, AccountState, WalletView};
+use crate::view::{AccountId, AccountState, SettledAccount, WalletView};
 
 /// Something the worker reports.
 #[derive(Debug)]
@@ -166,12 +166,17 @@ pub enum Reply {
     /// One account, reconciled now. `spendable` is whether a spend may be
     /// planned from it now, as [`crate::view::AccountRow::spendable`] says:
     /// it reconciled, and the wallet held it when it opened (an account set
-    /// aside then stays aside until the store is opened again).
+    /// aside then stays aside until the store is opened again). `settled` is
+    /// set when the read showed the spend landed and the worker settled the
+    /// account on its own (docs/DECISIONS.md D38); `state`, `spendable` and
+    /// `text` are then what the settle left, with the library's settled
+    /// page as `text`.
     Status {
         account: AccountId,
         state: AccountState,
         spendable: bool,
         text: String,
+        settled: Option<SettledAccount>,
     },
     /// What an acknowledged advance did. `ok` is whether the library counts
     /// it as done (the command line's exit status 0); `advanced_to` is the

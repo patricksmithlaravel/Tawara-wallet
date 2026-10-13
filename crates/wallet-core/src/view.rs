@@ -319,6 +319,23 @@ pub struct WalletView {
     /// interface says it in its own words and shows the text whole on
     /// request (docs/DECISIONS.md D28).
     pub notice: Option<Notice>,
+    /// The accounts the worker settled on its own in the command that
+    /// answered with this view (docs/DECISIONS.md D38): a spend that had
+    /// landed, which a read the person asked for showed. Empty when nothing
+    /// was settled, and for the person's own Settle, whose reply says what it
+    /// did. The interface shows its banner from this list, so it need not
+    /// guess from a change of state.
+    pub settled: Vec<SettledAccount>,
+}
+
+/// An account the worker settled on its own (docs/DECISIONS.md D38), with
+/// the library's page for the settlement: the page the command line's
+/// `settle` prints, which the interface keeps one step from its banner
+/// (D28).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SettledAccount {
+    pub account: AccountId,
+    pub text: String,
 }
 
 /// What can be said about a store's total balance. An account that diverged
@@ -404,6 +421,7 @@ mod tests {
             ],
             opened: false,
             notice: None,
+            settled: Vec::new(),
         };
         // One account has no known balance: the sum of the others is not
         // the total.

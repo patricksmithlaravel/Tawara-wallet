@@ -67,6 +67,33 @@
 //! sending to it. The next command that asks a node asks the one chosen
 //! then.
 //!
+//! # Settling (docs/DECISIONS.md D38)
+//!
+//! A spend that landed (the chain holds its account at the change key) is
+//! settled by the worker itself when a read shows it: a refresh, a check, an
+//! unlock or any reopen of the wallet, and the read that follows a send or a
+//! re-sign. The step is what Settle does (`cli::key_access`, then
+//! `Wallet::settle_if_landed`) and then the account's own read again. One
+//! observation is enough, as the library's rule has it: a settle that a reorg
+//! later reverts is caught at the next open, whereas a rule that waited for
+//! depth would freeze the account. The step runs only in an open wallet, only
+//! after a read that nobody cancelled, and only while no stop is asked. A
+//! settle the library refuses writes nothing, and the next read tries again.
+//! It moves no key index.
+//!
+//! An account the wallet set aside when it opened settles in the same way
+//! once a read shows it landed, as Settle settles it (D19, D38 item 1). A
+//! check that settles one leaves it aside, since the library holds the
+//! accounts it set aside until the wallet is opened again; a refresh opens
+//! the wallet again with it, and that opening settles it. An account the read
+//! does not show landed, a diverged one among them, is left as it is.
+//!
+//! The one narrow case the owner accepted (D38) is that an automatic settle
+//! can hold the lock past the idle period: the library reconciles the account
+//! again with no cancel, and that second read walks key positions only if it
+//! finds the account unexplained, which needs the node's answer to change
+//! between the two reads.
+//!
 //! # Cancellation
 //!
 //! [`WorkerHandle::cancel`] asks every command sent so far to stop. The
@@ -138,7 +165,7 @@ use mochimo_crypto::mesh::spend::SpendPlan;
 use mochimo_crypto::mesh::{MeshClient, Transport};
 use mochimo_crypto::recon::{self, Cancel, Divergence, ScanScope, Unfinished};
 use mochimo_crypto::tx::wire::Destination;
-use mochimo_crypto::wallet::{StartupRefusal, Unopened, Wallet};
+use mochimo_crypto::wallet::{Settlement, StartupRefusal, Unopened, Wallet};
 use mochimo_crypto::{Error, Secret, derive, mnemonic};
 use zeroize::Zeroizing;
 
@@ -158,7 +185,8 @@ use crate::secret::{PhraseForDisplay, SecretText};
 use crate::spend::{self, SpendRequest};
 use crate::text;
 use crate::view::{
-    AccountId, AccountKind, AccountRow, AccountState, Notice, NoticeKind, WalletView,
+    AccountId, AccountKind, AccountRow, AccountState, Notice, NoticeKind, SettledAccount,
+    WalletView,
 };
 
 /// How long the wallet stays unlocked with nothing done, unless the
@@ -401,6 +429,7 @@ pub fn spawn<C: Connect>(
                 stopped: Arc::new(AtomicBool::new(false)),
                 next_plan: 1,
                 numbers: RefCell::new(BTreeMap::new()),
+                settled: Vec::new(),
             };
             worker.run(guard.queue());
         })?;
@@ -525,6 +554,10 @@ struct Worker<C: Connect> {
     /// worker runs. Not secret: a tag is public, and its number is the
     /// command line's name for it.
     numbers: RefCell<BTreeMap<Tag, Option<u32>>>,
+    /// The accounts the running command settled on its own (docs/DECISIONS.md
+    /// D38), with the library's page for each, for the view it answers with.
+    /// Cleared before each command.
+    settled: Vec<SettledAccount>,
 }
 
 /// Whether a command does nothing when a cancel reached it before it
@@ -1036,6 +1069,44 @@ fn wallet_rows<T: Transport>(wallet: &Wallet<Disk, T>) -> Result<Vec<AccountRow>
         .collect())
 }
 
+/// Settle `tag` on its own, for a read that has just shown it landed
+/// (docs/DECISIONS.md D38). It takes the two steps `Worker::settle` takes,
+/// `cli::key_access` and then `Wallet::settle_if_landed`, and then reads the
+/// account's status again for its row. `Some` holds the library's page for
+/// the settlement, as Settle shows it, and the account's state after it,
+/// when the library settled it. `None` means nothing was settled: the library
+/// refused (a node that did not answer, for one), found nothing to settle, or
+/// could not write the settle. A refusal is not reported from here. The next
+/// read tries again, and the person's own Settle shows the library's words
+/// (D38). The caller has checked that no stop is asked. An account the wallet
+/// set aside when it opened is settled here as Settle settles it (D19).
+fn settle_landed<T: Transport>(
+    wallet: &mut Wallet<Disk, T>,
+    master: Option<&Secret<SEED_LEN>>,
+    tag: &Tag,
+) -> Option<(String, AccountState)> {
+    let access = cli::key_access(wallet.store(), tag, master).ok()?;
+    let settlement = wallet.settle_if_landed(tag, &access).ok()?;
+    if !matches!(settlement, Settlement::Settled { .. }) {
+        return None;
+    }
+    let page = text::page(
+        wallet.diverged(),
+        Outcome::Settled {
+            settlement,
+            upgraded: wallet.store().upgraded_from(),
+        },
+    );
+    let state = match recon::access_for(wallet.store(), tag, master) {
+        Ok(access) => match wallet.status(tag, &access) {
+            Ok(status) => AccountState::from_status(&status),
+            Err(d) => AccountState::from_divergence(&d),
+        },
+        Err(d) => AccountState::from_divergence(&d),
+    };
+    Some((page, state))
+}
+
 /// Which of `derived` the seed derives, and as which account: the tag of
 /// account N is `derive::derive_account_tag(master, N)`, as `restore
 /// --account N` makes it, so N is found by deriving 0, 1, 2 and on until
@@ -1165,6 +1236,7 @@ impl<C: Connect> Worker<C> {
                     let typed = typed_by_the_person(&command);
                     self.idle_stops = !typed;
                     self.stopped = Arc::new(AtomicBool::new(false));
+                    self.settled.clear();
                     let reply = if stops_before_starting(&command) && self.cancel_reached(id) {
                         // Sent before a cancel and not yet started: it does
                         // nothing at all (module doc). This is what keeps a
@@ -1225,6 +1297,7 @@ impl<C: Connect> Worker<C> {
     }
 
     fn view(&self) -> Option<WalletView> {
+        let settled = self.settled.clone();
         let mut view = match &self.session {
             Session::Locked => return None,
             Session::Store(s) => WalletView {
@@ -1232,12 +1305,14 @@ impl<C: Connect> Worker<C> {
                 accounts: s.rows.clone(),
                 opened: false,
                 notice: s.notice.clone(),
+                settled,
             },
             Session::Wallet(w) => WalletView {
                 dir: w.dir.clone(),
                 accounts: w.rows.clone(),
                 opened: true,
                 notice: not_whole(w.wallet.diverged()),
+                settled,
             },
         };
         self.number(&mut view.accounts);
@@ -1583,6 +1658,11 @@ impl<C: Connect> Worker<C> {
     /// the store on its own when it refuses or a cancel stops it (module
     /// doc, "Opening the wallet"). The store is never closed here except
     /// when its records cannot be read.
+    ///
+    /// An account that opened landed is settled before the wallet is reported
+    /// open (docs/DECISIONS.md D38). That includes one a refresh found landed
+    /// after the wallet had set it aside: the refresh opens the wallet again
+    /// with it, and the opening settles it (D19).
     fn open_session(
         &mut self,
         id: RequestId,
@@ -1626,8 +1706,25 @@ impl<C: Connect> Worker<C> {
             &mut |counted| self.progress(id, counted),
         );
         match opened {
-            Ok(wallet) => {
-                let rows = wallet_rows(&wallet)?;
+            Ok(mut wallet) => {
+                let mut rows = wallet_rows(&wallet)?;
+                for row in &mut rows {
+                    if asked() {
+                        break;
+                    }
+                    if !matches!(row.state, AccountState::SpendLanded { .. }) {
+                        continue;
+                    }
+                    let tag = row.id.tag();
+                    if let Some((text, state)) = settle_landed(&mut wallet, master.as_ref(), &tag) {
+                        row.spendable = matches!(state, AccountState::InSync { .. });
+                        row.state = state;
+                        self.settled.push(SettledAccount {
+                            account: row.id,
+                            text,
+                        });
+                    }
+                }
                 self.session = Session::Wallet(WalletSession {
                     dir,
                     node: url,
@@ -1729,7 +1826,9 @@ impl<C: Connect> Worker<C> {
     /// Each account's status read fresh, through the open wallet's client.
     /// The library refuses to spend from an account `Wallet::open` set
     /// aside, by what it found then; so when such an account reconciles now,
-    /// the wallet is opened again and it rejoins.
+    /// the wallet is opened again and it rejoins, and if it landed the
+    /// opening settles it (D19). An account these reads show landed is
+    /// settled once every read has been applied (docs/DECISIONS.md D38).
     fn refresh_wallet(&mut self, id: RequestId) -> Reply {
         self.busy(id, Activity::AskingNode);
         let asked = self.stop_asked(id);
@@ -1767,27 +1866,56 @@ impl<C: Connect> Worker<C> {
                 Err(d) => AccountState::from_divergence(&d),
             };
             let spendable = reconciled_at_open && matches!(state, AccountState::InSync { .. });
-            fresh.push((*tag, state, spendable));
+            let landed = matches!(state, AccountState::SpendLanded { .. });
+            fresh.push((*tag, state, spendable, landed));
         }
         if recovered {
             let Session::Wallet(w) = core::mem::replace(&mut self.session, Session::Locked) else {
                 return Self::not_unlocked();
             };
+            // The reopen reads every account again, and settles one it
+            // finds landed, a rejoining one among them (D19, D38).
             let (store, _old) = w.wallet.into_parts();
             return match self.reopen(id, w.dir, store, w.master) {
                 Ok(view) => Reply::Wallet(view),
                 Err(r) => Reply::Refused(r),
             };
         }
-        for (tag, state, spendable) in fresh {
+        for (tag, state, spendable, _) in &fresh {
             let index = w
                 .wallet
                 .store()
-                .view(&tag)
+                .view(tag)
                 .ok()
                 .flatten()
                 .map(|v| v.wots_index.get());
-            update_row(&mut w.rows, &tag, state, spendable, index);
+            update_row(&mut w.rows, tag, state.clone(), *spendable, index);
+        }
+        // The automatic settle (docs/DECISIONS.md D38), after every read has
+        // been applied so that a stop heard during the reads has already
+        // answered `Cancelled`. Each settle reads its own row again.
+        let landed: Vec<Tag> = fresh
+            .iter()
+            .filter(|(_, _, _, landed)| *landed)
+            .map(|(tag, _, _, _)| *tag)
+            .collect();
+        for tag in landed {
+            if asked() {
+                break;
+            }
+            let Session::Wallet(w) = &mut self.session else {
+                break;
+            };
+            // Every account here reconciled at open: one set aside that now
+            // reads cleanly took the reopen above instead.
+            if let Some((text, state)) = settle_landed(&mut w.wallet, w.master.as_ref(), &tag) {
+                let spendable = matches!(state, AccountState::InSync { .. });
+                update_row(&mut w.rows, &tag, state, spendable, None);
+                self.settled.push(SettledAccount {
+                    account: AccountId::from_tag(tag),
+                    text,
+                });
+            }
         }
         self.view().map_or_else(Self::not_unlocked, Reply::Wallet)
     }
@@ -1975,7 +2103,7 @@ impl<C: Connect> Worker<C> {
                 upgraded: w.wallet.store().upgraded_from(),
             },
         );
-        self.refresh_one(&tag);
+        self.refresh_one(id, &tag);
         let Some(view) = self.view() else {
             return Self::not_unlocked();
         };
@@ -1989,8 +2117,12 @@ impl<C: Connect> Worker<C> {
         })
     }
 
-    /// Read one account's status again after an operation on it.
-    fn refresh_one(&mut self, tag: &Tag) {
+    /// Read one account's status again after an operation on it. A read that
+    /// shows the account landed settles it, as a refresh would, when no stop
+    /// is asked (docs/DECISIONS.md D38). This is the read after a send and
+    /// after a re-sign. An account set aside at open stays aside: it spends
+    /// again once the wallet is opened again (D19).
+    fn refresh_one(&mut self, id: RequestId, tag: &Tag) {
         let Session::Wallet(w) = &mut self.session else {
             return;
         };
@@ -2004,6 +2136,7 @@ impl<C: Connect> Worker<C> {
             Err(d) => AccountState::from_divergence(&d),
         };
         let spendable = reconciled_at_open && matches!(state, AccountState::InSync { .. });
+        let landed = matches!(state, AccountState::SpendLanded { .. });
         let index = w
             .wallet
             .store()
@@ -2012,6 +2145,21 @@ impl<C: Connect> Worker<C> {
             .flatten()
             .map(|v| v.wots_index.get());
         update_row(&mut w.rows, tag, state, spendable, index);
+        let asked = self.stop_asked(id);
+        if !landed || asked() {
+            return;
+        }
+        let Session::Wallet(w) = &mut self.session else {
+            return;
+        };
+        if let Some((text, state)) = settle_landed(&mut w.wallet, w.master.as_ref(), tag) {
+            let spendable = reconciled_at_open && matches!(state, AccountState::InSync { .. });
+            update_row(&mut w.rows, tag, state, spendable, None);
+            self.settled.push(SettledAccount {
+                account: AccountId::from_tag(*tag),
+                text,
+            });
+        }
     }
 
     /// The refusal for a command that needs the wallet open, when it is not.
@@ -2050,7 +2198,7 @@ impl<C: Connect> Worker<C> {
             ),
             Err(e) => return Reply::Refused(library(e)),
         };
-        self.refresh_one(&tag);
+        self.refresh_one(id, &tag);
         match self.view() {
             Some(view) => Reply::Settled { text: page, view },
             None => Self::not_unlocked(),
@@ -2119,7 +2267,7 @@ impl<C: Connect> Worker<C> {
             };
         };
         let page = text::page(w.wallet.diverged(), outcome);
-        self.refresh_one(&tag);
+        self.refresh_one(id, &tag);
         let Some(view) = self.view() else {
             return Self::not_unlocked();
         };
@@ -2199,7 +2347,7 @@ impl<C: Connect> Worker<C> {
         if asked() {
             return Reply::Refused(library(Error::Cancelled));
         }
-        let state = match &result {
+        let mut state = match &result {
             Ok(status) => AccountState::from_status(status),
             Err(d) => AccountState::from_divergence(d),
         };
@@ -2210,7 +2358,8 @@ impl<C: Connect> Worker<C> {
         if matches!(outcome, Outcome::NoSuchAccount { .. }) {
             return refused(RefusalKind::Library, text::page(&[], outcome));
         }
-        let spendable = match &mut self.session {
+        let mut text = text::page(&[], outcome);
+        let mut spendable = match &mut self.session {
             Session::Store(s) => {
                 update_row(&mut s.rows, &tag, state.clone(), false, None);
                 false
@@ -2223,11 +2372,33 @@ impl<C: Connect> Worker<C> {
             }
             Session::Locked => false,
         };
+        // The automatic settle (docs/DECISIONS.md D38): a check that shows the
+        // account landed settles it, and the reply then says what was done,
+        // with the page Settle's reply carries. An account set aside at open
+        // settles too, as Settle settles it (D19), and stays aside until the
+        // wallet is opened again, so it is not spendable here.
+        let mut settled = None;
+        if let Session::Wallet(w) = &mut self.session
+            && matches!(state, AccountState::SpendLanded { .. })
+            && !asked()
+            && let Some((page, after)) = settle_landed(&mut w.wallet, w.master.as_ref(), &tag)
+        {
+            spendable = w.wallet.accounts().iter().any(|(t, _)| *t == tag)
+                && matches!(after, AccountState::InSync { .. });
+            update_row(&mut w.rows, &tag, after.clone(), spendable, None);
+            text.clone_from(&page);
+            state = after;
+            settled = Some(SettledAccount {
+                account,
+                text: page,
+            });
+        }
         Reply::Status {
             account,
             state,
             spendable,
-            text: text::page(&[], outcome),
+            text,
+            settled,
         }
     }
 

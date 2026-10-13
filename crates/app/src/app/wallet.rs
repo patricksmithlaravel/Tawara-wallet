@@ -1921,6 +1921,7 @@ impl App {
                     state,
                     spendable,
                     text,
+                    ..
                 },
             ) => {
                 // The worker's word on spending, not one worked out here: a

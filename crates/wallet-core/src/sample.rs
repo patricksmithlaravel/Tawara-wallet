@@ -141,7 +141,27 @@ pub fn wallet_view() -> WalletView {
             kind: NoticeKind::NotWhole,
             text,
         }),
+        settled: Vec::new(),
     }
+}
+
+/// The sample store with the second account's spend landed: the chain holds
+/// that account at its change key, and the account reads `SpendLanded` until
+/// the worker settles it (docs/DECISIONS.md D38). Its other accounts are as
+/// in [`wallet_view`], which the committed screenshots draw, so it is a
+/// separate view.
+#[must_use]
+pub fn landed_view() -> WalletView {
+    let mut view = wallet_view();
+    let row = &mut view.accounts[1];
+    row.index = 7;
+    row.state = AccountState::SpendLanded {
+        balance: 2_640_000_000_000,
+        spent_index: 6,
+        settled_index: 7,
+    };
+    row.spendable = false;
+    view
 }
 
 /// The same store opened while its node did not answer: no account was
