@@ -76,6 +76,9 @@ pub fn view<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> 
                 })
                 .center_x(Length::Fill),
         )
+        // The page has the id the phone's page has, so that entering a review
+        // scrolls it to its top on the desktop too (docs/SCREENS.md W5).
+        .id(super::page_id())
         .style(theme::scroll)
         .width(Length::Fill)
         .height(Length::Fill),

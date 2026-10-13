@@ -1214,6 +1214,11 @@ impl App {
                 }) = self.wallet_page()
                 {
                     s.stage = SendStage::Compose;
+                    // The form starts at the top of its page. Drawn in the
+                    // review's place, it would otherwise open at the review's
+                    // scroll rather than at its first destination
+                    // (docs/SCREENS.md W4).
+                    return crate::screens::page_top();
                 }
             }
             WalletMsg::Sign => {
@@ -1666,8 +1671,9 @@ impl App {
 
     /// The worker's answer to a command a wallet page sent. Refusals are
     /// shown on the page by [`App::refused`], apart from the ones that move
-    /// the page.
-    pub(super) fn on_wallet_reply(&mut self, purpose: Purpose, reply: Reply) {
+    /// the page. The task returned is for the runtime to run: a review that
+    /// is entered returns one that scrolls its page to the top.
+    pub(super) fn on_wallet_reply(&mut self, purpose: Purpose, reply: Reply) -> Task<Message> {
         match (purpose, reply) {
             // An explorer page's answer goes to it while it shows what was
             // asked for; another page has nothing to do with it.
@@ -1713,10 +1719,10 @@ impl App {
                     ..
                 }) = self.wallet_page()
                 else {
-                    return;
+                    return Task::none();
                 };
                 if e.finding != Some(hash) {
-                    return;
+                    return Task::none();
                 }
                 e.finding = None;
                 match *found {
@@ -1837,6 +1843,10 @@ impl App {
                 }) = self.wallet_page()
                 {
                     s.stage = SendStage::Review(Box::new(plan));
+                    // The review starts at the top of its page, so that the
+                    // payees and the amount are read before "Sign & submit" is
+                    // reached (docs/SCREENS.md W5).
+                    return crate::screens::page_top();
                 } else {
                     // The page was left while it was being laid out.
                     self.send(Command::DiscardPlan, Purpose::DiscardPlan);
@@ -1867,6 +1877,11 @@ impl App {
                     open: [(ReportKey::Sent, Level::Summary)].into(),
                     ..WalletPage::default()
                 });
+                // The sent page starts at the top of its page, as the review
+                // does. Drawn in the review's place, it would otherwise open at
+                // the review's scroll, with the steps and the three facts out
+                // of view above it (docs/SCREENS.md W6).
+                return crate::screens::page_top();
             }
             // Signing was refused; the worker dropped the plan and used no
             // key. Back to the form, with why.
@@ -1879,6 +1894,11 @@ impl App {
                 {
                     s.stage = SendStage::Compose;
                     *error = Some(r.text);
+                    // The form starts at the top of its page, where why is
+                    // shown. Drawn in the review's place, it would otherwise
+                    // open at the review's scroll, near "Sign & submit", with
+                    // the refusal out of view above it (docs/SCREENS.md W4).
+                    return crate::screens::page_top();
                 }
             }
             (Purpose::Settle, Reply::Settled { text, view }) => {
@@ -1911,7 +1931,7 @@ impl App {
                     row.state = state.clone();
                 }
                 let Some(p) = self.wallet_page() else {
-                    return;
+                    return Task::none();
                 };
                 match &mut p.page {
                     Page::Account(a) if a.account == account => {
@@ -2012,6 +2032,7 @@ impl App {
             (_, Reply::Refused(r)) => self.refused(r),
             _ => {}
         }
+        Task::none()
     }
 }
 

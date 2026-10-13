@@ -15,11 +15,11 @@ use std::borrow::Cow;
 use iced::advanced::clipboard;
 use iced::advanced::graphics;
 use iced::advanced::renderer::{self, Headless};
-use iced::advanced::widget::Operation;
 use iced::advanced::widget::operation::{Outcome, focusable};
+use iced::advanced::widget::{Id, Operation};
 use iced::event::Status;
 use iced::theme::Base;
-use iced::{Element, Event, Point, Rectangle, Size, mouse, touch, window};
+use iced::{Element, Event, Point, Rectangle, Size, Vector, mouse, touch, window};
 use iced_runtime::user_interface::{Cache, State, UserInterface};
 
 use crate::{fonts, overflow, theme};
@@ -56,15 +56,31 @@ impl<'a, M: 'a> Driver<'a, M> {
     /// The interface for `root` in a window of `size`, with nothing under
     /// the pointer yet.
     pub(crate) fn new(root: impl Into<Element<'a, M>>, size: (u32, u32)) -> Self {
+        Self::with_cache(root, size, Cache::default())
+    }
+
+    /// The interface for `root` in a window of `size`, holding the state
+    /// `cache` kept from an earlier one, scrolls included, as the runtime keeps
+    /// it between two drawings of a view.
+    pub(crate) fn with_cache(
+        root: impl Into<Element<'a, M>>,
+        size: (u32, u32),
+        cache: Cache,
+    ) -> Self {
         let mut renderer = renderer();
         let bounds = Size::new(size.0 as f32, size.1 as f32);
-        let ui = UserInterface::build(root, bounds, Cache::default(), &mut renderer);
+        let ui = UserInterface::build(root, bounds, cache, &mut renderer);
         Driver {
             ui,
             renderer,
             size,
             cursor: None,
         }
+    }
+
+    /// The state the interface holds, for [`Driver::with_cache`].
+    pub(crate) fn into_cache(self) -> Cache {
+        self.ui.into_cache()
     }
 
     /// Hands `events` to the interface one at a time, each with the cursor
@@ -156,6 +172,29 @@ impl<'a, M: 'a> Driver<'a, M> {
         counted.bounds
     }
 
+    /// Where the scrollable `id` is in the window, and how far it is scrolled,
+    /// if it is drawn.
+    pub(crate) fn scroll_of(&mut self, id: &Id) -> Option<(Rectangle, Vector)> {
+        let mut scroll = Scroll {
+            id: id.clone(),
+            found: None,
+        };
+        self.ui.operate(&self.renderer, &mut scroll);
+        scroll.found
+    }
+
+    /// Where `text` is laid out, if it is drawn. Inside a scrolled page it is
+    /// drawn higher by the page's scroll, which [`Driver::scroll_of`] gives.
+    pub(crate) fn text_bounds(&mut self, text: &str) -> Option<Rectangle> {
+        let mut texts = Texts::default();
+        self.ui.operate(&self.renderer, &mut texts);
+        texts
+            .0
+            .into_iter()
+            .find(|(drawn, _)| drawn == text)
+            .map(|(_, bounds)| bounds)
+    }
+
     /// The window as RGBA pixels, drawn the way the screenshot example draws
     /// a screen.
     pub(crate) fn draw(&mut self) -> Vec<u8> {
@@ -209,6 +248,32 @@ impl iced::advanced::widget::Operation for Focusables {
             self.bounds = Some(bounds);
         }
         self.total += 1;
+    }
+}
+
+/// The scroll of the scrollable with `id`: its bounds in the window, and how
+/// far it is translated.
+struct Scroll {
+    id: Id,
+    found: Option<(Rectangle, Vector)>,
+}
+
+impl Operation for Scroll {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+        operate(self);
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&Id>,
+        bounds: Rectangle,
+        _content: Rectangle,
+        translation: Vector,
+        _state: &mut dyn iced::advanced::widget::operation::Scrollable,
+    ) {
+        if id == Some(&self.id) {
+            self.found = Some((bounds, translation));
+        }
     }
 }
 

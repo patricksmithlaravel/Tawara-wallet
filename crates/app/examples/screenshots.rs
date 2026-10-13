@@ -37,12 +37,15 @@
 //! - `--except PREFIX`, repeatable: leaves out the samples whose name starts
 //!   with a prefix, for example `--except phone-` for the desktop alone.
 //! - `--phone-width N`: draws the phone's images N logical pixels wide rather
-//!   than 390, for looking at a width. It is refused with `--check`.
-//! - `--fit`: lays every selected phone sample out at 360 by 844 and prints
-//!   `OVERFLOW name: left..right` for each node whose right edge passes 360,
-//!   and for each text whose words do, with its content (ten a sample at most).
-//!   The phone's wallet page is also laid out in nanoMCM. It exits non-zero if
-//!   there is any, and writes nothing.
+//!   than 390, for looking at a width, and with `--fit` lays them out at N
+//!   rather than 360. It is refused with `--check`.
+//! - `--fit`: lays every selected phone sample out 844 tall, at the width
+//!   `--phone-width` gives or else at 360, and prints `OVERFLOW name:
+//!   left..right` for each node whose right edge passes that width, and for
+//!   each text whose words do, with its content (ten a sample at most). The
+//!   phone's wallet page is also laid out in nanoMCM. It exits non-zero if
+//!   there is any, and writes nothing. `--fit --phone-width 390` holds the
+//!   phone set to the width it is drawn at.
 //! - The environment variable `TAWARA_SCREENSHOTS_PRINT`: with `--check`,
 //!   prints each image that DIFFERS or is MISSING as base64, between
 //!   `----- BEGIN <name>.png -----` and `----- END <name>.png -----`, so that
@@ -61,7 +64,6 @@ use iced::mouse::Cursor;
 use iced::theme::Base;
 use iced::{Event, Size, window};
 use iced_runtime::user_interface::{Cache, UserInterface};
-use tawara_app::app::NARROWEST;
 use tawara_app::app::{
     AccountPage, ActivityPage, AddAccountPage, Back, BlockPage, Busy, DestinationRow, Explored,
     ExplorerPage, Level, Missed, Model, NodeForm, NodeState, Page, PasswordForm, PhraseState,
@@ -852,15 +854,16 @@ fn phones(width: u32) -> Vec<Image> {
 }
 
 /// The phone's wallet page in nanoMCM, the unit a person can choose in place
-/// of MCM. It is laid out at 360 by `fit`, with the phone set, so that the
-/// check covers the balance in that unit (docs/DECISIONS.md D32 item 10 (b)).
-/// It is not drawn: the committed images are of MCM, as the desktop's are.
-fn nanomcm_samples() -> Vec<Image> {
+/// of MCM, in a window `width` logical pixels wide. It is laid out by `fit`,
+/// with the phone set, so that the check covers the balance in that unit
+/// (docs/DECISIONS.md D32 item 10 (b)). It is not drawn: the committed images
+/// are of MCM, as the desktop's are.
+fn nanomcm_samples(width: u32) -> Vec<Image> {
     let mut model = sample_named("w1-wallet");
     model.prefs.unit = AmountUnit::NanoMcm;
     vec![Image {
         name: "phone-w1-wallet-nanomcm".to_owned(),
-        size: (NARROWEST_PX, PHONE.1),
+        size: (width, PHONE.1),
         model: phone(model, 0.0),
         to_end: false,
         focus: None,
@@ -1022,17 +1025,21 @@ fn overflow_lines(renderer: &iced::Renderer, name: &str, model: &Model, width: f
         .collect()
 }
 
-/// The phone images selected, laid out at 360 logical pixels: prints every
-/// overflow (at most ten a sample) and reports whether there was one.
-fn fit(renderer: &iced::Renderer, only: &[String], except: &[String]) -> bool {
+/// The phone images selected, laid out at `width` logical pixels: prints
+/// every overflow (at most ten a sample) and reports whether there was one.
+/// The check is at 360, the narrowest phone (`tawara_app::app::NARROWEST`);
+/// another width is for `--fit --phone-width`.
+fn fit(renderer: &iced::Renderer, only: &[String], except: &[String], width: u32) -> bool {
     let mut failed = false;
-    for image in phones(NARROWEST_PX).into_iter().chain(nanomcm_samples()) {
+    #[allow(clippy::cast_precision_loss)]
+    let logical = width as f32;
+    for image in phones(width).into_iter().chain(nanomcm_samples(width)) {
         if !selected(&image.name, only, except) {
             continue;
         }
         let mut model = image.model;
-        model.width = NARROWEST;
-        for line in overflow_lines(renderer, &image.name, &model, NARROWEST)
+        model.width = logical;
+        for line in overflow_lines(renderer, &image.name, &model, logical)
             .into_iter()
             .take(10)
         {
@@ -1116,7 +1123,8 @@ fn main() -> ExitCode {
     };
     let (only, except) = (&options.only, &options.except);
     if options.fit {
-        return if fit(&renderer, only, except) {
+        let width = options.phone_width.unwrap_or(NARROWEST_PX);
+        return if fit(&renderer, only, except, width) {
             ExitCode::FAILURE
         } else {
             ExitCode::SUCCESS
@@ -1128,7 +1136,7 @@ fn main() -> ExitCode {
     let mut failed = false;
     if options.check {
         // The phone screens are held to 360 logical pixels as well.
-        failed |= fit(&renderer, only, except);
+        failed |= fit(&renderer, only, except, NARROWEST_PX);
     }
     if !options.check
         && let Err(e) = std::fs::create_dir_all(&dir)
