@@ -138,7 +138,7 @@ with its source; what checks that protection; what is left; and the status.
 
 | # | threat | protections (sources) | checked by | residual | status |
 |---|---|---|---|---|---|
-| T16 | **The phrase seen or captured while shown** (A5): a person nearby, a screenshot, a recording, screen sharing, the app switcher. | Shown once, at creation, behind a confirmation of three words (PLAN 4.3; docs/SCREENS.md S4, S5); never shown again, and no control exists to show it (D27 item 3). Android: `FLAG_SECURE` on the whole app, set before the first frame (D32 item 4; `Tawara-mobile:crates/mobile/src/android.rs:27-29`). iOS: a cover with no wallet content on `WillResignActive`, over the key window, removed on `DidBecomeActive` (D32 item 6; `Tawara-mobile:crates/mobile/src/ios.rs:239-288`). With no key window no cover is added, and the log says so (`ios.rs:262-265`). | Tawara-mobile CI: `flag_secure` reads `SECURE` from `dumpsys` (`platform/android/tawara.sh:289-294`); `cover added` in the log (`platform/ios/tawara.sh:201-202`) and the key window in a scene (`:207-208`). Passed on 587329c. | The desktop has no protection: screenshots, recording and screen sharing see S4 (G2). No check shows that an Android screenshot, recording or recents thumbnail is blank, or that the iOS switcher's snapshot is (G7, G8). The `scene.window` check (`platform/ios/tawara.sh:208`) catches a missing key window on the simulator only; nothing checks it on a phone. | Android and iOS: verified (flag set, cover added); effect on a device, owed. Desktop: owed |
+| T16 | **The phrase seen or captured while shown** (A5): a person nearby, a screenshot, a recording, screen sharing, the app switcher. | Shown once, at creation, behind a confirmation of three words (PLAN 4.3; docs/SCREENS.md S4, S5); never shown again, and no control exists to show it (D27 item 3). Android: `FLAG_SECURE` on the whole app, set before the first frame (D32 item 4; `Tawara-mobile:crates/mobile/src/android.rs:27-29`). iOS: a cover with no wallet content on `WillResignActive`, over the key window, removed on `DidBecomeActive` (D32 item 6; `Tawara-mobile:crates/mobile/src/ios.rs:239-288`). With no key window no cover is added, and the log says so (`ios.rs:262-265`). | Tawara-mobile CI: `flag_secure` reads `SECURE` from `dumpsys` (`platform/android/tawara.sh:289-294`); `cover added` in the log (`platform/ios/tawara.sh:201-202`) and the key window in a scene (`:207-208`). Passed on 587329c. | The desktop has no protection: screenshots, recording and screen sharing see S4 (G2). No check shows that an Android screenshot, recording or recents thumbnail is blank, or that the iOS switcher's snapshot is (G7, G8). The `scene.window` check (`platform/ios/tawara.sh:208`) catches a missing key window on the simulator only; nothing checks it on a phone. On an iPhone, while the app is active, the app does not stop a screenshot, a screen recording or mirroring of S4 (G27): the cover comes off on `DidBecomeActive` (`Tawara-mobile:crates/mobile/src/ios.rs:208`, `:282-288`), the iced fork's iOS `set_content_protected` is empty (`fork:vendor/winit/src/platform_impl/ios/window.rs:459`), and no pinned code reads `UIScreen.isCaptured`. V6 checks the switcher's snapshot only. The planned control is D44 in PR #26 (proposed; the order decided by the owner on 2026-10-13; the details recommended), which blanks the grid while iOS reports the screen as recorded or mirrored, as far as it reports it, and shows a warning after a screenshot, which cannot block it (D44 item 3). That blanking is best effort, so V18 is the test. | Android and iOS: verified (flag set, cover added); effect on a device, owed. Desktop: owed. iOS while active: owed (G27, V18) |
 | T17 | **The input method learns or suggests a password or phrase** (A4). | iced marks a secure field's input purpose as secure (`fork:widget/src/text_input.rs:435-437`), which reaches winit as `ImePurpose::Password` (`fork:winit/src/conversion.rs:1440`). On Android winit drops it (`fork:vendor/winit/src/platform_impl/android/mod.rs:946`), and on iOS it is ignored with a warning (`fork:vendor/winit/src/platform_impl/ios/window.rs:386-387`). On Wayland it becomes a sensitive-data hint (`fork:vendor/winit/src/platform_impl/linux/wayland/seat/text_input/mod.rs:168`). | Phase 1 found an ordinary keyboard on both phones, which "may suggest and learn" (docs/spikes/P1-REPORT.md, "What did not, and where"). The owner's device check (D32 item 2) has no recorded result. | On both phones the keyboard is an ordinary one for the password and phrase fields. D32 item 2 makes native text-input glue part of phase 4 "if composition or secure entry fails" (`docs/DECISIONS.md:1461-1463`). Whether a keyboard that learns a password field counts as a failure of secure entry is not decided there; V1 reports it, and the owner decides. | owed (G3) |
 | T18 | **Accessibility services read a secret field** (A4). | PLAN 4.2 requires that secret fields are not exposed as a value to accessibility services. No decision, mechanism or test says how. iced at this pin publishes no accessibility tree (no `accesskit` in the fork or in `Cargo.lock`), so a service likely sees no field at all; that is an inference, not a check. | — | Unknown until checked. The same inference means a screen reader cannot use Tawara. | owed (G10) |
 | T19 | **Copy or cut of a secret field.** | iced refuses copy and cut in a `secure(true)` field (`fork:widget/src/text_input.rs:914-944`). The password, confirmation-word and restore-phrase fields are secure (`crates/app/src/screens/first_run.rs:449-470`, `:607-615`, `:706-711`, `:765-773`; `crates/app/src/ui.rs:298-316`). Paste into them is allowed (owner, D32 item 9 (g)). | No test in this repository. | — | source only (G11) |
@@ -266,7 +266,9 @@ with its source; what checks that protection; what is left; and the status.
   window. With none, no cover is added and the log says so
   (`Tawara-mobile:crates/mobile/src/ios.rs:262-265`); the `scene.window`
   check (`platform/ios/tawara.sh:208`) catches that on the simulator only
-  (D32 item 6).
+  (D32 item 6). Once the app is active again nothing hides the screen, and
+  the app does not stop a screenshot, a screen recording or mirroring of S4
+  (G27).
 - **Locking.** On entering the background a UIKit background task holds the
   process until the interface has taken the worker's answer to the move;
   if time runs out, or none is granted, the process ends itself (D32 item 6;
@@ -319,6 +321,7 @@ done under the owner's delegation, through pull requests the owner reviews.
 | G24 | The wording still open: the placeholders in the table at `docs/SCREENS.md:171-178` ("The application's own texts (D25)"), which D25 leaves to be settled with their screens; and the summaries' sentences under D28 (`crates/app/src/screens/wallet/report.rs`), which no decision approves word for word (D25; D27 item 12). | T35 | Owner | The owner approves the wording on the built screens. |
 | G25 | `deny.toml` does not hold D22's bundled roots. | T26, T37 | Delegated | Ban `rustls-native-certs` and `rustls-platform-verifier` in `deny.toml`, with a reason naming D22. |
 | G26 | The policy test's manifest scans skip `spikes/`, which has a `[patch]` (allowed by D17) and an older library pin. | T38 | Delegated | Extend the scan to every manifest, listing the spike's `iced_winit` patch as the one exception under D17. |
+| G27 | **iOS while the app is active.** The app does not stop a screenshot, a screen recording or mirroring of S4. The cover comes off on `DidBecomeActive` (`Tawara-mobile:crates/mobile/src/ios.rs:208`, `:282-288`); the iced fork's iOS `set_content_protected` is empty (`fork:vendor/winit/src/platform_impl/ios/window.rs:459`); no pinned code reads `UIScreen.isCaptured`, which Apple's QA1970 describes as true while the screen is recorded, mirrored or sent over AirPlay; and PLAN 4.3 asks for the iOS cover only as far as the switcher's snapshot (`docs/PLAN.md:165-166`). V6 does not see this. | T16 | Owner (device check V18), then delegated | The planned control is D44 in PR #26 (not merged; the order decided by the owner on 2026-10-13; the details recommended): on iOS the grid is blanked while iOS reports the screen as recorded or mirrored, as far as it reports it, and a warning follows a screenshot, which cannot block it. D44 calls the blanking best effort, so V18 decides it. Until the control ships and V18 passes, 5.4 item 15 applies. |
 
 ### 5.2 Device checks still owed
 
@@ -344,6 +347,7 @@ Android phone and an iPhone, on the builds to be released (section 6).
 | V15 | **Hardware-keyboard copy and cut, per platform.** On a phone with a hardware keyboard, copy and cut in a field that is not secure, then check the copy on that platform's terms, and record the API level or iOS version. **iOS:** the copy must be local-only, so a Mac or iPad signed in to the same Apple account, with Handoff on, must not receive it; and it must expire two minutes after the copy, so a paste into another app works within two minutes and finds nothing after. **Android:** the copy must carry the sensitive mark. On Android 13 (API 33) or later the clipboard preview then shows no text, as V14 checks for a Copy button. Below API 33 the mark has no effect, and nothing the system shows reflects it, so the check cannot observe it there. The record gives Android no expiry and no local-only copy, so none is checked. Until G22 is done the copy goes around Tawara's write, and the record must say so. | G22, T31 | section 4, Clipboard bullets; D32 item 10 (j) and its note on API 26 to 32; G22 |
 | V16 | **The first screen on an iPhone SE.** On an iPhone SE (3rd generation, iOS 18.3), where the safe area reported no inset on a cold launch, check that the wordmark stands clear of the 20-point status bar, with the fallback of D32 item 10 (b) in place. | usability | D32 item 10 (f); `docs/DECISIONS.md:2100-2107` |
 | V17 | **Drawing, speed and memory on a phone.** Real-GPU drawing, frame pacing, unlock time and memory on a phone; scrolling on iOS, which `simctl` cannot drive. | usability | spikes/README.md, "What CI cannot measure" |
+| V18 | **Screen recording and mirroring while S4 is shown (iPhone).** Start a screen recording, or mirror the phone to another screen (AirPlay, or a cable to a Mac), then open S4 with a phrase on it, and check the recording or the mirror: the words must not be visible in it. Record the iOS version and which of the two was used. Until G27's control ships nothing in the source hides them, so a fail is the expected result, and it is recorded, not waived. | G27, T16 | G27; D44 item 3 (PR #26); Apple QA1970 |
 
 ### 5.3 Records that disagree
 
@@ -381,13 +385,18 @@ bundled roots (owner, 2026-10-04). Not yet accepted, each named in section 3:
     with no confirmation (D32 item 9 (f)).
 14. T33: a lost phrase or password cannot be recovered, and the app has no
     password-change control (D27 items 4 and 11).
+15. T16 on an iPhone while the app is active (G27): the app does not stop a
+    screenshot, a screen recording or mirroring of S4. Under D44 a screenshot's
+    warning comes after the capture and cannot block it, and the blanking of a
+    recording or mirror is best effort. V18 records the recording and mirroring
+    case.
 
 ## 6. Before release
 
 PLAN section 7 makes this file a condition of phase 5. These must be closed,
 or accepted by the owner in writing in DECISIONS, before any release:
 
-1. **Every device check in 5.2**, V1 to V17, on the builds to be
+1. **Every device check in 5.2**, V1 to V18, on the builds to be
    released, with results recorded in DECISIONS. A failure of V1 (what
    counts as one is the owner's to decide, T17), V2, V5, V6, or of the
    footer link or Paste in V9, blocks the phone release it concerns until
@@ -400,7 +409,7 @@ or accepted by the owner in writing in DECISIONS, before any release:
    right.
 5. **G4 and C7** decided: fixed, or the deviation from PLAN 4.2 and D20
    recorded.
-6. **G1, G2, G10, G12 and G24** decided by the owner.
+6. **G1, G2, G10, G12, G24 and G27** decided by the owner, G27 after V18 has a recorded result (item 1).
 7. **Section 5.4** accepted, item by item, or a control added.
 8. **Phase 5's own items**: signed packages for every platform (T36, T42),
    third-party notices generated in CI, the counsel questions answered
