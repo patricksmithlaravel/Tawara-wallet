@@ -2673,11 +2673,11 @@ item 6's.
    one step away (D28). W6's Settle step follows the account's state.
    **Open:** where the banner sits, the W7 panel and the copy for a dead
    reservation are new wording, for the owner's approval. So are the copy for
-   signed bytes kept after a settle, the dismiss control item 5 names (which
-   does not exist yet), and W7's copy for a settle that a reorganisation
-   reverted (item 5). Its summary says spending is paused and the other accounts
-   are unaffected, and its causes are a spend not landed, a store moved ahead
-   and another chain (`crates/app/src/screens/wallet/report.rs:241`,
+   signed bytes kept after a settle, the dismiss control item 5 names (built in
+   PR #30, with a confirming second press), and W7's copy for a settle that a
+   reorganisation reverted (item 5). Its summary says spending is paused and the
+   other accounts are unaffected, and its causes are a spend not landed, a store
+   moved ahead and another chain (`crates/app/src/screens/wallet/report.rs:241`,
    `:266-275`). None of them names a reorg, which only the library's full report
    beneath does, and none says that the pause lasts until the spend lands or a
    saved copy is re-submitted (library `recon.rs:962-964`, `:986-1000`).
@@ -2696,8 +2696,8 @@ item 6's.
    restart also loses them. This replaces the owner's earlier answer of the
    same day, to forget them on settle. That answer rested on the wrong
    premise that a reverted settle reopens the reservation, as the corrected
-   facts below show. No dismiss control exists today; that control and its
-   copy are new wording (item 3).
+   facts below show. No dismiss control exists on this branch; PR #30 adds
+   one, and it and its copy are new wording (item 3).
 
    If a reorganisation of the chain then reverts the settle, the reservation
    is not reopened: `persist_settled` closes it and keeps only the settle's
@@ -2734,14 +2734,16 @@ item 6's.
    **(b) Wanted (owner, 2026-10-13), in a later PR, not this one.** A
    diverged account one key behind, with a retained settle, should offer
    Submit saved artifact, and accept only a saved copy whose digest
-   matches the retained one. It moves no key index (PLAN 4.9). The
-   constraints below are provisional, for the owner's approval when that
-   PR is made:
-   - only for an account one key behind, with a retained settle;
-   - only a saved copy whose digest matches the retained digest;
-   - no key index moves (PLAN 4.9);
-   - the library's own conditions hold: the balance at the source has
-     not moved, and the block-to-live has not passed (library
+   matches the retained one. It moves no key index (PLAN 4.9). Its
+   constraints:
+   - only for an account one key behind, with a retained settle (owner,
+     2026-10-13);
+   - only a saved copy whose digest matches the retained digest (owner,
+     2026-10-13);
+   - no key index moves (owner, 2026-10-13; PLAN 4.9);
+   - proposed, for the owner's approval when that PR is made: the
+     library's own conditions hold, that the balance at the source has
+     not moved and the block-to-live has not passed (library
      `recon.rs:986-1000`).
 
    What happens to the wallet. Refresh and Check now mark the account
@@ -2786,27 +2788,49 @@ item 6's.
 
    **Why the answer changed (owner, 2026-10-13).** The earlier answer
    rested on the premise that a reverted settle reopens the reservation. It
-   does not. Re-sign is refused after a revert, and no command rebuilds the
+   does not, so the owner revised it: unsaved bytes are kept until the
+   person saves or dismisses them or the wallet locks, in memory only.
+
+   Notes on the revision (analysis recorded with it, not the owner's
+   words). Re-sign is refused after a revert, and no command rebuilds the
    bytes (library `recon.rs:995-996`), so a copy held outside the store is
    the only way the library names to move the balance before the spend
    lands. The library's full report, one step away in Tawara
    (`crates/app/src/screens/wallet/report.rs:318`,
    `crates/app/src/app/wallet.rs:1302-1314`), says to keep any copy of the
-   artifact (library `recon.rs:999-1000`). The revised rule keeps the bytes
-   until the person saves or dismisses them or the wallet locks. The other
-   option put to the owner, keeping them until the balance at the source has
-   moved or a non-zero block-to-live has passed, was not taken. Those are the
-   library's conditions for re-submitting a saved copy, which item (b) uses;
-   they do not decide how long the bytes are kept.
+   artifact (library `recon.rs:999-1000`). Keeping the bytes until the
+   balance at the source has moved or a non-zero block-to-live has passed
+   would have been another rule. Those are the library's conditions for
+   re-submitting a saved copy, which item (b) uses, not a measure of how
+   long the bytes are kept.
 
-   Two consequences, for the owner to confirm. First, a lock releases unsaved
-   bytes. Today the code keeps them across a lock: `keep_signed` and
-   `bring_back_signed` (`crates/app/src/app/wallet.rs:713` and `:752`) hold a
-   spend's page through a lock and show it again on unlock, as W6 and S7 say.
-   While the reservation is open, Re-sign (W8) can sign the spend again.
-   Second, a revert after the bytes have gone, through a lock or a dismissal
-   with no save, finds no copy in the store, and the account is then as the
-   paragraphs above describe.
+   **As built in PR #30 (proposed, for the owner's confirmation).**
+   - A read that finds the account in sync forgets only a saved spend;
+     unsaved bytes stay offered after an automatic or a manual settle.
+   - W6 offers Dismiss only while the bytes are not saved, on its own row
+     below Save artifact and Copy hex. It asks to be confirmed, and says
+     that dismissing wipes the only copy Tawara holds.
+   - "The wallet locks" is read as a lock asked for, the idle lock, a move
+     to the background (D32 item 6) and the worker's shutdown. Each wipes
+     unsaved bytes, shown or kept, and S7 says so. A store the worker
+     closed because it could not be read back, which can follow a send's
+     answer at once, and one replaced by another unlock, keep them: no one
+     asked for that close, and the bytes may not have been seen.
+   - Saved bytes are not wiped by a lock. Their page is kept over it and
+     shown again on unlock, as `keep_signed` and `bring_back_signed`
+     (`crates/app/src/app/wallet.rs:713` and `:752`) do today, and they are
+     forgotten once the account is in sync.
+   - Whenever a kept spend is dropped, its hex and the library's page,
+     which repeats the hex, are wiped. Copies outside the model (a
+     clipboard, a share sheet, messages in flight) are not.
+   - A worker that stops keeps unsaved bytes until Tawara closes, and the
+     stopped screen offers to save them.
+
+   One consequence follows whatever the reading. A revert after the bytes
+   have gone, through a lock or a dismissal with no save, finds no copy in
+   the store, and the account is then as the paragraphs above describe.
+   While the reservation is still open, Re-sign (W8) can sign the spend
+   again.
 6. **The narrow lock case is accepted, with no library change (owner,
    2026-10-13).** D19 says every walk takes a cancel, and D24 says a walk
    never holds the lock back. The library's `settle_if_landed` reconciles
