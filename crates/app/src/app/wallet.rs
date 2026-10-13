@@ -1805,6 +1805,11 @@ impl App {
                     open: [(ReportKey::Sent, Level::Summary)].into(),
                     ..WalletPage::default()
                 });
+                // The sent page starts at the top of its page, as the review
+                // does. Drawn in the review's place, it would otherwise open at
+                // the review's scroll, with the steps and the three facts out
+                // of view above it (docs/SCREENS.md W6).
+                return crate::screens::page_top();
             }
             // Signing was refused; the worker dropped the plan and used no
             // key. Back to the form, with why.

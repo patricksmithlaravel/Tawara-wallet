@@ -3583,6 +3583,75 @@ mod tests {
     }
 
     #[test]
+    fn the_sent_page_starts_at_the_top_of_its_page_on_a_phone_and_on_the_desktop() {
+        // The review is scrolled to its end, where "Sign & submit" is, and the
+        // spend is signed. The sent page drawn in its place starts at the top
+        // of its page on each layout, with its title in view, rather than at
+        // the review's scroll (docs/SCREENS.md W6).
+        for (width, size) in [(390.0, (390, 844)), (1440.0, (1440, 600))] {
+            let plan = tawara_wallet_core::sample::plan_view();
+            let mut app = on_wallet(Page::Send(SendPage {
+                from: Some(plan.from),
+                form: typed_as_planned(&plan),
+                stage: SendStage::Review(Box::new(plan)),
+            }));
+            app.model.width = width;
+            let page = crate::screens::page_id();
+            let cache = {
+                let mut review = Driver::new(crate::screens::view(&app.model), size);
+                review.operate(Box::new(snap_to(
+                    page.clone(),
+                    RelativeOffset {
+                        x: None,
+                        y: Some(1.0),
+                    },
+                )));
+                let (_, scrolled) = review.scroll_of(&page).expect("the review is a page");
+                assert!(
+                    scrolled.y > 0.0,
+                    "{width}: the review scrolls: {scrolled:?}"
+                );
+                review.into_cache()
+            };
+
+            let sent = tawara_wallet_core::sample::sent_view();
+            let task = app.on_reply(Purpose::ConfirmSend, Reply::Sent(sent));
+            assert!(
+                sent_shown(&app).is_some(),
+                "{width}: the sent page is shown"
+            );
+            let mut shown = Driver::with_cache(crate::screens::view(&app.model), size, cache);
+            // Without the task the sent page would keep the review's scroll,
+            // which is the fault the task is for.
+            let (_, kept) = shown.scroll_of(&page).expect("the sent page is a page");
+            assert!(
+                kept.y > 0.0,
+                "{width}: the sent page is drawn at the review's scroll: {kept:?}"
+            );
+            let operations = operations(task);
+            assert_eq!(
+                operations.len(),
+                1,
+                "{width}: showing the sent page returns a task"
+            );
+            for operation in operations {
+                shown.operate(operation);
+            }
+            let (viewport, scroll) = shown.scroll_of(&page).expect("the sent page is a page");
+            assert_eq!(
+                scroll.y, 0.0,
+                "{width}: the sent page starts at the top of its page"
+            );
+            // The page's title, which the header sets in capitals.
+            let title = shown.text_bounds("SENT").expect("the title is drawn");
+            assert!(
+                title.y >= viewport.y && title.y + title.height <= viewport.y + viewport.height,
+                "{width}: the title is in view at {title:?}, in {viewport:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_plan_is_forgotten_when_its_review_is_left() {
         let scratch = Scratch::new("discard");
         let (mut app, events) = app(&scratch);

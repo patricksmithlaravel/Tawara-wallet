@@ -17,14 +17,15 @@ use crate::keyboard;
 use crate::theme::{self, color, space};
 use crate::ui::{self, t, ty};
 
-/// The page's scrollable in the phone layout: the one the screenshot example
-/// scrolls to its end (docs/DECISIONS.md D32 item 10 (b)).
+/// The page's scrollable: on a phone, the one the screenshot example scrolls
+/// to its end (docs/DECISIONS.md D32 item 10 (b)), and in both layouts the one
+/// [`page_top`] scrolls to its top (docs/SCREENS.md W5, W6).
 pub fn page_id() -> iced::widget::Id {
     iced::widget::Id::from("page")
 }
 
 /// Scrolls the page to its top, as entering a review does (docs/SCREENS.md
-/// W5). Without it the review is drawn at the form's scroll: the payees and
+/// W5), and as the sent page that follows it does (W6). Without it the review is drawn at the form's scroll: the payees and
 /// the amount can be out of view, and "Sign & submit", at the foot of the
 /// review, lands where "Review spend" was under the finger, so a second tap
 /// there would sign and broadcast the spend. iced keeps a scrollable's offset
