@@ -2432,9 +2432,11 @@ The GitHub digests were read on 2026-10-13.
   the icon compiled into `Assets.car` with `actool`; the `DT` keys of the
   Xcode that built it; `ITSAppUsesNonExemptEncryption`; and
   `CFBundleVersion` from the build number rather than the literal `1`. It
-  is signed with the Apple Distribution identity and zipped as
-  `Payload/Tawara.app`. Xcode 26.6 is used because App Store uploads have
-  needed Xcode 26 and the iOS 26 SDK since 2026-04-28 (source 3), and
+  is signed with the Apple Distribution identity and zipped so that the
+  archive's top level is a `Payload/` directory holding `Tawara.app`, with
+  no AppleDouble `._` entries, since App Store Connect has refused an upload
+  over a `._` path (source 28). Xcode 26.6 is used because App Store uploads
+  have needed Xcode 26 and the iOS 26 SDK since 2026-04-28 (source 3), and
   because linking with the iOS 27 SDK is what D32 item 8 found to stop the
   app at launch without a scene. The owner's Mac has only Xcode 27 at this
   writing, so the script reads the SDK the binary was linked with
@@ -2640,3 +2642,8 @@ packaging study of 2026-10-12, whose notes are not in the repository.
     container on 2026-10-13.
     https://github.com/guillemj/dpkg/blob/1.21.1/scripts/dpkg-shlibdeps.pl#L160
     (2026-10-13)
+28. Apple Developer Forums, "This bundle is invalid - Your archive contains
+    paths that are not allowed: [._Symbols]": an upload refused with
+    ITMS-90048 over a `._Symbols` path. No reply gives a cause; the
+    workarounds remove the path from the `.ipa` or rebuild.
+    https://developer.apple.com/forums/thread/776996 (2026-10-13)
