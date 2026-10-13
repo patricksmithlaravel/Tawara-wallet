@@ -22,6 +22,18 @@ use crate::ui::{self, Size, Type, t, ty};
 
 /// The first-run and unlock screens.
 pub fn view(model: &Model) -> Element<'_, Message> {
+    let words = match &model.screen {
+        Screen::Phrase(p) => p.phrase.words().collect(),
+        _ => Vec::new(),
+    };
+    view_of(model, words)
+}
+
+/// [`view`], with S4's `words` given beside the model rather than read from
+/// its phrase. The phrase on S4 comes only from the worker, so this is what
+/// lets the tests lay S4 out with the widest words of the library's list
+/// (docs/DECISIONS.md D44).
+fn view_of<'a>(model: &'a Model, words: Vec<&'a str>) -> Element<'a, Message> {
     // A phone's recovery phrase picks its frame by the height its page is
     // given, which only the layout knows, so it is built inside `responsive`
     // (docs/DECISIONS.md D44). It has no wordmark, so it is not wrapped by
@@ -29,7 +41,7 @@ pub fn view(model: &Model) -> Element<'_, Message> {
     if let (None, Screen::Phrase(p)) = (&model.busy, &model.screen)
         && model.compact()
     {
-        return responsive(move |size| phone_phrase(p, size.height)).into();
+        return responsive(move |size| phone_phrase(&words, p, size.height)).into();
     }
     let phrase_screen = matches!((&model.busy, &model.screen), (None, Screen::Phrase(_)));
     let form: Element<'_, Message> = match (&model.busy, &model.screen) {
@@ -39,7 +51,7 @@ pub fn view(model: &Model) -> Element<'_, Message> {
         (None, Screen::Start { choice }) => start(model, *choice),
         (None, Screen::Node(f)) => node(model, f),
         (None, Screen::NewWallet(f)) => new_wallet(model, f),
-        (None, Screen::Phrase(p)) => phrase_of(p, PhraseFrame::Whole),
+        (None, Screen::Phrase(p)) => phrase_content(&words, p.written, PhraseFrame::Whole),
         (None, Screen::Confirm(p)) => confirm(p, model.drawn()),
         (None, Screen::Restore(r)) => restore(model, r, model.drawn()),
         (None, Screen::Unlock(u)) => unlock(model, u),
@@ -171,7 +183,7 @@ fn brand_wordmark<'a>(name: Type) -> Element<'a, Message> {
 
 /// The headline on the brand field: its first line in `upright`, its second
 /// in `italic`. Rendering 01 sets both at 52 points; a phone sets them
-/// smaller (`PHONE_HERO`).
+/// smaller ([`ty::HERO_PHONE`]).
 fn brand_headline<'a>(upright: Type, italic: Type) -> Element<'a, Message> {
     let ink = color::TEXT_ON_ACCENT;
     column![
@@ -198,21 +210,6 @@ fn brand_pills<'a>() -> Element<'a, Message> {
     .into()
 }
 
-/// S0's headline on a phone. At rendering 01's 52 points the second line wraps
-/// at 360 wide, and the screen no longer fits 640 pixels of height with the
-/// wordmark, the pills and the button. At 34 points the second line stays on
-/// one line, and the screen fits (docs/DECISIONS.md D37).
-const PHONE_HERO: Type = Type {
-    font: fonts::DISPLAY_BOLD,
-    size: 34.0,
-};
-
-/// The italic second line of [`PHONE_HERO`].
-const PHONE_HERO_ITALIC: Type = Type {
-    font: fonts::DISPLAY_BOLD_ITALIC,
-    size: 34.0,
-};
-
 /// S0: the welcome screen on a phone alone, when the phone's own folder holds
 /// no store (docs/DECISIONS.md D37). The brand field whole: the wordmark at its
 /// top, and the headline, the pills and "Get started" at its foot, the button
@@ -225,7 +222,11 @@ fn welcome<'a>() -> Element<'a, Message> {
     let page = column![
         brand_wordmark(ty::WORDMARK_LARGE),
         space().height(Length::Fill),
-        column![brand_headline(PHONE_HERO, PHONE_HERO_ITALIC), brand_pills()].spacing(sp::S24),
+        column![
+            brand_headline(ty::HERO_PHONE, ty::HERO_PHONE_ITALIC),
+            brand_pills()
+        ]
+        .spacing(sp::S24),
         // The button is the dark tonal one, not the green primary: the field
         // is the primary's colour, so a primary button would not show on it.
         ui::button_with(
@@ -626,14 +627,6 @@ const PHRASE_COLUMNS: usize = 3;
 /// D44).
 const PHRASE_GAP: f32 = sp::S6;
 
-/// A word of the phrase: 14 pixels, where its number is 11 (docs/DECISIONS.md
-/// D44). At 15 the widest word of the library's list would not fit its cell at
-/// 360 wide.
-const PHRASE_WORD: Type = Type {
-    font: fonts::MONO_MEDIUM,
-    size: 14.0,
-};
-
 /// The usable height, in logical pixels, at which a phone draws the warning and
 /// the words on one frame (docs/DECISIONS.md D44). It is the frame's own height
 /// at 360 wide, where the heading and the warning wrap onto the most lines, which
@@ -667,12 +660,13 @@ fn phrase_frame(height: f32, shown: bool) -> PhraseFrame {
     }
 }
 
-/// S4 on a phone: the frame its page of `height` pixels allows, on a page of its
-/// own. The phone's wordmark is left out, which is what lets the warning and
-/// the words share a frame on a 390 by 844 phone (docs/DECISIONS.md D44).
-fn phone_phrase(p: &PhraseState, height: f32) -> Element<'_, Message> {
+/// S4 on a phone, for the `words` of `p`: the frame its page of `height`
+/// pixels allows, on a page of its own. The phone's wordmark is left out, which
+/// is what lets the warning and the words share a frame on a 390 by 844 phone
+/// (docs/DECISIONS.md D44).
+fn phone_phrase<'a>(words: &[&'a str], p: &PhraseState, height: f32) -> Element<'a, Message> {
     let page = phone_block(
-        phrase_of(p, phrase_frame(height, p.shown)),
+        phrase_content(words, p.written, phrase_frame(height, p.shown)),
         sp::S24,
         sp::S32,
     );
@@ -686,12 +680,6 @@ fn phone_phrase(p: &PhraseState, height: f32) -> Element<'_, Message> {
     .width(Length::Fill)
     .height(Length::Fill)
     .into()
-}
-
-/// S4's content for `p`, in `frame`.
-fn phrase_of(p: &PhraseState, frame: PhraseFrame) -> Element<'_, Message> {
-    let words: Vec<&str> = p.phrase.words().collect();
-    phrase_content(&words, p.written, frame)
 }
 
 /// S4 (docs/SCREENS.md S4; docs/DECISIONS.md D44): a heading, the library's
@@ -766,7 +754,7 @@ fn words_grid<'a>(words: &[&'a str]) -> Element<'a, Message> {
 }
 
 /// One word of the phrase with its number: the number at 11 pixels, the word at
-/// [`PHRASE_WORD`], in a box with 8 pixels either side and 4 above and below.
+/// [`ty::PHRASE_WORD`], in a box with 8 pixels either side and 4 above and below.
 /// At 360 wide a cell is about 105 pixels, and the widest word of the library's
 /// list, "abstract", needs 67 at 14 and the number 13, with 6 between them: the
 /// box leaves about 3 pixels spare, which the test
@@ -775,7 +763,7 @@ fn phrase_cell<'a>(n: usize, word: &'a str) -> Element<'a, Message> {
     container(
         row![
             t(format!("{:>2}", n + 1), ty::MONO_TINY, color::TEXT_MUTED),
-            t(word, PHRASE_WORD, color::TEXT_PRIMARY),
+            t(word, ty::PHRASE_WORD, color::TEXT_PRIMARY),
         ]
         .spacing(sp::S6)
         .align_y(Alignment::Center),
@@ -1339,7 +1327,7 @@ mod tests {
             .find(|(text, _)| text == "STARTS WITH US.")
             .expect("the headline's second line");
         assert!(
-            line.height < PHONE_HERO.size * 1.5,
+            line.height < ty::HERO_PHONE.size * 1.5,
             "two lines, not one: {line:?}"
         );
     }
@@ -1565,59 +1553,99 @@ mod tests {
         assert_eq!(phrase_frame(short, true), PhraseFrame::Phrase);
     }
 
+    /// S4 for `model`, its phrase 24 words of "abstract", in the root that
+    /// `screens::view` gives every screen: the page padded by the phone's
+    /// `insets`. "abstract" is the longest word of the library's list, eight
+    /// letters, so these are the widest words a phrase can be
+    /// (docs/DECISIONS.md D44).
+    fn widest_phrase(model: &Model, insets: Padding) -> Element<'_, Message> {
+        container(view_of(model, vec!["abstract"; 24]))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(insets)
+            .into()
+    }
+
     #[test]
     fn the_phrase_fits_the_window_at_every_size_the_plan_names() {
         // docs/DECISIONS.md D44: at 360 by 640, 360 by 800, 390 by 844 and the
         // desktop's 1024 by 700, every word is inside the part of the window a
         // person sees, the page does not scroll, and every word fits its cell.
+        // Each size is held to it twice: with the example phrase, as the
+        // application draws it, and with the widest words of the library's
+        // list. The last column says whether the frame shows the words.
         let none = Padding::ZERO;
-        let cases: [(&str, Model, (f32, f32), Padding); 7] = [
+        let cases = [
             (
                 "360 by 640, the warning",
                 phone_phrase_model(360.0, false),
                 (360.0, 640.0),
                 PHONE_INSETS,
+                false,
             ),
             (
                 "360 by 640, the words after the warning",
                 phone_phrase_model(360.0, true),
                 (360.0, 640.0),
                 PHONE_INSETS,
+                true,
             ),
             (
                 "360 by 800, the warning",
                 phone_phrase_model(360.0, false),
                 (360.0, 800.0),
                 PHONE_INSETS,
+                false,
             ),
             (
                 "360 by 800, the words after the warning",
                 phone_phrase_model(360.0, true),
                 (360.0, 800.0),
                 PHONE_INSETS,
+                true,
             ),
             (
                 "360 by the one-frame height, the warning and the words",
                 phone_phrase_model(360.0, false),
                 (360.0, window_of(PHRASE_ONE_FRAME)),
                 PHONE_INSETS,
+                true,
             ),
             (
                 "390 by 844, the warning and the words",
                 phone_phrase_model(390.0, false),
                 (390.0, 844.0),
                 PHONE_INSETS,
+                true,
             ),
             (
                 "the desktop at 1024 by 700",
                 desktop_phrase_model(1024.0),
                 (1024.0, 700.0),
                 none,
+                true,
             ),
         ];
-        for (name, model, size, insets) in cases {
+        for (name, model, size, insets, shows_words) in cases {
             let problems = fits_the_viewport(crate::screens::view(&model), size, insets);
-            assert!(problems.is_empty(), "{name}: {problems:#?}");
+            assert!(
+                problems.is_empty(),
+                "{name}, the example phrase: {problems:#?}"
+            );
+            let widest = texts(widest_phrase(&model, insets), size)
+                .into_iter()
+                .filter(|(text, _)| text == "abstract")
+                .count();
+            assert_eq!(
+                widest,
+                if shows_words { 24 } else { 0 },
+                "{name}: the words drawn"
+            );
+            let problems = fits_the_viewport(widest_phrase(&model, insets), size, insets);
+            assert!(
+                problems.is_empty(),
+                "{name}, the widest words: {problems:#?}"
+            );
         }
     }
 
