@@ -497,29 +497,29 @@ impl Transport for Chain {
         }
         let req: serde_json::Value =
             serde_json::from_slice(body).map_err(|_| mesh("test: request json"))?;
+        // A status read the countdown answers uses one of its answers up.
+        let status_refused = s.status_down || s.status_answers == Some(0);
+        if path == "/network/status"
+            && !status_refused
+            && let Some(answers) = s.status_answers.as_mut()
+        {
+            *answers -= 1;
+        }
         match path {
-            "/network/status" if s.status_down || s.status_answers == Some(0) => {
-                Err(Error::Transport {
-                    op: "status",
-                    kind: TransportKind::Io(std::io::ErrorKind::TimedOut),
-                })
-            }
-            "/network/status" => {
-                if let Some(answers) = s.status_answers.as_mut() {
-                    *answers -= 1;
-                }
-                Ok(serde_json::json!({
-                    "current_block_identifier": { "index": s.tip, "hash": format!("0x{}", "ab".repeat(32)) },
-                    "current_block_timestamp": s.tip * 60_000,
-                    "genesis_block_identifier": { "index": 0, "hash": format!("0x{}", "00".repeat(32)) },
-                    "sync_status": { "stage": s.sync.0, "synced": s.sync.1 },
-                })
-                .to_string()
-                .into_bytes())
-            }
+            "/network/status" if status_refused => Err(Error::Transport {
+                op: "status",
+                kind: TransportKind::Io(std::io::ErrorKind::TimedOut),
+            }),
+            "/network/status" => Ok(serde_json::json!({
+                "current_block_identifier": { "index": s.tip, "hash": format!("0x{}", "ab".repeat(32)) },
+                "current_block_timestamp": s.tip * 60_000,
+                "genesis_block_identifier": { "index": 0, "hash": format!("0x{}", "00".repeat(32)) },
+                "sync_status": { "stage": s.sync.0, "synced": s.sync.1 },
+            })
+            .to_string()
+            .into_bytes()),
             "/network/list" => Ok(
-                br#"{"network_identifiers":[{"blockchain":"mochimo","network":"mainnet"}]}"#
-                    .to_vec(),
+                br#"{"network_identifiers":[{"blockchain":"mochimo","network":"mainnet"}]}"#.to_vec(),
             ),
             "/mempool" => {
                 let ids: Vec<_> = s
@@ -527,19 +527,11 @@ impl Transport for Chain {
                     .iter()
                     .map(|id| serde_json::json!({ "hash": format!("0x{}", hex_of(id)) }))
                     .collect();
-                let list = if ids.is_empty() {
-                    serde_json::Value::Null
-                } else {
-                    ids.into()
-                };
-                Ok(serde_json::json!({ "transaction_identifiers": list })
-                    .to_string()
-                    .into_bytes())
+                let list = if ids.is_empty() { serde_json::Value::Null } else { ids.into() };
+                Ok(serde_json::json!({ "transaction_identifiers": list }).to_string().into_bytes())
             }
             "/call" => {
-                let asked = req["parameters"]["tag"]
-                    .as_str()
-                    .ok_or(mesh("test: parameters.tag"))?;
+                let asked = req["parameters"]["tag"].as_str().ok_or(mesh("test: parameters.tag"))?;
                 let raw = asked
                     .strip_prefix("0x")
                     .and_then(unhex)
@@ -563,9 +555,7 @@ impl Transport for Chain {
                         hex_of(address)
                     )
                     .into_bytes()),
-                    None => Ok(
-                        br#"{"code":4,"message":"Account not found","retriable":false}"#.to_vec(),
-                    ),
+                    None => Ok(br#"{"code":4,"message":"Account not found","retriable":false}"#.to_vec()),
                 }
             }
             "/search/transactions" => {
@@ -576,10 +566,7 @@ impl Transport for Chain {
                     return Err(Error::HttpStatus { status: 404 });
                 }
                 if s.index_down {
-                    return Ok(
-                        br#"{"code":2,"message":"Internal general error","retriable":true}"#
-                            .to_vec(),
-                    );
+                    return Ok(br#"{"code":2,"message":"Internal general error","retriable":true}"#.to_vec());
                 }
                 // One transaction, by its id.
                 if let Some(id) = req["transaction_identifier"]["hash"].as_str() {
@@ -591,23 +578,13 @@ impl Transport for Chain {
                         .cloned()
                         .into_iter()
                         .collect();
-                    return Ok(
-                        serde_json::json!({ "transactions": found, "total_count": found.len() })
-                            .to_string()
-                            .into_bytes(),
-                    );
+                    return Ok(serde_json::json!({ "transactions": found, "total_count": found.len() })
+                        .to_string()
+                        .into_bytes());
                 }
-                let asked = req["account_identifier"]["address"]
-                    .as_str()
-                    .ok_or(mesh("test: account_identifier"))?;
-                let limit = req["limit"]
-                    .as_u64()
-                    .filter(|l| (1..=100).contains(l))
-                    .unwrap_or(10);
-                let raw = asked
-                    .strip_prefix("0x")
-                    .and_then(unhex)
-                    .ok_or(mesh("test: tag hex"))?;
+                let asked = req["account_identifier"]["address"].as_str().ok_or(mesh("test: account_identifier"))?;
+                let limit = req["limit"].as_u64().filter(|l| (1..=100).contains(l)).unwrap_or(10);
+                let raw = asked.strip_prefix("0x").and_then(unhex).ok_or(mesh("test: tag hex"))?;
                 let tag: Tag = raw.try_into().map_err(|_| mesh("test: tag length"))?;
                 let offset = req["offset"].as_u64().unwrap_or(0);
                 let rows = s.history.get(&tag).cloned().unwrap_or_default();
@@ -617,11 +594,7 @@ impl Transport for Chain {
                     .skip(usize::try_from(offset).unwrap_or(usize::MAX))
                     .take(usize::try_from(limit).unwrap_or(10))
                     .collect();
-                Ok(
-                    serde_json::json!({ "transactions": page, "total_count": total })
-                        .to_string()
-                        .into_bytes(),
-                )
+                Ok(serde_json::json!({ "transactions": page, "total_count": total }).to_string().into_bytes())
             }
             "/block" => {
                 // By number, or by hash: the scripted chain's hashes are their
@@ -631,25 +604,17 @@ impl Transport for Chain {
                         let digits = hash.strip_prefix("0x").ok_or(mesh("test: block hash"))?;
                         u64::from_str_radix(digits, 16).unwrap_or(u64::MAX)
                     }
-                    None => req["block_identifier"]["index"]
-                        .as_u64()
-                        .ok_or(mesh("test: block index"))?,
+                    None => req["block_identifier"]["index"].as_u64().ok_or(mesh("test: block index"))?,
                 };
                 // Index 0 is the tip to this endpoint, as the library notes.
                 let index = if index == 0 { s.tip } else { index };
                 if index > s.tip || s.unserved.contains(&index) {
-                    return Ok(
-                        br#"{"code":2,"message":"Block not found","retriable":false}"#.to_vec(),
-                    );
+                    return Ok(br#"{"code":2,"message":"Block not found","retriable":false}"#.to_vec());
                 }
                 let pseudo = s.pseudo.contains(&index);
                 let neogenesis = index & 0xff == 0;
                 let spends = s.spends.get(&index).cloned().unwrap_or_default();
-                let tx_count = if pseudo {
-                    0
-                } else {
-                    u32::try_from(spends.len()).unwrap_or(0).max(1)
-                };
+                let tx_count = if pseudo { 0 } else { u32::try_from(spends.len()).unwrap_or(0).max(1) };
                 // A normal block pays its miner; a pseudo-block and a
                 // neogenesis block carry no reward.
                 let mut transactions = Vec::new();
@@ -683,28 +648,19 @@ impl Transport for Chain {
                 .into_bytes())
             }
             "/mempool/transaction" => {
-                let asked = req["transaction_identifier"]["hash"]
-                    .as_str()
-                    .ok_or(mesh("test: transaction id"))?;
+                let asked = req["transaction_identifier"]["hash"].as_str().ok_or(mesh("test: transaction id"))?;
                 let found = s
                     .pending
                     .iter()
                     .find(|(id, _)| format!("0x{}", hex_of(*id)) == asked)
                     .map(|(_, t)| t.clone());
                 match found {
-                    Some(t) => Ok(serde_json::json!({ "transaction": t })
-                        .to_string()
-                        .into_bytes()),
-                    None => Ok(
-                        br#"{"code":3,"message":"Transaction not found","retriable":false}"#
-                            .to_vec(),
-                    ),
+                    Some(t) => Ok(serde_json::json!({ "transaction": t }).to_string().into_bytes()),
+                    None => Ok(br#"{"code":3,"message":"Transaction not found","retriable":false}"#.to_vec()),
                 }
             }
             "/construction/submit" => {
-                let text = req["signed_transaction"]
-                    .as_str()
-                    .ok_or(mesh("test: signed_transaction"))?;
+                let text = req["signed_transaction"].as_str().ok_or(mesh("test: signed_transaction"))?;
                 let wire = unhex(text).ok_or(mesh("test: wire hex"))?;
                 s.submits.push(wire.clone());
                 if s.refuse_submits {
@@ -714,11 +670,7 @@ impl Transport for Chain {
                     });
                 }
                 let tx = mochimo_crypto::tx::wire::Transaction::from_wire(&wire)?;
-                Ok(format!(
-                    r#"{{"transaction_identifier":{{"hash":"{}"}}}}"#,
-                    hex_of(&tx.id_digest())
-                )
-                .into_bytes())
+                Ok(format!(r#"{{"transaction_identifier":{{"hash":"{}"}}}}"#, hex_of(&tx.id_digest())).into_bytes())
             }
             _ => Err(mesh("test: a path this node does not script")),
         }
