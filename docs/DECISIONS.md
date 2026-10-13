@@ -2723,10 +2723,10 @@ item 6's.
    What is lost, in plain words. From this store, the balance at the
    reverted address moves only if the reverted spend lands after all, or if
    a copy the person saved is re-submitted while that balance has not moved
-   and its block-to-live has not passed. With no saved copy, neither Tawara
-   nor the library's commands can spend that balance from this store. Tawara
-   offers no route to a saved copy from this account either: Submit saved
-   artifact is offered only for an open reservation
+   and a non-zero block-to-live has not passed. With no saved copy, neither
+   Tawara nor the library's commands can spend that balance from this store.
+   Tawara offers no route to a saved copy from this account either: Submit
+   saved artifact is offered only for an open reservation
    (`crates/app/src/screens/wallet/account.rs:187-191`), and the
    acknowledged advance writes nothing for a chain behind the store (library
    `cli/reconcile.rs:272-281`).
@@ -2740,11 +2740,14 @@ item 6's.
      2026-10-13);
    - only a saved copy whose digest matches the retained digest (owner,
      2026-10-13);
-   - no key index moves (owner, 2026-10-13; PLAN 4.9);
-   - proposed, for the owner's approval when that PR is made: the
-     library's own conditions hold, that the balance at the source has
-     not moved and the block-to-live has not passed (library
-     `recon.rs:986-1000`).
+   - only the identical saved bytes may be re-submitted, and only under the
+     library's conditions: the balance at the source has not moved, and a
+     non-zero block-to-live has not passed (library `recon.rs:992-994`;
+     owner's review, 2026-10-13);
+   - signing anything else with that key is never allowed, whether or not
+     the reverted spend has expired (library `recon.rs:991-992` and
+     `README.md:339`; owner's review, 2026-10-13);
+   - no key index moves (owner, 2026-10-13; PLAN 4.9).
 
    What happens to the wallet. Refresh and Check now mark the account
    diverged and leave an open wallet open. `Wallet::open`, though, refuses a
@@ -2781,10 +2784,16 @@ item 6's.
    `cli/restore.rs:173-176`). That store could then sign with the key the
    reverted settle used, whose signature the library's report calls the only
    one that key may ever give (library `recon.rs:991-992`). That is PLAN
-   4.5's key-reuse hazard. A store made from the same seed must not advance
-   to that index or spend from it while the reverted spend may still land or
-   be re-submitted. Neither store can see the other, so this is recorded
-   here and not enforced.
+   4.5's key-reuse hazard. A store made from the same seed must never
+   advance to that index or sign anything with that key. That holds whether
+   the reverted spend lands, is re-submitted or expires, because the hazard
+   is the signature itself, which already exists. After expiry the signed
+   bytes may never be accepted (library `README.md:339`), but expiry does not
+   undo the private material that the WOTS+ signature exposed. Only the
+   identical saved bytes may be re-submitted, and only while the balance at
+   the source has not moved and a non-zero block-to-live has not passed
+   (library `recon.rs:992-994`; item (b)). Neither store can see the other,
+   so this is recorded here and not enforced.
 
    **Why the answer changed (owner, 2026-10-13).** The earlier answer
    rested on the premise that a reverted settle reopens the reservation. It
@@ -2829,8 +2838,9 @@ item 6's.
    One consequence follows whatever the reading. A revert after the bytes
    have gone, through a lock or a dismissal with no save, finds no copy in
    the store, and the account is then as the paragraphs above describe.
-   While the reservation is still open, Re-sign (W8) can sign the spend
-   again.
+   While the reservation is still open, Re-sign (W8) can sign the same
+   spend again: the library refuses any rebuilt plan whose digest differs
+   from the reserved one (library `wallet.rs:813-814`).
 6. **The narrow lock case is accepted, with no library change (owner,
    2026-10-13).** D19 says every walk takes a cancel, and D24 says a walk
    never holds the lock back. The library's `settle_if_landed` reconciles
