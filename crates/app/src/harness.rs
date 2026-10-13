@@ -2,7 +2,8 @@
 //! by hand, with events, operations and drawing, as the runtime drives one.
 //! The tests of the widgets and the screens use it, and so does the layout
 //! check the phone screens are held to: every node of a screen at 360 logical
-//! pixels must lie within the width (docs/DECISIONS.md D32 item 10 (b)).
+//! pixels must lie within the width, and so must the words of every text
+//! (docs/DECISIONS.md D32 item 10 (b)).
 //!
 //! The pointer and the fingers are given in window coordinates, as the shell
 //! gives them. Each event carries its position where it has one, and the
@@ -13,16 +14,15 @@ use std::borrow::Cow;
 
 use iced::advanced::clipboard;
 use iced::advanced::graphics;
-use iced::advanced::layout;
 use iced::advanced::renderer::{self, Headless};
+use iced::advanced::widget::Operation;
 use iced::advanced::widget::operation::{Outcome, focusable};
-use iced::advanced::widget::{Operation, Tree};
 use iced::event::Status;
 use iced::theme::Base;
 use iced::{Element, Event, Point, Rectangle, Size, mouse, touch, window};
 use iced_runtime::user_interface::{Cache, State, UserInterface};
 
-use crate::{fonts, theme};
+use crate::{fonts, overflow, theme};
 
 /// The renderer the tests draw with: the software renderer, with the bundled
 /// faces loaded as the screenshot example loads them.
@@ -301,36 +301,18 @@ pub(crate) fn redraw(at: iced::time::Instant) -> Event {
 }
 
 /// Every node of `root` whose right edge passes `width` plus half a pixel
-/// when it is laid out at `width` by 844, as a window of that width would
-/// lay it out, with `Ok` when none does. Each node's position is its parent's
-/// plus its own, so the check is of what is drawn.
+/// when it is laid out at `width` by 844, and every text whose words do, as a
+/// window of that width would draw them, with `Ok` when there is none
+/// (docs/DECISIONS.md D32 item 10 (b); `crate::overflow`).
 pub(crate) fn fits<'a, M: 'a>(
     root: impl Into<Element<'a, M>>,
     width: f32,
 ) -> Result<(), Vec<Rectangle>> {
-    let mut element: Element<'a, M> = root.into();
-    let renderer = renderer();
-    let mut tree = Tree::new(element.as_widget());
-    let limits = layout::Limits::new(Size::ZERO, Size::new(width, 844.0));
-    let node = element
-        .as_widget_mut()
-        .layout(&mut tree, &renderer, &limits);
-    let mut past = Vec::new();
-    overflow(&node, Point::ORIGIN, width, &mut past);
-    if past.is_empty() { Ok(()) } else { Err(past) }
-}
-
-/// Collects, under `node` at `origin`, every node whose right edge passes
-/// `width` plus half a pixel.
-fn overflow(node: &layout::Node, origin: Point, width: f32, past: &mut Vec<Rectangle>) {
-    for child in node.children() {
-        let bounds = child.bounds();
-        let at = Point::new(origin.x + bounds.x, origin.y + bounds.y);
-        let absolute = Rectangle::new(at, bounds.size());
-        if absolute.x + absolute.width > width + 0.5 {
-            past.push(absolute);
-        }
-        overflow(child, at, width, past);
+    let past = overflow::past_the_edge(root.into(), &renderer(), width, 844.0);
+    if past.is_empty() {
+        Ok(())
+    } else {
+        Err(past.into_iter().map(|past| past.bounds).collect())
     }
 }
 

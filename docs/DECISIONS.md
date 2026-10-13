@@ -1959,6 +1959,15 @@ on the three conditions D18 left open.
    range. The owner's narrowest width, 360, is a phone held upright; a
    layout for phones held sideways is left for a later change.
 
+   *Amended 2026-10-12, after the owner's review of the paste change: the
+   screenshot check also reports a text whose words run past the window's edge,
+   measured by the width its paragraph needs. iced can squeeze a text into a box
+   narrower than its words, so the words can pass the edge while the box stays
+   inside it (`tawara_app::overflow`). Words that end inside the window are not
+   reported, even when they are wider than their box. The balance on a phone is
+   set to the size its card allows (`dashboard.rs`), so that a nanoMCM amount
+   stays on one line.*
+
    **(c) Phone screenshots (decided under the owner's delegation,
    2026-10-12).** Every screen drawn for the desktop, except the `narrow-*`
    images of the desktop's smallest window, is also drawn at 390 × 844 logical
