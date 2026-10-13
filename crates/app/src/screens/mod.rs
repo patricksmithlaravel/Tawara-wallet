@@ -7,8 +7,9 @@ use iced::advanced::widget::operation::scrollable::{AbsoluteOffset, scroll_to};
 use iced::advanced::widget::operation::{Focusable, Outcome, Scrollable};
 use iced::advanced::widget::{Id, Operation};
 use iced::mobile::SafeArea;
+use iced::widget::operation::{RelativeOffset, snap_to};
 use iced::widget::{column, container, progress_bar, scrollable};
-use iced::{Element, Length, Padding, Rectangle, Vector};
+use iced::{Element, Length, Padding, Rectangle, Task, Vector};
 use tawara_wallet_core::Activity;
 
 use crate::app::{Busy, Message, Model, Screen};
@@ -20,6 +21,17 @@ use crate::ui::{self, t, ty};
 /// scrolls to its end (docs/DECISIONS.md D32 item 10 (b)).
 pub fn page_id() -> iced::widget::Id {
     iced::widget::Id::from("page")
+}
+
+/// Scrolls the page to its top, as entering a review does (docs/SCREENS.md
+/// W5). Without it the review is drawn at the form's scroll: the payees and
+/// the amount can be out of view, and "Sign & submit", at the foot of the
+/// review, lands where "Review spend" was under the finger, so a second tap
+/// there would sign and broadcast the spend. iced keeps a scrollable's offset
+/// with its place in the widget tree, and an id only names it for an
+/// operation, so giving the review another id would not start it at the top.
+pub fn page_top() -> Task<Message> {
+    snap_to(page_id(), RelativeOffset::START)
 }
 
 /// Whether this build is the iPhone's: the one whose shell can report no safe

@@ -1116,7 +1116,7 @@ impl App {
         match message {
             Message::Worker(event) => {
                 if let Some(event) = event.take() {
-                    self.on_event(event);
+                    return self.on_event(event);
                 }
             }
             Message::Input => self.touch(),
@@ -1470,7 +1470,7 @@ impl App {
         }
     }
 
-    fn on_event(&mut self, event: Event) {
+    fn on_event(&mut self, event: Event) -> Task<Message> {
         match event {
             Event::Busy { id, activity } => {
                 if let Some(w) = &mut self.worker
@@ -1501,7 +1501,7 @@ impl App {
                     Some(w.waiting.remove(at).1)
                 });
                 if let Some(purpose) = purpose {
-                    self.on_reply(purpose, reply);
+                    return self.on_reply(purpose, reply);
                 }
             }
             Event::Locked { reason } => {
@@ -1529,7 +1529,7 @@ impl App {
                         _ => "when the wallet locked".to_owned(),
                     };
                     self.model.back_to_new_wallet(Some(phrase_discarded(&why)));
-                    return;
+                    return Task::none();
                 }
                 let mut note = match reason {
                     LockReason::Idle => Some(format!(
@@ -1590,6 +1590,7 @@ impl App {
                 self.model.wiped.taken(u64::MAX);
             }
         }
+        Task::none()
     }
 
     /// The worker has stopped (`panicked` when it faulted). Nothing more
@@ -1608,13 +1609,15 @@ impl App {
 
     /// The worker's answer to a command. A spend kept for a reservation the
     /// answer shows settled is forgotten after it (see [`Model::signed`]).
-    fn on_reply(&mut self, purpose: Purpose, reply: Reply) {
-        if purpose.wallet_page() {
-            self.on_wallet_reply(purpose, reply);
+    fn on_reply(&mut self, purpose: Purpose, reply: Reply) -> Task<Message> {
+        let task = if purpose.wallet_page() {
+            self.on_wallet_reply(purpose, reply)
         } else {
             self.answer(purpose, reply);
-        }
+            Task::none()
+        };
         self.model.forget_settled();
+        task
     }
 
     /// An answer to a command a wallet page did not send.
@@ -1914,6 +1917,12 @@ fn person_input(event: IcedEvent, status: event::Status, _: iced::window::Id) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::{Driver, mouse_move, mouse_press, mouse_release};
+    use iced::advanced::widget::Operation;
+    use iced::advanced::widget::operation::scrollable::{RelativeOffset, snap_to};
+    use iced::futures::StreamExt;
+    use iced::{Point, Rectangle};
+    use iced_runtime::Action;
     use std::sync::mpsc::Receiver;
 
     /// The BIP39 all-`abandon` test vector: public, never funded.
@@ -2937,7 +2946,7 @@ mod tests {
             form: PasswordForm::in_dir(made.display().to_string()),
             phrase: String::new(),
         });
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::CreateFromPhrase,
             Reply::Created {
                 dir: made.clone(),
@@ -2995,7 +3004,7 @@ mod tests {
             let mut app = alone();
             app.model.screen = screen;
             app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
-            app.on_event(Event::Stopped { panicked: true });
+            let _ = app.on_event(Event::Stopped { panicked: true });
             assert_eq!(app.model.stopped, Some(true));
             assert!(app.model.wallet.is_none());
             assert!(
@@ -3069,7 +3078,7 @@ mod tests {
         // A refusal that leaves the phrase waiting keeps S5, with why.
         let mut app = alone();
         app.model.screen = confirming();
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::CreateConfirm,
             refusal(RefusalKind::UnsafeDirectory, "unsafe. Nothing was created."),
         );
@@ -3082,7 +3091,7 @@ mod tests {
         // No phrase waiting: the one shown goes, and S3 says why.
         let mut app = alone();
         app.model.screen = confirming();
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::CreateConfirm,
             refusal(
                 RefusalKind::NothingToConfirm,
@@ -3150,7 +3159,7 @@ mod tests {
         let scratch = Scratch::new("artifact");
         let mut app = on_wallet(Page::Receive(ReceivePage::default()));
         let sent = tawara_wallet_core::sample::sent_view();
-        app.on_reply(Purpose::ConfirmSend, Reply::Sent(sent.clone()));
+        let _ = app.on_reply(Purpose::ConfirmSend, Reply::Sent(sent.clone()));
         let p = wallet_page(&app);
         assert!(
             matches!(&p.page, Page::Send(SendPage { stage: SendStage::Sent(s), .. })
@@ -3221,7 +3230,7 @@ mod tests {
             stage: SendStage::Review(Box::new(plan)),
         }));
         let sent = tawara_wallet_core::sample::sent_view();
-        app.on_reply(Purpose::ConfirmSend, Reply::Sent(sent.clone()));
+        let _ = app.on_reply(Purpose::ConfirmSend, Reply::Sent(sent.clone()));
         (app, sent)
     }
 
@@ -3242,7 +3251,7 @@ mod tests {
         // not stop a spend it has started: the spend answers, then the lock.
         let (mut app, sent) = just_sent();
         wallet(&mut app, WalletMsg::Report(ReportKey::Sent, Level::Full));
-        app.on_event(Event::Locked {
+        let _ = app.on_event(Event::Locked {
             reason: LockReason::Asked,
         });
         assert_eq!(app.model.wallet, None);
@@ -3271,14 +3280,14 @@ mod tests {
         // offered there.
         let mut other = tawara_wallet_core::sample::wallet_view();
         other.dir = std::env::temp_dir().join("tawara-another-store");
-        app.on_reply(Purpose::Unlock, Reply::Unlocked(other));
+        let _ = app.on_reply(Purpose::Unlock, Reply::Unlocked(other));
         assert!(matches!(wallet_page(&app).page, Page::Dashboard));
         assert_eq!(app.model.signed.len(), 1);
         assert_eq!(app.model.unsaved_signed().count(), 0);
 
         // Its own store unlocked: the page as it was left, with the bytes
         // and what was typed for them.
-        app.on_reply(Purpose::Unlock, Reply::Unlocked(sent.view.clone()));
+        let _ = app.on_reply(Purpose::Unlock, Reply::Unlocked(sent.view.clone()));
         let (form, s) = sent_shown(&app).expect("the sent page");
         assert_eq!(*form, spend_typed());
         assert_eq!(s.sent.artifact_hex, sent.artifact_hex);
@@ -3292,12 +3301,12 @@ mod tests {
         // Left for another page and then locked: kept and offered, not
         // brought back by the unlock.
         wallet(&mut app, WalletMsg::Open(To::Dashboard));
-        app.on_event(Event::Locked {
+        let _ = app.on_event(Event::Locked {
             reason: LockReason::Idle,
         });
         assert!(matches!(&app.model.screen, Screen::Unlock(u)
             if u.note.as_deref().is_some_and(|n| !n.contains("signed spend"))));
-        app.on_reply(Purpose::Unlock, Reply::Unlocked(sent.view.clone()));
+        let _ = app.on_reply(Purpose::Unlock, Reply::Unlocked(sent.view.clone()));
         assert!(matches!(wallet_page(&app).page, Page::Dashboard));
         assert_eq!(app.model.unsaved_signed().count(), 1);
     }
@@ -3338,7 +3347,7 @@ mod tests {
             Page::Resign(ResignPage { form, .. }) if *form == spend_typed()));
 
         // Re-signed, the same bytes again: kept once, as the newest page.
-        app.on_reply(Purpose::Resign, Reply::Sent(sent.clone()));
+        let _ = app.on_reply(Purpose::Resign, Reply::Sent(sent.clone()));
         assert!(sent_shown(&app).is_some_and(|(_, s)| s.resigned));
         let other = app.model.wallet.as_ref().unwrap().accounts[1].id;
         wallet(&mut app, WalletMsg::Open(To::Resign(other)));
@@ -3349,7 +3358,7 @@ mod tests {
 
         // Settling that finds the spend not landed keeps it; a check that
         // finds the account in sync forgets it.
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Settle,
             Reply::Settled {
                 text: "not landed".to_owned(),
@@ -3357,7 +3366,7 @@ mod tests {
             },
         );
         assert_eq!(app.model.signed.len(), 1);
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Status,
             Reply::Status {
                 account: from,
@@ -3376,7 +3385,7 @@ mod tests {
     fn a_stopped_worker_leaves_the_signed_spends_to_save() {
         let scratch = Scratch::new("stopped-spend");
         let (mut app, sent) = just_sent();
-        app.on_event(Event::Stopped { panicked: true });
+        let _ = app.on_event(Event::Stopped { panicked: true });
         assert_eq!(app.model.stopped, Some(true));
         assert_eq!(app.model.wallet, None);
         assert_eq!(app.model.signed.len(), 1);
@@ -3403,7 +3412,7 @@ mod tests {
             form: SpendForm::default(),
             stage: SendStage::Review(Box::new(plan)),
         }));
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::ConfirmSend,
             Reply::Refused(Refusal {
                 kind: RefusalKind::Library,
@@ -3437,7 +3446,7 @@ mod tests {
             form: form.clone(),
             stage: SendStage::Compose,
         }));
-        app.on_reply(Purpose::PlanSend, Reply::Planned(plan));
+        let _ = app.on_reply(Purpose::PlanSend, Reply::Planned(plan));
         assert!(matches!(
             &wallet_page(&app).page,
             Page::Send(SendPage {
@@ -3455,6 +3464,122 @@ mod tests {
             "{:?}",
             wallet_page(&app).page
         );
+    }
+
+    /// The sample's spend as a person types it: the payees the sample plan
+    /// lays out, with their figures.
+    fn typed_as_planned(plan: &tawara_wallet_core::PlanView) -> SpendForm {
+        SpendForm {
+            rows: plan
+                .destinations
+                .iter()
+                .map(|d| DestinationRow {
+                    to: d.destination.clone(),
+                    amount: tawara_wallet_core::amount::format_mcm(d.amount)
+                        .trim_end_matches('0')
+                        .trim_end_matches('.')
+                        .to_owned(),
+                    reference: d.reference.clone(),
+                })
+                .collect(),
+            ..SpendForm::default()
+        }
+    }
+
+    /// The window operations `task` asks the runtime to run, in order.
+    fn operations(task: Task<Message>) -> Vec<Box<dyn Operation>> {
+        let Some(stream) = iced_runtime::task::into_stream(task) else {
+            return Vec::new();
+        };
+        iced::futures::executor::block_on(stream.collect::<Vec<_>>())
+            .into_iter()
+            .filter_map(|action| match action {
+                Action::Widget(operation) => Some(operation),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_review_starts_at_the_top_of_its_page_on_a_phone_and_on_the_desktop() {
+        // The form is scrolled to its end, and "Review spend" is pressed where
+        // it is drawn. The review drawn over the form then starts at the top
+        // of its page on each layout: the payee is in view, and "Sign & submit"
+        // is not where "Review spend" was pressed (docs/SCREENS.md W5).
+        for (width, size) in [(390.0, (390, 844)), (1440.0, (1440, 600))] {
+            let plan = tawara_wallet_core::sample::plan_view();
+            let mut app = on_wallet(Page::Send(SendPage {
+                from: Some(plan.from),
+                form: typed_as_planned(&plan),
+                stage: SendStage::Compose,
+            }));
+            app.model.width = width;
+            let page = crate::screens::page_id();
+            let (messages, cache, pressed) = {
+                let mut form = Driver::new(crate::screens::view(&app.model), size);
+                form.operate(Box::new(snap_to(
+                    page.clone(),
+                    RelativeOffset {
+                        x: None,
+                        y: Some(1.0),
+                    },
+                )));
+                let (_, scrolled) = form.scroll_of(&page).expect("the form is a page");
+                assert!(scrolled.y > 0.0, "{width}: the form scrolls: {scrolled:?}");
+                let label = form
+                    .text_bounds("Review spend")
+                    .expect("'Review spend' is drawn");
+                let at = Point::new(label.center_x(), label.center_y() - scrolled.y);
+                let (messages, _, _) =
+                    form.send(&[mouse_move(at.x, at.y), mouse_press(), mouse_release()]);
+                (messages, form.into_cache(), at)
+            };
+            assert!(
+                matches!(messages.as_slice(), [Message::Wallet(WalletMsg::Review)]),
+                "{width}: pressing it asks for the review: {messages:?}"
+            );
+            for message in messages {
+                let _ = app.update(message);
+            }
+
+            // The worker lays the plan out. The page is drawn again, with the
+            // state the form kept, and the task the answer returned runs.
+            let task = app.on_reply(Purpose::PlanSend, Reply::Planned(plan.clone()));
+            let mut review = Driver::with_cache(crate::screens::view(&app.model), size, cache);
+            let operations = operations(task);
+            assert_eq!(
+                operations.len(),
+                1,
+                "{width}: entering the review returns a task"
+            );
+            for operation in operations {
+                review.operate(operation);
+            }
+            let (viewport, scroll) = review.scroll_of(&page).expect("the review is a page");
+            assert_eq!(
+                scroll.y, 0.0,
+                "{width}: the review starts at the top of its page"
+            );
+            let payee = review
+                .text_bounds(&plan.destinations[0].destination)
+                .expect("the payee is drawn");
+            let shown = payee.y - scroll.y;
+            assert!(
+                shown >= viewport.y && shown + payee.height <= viewport.y + viewport.height,
+                "{width}: the payee is in view at {shown}, in {viewport:?}"
+            );
+            let sign = review
+                .text_bounds("Sign & submit")
+                .expect("'Sign & submit' is drawn");
+            let sign = Rectangle {
+                y: sign.y - scroll.y,
+                ..sign
+            };
+            assert!(
+                !sign.contains(pressed),
+                "{width}: 'Sign & submit' is not where 'Review spend' was: {sign:?}"
+            );
+        }
     }
 
     #[test]
@@ -3493,7 +3618,7 @@ mod tests {
         // A plan laid out after its page was left is forgotten as it comes.
         wallet(&mut app, WalletMsg::Open(To::Dashboard));
         assert_eq!(discards(&app), 2, "the form held no plan");
-        app.on_reply(Purpose::PlanSend, Reply::Planned(plan.clone()));
+        let _ = app.on_reply(Purpose::PlanSend, Reply::Planned(plan.clone()));
         assert_eq!(discards(&app), 3);
         pump(&mut app, &events, |a| discards(a) == 0);
     }
@@ -3540,7 +3665,7 @@ mod tests {
         let accounts = tawara_wallet_core::sample::wallet_view().accounts;
         assert!(accounts[0].spendable && !accounts[1].spendable);
         let checked = |app: &mut App, n: usize, state: AccountState, spendable: bool| {
-            app.on_reply(
+            let _ = app.on_reply(
                 Purpose::Status,
                 Reply::Status {
                     account: accounts[n].id,
@@ -3642,13 +3767,13 @@ mod tests {
         let mut app = on_wallet(Page::Activity(ActivityPage::default()));
         app.model.node.url = Some("https://node.example".to_owned());
         app.model.activity.reading = true;
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Activity,
             Reply::Activity(Ok(tawara_wallet_core::sample::activity())),
         );
         assert!(!app.model.activity.reading);
         assert!(matches!(&app.model.activity.last, Some(Ok(h)) if h.len() == 3));
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Blocks,
             Reply::Blocks(Ok(tawara_wallet_core::sample::blocks())),
         );
@@ -3657,7 +3782,7 @@ mod tests {
         // A refusal that is not the node's answer (a cancel) leaves what
         // was shown.
         app.model.activity.reading = true;
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Activity,
             Reply::Refused(Refusal {
                 kind: RefusalKind::Cancelled,
@@ -3668,7 +3793,7 @@ mod tests {
         assert!(matches!(&app.model.activity.last, Some(Ok(_))));
 
         // A node with no index says so, for every account.
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Activity,
             Reply::Activity(Err(tawara_wallet_core::sample::index_refusal(
                 IndexState::Absent,
@@ -3679,7 +3804,7 @@ mod tests {
         );
 
         // Another node: another index and another chain.
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::SetNode { form: true },
             Reply::NodeSet {
                 url: "https://other.example".to_owned(),
@@ -3689,11 +3814,11 @@ mod tests {
         assert!(app.model.activity.last.is_none() && app.model.blocks.last.is_none());
 
         // The store locked: what the index held for it goes with it.
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Activity,
             Reply::Activity(Ok(tawara_wallet_core::sample::activity())),
         );
-        app.on_event(Event::Locked {
+        let _ = app.on_event(Event::Locked {
             reason: LockReason::Asked,
         });
         assert!(app.model.activity.last.is_none());
@@ -3739,7 +3864,7 @@ mod tests {
             ["Network", "Networks", "Blocks", "Mempool", "Network"]
         );
 
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Network {
                 sent: Instant::now(),
             },
@@ -3759,15 +3884,15 @@ mod tests {
             blockchain: "mochimo".to_owned(),
             network: "mainnet".to_owned(),
         };
-        app.on_reply(Purpose::Networks, Reply::Networks(vec![mainnet.clone()]));
+        let _ = app.on_reply(Purpose::Networks, Reply::Networks(vec![mainnet.clone()]));
         assert_eq!(app.model.node.network, Some(mainnet));
-        app.on_reply(Purpose::Mempool, Reply::Mempool(Ok(sample::mempool())));
+        let _ = app.on_reply(Purpose::Mempool, Reply::Mempool(Ok(sample::mempool())));
         assert!(!app.model.mempool.reading);
         assert!(matches!(&app.model.mempool.last, Some(Ok(m)) if m.waiting == 14));
 
         // A node that stops answering: no tip, so no solve time or sync
         // state either. The network it serves is still the one it said.
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Network {
                 sent: Instant::now(),
             },
@@ -3788,7 +3913,7 @@ mod tests {
         assert!(!waiting(&app)[before..].contains(&"Networks".to_owned()));
 
         // Another node: its own network and its own queue.
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::SetNode { form: true },
             Reply::NodeSet {
                 url: "https://other.example".to_owned(),
@@ -3822,7 +3947,7 @@ mod tests {
         assert_eq!(waiting(&app), ["OlderActivity"], "one read at a time");
 
         // A refusal (a cancel) leaves the rows as they were.
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::OlderActivity,
             Reply::Refused(Refusal {
                 kind: RefusalKind::Cancelled,
@@ -3843,7 +3968,7 @@ mod tests {
         page.text = "the older page".to_owned();
         let rows = histories[0].transactions.len();
         app.model.activity.reading = true;
-        app.on_reply(Purpose::OlderActivity, Reply::Activity(Ok(vec![page])));
+        let _ = app.on_reply(Purpose::OlderActivity, Reply::Activity(Ok(vec![page])));
         assert!(!app.model.activity.reading);
         let Some(Ok(now)) = &app.model.activity.last else {
             panic!("the rows read");
@@ -3889,7 +4014,7 @@ mod tests {
         assert!(matches!(&wallet_page(&app).page,
             Page::Recovery(r) if r.target == Some(paused) && r.reports.is_none()));
 
-        app.on_reply(Purpose::Review, Reply::Reviewed(reports.clone()));
+        let _ = app.on_reply(Purpose::Review, Reply::Reviewed(reports.clone()));
         let p = wallet_page(&app);
         assert!(matches!(&p.page, Page::Recovery(r) if r.reports.as_ref() == Some(&reports)));
         for n in 0..3 {
@@ -3995,7 +4120,7 @@ mod tests {
         // form cleared.
         let mut after = tawara_wallet_core::sample::wallet_view();
         after.accounts[2].state = tawara_wallet_core::view::AccountState::InSync { balance: 1 };
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Reconcile,
             Reply::Reconciled {
                 ok: true,
@@ -4013,7 +4138,7 @@ mod tests {
         // a report that changed folds to its summary and is to be read
         // again.
         assert_eq!(unread(&app), Some(0));
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Status,
             Reply::Status {
                 account: paused,
@@ -4038,7 +4163,7 @@ mod tests {
         );
 
         // Read again: every report is to be opened again.
-        app.on_reply(Purpose::Review, Reply::Reviewed(reports.clone()));
+        let _ = app.on_reply(Purpose::Review, Reply::Reviewed(reports.clone()));
         assert_eq!(unread(&app), Some(3));
     }
 
@@ -4146,7 +4271,7 @@ mod tests {
         };
         let (tx, text) = sample::transaction();
         let mut app = finding(A);
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Find(A),
             Reply::Found(Box::new(Found::Transaction {
                 transaction: tx.clone(),
@@ -4161,7 +4286,7 @@ mod tests {
             other => panic!("expected the transaction, got {other:?}"),
         }
         let mut app = finding(A);
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Find(A),
             Reply::Found(Box::new(Found::Block(Box::new(sample::block())))),
         );
@@ -4174,7 +4299,7 @@ mod tests {
         }
         let mut app = finding(A);
         let (transaction, block) = sample::not_found([1; 32]);
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Find(A),
             Reply::Found(Box::new(Found::Neither {
                 searched: true,
@@ -4192,7 +4317,7 @@ mod tests {
         // The explorer opened afresh since it asked: nothing waits there.
         let mut app = explorer(ExplorerPage::default());
         let (tx, text) = sample::transaction();
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Find(A),
             Reply::Found(Box::new(Found::Transaction {
                 transaction: tx,
@@ -4203,7 +4328,7 @@ mod tests {
         // Another page opened since: the answer has nowhere to go.
         let mut app = on_wallet(Page::Dashboard);
         let (tx, text) = sample::transaction();
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Find(A),
             Reply::Found(Box::new(Found::Transaction {
                 transaction: tx,
@@ -4215,7 +4340,7 @@ mod tests {
         // since: A's answer is not B's, and B's is still taken.
         let mut app = finding(B);
         let (tx, text) = sample::transaction();
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Find(A),
             Reply::Found(Box::new(Found::Transaction {
                 transaction: tx.clone(),
@@ -4226,7 +4351,7 @@ mod tests {
             Page::Explorer(e) => assert_eq!(e.finding, Some(B), "still waiting on B"),
             other => panic!("expected the explorer, got {other:?}"),
         }
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Find(A),
             Reply::Refused(Refusal {
                 kind: RefusalKind::Library,
@@ -4234,7 +4359,7 @@ mod tests {
             }),
         );
         assert!(wallet_page(&app).error.is_none(), "A's refusal is not B's");
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Find(B),
             Reply::Found(Box::new(Found::Transaction {
                 transaction: tx.clone(),
@@ -4256,7 +4381,7 @@ mod tests {
             read: None,
             rows_from: 0,
         }));
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Block(BlockAt::Number(871_171)),
             Reply::Block(Ok(Box::new(sample::block()))),
         );
@@ -4264,7 +4389,7 @@ mod tests {
             matches!(&wallet_page(&app).page, Page::Block(b) if b.read.is_none()),
             "another block's answer"
         );
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::Block(BlockAt::Number(871_172)),
             Reply::Block(Ok(Box::new(sample::block()))),
         );
@@ -4293,12 +4418,12 @@ mod tests {
             reading_older: false,
             typed: false,
         }));
-        app.on_reply(Purpose::Tag(payee()), Reply::Tag(Box::new(view.clone())));
+        let _ = app.on_reply(Purpose::Tag(payee()), Reply::Tag(Box::new(view.clone())));
         assert!(
             matches!(&wallet_page(&app).page, Page::Tag(t) if t.read.is_none()),
             "another account's answer"
         );
-        app.on_reply(Purpose::Tag(account), Reply::Tag(Box::new(view)));
+        let _ = app.on_reply(Purpose::Tag(account), Reply::Tag(Box::new(view)));
         // An older page goes below the rows read; a refusal leaves them.
         if let Screen::Wallet(WalletPage {
             page: Page::Tag(t), ..
@@ -4318,7 +4443,7 @@ mod tests {
             other => panic!("expected the account, got {other:?}"),
         };
         let before = rows(&app).0;
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::TagHistory(account),
             Reply::TagHistory(Err(sample::index_refusal(
                 tawara_wallet_core::explorer::IndexState::Unavailable,
@@ -4337,7 +4462,7 @@ mod tests {
             next: before as u64 + 1,
             text: String::new(),
         };
-        app.on_reply(Purpose::TagHistory(account), Reply::TagHistory(Ok(older)));
+        let _ = app.on_reply(Purpose::TagHistory(account), Reply::TagHistory(Ok(older)));
         assert_eq!(rows(&app), (before + 1, false));
         wallet(&mut app, WalletMsg::OpenTagRow(before));
         match &wallet_page(&app).page {
@@ -4355,7 +4480,7 @@ mod tests {
         let mut app = explorer(ExplorerPage::default());
         wallet(&mut app, WalletMsg::Open(To::Queue));
         assert!(matches!(&wallet_page(&app).page, Page::Queue(q) if q.read.is_none()));
-        app.on_reply(Purpose::Queue, Reply::Pending(Ok(sample::queue())));
+        let _ = app.on_reply(Purpose::Queue, Reply::Pending(Ok(sample::queue())));
         match &wallet_page(&app).page {
             Page::Queue(QueuePage { read: Some(Ok(p)) }) => {
                 assert_eq!(p.rows.len(), p.waiting, "every one read whole");
@@ -4374,7 +4499,7 @@ mod tests {
         }
         // The queue's answer goes nowhere once its page is left.
         let mut app = on_wallet(Page::Dashboard);
-        app.on_reply(Purpose::Queue, Reply::Pending(Ok(sample::queue())));
+        let _ = app.on_reply(Purpose::Queue, Reply::Pending(Ok(sample::queue())));
         assert!(matches!(wallet_page(&app).page, Page::Dashboard));
     }
 
@@ -4414,13 +4539,13 @@ mod tests {
         let mut app = alone();
         app.model.clock_ms = 1_234;
         app.model.chain.reading = true;
-        app.on_reply(Purpose::Chain, Reply::Chain(Ok(sample::chain())));
+        let _ = app.on_reply(Purpose::Chain, Reply::Chain(Ok(sample::chain())));
         assert!(!app.model.chain.reading);
         assert_eq!(app.model.chain.read_ms, Some(1_234));
         assert!(matches!(app.model.chain.last, Some(Ok(_))));
-        app.on_reply(Purpose::Pending, Reply::Pending(Ok(sample::pending())));
+        let _ = app.on_reply(Purpose::Pending, Reply::Pending(Ok(sample::pending())));
         assert!(matches!(app.model.pending.last, Some(Ok(_))));
-        app.on_reply(
+        let _ = app.on_reply(
             Purpose::SetNode { form: false },
             Reply::NodeSet {
                 url: "https://another.example".to_owned(),
