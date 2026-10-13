@@ -322,6 +322,13 @@ pub struct PlanView {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SentView {
     pub from: AccountId,
+    /// The one-time key index the spend was signed with, which is the index of
+    /// the reservation it holds (`AccountState::SpendOutstanding::spent_index`
+    /// while that reservation is open). A re-sign is for the spend that holds
+    /// the account's open reservation, so the interface finds the spend by it
+    /// (docs/DECISIONS.md D38 item 5). `None` only when the store could not say
+    /// which reservation it holds.
+    pub spent_index: Option<u32>,
     /// Whether the node's socket took the bytes. **A socket write, not a
     /// verdict**: whether the spend landed is settling's question.
     pub submitted: bool,

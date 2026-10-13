@@ -851,6 +851,7 @@ mod tests {
                                  instead and keep it somewhere safe.";
         let page = |saved: &str| SentPage {
             sent: tawara_wallet_core::sample::sent_view(),
+            order: 0,
             resigned: false,
             saved: Some(Err(saved.to_owned())),
             dismissing: false,

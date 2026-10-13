@@ -327,6 +327,10 @@ pub enum SendStage {
 #[derive(Clone, Debug)]
 pub struct SentPage {
     pub sent: SentView,
+    /// The spend's place in the run's signing history, which [`Model::signed`]
+    /// keeps its spends in: a re-sign gives the same bytes again, and keeps the
+    /// place of the spend it re-signs (docs/DECISIONS.md D38 item 5).
+    pub order: u64,
     /// Re-signed (W8) rather than signed for the first time.
     pub resigned: bool,
     /// Where "Save artifact" wrote the bytes. An `Err` holds why they are not
@@ -773,13 +777,20 @@ impl Model {
             sent.saved = Some(Ok(path));
         }
         self.discard_signed(|s| s.sent.sent.artifact_hex == sent.sent.artifact_hex);
-        self.signed.push(Signed {
-            sent,
-            form,
-            open,
-            resume,
-            copied: false,
-        });
+        // Kept at the place the spend holds in the signing history, so that
+        // leaving a page, or showing it again, never reorders the spends kept
+        // (docs/DECISIONS.md D38 item 5).
+        let at = self.signed.partition_point(|s| s.sent.order < sent.order);
+        self.signed.insert(
+            at,
+            Signed {
+                sent,
+                form,
+                open,
+                resume,
+                copied: false,
+            },
+        );
         true
     }
 
@@ -791,6 +802,24 @@ impl Model {
             Some(Ok(path)) if s.sent.sent.artifact_hex == hex => Some(path.clone()),
             _ => None,
         })
+    }
+
+    /// The place in the signing history of the kept spend with the bytes `hex`,
+    /// if one is kept: a re-sign gives the same bytes again, and keeps the place
+    /// (docs/DECISIONS.md D38 item 5).
+    pub(super) fn kept_order(&self, hex: &str) -> Option<u64> {
+        self.signed
+            .iter()
+            .find(|s| s.sent.sent.artifact_hex == hex)
+            .map(|s| s.sent.order)
+    }
+
+    /// The place the next spend signed in this run takes in the signing
+    /// history (docs/DECISIONS.md D38 item 5).
+    pub(super) fn next_order(&mut self) -> u64 {
+        let order = self.next_signing;
+        self.next_signing += 1;
+        order
     }
 
     /// Once a store is unlocked: the signed spend's page a lock closed for
@@ -921,14 +950,29 @@ impl Model {
             .filter(move |s| s.unsaved() && dir.is_some_and(|d| same_store(s.dir(), d)))
     }
 
-    /// What was typed for the newest kept spend from `account` in the open
-    /// store.
+    /// What was typed for the kept spend that holds the account's open
+    /// reservation, in the open store (docs/DECISIONS.md D38 item 5, W8): the
+    /// spend whose one-time key index is the reservation's. Another spend of
+    /// the account is not offered for it, however recent, since the library
+    /// would refuse its parameters. `None` when no kept spend holds that
+    /// reservation, and when the account's state does not say which
+    /// reservation is open.
     fn kept_form(&self, account: AccountId) -> Option<SpendForm> {
-        let dir = &self.wallet.as_ref()?.dir;
+        let view = self.wallet.as_ref()?;
+        let held = view
+            .accounts
+            .iter()
+            .find(|a| a.id == account)?
+            .state
+            .reserved_index()?;
         self.signed
             .iter()
             .rev()
-            .find(|s| s.sent.sent.from == account && same_store(s.dir(), dir))
+            .find(|s| {
+                s.sent.sent.from == account
+                    && s.sent.sent.spent_index == Some(held)
+                    && same_store(s.dir(), &view.dir)
+            })
             .map(|s| s.form.clone())
     }
 }
@@ -2040,6 +2084,14 @@ impl App {
                     Some(Page::Resign(r)) => r.form.clone(),
                     _ => SpendForm::default(),
                 };
+                // A re-sign gives the same bytes again, and keeps the place they
+                // hold in the signing history; a new spend takes the next place
+                // (docs/DECISIONS.md D38 item 5).
+                let order = match purpose {
+                    Purpose::Resign => self.model.kept_order(&sent.artifact_hex),
+                    _ => None,
+                }
+                .unwrap_or_else(|| self.model.next_order());
                 self.model.screen = Screen::Wallet(WalletPage {
                     page: Page::Send(SendPage {
                         from,
@@ -2050,6 +2102,7 @@ impl App {
                             // 2026-10-13).
                             saved: self.model.saved_copy(&sent.artifact_hex).map(Ok),
                             sent,
+                            order,
                             resigned: matches!(purpose, Purpose::Resign),
                             dismissing: false,
                         })),
@@ -2384,6 +2437,7 @@ mod tests {
         let signed = Signed {
             sent: SentPage {
                 sent,
+                order: 0,
                 resigned: false,
                 saved: Some(saved),
                 dismissing: false,
@@ -2431,6 +2485,7 @@ mod tests {
     fn sent_page() -> SentPage {
         SentPage {
             sent: tawara_wallet_core::sample::sent_view(),
+            order: 0,
             resigned: false,
             saved: None,
             dismissing: false,

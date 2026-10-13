@@ -1005,6 +1005,18 @@ fn reserved_in(store: &Keystore<Disk>, tag: &Tag) -> bool {
     matches!(store.view(tag), Ok(Some(v)) if v.pending.is_some())
 }
 
+/// The index of the reservation the store holds for `tag`, when one is open:
+/// the key the spend holding it was signed with (`AccountView::pending`). A
+/// store that cannot be read for the tag says none. A sign's reply carries it,
+/// read before the read after the sign can settle the reservation away
+/// (docs/DECISIONS.md D38 item 5).
+fn reserved_index(store: &Keystore<Disk>, tag: &Tag) -> Option<u32> {
+    match store.view(tag) {
+        Ok(Some(view)) => view.pending.map(|pending| pending.spent_index.get()),
+        _ => None,
+    }
+}
+
 /// The Store session's notice when the library would not open the wallet,
 /// with each account's report put on its row (module doc, "Opening the
 /// wallet").
@@ -2167,6 +2179,7 @@ impl<C: Connect> Worker<C> {
             Ok(s) => s,
             Err(e) => return Reply::Refused(library(e)),
         };
+        let spent_index = reserved_index(w.wallet.store(), &tag);
         let wire = signed.wire();
         let submitted = w.wallet.submit(&signed);
         let tx_id = submitted.as_ref().ok().map(|id| hex(&id.0));
@@ -2193,6 +2206,7 @@ impl<C: Connect> Worker<C> {
         };
         Reply::Sent(SentView {
             from: AccountId::from_tag(tag),
+            spent_index,
             submitted: submitted.is_ok(),
             tx_id,
             artifact_hex: hex(&wire),
@@ -2355,6 +2369,8 @@ impl<C: Connect> Worker<C> {
             };
         };
         let page = text::page(w.wallet.diverged(), outcome);
+        // Read before the read after the re-sign can settle the reservation away.
+        let spent_index = reserved_index(w.wallet.store(), &tag);
         self.refresh_one(id, &tag);
         let Some(view) = self.view() else {
             return Self::not_unlocked();
@@ -2365,6 +2381,7 @@ impl<C: Connect> Worker<C> {
             .map(|id| hex(&id.0));
         Reply::Sent(SentView {
             from: AccountId::from_tag(tag),
+            spent_index,
             submitted: matches!(submitted, Some(Ok(_))),
             tx_id,
             artifact_hex: hex(&wire),

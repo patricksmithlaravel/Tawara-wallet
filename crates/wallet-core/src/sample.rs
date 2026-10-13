@@ -326,6 +326,7 @@ pub fn sent_view() -> SentView {
     view.accounts[0].index = 50;
     SentView {
         from: AccountId::from_tag(tag(1)),
+        spent_index: Some(49),
         submitted: true,
         tx_id: Some(hex(&id.0)),
         artifact_hex: hex(&wire),

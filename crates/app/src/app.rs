@@ -104,8 +104,13 @@ pub struct Model {
     /// brings a saved spend's page back once its store is unlocked, and the
     /// stopped screen offers to save what is left. What the store showed is
     /// dropped from it, and whenever a spend is dropped its bytes are wiped,
-    /// with the library's page, which repeats them.
+    /// with the library's page, which repeats them. They are kept in the order
+    /// they were signed: leaving or showing a page never reorders them, and a
+    /// re-sign keeps its spend's place ([`SentPage::order`]).
     pub signed: Vec<Signed>,
+    /// The place the next spend signed in this run takes in the signing history
+    /// ([`SentPage::order`]).
+    next_signing: u64,
     /// The worker stopped: `Some(true)` when it panicked. Nothing more can
     /// be done in this run.
     pub stopped: Option<bool>,
@@ -817,6 +822,7 @@ impl Model {
             busy: None,
             wallet: None,
             signed: Vec::new(),
+            next_signing: 0,
             stopped: None,
             left: Arc::new(AtomicU64::new(0)),
             left_seen: 0,
@@ -3890,7 +3896,7 @@ mod tests {
         assert!(matches!(&wallet_page(&app).page,
             Page::Resign(ResignPage { form, .. }) if *form == spend_typed()));
 
-        // Re-signed, the same bytes again: kept once, as the newest page, and
+        // Re-signed, the same bytes again: kept once, in the place it held, and
         // saved, since those bytes were (D38 item 5, as revised on 2026-10-13).
         let _ = app.on_reply(Purpose::Resign, Reply::Sent(sent.clone()));
         assert!(sent_shown(&app).is_some_and(|(_, s)| s.resigned && !s.unsaved()));
@@ -3920,6 +3926,176 @@ mod tests {
         wallet(&mut app, WalletMsg::Open(To::Resign(from)));
         assert!(matches!(&wallet_page(&app).page,
             Page::Resign(ResignPage { form, .. }) if *form == SpendForm::default()));
+    }
+
+    /// What was typed for the second of the two spends [`two_spends`] signs:
+    /// other parameters than [`spend_typed`].
+    fn second_form() -> SpendForm {
+        SpendForm {
+            rows: vec![DestinationRow {
+                to: "other".to_owned(),
+                amount: "2".to_owned(),
+                reference: String::new(),
+            }],
+            fee: "1000".to_owned(),
+            ..SpendForm::default()
+        }
+    }
+
+    /// Signs `sent` from the review of `plan`, typed as `form`, and leaves its
+    /// page for the dashboard, so that the spend is kept.
+    fn signed_and_left(
+        app: &mut App,
+        plan: tawara_wallet_core::PlanView,
+        form: SpendForm,
+        sent: tawara_wallet_core::SentView,
+    ) {
+        app.model.screen = Screen::Wallet(WalletPage {
+            page: Page::Send(SendPage {
+                from: Some(plan.from),
+                form,
+                stage: SendStage::Review(Box::new(plan)),
+            }),
+            ..WalletPage::default()
+        });
+        let _ = app.on_reply(Purpose::ConfirmSend, Reply::Sent(sent));
+        wallet(app, WalletMsg::Open(To::Dashboard));
+    }
+
+    /// Two spends this run signed from the sample account, in this order, with
+    /// the dashboard shown after both. The first, typed as [`spend_typed`], was
+    /// left unsaved and has settled since, so its account's next key is the
+    /// second's. The second, typed as `second`, holds the account's open
+    /// reservation, and is left unsaved. Their reservations are at the one-time
+    /// key indexes 49 and 50. Returns the application and the two spends.
+    fn two_spends(
+        second: SpendForm,
+    ) -> (
+        App,
+        tawara_wallet_core::SentView,
+        tawara_wallet_core::SentView,
+    ) {
+        use tawara_wallet_core::view::{AccountState, ReservationState, SettledAccount};
+        let mut app = alone();
+        app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        let plan = tawara_wallet_core::sample::plan_view();
+        let first = tawara_wallet_core::sample::sent_view();
+        signed_and_left(&mut app, plan.clone(), spend_typed(), first.clone());
+        // The first lands, and the check settles it on its own.
+        let _ = app.on_reply(
+            Purpose::Status,
+            Reply::Status {
+                account: first.from,
+                state: AccountState::InSync { balance: 1 },
+                spendable: true,
+                text: "settled".to_owned(),
+                settled: Some(SettledAccount {
+                    account: first.from,
+                    text: "settled: the library's page".to_owned(),
+                }),
+            },
+        );
+        let mut next = tawara_wallet_core::sample::sent_view();
+        next.spent_index = Some(50);
+        next.artifact_hex = "bb".repeat(8);
+        next.view.accounts[0].set_state(AccountState::SpendOutstanding {
+            balance: 1,
+            spent_index: 50,
+            reservation: ReservationState::Live,
+        });
+        signed_and_left(&mut app, plan, second, next.clone());
+        (app, first, next)
+    }
+
+    /// The bytes of the kept spends, in the order the application keeps them.
+    fn kept_bytes(app: &App) -> Vec<String> {
+        app.model
+            .signed
+            .iter()
+            .map(|s| s.sent.sent.artifact_hex.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_re_sign_offers_the_spend_its_reservation_holds_and_leaving_pages_keeps_the_order() {
+        // D38 item 5: the first spend is left unsaved and settles, and the second,
+        // with other parameters, holds the account's reservation. Reopening the
+        // first, and then the account's page, reorders nothing, and the re-sign
+        // offers the second's parameters. The library accepts those for its
+        // reservation, as `a_re_sign_is_for_the_spend_whose_reservation_is_open`
+        // shows in the worker's tests.
+        let (mut app, first, second) = two_spends(second_form());
+        let from = first.from;
+        let both = vec![first.artifact_hex.clone(), second.artifact_hex.clone()];
+        assert_eq!(kept_bytes(&app), both);
+        wallet(&mut app, WalletMsg::ShowSigned(first.artifact_hex.clone()));
+        wallet(&mut app, WalletMsg::Open(To::Account(from)));
+        assert_eq!(kept_bytes(&app), both, "navigation reorders nothing");
+        wallet(&mut app, WalletMsg::Open(To::Resign(from)));
+        assert!(
+            matches!(&wallet_page(&app).page,
+                Page::Resign(ResignPage { form, .. }) if *form == second_form()),
+            "{:?}",
+            wallet_page(&app).page
+        );
+    }
+
+    #[test]
+    fn a_re_sign_offers_nothing_once_the_spend_holding_the_reservation_is_dismissed() {
+        // D38 item 5: the second spend holds the account's reservation, and is
+        // dismissed, its bytes wiped. The first is another spend, still kept: the
+        // re-sign offers nothing for the reservation, not the first spend's
+        // parameters, which the library would refuse.
+        let (mut app, first, second) = two_spends(second_form());
+        wallet(
+            &mut app,
+            WalletMsg::DismissSigned(second.artifact_hex.clone()),
+        );
+        assert_eq!(kept_bytes(&app), vec![first.artifact_hex.clone()]);
+        wallet(&mut app, WalletMsg::Open(To::Resign(first.from)));
+        assert!(
+            matches!(&wallet_page(&app).page,
+                Page::Resign(ResignPage { form, .. }) if *form == SpendForm::default()),
+            "{:?}",
+            wallet_page(&app).page
+        );
+    }
+
+    #[test]
+    fn a_re_sign_keeps_the_place_its_spend_holds_in_the_signing_order() {
+        // D38 item 5: a re-sign gives the same bytes again, so its spend keeps the
+        // place it held, though a spend of another account was signed after it.
+        use tawara_wallet_core::view::{AccountState, ReservationState};
+        let (mut app, first, second) = two_spends(second_form());
+        let other = app.model.wallet.as_ref().map(|w| w.accounts[1].id);
+        let mut third = tawara_wallet_core::sample::sent_view();
+        third.from = other.expect("the store is open");
+        third.spent_index = Some(6);
+        third.artifact_hex = "cc".repeat(8);
+        third.view = second.view.clone();
+        third.view.accounts[1].set_state(AccountState::SpendOutstanding {
+            balance: 1,
+            spent_index: 6,
+            reservation: ReservationState::Live,
+        });
+        signed_and_left(
+            &mut app,
+            tawara_wallet_core::sample::plan_view(),
+            SpendForm::default(),
+            third.clone(),
+        );
+        wallet(&mut app, WalletMsg::Open(To::Resign(second.from)));
+        let _ = app.on_reply(Purpose::Resign, Reply::Sent(second.clone()));
+        wallet(&mut app, WalletMsg::Open(To::Dashboard));
+        assert_eq!(
+            kept_bytes(&app),
+            vec![
+                first.artifact_hex.clone(),
+                second.artifact_hex.clone(),
+                third.artifact_hex.clone(),
+            ]
+        );
+        assert!(app.model.signed[1].sent.resigned);
     }
 
     /// A check's answer that finds `account` in sync.

@@ -2656,6 +2656,61 @@ fn a_spend_signed_after_an_unlock_in_sync_polls_through_a_failed_read_and_settle
 }
 
 #[test]
+fn a_re_sign_is_for_the_spend_whose_reservation_is_open_and_the_library_refuses_another() {
+    // D38 item 5: spend A is signed and lands, and its settle leaves the next key
+    // to spend B, with other parameters. The reservation open is B's: the library
+    // re-signs B's parameters and refuses A's, so the spend a re-sign is offered
+    // must be the one whose sign reply names the reservation's key index.
+    let scratch = Scratch::new("resign-holds");
+    let (mut h, start) = funded(&scratch);
+    let a = pay(destination(1), Amount::Nano(100_000));
+    let plan_a = planned(h.call(Command::PlanSend { spend: a.clone() }));
+    let sent_a = sent(h.call(Command::ConfirmSend { plan: plan_a.plan }));
+    assert_eq!(sent_a.spent_index, Some(start));
+
+    // A lands, and a check settles it: the account's next key is the one after.
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan_a.change_total);
+    match h.call(Command::Status {
+        account: account0(),
+        scan_to: None,
+    }) {
+        Reply::Status { state, settled, .. } => {
+            assert_eq!(
+                state,
+                AccountState::InSync {
+                    balance: plan_a.change_total
+                },
+                "{state:?}"
+            );
+            assert!(settled.is_some(), "the landed spend settles on the check");
+        }
+        other => panic!("expected a status, got {other:?}"),
+    }
+
+    // B, with other parameters, holds the reservation now.
+    let b = pay(destination(1), Amount::Nano(200_000));
+    let plan_b = planned(h.call(Command::PlanSend { spend: b.clone() }));
+    let sent_b = sent(h.call(Command::ConfirmSend { plan: plan_b.plan }));
+    assert_eq!(sent_b.spent_index, Some(start + 1));
+    assert_eq!(
+        row_of(&sent_b.view, account0()).state.reserved_index(),
+        Some(start + 1)
+    );
+
+    // A's parameters are another spend, and the library refuses them.
+    let other = refusal(h.call(Command::Resign { spend: a }));
+    assert_eq!(other.kind, RefusalKind::Library);
+    assert_eq!(h.chain.submits().len(), 2, "nothing more was sent");
+
+    // B's parameters are the spend the reservation holds: the same bytes again.
+    let again = sent(h.call(Command::Resign { spend: b }));
+    assert!(again.submitted);
+    assert_eq!(again.artifact_hex, sent_b.artifact_hex);
+    assert_eq!(again.spent_index, Some(start + 1));
+}
+
+#[test]
 fn the_node_is_chosen_https_or_loopback_only() {
     let mut h = Harness::new();
     let none = refusal(h.call(Command::NetworkStatus));

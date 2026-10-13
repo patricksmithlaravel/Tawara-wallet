@@ -247,6 +247,7 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         form: typed.clone(),
         stage: SendStage::Sent(Box::new(SentPage {
             sent: sample::sent_view(),
+            order: 0,
             resigned: false,
             saved: Some(Ok(PathBuf::from(
                 "/home/you/Downloads/tawara-spend-5e5e5e5e5e5e5e5e.hex",
@@ -259,6 +260,7 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
     let kept = || Signed {
         sent: SentPage {
             sent: sample::sent_view(),
+            order: 0,
             resigned: false,
             saved: None,
             dismissing: false,
@@ -306,6 +308,7 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
             form: typed.clone(),
             stage: SendStage::Sent(Box::new(SentPage {
                 sent: sample::sent_view(),
+                order: 0,
                 resigned: false,
                 saved: Some(Ok(PathBuf::from(
                     "/home/you/Downloads/tawara-spend-5e5e5e5e5e5e5e5e.hex",

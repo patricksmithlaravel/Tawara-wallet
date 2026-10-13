@@ -248,6 +248,21 @@ impl AccountState {
             | AccountState::NotReconciled => None,
         }
     }
+
+    /// The one-time key index of the reservation the state says is open: an
+    /// outstanding or a landed spend's `spent_index`, the index that spend was
+    /// signed with (docs/DECISIONS.md D38 item 5). `None` for a state that does
+    /// not say which reservation it holds, as an unexplained one does not.
+    #[must_use]
+    pub fn reserved_index(&self) -> Option<u32> {
+        match self {
+            AccountState::SpendOutstanding { spent_index, .. }
+            | AccountState::SpendLanded { spent_index, .. } => Some(*spent_index),
+            AccountState::InSync { .. }
+            | AccountState::Diverged { .. }
+            | AccountState::NotReconciled => None,
+        }
+    }
 }
 
 /// What reconciliation found for an account it could not explain, as the

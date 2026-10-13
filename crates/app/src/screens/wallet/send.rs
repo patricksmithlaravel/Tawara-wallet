@@ -1257,6 +1257,7 @@ mod tests {
         // page says so (docs/DECISIONS.md D32 item 10 (i)).
         let sent = SentPage {
             sent: sample::sent_view(),
+            order: 0,
             resigned: false,
             saved: Some(Err(crate::app::SHARED.to_owned())),
             dismissing: false,
@@ -1285,6 +1286,7 @@ mod tests {
         let drawn = |saved: Option<Result<std::path::PathBuf, String>>, dismissing: bool| {
             let sent = SentPage {
                 sent: sample::sent_view(),
+                order: 0,
                 resigned: false,
                 saved,
                 dismissing,
