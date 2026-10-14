@@ -225,8 +225,8 @@ with the threat model's own identifiers:
 - [ ] **Every device check, V1 to V18** (its section 5.2), run on the
   builds to be released and recorded: section 8 here (owner; section 8's
   gate).
-- [ ] **G6**, the Android exit after `Destroy`: its emulator run at the
-  release's pin, and what D32 item 9 (j) says to do with the result
+- [ ] **G6**, the Android exit after `Destroy`: answered by D32 item 9 (j)'s
+  2026-10-13 amendment. Its emulator check is repeated at the release's pin
   (delegated, then owner; section 3's gate). Its run on the phone is V4
   (section 8's gate).
 - [ ] **G17**, a working save path on phones: Tawara-mobile #8 (the share
