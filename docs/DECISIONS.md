@@ -162,6 +162,11 @@ unpublished crate. The key was removed, so the line is the plan's again.
 | iOS bundle identifier | `com.patricksmithlaravel.tawara` |
 | Windows publisher | `patricksmithlaravel` |
 
+*Proposed in D36, 2026-10-13, for the owner's decision: the macOS bundle
+identifier `com.patricksmithlaravel.tawara` and the Linux desktop entry
+`com.patricksmithlaravel.tawara.desktop`. Until the owner decides, this
+entry names neither.*
+
 ### D9. Package names
 
 **proposed.** The directories are the plan's (`crates/wallet-core`,
@@ -2584,6 +2589,408 @@ merge in.
      and so do deny.toml's view and these notices. (Recommended) the owner
      puts to counsel whether bindings generated from those files carry their
      licences, before the first Linux distribution.
+
+### D36. Packaging: the platform's own tools for each target
+
+**proposed, 2026-10-13, for the owner's decision.** Phase 5 (docs/PLAN.md
+section 7) needs signed packages for every platform, and section 6 asks for
+one packaging tool to be chosen and recorded. This entry proposes the tools;
+docs/RELEASE.md is the checklist that uses them. Nothing here is decided.
+The owner's delegation of 2026-10-12 (D32 item 10) covers the questions
+phase 4 (b)'s studies raised, not packaging, so every choice below that is
+the owner's is listed under "What the owner decides", with a
+recommendation, and docs/RELEASE.md section 1.1 points there.
+
+Three entries were written at once after D33, and each has a fixed number,
+so that the order they merge in does not change any of them: D34 is the
+threat model, D35 the third-party notices, and D36 this one.
+
+**Not one tool, and why.** Section 6's "one packaging tool" is not followed,
+so this is a deviation from the plan, put to the owner (decision 1).
+
+- `cargo-packager` (section 6's example, 0.11.8, released 2025-11-27)
+  describes itself as a public preview. Its documentation says nothing of
+  macOS signing or notarisation, nor of how it obtains WiX and NSIS
+  (source 17), so it cannot be held to D13's rule that every tool is
+  installed at a pinned version.
+- `icm`, the owner's release tool in the iced fork's `cli/`, at the release
+  Tawara already pins (`v0.14.1-mobile.2`, `d4ab3a057`), is built for this
+  app's shape (a NativeActivity `cdylib`, a hand-made iOS bundle, one fork
+  iced) and has store gates for each target. It is not proposed now, for
+  four reasons. It has not been built or run against Tawara, so none of its
+  gates has reported on this tree. Its adoption step (`icm init
+  --adopt-*`) is not implemented at the pin, so its configuration would be
+  written by hand. Adopting it replaces Tawara-mobile's hand-written
+  `Info.plist.in` and `AndroidManifest.xml` with generated files, and
+  Tawara-mobile's checks read those files. And it does not run on Windows
+  hosts at the pin, so the Windows installer would need a second tool in
+  any case.
+- No single tool covers the six targets with signing done the way each
+  store and platform requires. So each target uses the platform vendor's
+  own tools, or the one widely used tool for its format, driven by plain
+  shell scripts in the repository that owns the target. Tawara-mobile's
+  development scripts already drive `aapt2`, `apksigner` and `codesign`
+  that way (`platform/android/tawara.sh` and `platform/ios/tawara.sh` at
+  Tawara-mobile 587329c).
+
+Where icm pins a tool, the same version and hash are used here
+(`bundletool` 1.18.3, `appimagetool` 1.9.1 and its runtime), so a later
+move to icm changes what drives the tools, not the tools or the packages.
+That move is the first thing to revisit, once a fork tag carries icm's
+adoption step and Windows support, and a dry run of `icm release` against a
+scratch copy of each repository has passed; the pin would follow D32 item
+9 (a).
+
+**The tools.** Every release is built on the owner's machines, and the CI
+packaging job builds the same packages unsigned (below), with the same pins.
+
+| target | package | tools, pinned | where they come from |
+|---|---|---|---|
+| Windows | per-user `-setup.exe`, x86_64 | NSIS 3.13; `rc.exe` (icon and version information) and `signtool` from the Windows SDK | NSIS: the 3.13 zip (source 15), checked against a SHA-256 recorded in the script, trusted on first use (below); the SDK on the owner's Windows machine and on the `windows-2025` image |
+| macOS | universal `Tawara.app` in a `.dmg` | Xcode 26.6: `lipo`, `iconutil`, `codesign`, `hdiutil`, `notarytool`, `stapler` | `/Applications/Xcode_26.6.app`, installed beside Xcode 27 on the owner's Mac, and the same path on the `macos-26` image (source 22: Xcode 26.6, build 17F113, with the iOS 26.5 SDK); chosen with `DEVELOPER_DIR` |
+| Linux | AppImage, x86_64 | `appimagetool` 1.9.1 and the type 2 runtime 20251108 | `curl` from their GitHub releases (sources 20 and 21), each checked against `ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0` and `2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d`, which are icm's pins and GitHub's own digests for those files |
+| Linux | `.deb`, x86_64 | `dpkg-deb --root-owner-group`, `dpkg-shlibdeps` | Ubuntu 22.04's `dpkg-dev`, installed with `apt-get` (docs/RELEASE.md section 6.3) in the `ubuntu:22.04` container the build runs in, pinned by digest |
+| Android | App Bundle (`.aab`) | build-tools 36.0.0 (`aapt2 link --proto-format`), `platforms/android-36`, NDK 29.0.14206865, `bundletool` 1.18.3, `jarsigner` from a JDK 17 or later | `sdkmanager` at those versions; `bundletool` by `curl` (source 19), checked against `a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29`, icm's pin and GitHub's digest |
+| iOS | `.ipa` for App Store Connect | Xcode 26.6: `actool`, `codesign`, `plutil`, `ditto`, `vtool`; `xcrun altool` to validate and upload | as macOS |
+
+Every Rust build in a release uses `--locked` and the release profile D11
+restates; nothing in a packaging script sets `panic` or overflow checks.
+The pins move only in a pull request that names the new version and hash.
+The GitHub digests were read on 2026-10-13.
+
+**Reasons for each choice.**
+
+- **Windows: NSIS rather than WiX.** WiX 6 is distributed under version
+  1.0 of the Open Source Maintenance Fee terms, and WiX 7 under version 1.1
+  (source 13). Version 1.0 exempts only those who make no revenue; version
+  1.1 exempts those under US$10,000 in annual revenue, and organisations
+  above that must sponsor the WiX project (sources 13 and 14). Accepting
+  either is the owner's to do, not something to decide on the owner's
+  behalf (decision 2). WiX 5.0.2, the last release before the fee and the
+  version icm targets, is not proposed either: the research found no
+  statement of its support, either way. NSIS 3.13 (released 2026-09-27;
+  source 15) needs no acceptance. Its source, stubs and plug-ins are under
+  the zlib/libpng licence, except two compression modules: bzip2's, under
+  the bzip2 licence, and LZMA's, under the Common Public License 1.0 with
+  an exception for linking (source 16). The script sets `SetCompressor
+  zlib`, so the installer carries only zlib/libpng code from NSIS. It
+  installs per user, into `%LOCALAPPDATA%\Programs\Tawara`, with no
+  administrator prompt, which suits a wallet whose store lives in the
+  user's own profile (D21). An MSI can be added if the owner accepts WiX's
+  terms.
+- **The static C runtime on Windows.** The executable is linked with
+  `-C target-feature=+crt-static`, so the installer carries no Visual C++
+  runtime. The flag is given with `--config` on the release script's
+  command line, not written into a `.cargo/config.toml`: the repository
+  has no `.cargo` directory and needs none, and a file there would change
+  every Windows build, development and CI included, to serve the release
+  alone. The flag touches neither of the settings D11 protects, `panic` and
+  overflow checks, which are all D11's policy test refuses in cargo
+  configuration.
+- **NSIS's download is trusted on first use.** NSIS publishes no checksum
+  and no signature for its downloads (source 15, checked 2026-10-13), so
+  nothing verifies the first download beyond its HTTPS connection to
+  SourceForge. The hash recorded in the script proves that every later
+  download is the same file, not that the first was the publisher's. To
+  narrow that, the first download is made twice, over two different
+  networks, and the two compared before the hash is recorded. The
+  remaining risk is the threat model's T42 (D34): a subverted compiler
+  would write the installer that the owner then signs. Building NSIS from
+  its source archive at the 3.13 tag is the alternative, if the owner
+  wants it (decision 8).
+- **Prebuilt downloads, where D13 builds from source.** D13 builds
+  cargo-deny from crates.io at a pinned version "rather than downloaded
+  prebuilt", with the Rust toolchain CI already has. The four downloaded
+  tools here have no such route: NSIS is C and C++ built with SCons and a
+  cross-compiler for its stubs; `appimagetool` and the runtime are C,
+  built statically against musl in their own CI; and `bundletool` is Java
+  built with Gradle, which D4 keeps out. Building them would bring in a
+  toolchain larger than the tool, which would itself need pinning. So each
+  is pinned by version and SHA-256 instead, and any change in its bytes
+  fails the build. For the three on GitHub the recorded hash is checked
+  against more than one party: GitHub's digest, computed when the
+  publisher uploaded the file, and icm's pin, made separately. This is a
+  departure from D13's practice, put to the owner (decision 8).
+- **macOS: Apple's tools, no third-party DMG tool.** `hdiutil` makes the
+  image without driving the Finder, so it runs without a logged-in
+  session; the styled window that `create-dmg` or `dmgbuild` would add is
+  not needed. The app is one universal binary (`lipo` of
+  `aarch64-apple-darwin` and `x86_64-apple-darwin`) with
+  `LSMinimumSystemVersion` 11.0, the first release that runs on Apple
+  silicon, so one minimum serves both halves (decision 5). It is signed
+  with the hardened runtime and a secure timestamp, with no entitlements:
+  it is not sandboxed and needs no exception. Notarisation uses
+  `notarytool`, since Apple has refused `altool` notarisation since
+  2023-11-01 (source 3). It is built with Xcode 26.6, as iOS is, so one
+  Xcode builds both Apple targets.
+- **Linux: AppImage and `.deb`, both by hand, in a pinned container.**
+  `appimagetool` is run with `--appimage-extract-and-run`, so the build
+  needs no FUSE, and with `--runtime-file`, so it downloads nothing at run
+  time. `dpkg-deb` and `dpkg-shlibdeps` are Debian's own; `cargo-deb` would
+  add a tool for what a control file and two commands do. `dpkg-shlibdeps`
+  also needs a `debian/control` in its working directory (source 27), so the
+  build gives it a workspace beside the tree. It names only the libraries a
+  binary is linked with (source 26), and the app also opens several by name
+  at run time (through `x11-dl`, `x11rb`, `xkbcommon-dl` and `wayland-sys`
+  in winit's backends, and through `ash` for `libvulkan` in wgpu), so
+  RELEASE.md section 6.3 names them by hand. An executable runs only on
+  systems whose glibc is at least the newest version it needs, so the build
+  names a floor, **glibc 2.35** (Ubuntu 22.04's, and icm's default), and
+  **fails if the executable needs anything newer**; the release notes state
+  the floor. The build runs in an `ubuntu:22.04` container pinned by digest,
+  on the owner's machine for a release and in the same container in CI. A
+  runner image is not enough: the release is not built in CI, and the newest
+  images move on (Tawara-mobile's Android job already runs on
+  `ubuntu-24.04`, `.github/workflows/mobile.yml` line 96, whose glibc is
+  2.39), while docs/RELEASE.md section 7 tests the packages on Ubuntu 22.04.
+  The image carries neither a C compiler nor `dpkg-dev`, so the build first
+  installs `gcc`, `libc6-dev` and `dpkg-dev` from Ubuntu 22.04's archive,
+  with `curl` and `ca-certificates` to fetch rustup-init; it needs no `-dev`
+  library package, since the libraries named above are opened at run time.
+  Then Rust comes from rustup-init at a pinned version and hash, then the
+  toolchain `rust-toolchain.toml` names. On an Apple silicon Mac the
+  `linux/amd64` container runs under emulation, which is slower and changes
+  nothing about the checks. x86_64 only, for the first release (decision 6).
+- **Android: `aapt2` and `bundletool`, no Gradle** (D4; Tawara-mobile's
+  script already links with `aapt2`). `aapt2 link --proto-format` writes
+  the resources a bundle needs; there is no DEX, as the manifest says
+  `hasCode="false"`. `bundletool build-bundle` then `bundletool validate`.
+  The bundle is signed with `jarsigner`, because `apksigner` cannot sign a
+  bundle (source 10). It is never built with `--debug-mode`. The ABIs are
+  those `tawara.sh` builds, arm64-v8a and x86_64, with 16 KB page
+  alignment (`PAGE_ALIGNMENT_16K` in the bundle's configuration), which NDK
+  r28 and later give by default (source 11). The target API is 36 (D32
+  item 9 (i), PR B; source 6), and the compile jar is
+  `platforms/android-36` exactly, not the newest one installed as the
+  development script takes. Before the release script runs on the owner's
+  Mac, it chooses the NDK's host directory, and runs its emulator check on
+  a port and AVD of its own, which it deletes afterwards; docs/RELEASE.md
+  section 1.6 lists what in `tawara.sh` stops it otherwise.
+- **iOS: the bundle `tawara.sh` makes, finished for the App Store, no
+  Xcode project** (Tawara-mobile's `platform/ios/README.md`). The release
+  script adds what a store upload needs and the development bundle lacks:
+  the App Store provisioning profile as `embedded.mobileprovision`; an
+  entitlements file with the application identifier, the team,
+  `get-task-allow` false, and `com.apple.developer.default-data-protection`
+  set to `NSFileProtectionComplete` (D32 item 3); `PrivacyInfo.xcprivacy`;
+  the icon compiled into `Assets.car` with `actool`; the `DT` keys of the
+  Xcode that built it; `ITSAppUsesNonExemptEncryption`; and
+  `CFBundleVersion` from the build number rather than the literal `1`. It
+  is signed with the Apple Distribution identity and zipped so that the
+  archive's top level is a `Payload/` directory holding `Tawara.app`, with
+  no AppleDouble `._` entries, since App Store Connect has refused an upload
+  over a `._` path (source 28). Xcode 26.6 is used because App Store uploads
+  have needed Xcode 26 and the iOS 26 SDK since 2026-04-28 (source 3), and
+  because linking with the iOS 27 SDK is what D32 item 8 found to stop the
+  app at launch without a scene. The owner's Mac has only Xcode 27 at this
+  writing, so the script reads the SDK the binary was linked with
+  (`vtool -show-build`) and fails unless it is 26.x, before anything is
+  signed. If Apple requires a newer SDK before an upload, the scene work is
+  re-checked first. An Xcode project generated with XcodeGen is the
+  fallback if `altool --validate-app` keeps refusing a hand-made bundle.
+
+**What CI does, and what stays on the owner's machines (D13).** D13 is
+unchanged: plain commands, no `uses:`, an anonymous clone, `permissions:
+{}`, and no uploaded artifacts. A packaging job, run on pull requests that
+touch the packaging scripts and by hand, builds every package unsigned
+with the pinned tools (the Linux ones with `docker run` in the pinned
+container), runs the static checks docs/RELEASE.md lists for each (for
+example `bundletool validate`, `plutil -lint`, `dpkg-deb --info`, the glibc
+floor, the linked iOS SDK), and keeps nothing. The release itself is built
+from the tag on the owner's machines, where the keys are, and signed and
+notarised there: signing secrets never enter CI, and the owner's Windows
+certificate could not reach a hosted runner anyway, since the keys of
+public code-signing certificates have had to be held in hardware since
+2023-06-01 (source 18). The owner publishes the packages by hand. Signing
+in CI would need secrets in the workflow and a write token to publish, both
+of which D13 rules out; that is the owner's to change if it is ever wanted
+(decision 4).
+
+**Names, identifiers and placement.** The installed executable is
+`tawara-desktop`, the cargo binary's own name, on every desktop system (D9:
+it must not collide with the command-line wallet's `tawara`); the name
+people see in menus, the Start menu and the Dock is "Tawara" (D8). D8 names
+no macOS or Linux identifier, so two are proposed (decision 7): the macOS
+bundle identifier `com.patricksmithlaravel.tawara`, the same as iOS's, so
+that one name identifies the app everywhere; and the Linux desktop entry
+`com.patricksmithlaravel.tawara.desktop`, a reverse-DNS name as the
+desktop entry specification recommends. The `.deb` package is
+`tawara-desktop`. The desktop scripts live in this repository under
+`packaging/`; the phone scripts live in Tawara-mobile beside `tawara.sh`, as
+`release.sh` in `platform/android` and `platform/ios`, and `tawara.sh`
+stays the development check it is. Every package carries `LICENSE.md` and
+the generated `THIRD-PARTY-NOTICES.txt` (D35); docs/RELEASE.md section 4
+says where.
+
+**Architectures.** macOS is one universal binary. Windows is x86_64 only:
+Windows 11 on Arm runs x86_64 programs under its emulation, and an
+aarch64 build would be a second installer to sign and check. Linux is
+x86_64 only. The notices (D35) cover all six desktop targets, so either
+can be added later without a change to them (decision 6).
+
+**What the owner decides.** Each is open until the owner answers, and each
+answer is recorded here with its date.
+
+1. **Per-target tools rather than one packaging tool**, departing from
+   PLAN section 6. **(Recommended)** as above, with icm revisited when it
+   can adopt an existing app and runs on Windows.
+2. **NSIS 3.13, or WiX 7** under the maintenance fee's version 1.1 terms
+   (sponsorship if annual revenue is above US$10,000). **(Recommended)**
+   NSIS.
+3. **The installed executable's name**, `tawara-desktop` (D9; the threat
+   model's section 6, item 8). **(Recommended)** as proposed.
+4. **Signing and publishing on the owner's machines only**, with CI
+   building unsigned packages and D13 unchanged. **(Recommended)** as
+   proposed.
+5. **macOS 11.0 as the minimum**, one universal binary.
+   **(Recommended)** as proposed.
+6. **The first release's architectures**: Windows and Linux x86_64 only,
+   with glibc 2.35 as the Linux floor. **(Recommended)** as proposed.
+7. **The identifiers**: macOS `com.patricksmithlaravel.tawara`, Linux
+   `com.patricksmithlaravel.tawara.desktop`, to be added to D8.
+   **(Recommended)** as proposed.
+8. **Prebuilt downloads pinned by hash**, and NSIS's hash trusted on first
+   use; or NSIS built from source. **(Recommended)** the downloads, with
+   the two-network first download.
+9. **The accounts** in docs/RELEASE.md section 1.2, among them the Apple
+   enrolment as an organisation and the Play account type, each after the
+   confirmation that section asks for.
+
+**What each step needs from the owner.** docs/RELEASE.md section 1 lists
+them with their lead times: the Apple Developer Program enrolled as an
+organisation, its identifiers, certificates, profile and API key, and the
+`notarytool` profile; a Play Console account, the app, the upload keystore
+and Play App Signing; a Windows code-signing certificate on its hardware
+token, with a Windows machine that holds it; the `.deb` maintainer line and
+an optional GPG key; the app icon; the export compliance answer; and the
+machines of its section 1.6, including Xcode 26.6 beside Xcode 27 and a
+container runtime.
+
+**Sources.** Each was read on the date given; "research" means the phase 5
+packaging study of 2026-10-12, whose notes are not in the repository.
+
+1. Apple, App Review Guidelines, 3.1.5(i): "Apps may facilitate virtual
+   currency storage, provided they are offered by developers enrolled as
+   an organization." https://developer.apple.com/app-store/review/guidelines/
+   (2026-10-13)
+2. Apple, enrolling an organisation: a legal entity, a D-U-N-S number, a
+   public website on its domain, an Account Holder with authority to bind
+   it. https://developer.apple.com/programs/enroll/ (2026-10-13)
+3. Apple, upcoming requirements: Xcode 26 and the iOS 26 SDK for uploads
+   from 2026-04-28; iOS 13 as the lowest deployment target from 2026-09-09;
+   `altool` notarisation refused from 2023-11-01. No iOS 27 SDK date is
+   given. https://developer.apple.com/news/upcoming-requirements/
+   (2026-10-13)
+4. Apple, uploading builds: Xcode, `altool`, Transporter and others; the
+   roles that may upload include App Manager.
+   https://developer.apple.com/help/app-store-connect/manage-builds/upload-builds
+   (2026-10-13)
+5. Apple Developer Program fee, US$99 a year.
+   https://developer.apple.com/programs/ (research, 2026-10-12)
+6. Google Play target API: API 36 for new apps and app updates from
+   2026-08-31; an extension to 2026-11-01 on request, without saying
+   whether a new app may have one.
+   https://developer.android.com/google/play/requirements/target-sdk
+   (2026-10-13)
+7. Google Play testing for new personal accounts: personal accounts created
+   after 2023-11-13 run a closed test with at least 12 testers opted in for
+   14 days; organisation accounts are not mentioned. The test starts after
+   the app's setup, the testers "must have been opted in continuously for
+   the preceding 14 days" when production access is applied for, and the
+   review of that application "usually takes seven days or less".
+   https://support.google.com/googleplay/android-developer/answer/14151465
+   (2026-10-13)
+8. Google Play registration: US$25 once, identity verification.
+   https://support.google.com/googleplay/android-developer/answer/6112435
+   (research, 2026-10-12)
+9. Play App Signing and upload key reset.
+   https://developer.android.com/studio/publish/app-signing (research,
+   2026-10-12)
+10. bundletool: bundles are signed with `jarsigner`; `apksigner` cannot
+    sign one. https://developer.android.com/studio/command-line/bundletool
+    (research, 2026-10-12)
+11. Android 16 KB page sizes; NDK r28 and later align by default.
+    https://developer.android.com/guide/practices/page-sizes (research,
+    2026-10-12)
+12. Google Play cryptocurrency policy, read through a secondary summary
+    only. https://support.google.com/googleplay/android-developer/answer/16329703
+    (research, 2026-10-12)
+13. FireGiant, Open Source Maintenance Fee: WiX 6 under OSMF 1.0, WiX 7
+    under OSMF 1.1 (EULA id `wix7`); the fee began with WiX 6.
+    https://docs.firegiant.com/wix/osmf/ (2026-10-13)
+14. Rob Mensching, OSMF 1.1: 1.0 exempted only those without revenue; 1.1
+    exempts annual revenue under US$10,000. The article does not itself map
+    versions to WiX releases; source 13 does.
+    https://robmensching.com/blog/posts/2026/02/04/osmf-v11/ (2026-10-13)
+15. NSIS download: 3.13, released 2026-09-27; no checksums or signatures
+    published. https://nsis.sourceforge.io/Download (2026-10-13)
+16. NSIS licence: zlib/libpng, except the bzip2 module (bzip2 licence) and
+    the LZMA module (CPL 1.0, with a linking exception).
+    https://nsis.sourceforge.io/License (2026-10-13)
+17. cargo-packager 0.11.8, a public preview.
+    https://docs.crabnebula.dev/packager/ and
+    https://crates.io/crates/cargo-packager (research, 2026-10-12)
+18. SSL.com, code-signing keys held in hardware from 2023-06-01.
+    https://ssl.com/article/code-signing-key-storage-requirements-will-change-on-june-1-2023/
+    (research, 2026-10-12)
+19. bundletool 1.18.3 and its jar's digest.
+    https://github.com/google/bundletool/releases/tag/1.18.3 (2026-10-13)
+20. appimagetool 1.9.1 and its x86_64 digest.
+    https://github.com/AppImage/appimagetool/releases/tag/1.9.1
+    (2026-10-13)
+21. AppImage type 2 runtime 20251108 and its x86_64 digest.
+    https://github.com/AppImage/type2-runtime/releases/tag/20251108
+    (2026-10-13)
+22. GitHub's `macos-26` image: Xcode 26.6 (17F113) at
+    `/Applications/Xcode_26.6.app`, the image's default, with the iOS 26.5
+    SDK.
+    https://github.com/actions/runner-images/blob/main/images/macos/macos-26-Readme.md
+    (2026-10-13)
+23. Apple, Technical Note TN2206, "macOS Code Signing In Depth", section
+    "Signing Disk Images": a disk image's signature is assessed with
+    `spctl -a -t open --context context:primary-signature`.
+    https://developer.apple.com/library/archive/technotes/tn2206/
+    (2026-10-13). The notarised output, and `-t install` for installer
+    packages, are from https://developer.apple.com/forums/thread/130560 and
+    https://developer.apple.com/forums/thread/675354 (both checked
+    2026-10-13).
+24. Google Play, staged rollouts: "Staged rollouts can only be used for app
+    updates, not when publishing an app for the first time."
+    https://support.google.com/googleplay/android-developer/answer/6346149?hl=en
+    (2026-10-13)
+25. Google Play, the first production release: "If rolling out a first
+    production release, clicking Start rollout to production publishes your
+    app to all Google Play users in your selected countries or regions." and
+    "Rollout percentage options are unavailable for a first release."
+    https://support.google.com/googleplay/android-developer/answer/9859348?hl=en
+    (2026-10-13)
+26. Debian, dpkg-shlibdeps(1): "For each binary that dpkg-shlibdeps
+    analyzes, it finds out the list of libraries that it's linked with."
+    With `-O`, it prints the substitution variables, among them
+    `shlibs:Depends`, to standard output; `-e` names the executable.
+    https://manpages.debian.org/bookworm/dpkg-dev/dpkg-shlibdeps.1.en.html
+    (2026-10-13)
+27. dpkg 1.21.1, `scripts/dpkg-shlibdeps.pl` line 160, `my $control =
+    Dpkg::Control::Info->new();`, reads `debian/control` from the working
+    directory whether or not `-O` is given; line 161 takes its source stanza.
+    In `scripts/Dpkg/Control/Info.pm`, lines 68 and 69 make `debian/control`
+    the default file, lines 108 and 109 require a `Source` field in the first
+    stanza, and lines 115 to 122 require `Package` and `Architecture` fields
+    in each later one. `scripts/Dpkg/Interface/Storable.pm` line 93 opens the
+    file and reports a failure as `cannot read %s`. Line 112 of
+    `dpkg-shlibdeps.pl` matches `-e` as `^-e(.*)$`, so `-e` followed by a
+    space adds an executable with an empty name; for that name no package
+    root is found, and lines 359 to 365 print the warning that `binaries to
+    analyze should already be installed in their package's directory`. The
+    same lines are in Ubuntu 22.04's dpkg-dev 1.21.1ubuntu2.6, checked in a
+    container on 2026-10-13.
+    https://github.com/guillemj/dpkg/blob/1.21.1/scripts/dpkg-shlibdeps.pl#L160
+    (2026-10-13)
+28. Apple Developer Forums, "This bundle is invalid - Your archive contains
+    paths that are not allowed: [._Symbols]": an upload refused with
+    ITMS-90048 over a `._Symbols` path. No reply gives a cause; the
+    workarounds remove the path from the `.ipa` or rebuild.
+    https://developer.apple.com/forums/thread/776996 (2026-10-13)
 
 ## The owner's nine items, October 2026
 
