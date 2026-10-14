@@ -1123,6 +1123,15 @@ impl App {
         if reviewing {
             self.send(Command::DiscardPlan, Purpose::DiscardPlan);
         }
+        // Signed bytes pasted on W9 go with the page, wiped, as a copy of
+        // unsaved bytes would (docs/DECISIONS.md D38 item 5).
+        if let Some(WalletPage {
+            page: Page::Submit(s),
+            ..
+        }) = self.wallet_page()
+        {
+            wipe(&mut s.hex);
+        }
         self.model.keep_signed(false);
     }
 
@@ -1590,6 +1599,7 @@ impl App {
                     ..
                 }) = self.wallet_page()
                 {
+                    wipe(&mut s.hex);
                     s.hex = hex;
                 }
             }

@@ -879,6 +879,12 @@ fn wipe_typed(screen: &mut Screen) {
                 wipe(w);
             }
         }
+        // Signed bytes pasted on W9 may be a copy of unsaved bytes (Copy hex),
+        // and go as those do (docs/DECISIONS.md D38 item 5; docs/SCREENS.md W9).
+        Screen::Wallet(WalletPage {
+            page: Page::Submit(s),
+            ..
+        }) => wipe(&mut s.hex),
         Screen::Welcome | Screen::Start { .. } | Screen::Node(_) | Screen::Wallet(_) => {}
     }
 }
@@ -5033,6 +5039,26 @@ mod tests {
             RELEASED_IN_TESTS.with(std::cell::Cell::get) - before,
             1,
             "the kept bytes went with the application"
+        );
+    }
+
+    #[test]
+    fn signed_bytes_pasted_on_w9_are_wiped_with_a_move_to_the_background() {
+        // A pasted artifact may be a copy of unsaved bytes, so it goes as they
+        // do (docs/DECISIONS.md D38 item 5): wiped where it is, with the typed
+        // secrets, on a move to the background, and when its page or screen is
+        // left.
+        let mut app = on_wallet(Page::Submit(SubmitPage::default()));
+        let _ = app.update(Message::Pasted(
+            PasteInto::SignedBytes,
+            Some(Clip("4f2a00ab11cd".to_owned())),
+        ));
+        assert!(matches!(&wallet_page(&app).page, Page::Submit(s) if !s.hex.is_empty()));
+        app.model.backgrounded();
+        assert!(
+            matches!(&wallet_page(&app).page, Page::Submit(s) if s.hex.is_empty()),
+            "{:?}",
+            wallet_page(&app).page
         );
     }
 
