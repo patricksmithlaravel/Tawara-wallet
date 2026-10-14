@@ -46,8 +46,10 @@ const POLL_EVERY: Duration = Duration::from_secs(60);
 /// The accounts an answer reads afresh (see [`Reads`]): a check or a poll
 /// reads its account, a send the account it spent from (the read after the
 /// sign), a settle the account it settled, and an opened or refreshed store
-/// every account. Any other answer reads nothing, and the rows it carries are
-/// the store as it was (docs/DECISIONS.md D38 item 2; docs/SCREENS.md W7).
+/// every account, as a recovery review does too, since it reconciles every
+/// account and updates each row. Any other answer reads nothing, and the rows
+/// it carries are the store as it was (docs/DECISIONS.md D38 item 2;
+/// docs/SCREENS.md W7).
 fn reads_of(purpose: Purpose, reply: &Reply) -> Reads {
     match (purpose, reply) {
         (_, Reply::Status { account, .. }) => Reads::One(*account),
@@ -61,6 +63,9 @@ fn reads_of(purpose: Purpose, reply: &Reply) -> Reads {
             | Reply::Reconciled { opened: Ok(_), .. }
             | Reply::Restored { opened: Ok(_), .. },
         ) => Reads::Every,
+        // A recovery review reconciles every account the store holds, and
+        // updates each row from what it found.
+        (Purpose::Review, Reply::Reviewed(_)) => Reads::Every,
         _ => Reads::Nothing,
     }
 }
@@ -5376,6 +5381,17 @@ mod tests {
     }
 
     #[test]
+    fn a_recovery_review_reads_every_account_it_reconciled() {
+        // view::Reads: a review reconciles every account of the store and updates
+        // each row, so its answer reads them all (docs/DECISIONS.md D38 item 2).
+        let reports = tawara_wallet_core::sample::review();
+        assert_eq!(
+            reads_of(Purpose::Review, &Reply::Reviewed(reports)),
+            Reads::Every
+        );
+    }
+
+    #[test]
     fn a_refused_signing_goes_back_to_the_form_with_why() {
         let plan = tawara_wallet_core::sample::plan_view();
         let mut app = on_wallet(Page::Send(SendPage {
@@ -7239,6 +7255,160 @@ mod tests {
         wallet.accounts[1].reserved = false;
         let _ = app.on_reply(Purpose::Refresh, Reply::Wallet(wallet));
         assert!(!polls(&mut app));
+    }
+
+    #[test]
+    fn a_recovery_review_that_finds_a_live_reservation_restarts_an_ended_watch() {
+        // The owner's review (P2; docs/DECISIONS.md D38 item 2): a recovery review
+        // reconciles every account and updates its rows, so its reads reset the
+        // watch. An account whose watch ended, and which the review finds with a
+        // live reservation, is polled afresh: a transient failure keeps the polls
+        // going, and the poll that finds the spend landed settles it.
+        use tawara_wallet_core::view::{
+            AccountState, DivergenceKind, ReservationState, SettledAccount,
+        };
+        let scratch = Scratch::new("review-restarts");
+        let (mut app, _events) = app(&scratch);
+        app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        let account = live_account();
+        let in_sync = AccountState::InSync {
+            balance: 3_180_000_000_000,
+        };
+        let answer = |app: &mut App, state: AccountState, settled: Option<SettledAccount>| {
+            let _ = app.on_reply(
+                Purpose::Poll,
+                Reply::Status {
+                    account,
+                    state,
+                    spendable: false,
+                    text: "checked".to_owned(),
+                    settled,
+                },
+            );
+        };
+        // Whether the next tick sends a poll: the last one's time is forgotten,
+        // so that a poll is due, and its answer is taken.
+        let polls = |app: &mut App| {
+            app.model.polled_at = None;
+            answered(app);
+            let _ = app.update(Message::Tick(now_ms()));
+            let sent = app.waiting_on(|p| matches!(p, Purpose::Poll));
+            answered(app);
+            sent
+        };
+        // A read showed the account in sync, so its watch ended.
+        answer(&mut app, in_sync.clone(), None);
+        assert!(!polls(&mut app), "an account in sync is not polled");
+
+        // A recovery review finds its reservation live, and the polls start again.
+        let mut reports = tawara_wallet_core::sample::review();
+        let found = reports
+            .iter_mut()
+            .find(|r| r.account == account)
+            .expect("the sample's spend");
+        found.state = AccountState::SpendOutstanding {
+            balance: 3_180_000_000_000,
+            spent_index: 6,
+            reservation: ReservationState::Live,
+        };
+        let _ = app.on_reply(Purpose::Review, Reply::Reviewed(reports));
+        assert!(polls(&mut app), "the review's live reservation is polled");
+
+        // The node does not answer, and the polls go on.
+        let silent = AccountState::Diverged {
+            kind: DivergenceKind::Unreachable,
+            report: "no answer".to_owned(),
+            advance_to: None,
+        };
+        answer(&mut app, silent, None);
+        assert!(polls(&mut app), "a transient failure keeps the polls going");
+
+        // The next poll finds the spend landed, and settles it.
+        answer(
+            &mut app,
+            in_sync,
+            Some(SettledAccount {
+                account,
+                text: "settled: the library's page".to_owned(),
+            }),
+        );
+        assert!(!polls(&mut app), "a settled account is not polled");
+        assert!(
+            app.model.settled_waiting.contains_key(&account),
+            "the settlement's banner waits for the account's page"
+        );
+    }
+
+    #[test]
+    fn a_recovery_review_starts_the_count_of_a_spend_in_doubt_afresh() {
+        // The bound of docs/DECISIONS.md D38 item 2 counts the polls of a spend in
+        // doubt, and the third read in doubt in a row ends them. A review that finds
+        // the reservation live again starts that count afresh, as a sign does, so
+        // the account is polled through the bound once more.
+        use tawara_wallet_core::view::{AccountState, DivergenceKind, ReservationState};
+        let scratch = Scratch::new("review-bound");
+        let (mut app, _events) = app(&scratch);
+        app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        let account = live_account();
+        let live = AccountState::SpendOutstanding {
+            balance: 3_180_000_000_000,
+            spent_index: 6,
+            reservation: ReservationState::Live,
+        };
+        let not_found = AccountState::Diverged {
+            kind: DivergenceKind::NotFound,
+            report: "account not found".to_owned(),
+            advance_to: None,
+        };
+        let answer = |app: &mut App, state: AccountState| {
+            let _ = app.on_reply(
+                Purpose::Poll,
+                Reply::Status {
+                    account,
+                    state,
+                    spendable: false,
+                    text: "checked".to_owned(),
+                    settled: None,
+                },
+            );
+        };
+        // Whether the next tick sends a poll, as the test above has it.
+        let polls = |app: &mut App| {
+            app.model.polled_at = None;
+            answered(app);
+            let _ = app.update(Message::Tick(now_ms()));
+            let sent = app.waiting_on(|p| matches!(p, Purpose::Poll));
+            answered(app);
+            sent
+        };
+        // A recovery review that finds the reservation live.
+        let review = |app: &mut App| {
+            let mut reports = tawara_wallet_core::sample::review();
+            let found = reports
+                .iter_mut()
+                .find(|r| r.account == account)
+                .expect("the sample's spend");
+            found.state = live.clone();
+            let _ = app.on_reply(Purpose::Review, Reply::Reviewed(reports));
+        };
+        // Each round: two polls in doubt, and the third read in doubt ends them.
+        // The second round starts after the first has ended them.
+        for round in 0..2 {
+            review(&mut app);
+            assert!(
+                polls(&mut app),
+                "round {round}: the review's reservation is polled"
+            );
+            for n in 0..2 {
+                answer(&mut app, not_found.clone());
+                assert!(polls(&mut app), "round {round}: not found, poll {n}");
+            }
+            answer(&mut app, not_found.clone());
+            assert!(
+                !polls(&mut app),
+                "round {round}: the third read in doubt ends the polls"
+            );
+        }
     }
 
     #[test]
