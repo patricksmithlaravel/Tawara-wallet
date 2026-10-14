@@ -141,7 +141,10 @@ pub struct Model {
     /// ([`SentPage::order`]).
     next_signing: u64,
     /// The worker stopped: `Some(true)` when it panicked. Nothing more can
-    /// be done in this run.
+    /// be done in this run. `Some(false)` is also a stop whose reason is not
+    /// yet known, since a command could not be sent to the worker
+    /// ([`App::lost_worker`]): until its notice says which, the unsaved bytes
+    /// are kept, as a panic keeps them.
     pub stopped: Option<bool>,
     /// The window's width in logical pixels. Below [`COMPACT`] the phone
     /// layout is drawn; from there up, the layouts of docs/DECISIONS.md D27,
@@ -765,6 +768,10 @@ impl Purpose {
 struct Worker {
     handle: WorkerHandle,
     waiting: Vec<(RequestId, Purpose)>,
+    /// A command could not be sent to the worker, whose queue is gone: it has
+    /// stopped or is stopping, and its `Stopped` has not come yet. Until that
+    /// does, whether it panicked is not known (see [`App::lost_worker`]).
+    lost: bool,
 }
 
 /// The application: the model, and the worker it talks to.
@@ -1334,6 +1341,7 @@ impl App {
             worker: Some(Worker {
                 handle,
                 waiting: Vec::new(),
+                lost: false,
             }),
             prefs_path,
             #[cfg(test)]
@@ -1376,7 +1384,7 @@ impl App {
                 Some(id)
             }
             Err(_) => {
-                self.stop(false);
+                self.lost_worker();
                 None
             }
         }
@@ -2079,8 +2087,14 @@ impl App {
                 // store open, the worker's `Locked` comes first and has wiped
                 // them, with S7's note (wallet-core's test
                 // `every_move_to_the_background_is_reported_after_any_lock`), so
-                // this finds nothing more.
-                self.model.release_unsaved();
+                // this finds nothing more. A worker whose stop is not yet known
+                // keeps them, a move's notice included, since a panic keeps them:
+                // its `Stopped` releases them if the stop was graceful (see
+                // `App::lost_worker`).
+                let lost = self.worker.as_ref().is_some_and(|w| w.lost);
+                if !lost {
+                    self.model.release_unsaved();
+                }
                 // Taken in turn: every answer before it, a recovery phrase
                 // among them, and the `Locked` that dropped it, have been
                 // too. The shell may let the process be suspended.
@@ -2096,11 +2110,40 @@ impl App {
         Task::none()
     }
 
-    /// The worker has stopped (`panicked` when it faulted). Nothing more
-    /// can be done in this run, and what the screens held goes with it:
-    /// the open store's view, and the secret a form or the phrase screens
-    /// held, zeroized. With no worker left to lock on idle, nothing secret
-    /// would otherwise go before the application closed.
+    /// A command could not be sent, because the worker's queue is gone: it
+    /// has stopped or is stopping, and its `Stopped` has not come yet. A worker
+    /// that panics drops its queue before its notice reaches the interface, so
+    /// this may be a panic's window as well as a graceful stop's, and the
+    /// reason is not known until the notice comes. Until it does, the unsaved
+    /// bytes are kept, a move to the background included: a panic keeps them
+    /// until Tawara closes, and a graceful stop releases them (docs/DECISIONS.md
+    /// D38 item 5; docs/SCREENS.md W6). The stopped screen shows at once. The
+    /// worker is kept meanwhile, so the answers it has already sent are still
+    /// taken, a spend's among them, since they may hold the only copy of its
+    /// bytes.
+    fn lost_worker(&mut self) {
+        if let Some(w) = &mut self.worker {
+            w.lost = true;
+        }
+        let m = &mut self.model;
+        if m.stopped.is_none() {
+            m.stopped = Some(false);
+        }
+        // The page shown is kept with the other spends, as a stop keeps it.
+        drop(m.leave());
+        m.busy = None;
+        m.wallet = None;
+        m.watch.clear();
+    }
+
+    /// The worker has stopped, as its `Stopped` says (`panicked` when it
+    /// faulted). Nothing more can be done in this run, and what the screens
+    /// held goes with it: the open store's view, and the secret a form or the
+    /// phrase screens held, zeroized. With no worker left to lock on idle,
+    /// nothing secret would otherwise go before the application closed. The
+    /// unsaved bytes go only with a graceful stop: a panic keeps them until
+    /// Tawara closes (docs/DECISIONS.md D38 item 5). This notice also settles
+    /// a stop that [`App::lost_worker`] left of unknown reason.
     fn stop(&mut self, panicked: bool) {
         let m = &mut self.model;
         m.stopped = Some(panicked || m.stopped == Some(true));
@@ -5033,6 +5076,134 @@ mod tests {
         let (mut app, _) = just_sent();
         let _ = app.on_event(Event::Stopped { panicked: false });
         assert!(app.model.signed.is_empty(), "and the shown bytes");
+    }
+
+    /// Stops the worker as a panic leaves it to the interface: its queue goes
+    /// before any notice of the stop reaches the interface, so a command sent
+    /// now fails. The notice is not read here; a test hands it on itself.
+    fn queue_gone(app: &App) {
+        let handle = &app.worker.as_ref().expect("a worker").handle;
+        handle.shutdown();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while handle.send(Command::Review).is_ok() {
+            assert!(Instant::now() < deadline, "the worker's queue did not go");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn a_send_that_fails_before_a_panic_notice_keeps_the_unsaved_bytes() {
+        // The owner's review (P1): a worker that panics drops its queue before its
+        // `Stopped` reaches the interface, so a command sent in between fails. The
+        // failure releases nothing: the notice that follows says whether the worker
+        // panicked, and a panic keeps the bytes (docs/DECISIONS.md D38 item 5;
+        // docs/SCREENS.md W6).
+        let scratch = Scratch::new("send-fails-then-panic");
+        let (mut app, _) = signed_then_locked(&scratch, LockReason::ReopenFailed);
+        assert_eq!(app.model.signed.len(), 1, "kept, as the close leaves it");
+        queue_gone(&app);
+        assert!(app.send(Command::Review, Purpose::Review).is_none());
+        assert_eq!(app.model.signed.len(), 1, "the failure released nothing");
+        assert!(app.model.signed[0].unsaved());
+        assert_eq!(app.model.stopped, Some(false), "the stop shows at once");
+
+        let _ = app.on_event(Event::Stopped { panicked: true });
+        assert_eq!(app.model.stopped, Some(true));
+        assert_eq!(app.model.signed.len(), 1, "the panic keeps the bytes");
+        assert!(app.model.signed[0].unsaved());
+    }
+
+    #[test]
+    fn a_graceful_stop_after_a_failed_send_releases_the_unsaved_bytes() {
+        // The counterpart: the notice says the stop was graceful, so the bytes the
+        // failed send kept are released, as the shutdown releases them.
+        let scratch = Scratch::new("send-fails-then-graceful");
+        let (mut app, _) = signed_then_locked(&scratch, LockReason::ReopenFailed);
+        queue_gone(&app);
+        assert!(app.send(Command::Review, Purpose::Review).is_none());
+        assert_eq!(
+            app.model.signed.len(),
+            1,
+            "not yet: the reason is not known"
+        );
+
+        let _ = app.on_event(Event::Stopped { panicked: false });
+        assert_eq!(app.model.stopped, Some(false));
+        assert!(app.model.signed.is_empty(), "a graceful stop releases them");
+    }
+
+    #[test]
+    fn a_move_after_a_failed_send_with_no_notice_keeps_the_bytes_until_the_app_ends() {
+        // A failed send and then no notice at all: the move to the background
+        // releases nothing, since the reason is not known and a panic keeps the
+        // bytes. Leaving the application releases them (docs/DECISIONS.md D38
+        // item 5).
+        let scratch = Scratch::new("send-fails-then-move");
+        let (mut app, _) = signed_then_locked(&scratch, LockReason::ReopenFailed);
+        queue_gone(&app);
+        assert!(app.send(Command::Review, Purpose::Review).is_none());
+        app.model.left.fetch_add(1, Ordering::SeqCst);
+        let _ = app.update(Message::Input);
+        assert_eq!(app.model.signed.len(), 1, "the move released nothing");
+        assert!(app.model.signed[0].unsaved());
+
+        let before = RELEASED_IN_TESTS.with(std::cell::Cell::get);
+        drop(app);
+        assert_eq!(
+            RELEASED_IN_TESTS.with(std::cell::Cell::get) - before,
+            1,
+            "leaving the application released the kept bytes"
+        );
+    }
+
+    #[test]
+    fn a_move_notice_after_a_failed_send_releases_nothing_and_a_panic_keeps_the_bytes() {
+        // The worker's `Backgrounded` for a move it took before it stopped can come
+        // after the failed send. For a store its read-back closed, that notice
+        // would release the bytes, so it must not while the reason is unknown; the
+        // panic that follows keeps them.
+        let scratch = Scratch::new("send-fails-then-backgrounded");
+        let (mut app, _) = signed_then_locked(&scratch, LockReason::ReopenFailed);
+        queue_gone(&app);
+        assert!(app.send(Command::Review, Purpose::Review).is_none());
+
+        let _ = app.on_event(Event::Backgrounded { seq: 1 });
+        assert_eq!(app.model.signed.len(), 1, "the notice released nothing");
+        let _ = app.on_event(Event::Stopped { panicked: true });
+        assert_eq!(app.model.signed.len(), 1, "and the panic keeps them");
+    }
+
+    #[test]
+    fn a_spend_answered_after_a_failed_send_is_taken_and_its_bytes_are_kept() {
+        // The worker signed a spend and then stopped, so the answer comes after the
+        // failed send. It is taken, and its bytes are kept with the stop: they are
+        // not lost to a queue dropped first.
+        let scratch = Scratch::new("send-fails-then-answer");
+        let (mut app, _events) = app(&scratch);
+        app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        let id = RequestId::example();
+        app.worker
+            .as_mut()
+            .expect("a worker")
+            .waiting
+            .push((id, Purpose::ConfirmSend));
+        queue_gone(&app);
+        assert!(app.send(Command::Review, Purpose::Review).is_none());
+
+        let sent = tawara_wallet_core::sample::sent_view();
+        let _ = app.on_event(Event::Done {
+            id,
+            reply: Box::new(Reply::Sent(sent.clone())),
+        });
+        assert!(sent_shown(&app).is_some(), "the answer is taken");
+
+        let _ = app.on_event(Event::Stopped { panicked: true });
+        assert_eq!(app.model.signed.len(), 1, "kept with the stop");
+        assert_eq!(
+            app.model.signed[0].sent.sent.artifact_hex,
+            sent.artifact_hex
+        );
+        assert!(app.model.signed[0].unsaved());
     }
 
     #[test]
