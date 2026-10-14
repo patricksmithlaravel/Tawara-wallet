@@ -17,7 +17,7 @@
 //! pages again scrolled to their end (`phone-<name>-end.png`), and two with
 //! the keyboard up (`phone-<name>-keyboard.png`), the field typed into
 //! focused and the page scrolled to it as the keyboard's coming up scrolls
-//! it: 63 in all. Every piece of
+//! it: 66 in all. Every piece of
 //! text names a bundled face (`tawara_app::fonts`), so the pixels do not
 //! depend on the fonts a machine has installed.
 //!
@@ -535,10 +535,10 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         (
             "w2-receive",
             DASHBOARD,
-            on(Page::Receive(ReceivePage {
-                account: Some(accounts[0].id),
-                view: Some(sample::receive_view()),
-            })),
+            on(Page::Receive(ReceivePage::answered(
+                accounts[0].id,
+                sample::receive_view(),
+            ))),
         ),
         (
             "w3-add-account",
@@ -760,9 +760,12 @@ const PHONE: (u32, u32) = (390, 844);
 const PHONE_DIR: &str =
     "/private/var/mobile/Containers/Data/Application/0A1B2C3D/Library/Application Support/Tawara";
 
-/// The long pages drawn a second time scrolled to their end.
-const PHONE_ENDS: [&str; 10] = [
+/// The long pages drawn a second time scrolled to their end. Receive is one,
+/// so that its QR code, which is below the fold at the top, is in an image the
+/// owner can approve it by (docs/DECISIONS.md D41).
+const PHONE_ENDS: [&str; 11] = [
     "w1-wallet",
+    "w2-receive",
     "w4-send",
     "w5-review",
     "w6-sent",

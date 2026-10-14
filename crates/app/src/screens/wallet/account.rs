@@ -512,4 +512,27 @@ mod tests {
             "Submit saved artifact wraps onto a line of its own"
         );
     }
+
+    #[test]
+    fn a_reverted_settle_is_offered_no_button_and_no_remedy() {
+        // docs/DECISIONS.md D38 item 5: a settle that a reorganisation
+        // reverted leaves the account one key behind the store, with no
+        // reservation. Nothing here may move a key index (PLAN 4.9), and
+        // Submit saved artifact belongs to an open reservation, so the panel
+        // draws the report and no button, and account recovery offers nothing.
+        let mut wallet = sample::wallet_view();
+        let id = wallet.accounts[2].id;
+        wallet.accounts[2].state = AccountState::Diverged {
+            kind: DivergenceKind::Behind { gap: 1 },
+            report: "This store recorded a SETTLE at index 4".to_owned(),
+            advance_to: None,
+        };
+        assert_eq!(crate::app::remedy(&wallet.accounts[2].state), None);
+        let model = phone(wallet, id, None);
+        assert_eq!(
+            find_bounds(crate::screens::view(&model), TALL, &button_id(0)),
+            None,
+            "a Behind account draws no button"
+        );
+    }
 }
