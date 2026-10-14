@@ -3,7 +3,10 @@
 //! The tests of the widgets and the screens use it, and so does the layout
 //! check the phone screens are held to: every node of a screen at 360 logical
 //! pixels must lie within the width, and so must the words of every text
-//! (docs/DECISIONS.md D32 item 10 (b)).
+//! (docs/DECISIONS.md D32 item 10 (b)). A screen that shows all of its words
+//! at once is held further, to the part of its window a person sees between
+//! the system's insets, with no page that scrolls and no word wider than its
+//! box (`fits_the_viewport`; docs/DECISIONS.md D44).
 //!
 //! The pointer and the fingers are given in window coordinates, as the shell
 //! gives them. Each event carries its position where it has one, and the
@@ -19,7 +22,7 @@ use iced::advanced::widget::operation::{Outcome, focusable};
 use iced::advanced::widget::{Id, Operation};
 use iced::event::Status;
 use iced::theme::Base;
-use iced::{Element, Event, Point, Rectangle, Size, Vector, mouse, touch, window};
+use iced::{Element, Event, Padding, Point, Rectangle, Size, Vector, mouse, touch, window};
 use iced_runtime::user_interface::{Cache, State, UserInterface};
 
 use crate::{fonts, overflow, theme};
@@ -379,6 +382,19 @@ pub(crate) fn fits<'a, M: 'a>(
     } else {
         Err(past.into_iter().map(|past| past.bounds).collect())
     }
+}
+
+/// What `root` draws outside the part of a window of `size` that a person
+/// sees, with the system's `insets` covered at the top and the bottom: each
+/// problem [`overflow::viewport_problems`] finds, one line each, and none when
+/// the screen fits. Every word of a screen that must show all of its words at
+/// once is held to it (docs/DECISIONS.md D44).
+pub(crate) fn fits_the_viewport<'a, M: 'a>(
+    root: impl Into<Element<'a, M>>,
+    size: (f32, f32),
+    insets: Padding,
+) -> Vec<String> {
+    overflow::viewport_problems(root.into(), &renderer(), Size::new(size.0, size.1), insets)
 }
 
 #[cfg(test)]

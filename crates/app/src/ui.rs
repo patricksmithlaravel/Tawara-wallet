@@ -41,6 +41,14 @@ pub mod ty {
 
     pub const HERO: Type = Type::new(fonts::DISPLAY_BOLD, 52.0);
     pub const HERO_ITALIC: Type = Type::new(fonts::DISPLAY_BOLD_ITALIC, 52.0);
+    /// The welcome screen's headline on a phone, S0. At [`HERO`]'s 52 points
+    /// the second line wraps at 360 wide, and the screen no longer fits 640
+    /// pixels of height with the wordmark, the pills and the button. At 34
+    /// points the second line stays on one line, and the screen fits
+    /// (docs/DECISIONS.md D37).
+    pub const HERO_PHONE: Type = Type::new(fonts::DISPLAY_BOLD, 34.0);
+    /// The italic second line of [`HERO_PHONE`].
+    pub const HERO_PHONE_ITALIC: Type = Type::new(fonts::DISPLAY_BOLD_ITALIC, 34.0);
     pub const ONBOARDING_TITLE: Type = Type::new(fonts::DISPLAY_BOLD, 28.0);
     pub const PAGE_TITLE: Type = Type::new(fonts::DISPLAY_BOLD, 26.0);
     pub const WORDMARK: Type = Type::new(fonts::DISPLAY_BOLD, 22.0);
@@ -64,6 +72,11 @@ pub mod ty {
     pub const MONO_SMALL: Type = Type::new(fonts::MONO, 12.0);
     pub const MONO_TINY: Type = Type::new(fonts::MONO, 11.0);
     pub const MONO_WORD: Type = Type::new(fonts::MONO_MEDIUM, 15.0);
+    /// A word of the recovery phrase in its grid: 14 pixels, one less than
+    /// [`MONO_WORD`], because at 15 the widest word of the library's list,
+    /// "abstract", would not fit its cell on a phone 360 wide
+    /// (docs/DECISIONS.md D44).
+    pub const PHRASE_WORD: Type = Type::new(fonts::MONO_MEDIUM, 14.0);
     pub const TABLE_AMOUNT: Type = Type::new(fonts::DISPLAY_SEMIBOLD, 13.0);
     pub const STAT_VALUE: Type = Type::new(fonts::DISPLAY_BOLD, 20.0);
     pub const HAIKU: Type = Type::new(fonts::DISPLAY_MEDIUM_ITALIC, 26.0);
