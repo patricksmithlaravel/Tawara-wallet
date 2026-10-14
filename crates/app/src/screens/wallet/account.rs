@@ -304,6 +304,15 @@ mod tests {
         size: (u32, u32),
         id: &iced::widget::Id,
     ) -> iced::Rectangle {
+        drawn(root, size, id).expect("the container is drawn")
+    }
+
+    /// As [`bounds_of`], or `None` when nothing carries `id`.
+    fn drawn(
+        root: Element<'_, Message>,
+        size: (u32, u32),
+        id: &iced::widget::Id,
+    ) -> Option<iced::Rectangle> {
         struct Find<'a> {
             id: &'a iced::widget::Id,
             found: Option<iced::Rectangle>,
@@ -324,7 +333,7 @@ mod tests {
         let mut ui = UserInterface::build(root, bounds, Cache::default(), &mut renderer);
         let mut find = Find { id, found: None };
         ui.operate(&renderer, &mut find);
-        find.found.expect("the container is drawn")
+        find.found
     }
 
     /// The store `wallet` on W7 for `account`, in a phone 360 logical pixels
@@ -403,6 +412,29 @@ mod tests {
         assert!(
             third.y > first.y,
             "Submit saved artifact wraps onto a line of its own"
+        );
+    }
+
+    #[test]
+    fn a_reverted_settle_is_offered_no_button_and_no_remedy() {
+        // docs/DECISIONS.md D38 item 5: a settle that a reorganisation
+        // reverted leaves the account one key behind the store, with no
+        // reservation. Nothing here may move a key index (PLAN 4.9), and
+        // Submit saved artifact belongs to an open reservation, so the panel
+        // draws the report and no button, and account recovery offers nothing.
+        let mut wallet = sample::wallet_view();
+        let id = wallet.accounts[2].id;
+        wallet.accounts[2].state = AccountState::Diverged {
+            kind: DivergenceKind::Behind { gap: 1 },
+            report: "This store recorded a SETTLE at index 4".to_owned(),
+            advance_to: None,
+        };
+        assert_eq!(crate::app::remedy(&wallet.accounts[2].state), None);
+        let model = phone(wallet, id, None);
+        assert_eq!(
+            drawn(crate::screens::view(&model), TALL, &button_id(0)),
+            None,
+            "a Behind account draws no button"
         );
     }
 }
