@@ -777,6 +777,16 @@ pub struct App {
     touches: std::cell::Cell<u64>,
 }
 
+impl Drop for App {
+    /// The application is gone, and with it the unsaved bytes it still holds.
+    /// The worker's `Locked` and `Stopped` for the shutdown reach the
+    /// application only while it runs, so the release does not wait for them
+    /// (docs/SCREENS.md W6).
+    fn drop(&mut self) {
+        self.model.release_unsaved();
+    }
+}
+
 /// Empty a secret field so its text is zeroized, not just dropped:
 /// `SecretText::take` moves the buffer into a zeroizing one and leaves the
 /// field empty (docs/PLAN.md section 4.2).
@@ -893,6 +903,27 @@ fn cleaned_phrase(field: &mut String) -> String {
     wipe(field);
     phrase
 }
+
+#[cfg(test)]
+thread_local! {
+    /// The unsaved spends a release has wiped on this thread. Once the
+    /// application is gone nothing is left to look at, so a test reads this to
+    /// see that the release on its drop ran.
+    static RELEASED_IN_TESTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// What S7 says of a signed spend's page that a lock kept, to show again once
+/// its store is unlocked (docs/SCREENS.md W6).
+const KEPT_NOTE: &str = "A signed spend's page was open when the wallet locked. It is kept, \
+                         with the signed bytes, and shown again when this store is unlocked.";
+
+/// What S7 says of unsaved signed bytes that a lock or a release wiped
+/// (docs/SCREENS.md W6).
+const WIPED_NOTE: &str = "Signed bytes that were not saved were wiped when the wallet \
+                          locked. Nothing is written to disk, so they are gone: if the \
+                          spend has not landed, its account's page offers Re-sign, which \
+                          takes the same destinations, amounts, references, fee and \
+                          block-to-live typed again.";
 
 impl Model {
     /// The model at start-up: the first screen, before the worker has said
@@ -1051,6 +1082,39 @@ impl Model {
             return;
         }
         wipe_typed(&mut self.screen);
+    }
+
+    /// Releases the unsaved bytes that a lock releases, when no lock comes for
+    /// them: a store the worker closed for a read-back that failed keeps them,
+    /// and nothing is open for a move to the background or a shutdown to close,
+    /// so no `Locked` comes (docs/DECISIONS.md D38 item 5; docs/SCREENS.md W6).
+    /// They are wiped, shown or kept, and S7 says so: its note no longer says a
+    /// kept page comes back once no kept spend is left to come back.
+    fn release_unsaved(&mut self) {
+        let released = self.drop_unsaved_at_lock();
+        #[cfg(test)]
+        RELEASED_IN_TESTS.with(|n| n.set(n.get() + released.len()));
+        if released.is_empty() {
+            return;
+        }
+        let resumes = self.signed.iter().any(|s| s.resume);
+        let Screen::Unlock(u) = &mut self.screen else {
+            return;
+        };
+        let note = u.note.take().unwrap_or_default();
+        let note = if resumes {
+            note
+        } else {
+            note.replace(KEPT_NOTE, "")
+        };
+        let note = note.trim();
+        u.note = Some(if note.is_empty() {
+            WIPED_NOTE.to_owned()
+        } else if note.contains(WIPED_NOTE) {
+            note.to_owned()
+        } else {
+            format!("{note} {WIPED_NOTE}")
+        });
     }
 
     /// Back to S3, in the folder the pending phrase was for (the default
@@ -1965,14 +2029,9 @@ impl App {
                     LockReason::Asked | LockReason::Replaced | LockReason::Shutdown => None,
                 };
                 if wiped {
-                    let gone = "Signed bytes that were not saved were wiped when the wallet \
-                                locked. Nothing is written to disk, so they are gone: if the \
-                                spend has not landed, its account's page offers Re-sign, which \
-                                takes the same destinations, amounts, references, fee and \
-                                block-to-live typed again.";
                     note = Some(match note {
-                        Some(n) => format!("{n} {gone}"),
-                        None => gone.to_owned(),
+                        Some(n) => format!("{n} {WIPED_NOTE}"),
+                        None => WIPED_NOTE.to_owned(),
                     });
                 }
                 let exists = dir.is_some()
@@ -1986,12 +2045,9 @@ impl App {
                     // after it, so its sent page may only just have been
                     // shown: it is kept, not closed with the screen.
                     if self.model.keep_signed(true) {
-                        let kept = "A signed spend's page was open when the wallet locked. It \
-                                    is kept, with the signed bytes, and shown again when this \
-                                    store is unlocked.";
                         note = Some(match note {
-                            Some(n) => format!("{n} {kept}"),
-                            None => kept.to_owned(),
+                            Some(n) => format!("{n} {KEPT_NOTE}"),
+                            None => KEPT_NOTE.to_owned(),
                         });
                     }
                     if exists || note.is_some() {
@@ -2006,6 +2062,10 @@ impl App {
             }
             Event::Backgrounded { seq } => {
                 self.model.backgrounded();
+                // A store the worker closed for a read-back that failed sends no
+                // `Locked` for the move, so the unsaved bytes it kept are released
+                // here, before the move is taken (docs/SCREENS.md W6).
+                self.model.release_unsaved();
                 // Taken in turn: every answer before it, a recovery phrase
                 // among them, and the `Locked` that dropped it, have been
                 // too. The shell may let the process be suspended.
@@ -2030,6 +2090,12 @@ impl App {
         let m = &mut self.model;
         m.stopped = Some(panicked || m.stopped == Some(true));
         drop(m.leave());
+        // A graceful shutdown ends the run, so the unsaved bytes go, as its lock
+        // would take them, even when no `Locked` came (docs/SCREENS.md W6). A
+        // worker that panicked keeps them, to save from the stopped card.
+        if !panicked {
+            m.release_unsaved();
+        }
         m.busy = None;
         m.wallet = None;
         m.watch.clear();
@@ -4888,6 +4954,86 @@ mod tests {
         );
         wallet(&mut app, WalletMsg::Copy(sent.artifact_hex.clone()));
         assert!(app.model.signed[0].copied);
+    }
+
+    #[test]
+    fn a_move_to_the_background_releases_the_bytes_a_failed_read_back_kept() {
+        // A store the worker closed for a read-back that failed keeps its unsaved
+        // bytes, and sends no `Locked` for the move: the move wipes them, and S7
+        // says so (docs/DECISIONS.md D38 item 5; docs/SCREENS.md W6).
+        let scratch = Scratch::new("background-kept");
+        let (mut app, sent) = signed_then_locked(&scratch, LockReason::ReopenFailed);
+        assert_eq!(app.model.signed.len(), 1, "kept, as the close leaves it");
+        let _ = app.on_event(Event::Backgrounded { seq: 1 });
+        assert!(
+            app.model.signed.is_empty(),
+            "the kept bytes went with the move"
+        );
+        match &app.model.screen {
+            Screen::Unlock(u) => {
+                let note = u.note.as_deref().unwrap_or_default();
+                assert!(note.contains("wiped"), "{note}");
+                assert!(!note.contains("shown again"), "{note}");
+            }
+            other => panic!("expected the unlock screen, got {other:?}"),
+        }
+        // Unlocked again: the page does not come back, and nothing is offered.
+        let _ = app.on_reply(Purpose::Unlock, Reply::Unlocked(sent.view.clone()));
+        assert!(sent_shown(&app).is_none());
+        assert_eq!(app.model.unsaved_signed().count(), 0);
+    }
+
+    #[test]
+    fn a_move_to_the_background_wipes_a_shown_unsaved_page_when_no_lock_comes() {
+        // The page is shown, and the move's `Locked` does not come: the move
+        // wipes it all the same (docs/SCREENS.md W6).
+        let (mut app, _) = just_sent();
+        let _ = app.on_event(Event::Backgrounded { seq: 1 });
+        assert!(
+            app.model.signed.is_empty(),
+            "the shown bytes went with the move"
+        );
+        assert!(sent_shown(&app).is_none(), "and so did their page");
+    }
+
+    #[test]
+    fn a_graceful_shutdown_releases_the_unsaved_bytes_and_a_panic_keeps_them() {
+        // The shutdown ends the run, so unsaved bytes go even when no `Locked`
+        // came with it; a worker that panicked keeps them to save (docs/
+        // DECISIONS.md D38 item 5; docs/SCREENS.md W6).
+        let scratch = Scratch::new("shutdown-kept-panic");
+        let (mut app, _) = signed_then_locked(&scratch, LockReason::ReopenFailed);
+        let _ = app.on_event(Event::Stopped { panicked: true });
+        assert_eq!(app.model.signed.len(), 1, "a panic keeps the kept bytes");
+        assert!(app.model.signed[0].unsaved());
+
+        let scratch = Scratch::new("shutdown-kept");
+        let (mut app, _) = signed_then_locked(&scratch, LockReason::ReopenFailed);
+        let _ = app.on_event(Event::Stopped { panicked: false });
+        assert!(
+            app.model.signed.is_empty(),
+            "the shutdown released the kept bytes"
+        );
+
+        let (mut app, _) = just_sent();
+        let _ = app.on_event(Event::Stopped { panicked: false });
+        assert!(app.model.signed.is_empty(), "and the shown bytes");
+    }
+
+    #[test]
+    fn leaving_the_application_releases_the_unsaved_bytes_it_still_holds() {
+        // The application's end, with the store closed for a read-back that
+        // failed and no event reaching it: its drop releases the kept bytes
+        // (docs/DECISIONS.md D38 item 5; docs/SCREENS.md W6).
+        let scratch = Scratch::new("drop-kept");
+        let (app, _) = signed_then_locked(&scratch, LockReason::ReopenFailed);
+        let before = RELEASED_IN_TESTS.with(std::cell::Cell::get);
+        drop(app);
+        assert_eq!(
+            RELEASED_IN_TESTS.with(std::cell::Cell::get) - before,
+            1,
+            "the kept bytes went with the application"
+        );
     }
 
     #[test]
