@@ -148,7 +148,7 @@ pub struct Model {
     /// The worker stopped: `Some(true)` when it panicked. Nothing more can
     /// be done in this run. `Some(false)` is also a stop whose reason is not
     /// yet known, since a command could not be sent to the worker
-    /// ([`App::lost_worker`]): until its notice says which, the unsaved bytes
+    /// (`App::lost_worker`): until its notice says which, the unsaved bytes
     /// are kept, as a panic keeps them.
     pub stopped: Option<bool>,
     /// The window's width in logical pixels. Below [`COMPACT`] the phone
