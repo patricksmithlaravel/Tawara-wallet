@@ -2000,14 +2000,17 @@ impl App {
                 // A store the worker closed because it could not be read back
                 // after a send or a settle, or one replaced by another unlock,
                 // keeps them: no one asked for that close, and bytes just signed
-                // may not have been seen yet.
-                let releases = matches!(
-                    reason,
-                    LockReason::Asked
-                        | LockReason::Idle
-                        | LockReason::Background
-                        | LockReason::Shutdown
-                );
+                // may not have been seen yet. A lock that comes after a send
+                // failed, while the stop's reason is not yet known, keeps them
+                // too, unless it is the shutdown's: the worker may have sent it
+                // just before it panicked, and a panic keeps them until Tawara
+                // closes (see `App::lost_worker`).
+                let lost = self.worker.as_ref().is_some_and(|w| w.lost);
+                let releases = match reason {
+                    LockReason::Shutdown => true,
+                    LockReason::Asked | LockReason::Idle | LockReason::Background => !lost,
+                    LockReason::Replaced | LockReason::ReopenFailed => false,
+                };
                 let wiped = releases && !self.model.drop_unsaved_at_lock().is_empty();
                 self.model.busy = None;
                 // What the index holds for the store goes with it, and so does a
@@ -5176,6 +5179,62 @@ mod tests {
         assert_eq!(app.model.signed.len(), 1, "the notice released nothing");
         let _ = app.on_event(Event::Stopped { panicked: true });
         assert_eq!(app.model.signed.len(), 1, "and the panic keeps them");
+    }
+
+    /// The application with a store its read-back closed and one unsaved spend
+    /// kept, after a send failed for a queue that went: then the worker's
+    /// `Locked` for `reason`, sent before it stopped, is taken.
+    fn locked_after_a_failed_send(scratch: &Scratch, reason: LockReason) -> App {
+        let (mut app, _) = signed_then_locked(scratch, LockReason::ReopenFailed);
+        queue_gone(&app);
+        assert!(app.send(Command::Review, Purpose::Review).is_none());
+        let _ = app.on_event(Event::Locked { reason });
+        app
+    }
+
+    #[test]
+    fn a_lock_notice_after_a_failed_send_releases_nothing_and_a_panic_keeps_the_bytes() {
+        // A lock the worker sent just before it panicked can reach the interface
+        // after a send failed. While the stop's reason is not known, the lock
+        // keeps the bytes, as a move's notice does; the panic that follows keeps
+        // them (docs/DECISIONS.md D38 item 5; docs/SCREENS.md W6).
+        for reason in [LockReason::Asked, LockReason::Idle, LockReason::Background] {
+            let scratch = Scratch::new("send-fails-then-locked");
+            let mut app = locked_after_a_failed_send(&scratch, reason);
+            assert_eq!(
+                app.model.signed.len(),
+                1,
+                "the lock ({reason:?}) released nothing"
+            );
+            assert!(app.model.signed[0].unsaved());
+            let _ = app.on_event(Event::Stopped { panicked: true });
+            assert_eq!(app.model.signed.len(), 1, "and the panic keeps them");
+            assert!(app.model.signed[0].unsaved());
+        }
+    }
+
+    #[test]
+    fn a_lock_notice_after_a_failed_send_then_a_graceful_stop_releases_the_bytes() {
+        // The counterpart: the notice that follows says the stop was graceful, so
+        // the bytes the lock kept are released then.
+        let scratch = Scratch::new("send-fails-locked-graceful");
+        let mut app = locked_after_a_failed_send(&scratch, LockReason::Background);
+        assert_eq!(
+            app.model.signed.len(),
+            1,
+            "not yet: the reason is not known"
+        );
+        let _ = app.on_event(Event::Stopped { panicked: false });
+        assert!(app.model.signed.is_empty(), "a graceful stop releases them");
+    }
+
+    #[test]
+    fn a_shutdown_lock_after_a_failed_send_releases_the_bytes() {
+        // A shutdown's lock says the stop is graceful, so it releases the bytes,
+        // whether or not a send failed first.
+        let scratch = Scratch::new("send-fails-then-shutdown-lock");
+        let app = locked_after_a_failed_send(&scratch, LockReason::Shutdown);
+        assert!(app.model.signed.is_empty(), "the shutdown releases them");
     }
 
     #[test]
