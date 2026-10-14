@@ -43,14 +43,16 @@ const ICED_GIT: &str = "https://github.com/patricksmithlaravel/iced_mobile";
 
 /// The features the `iced` line in the workspace manifest names, in any order.
 /// D27 added `canvas` and `advanced` to the list the workspace line writes out,
-/// beyond iced 0.14.0's own defaults. Each feature turns on code, crates or a platform backend in every build, so a
-/// change to this list needs a decision, recorded in docs/DECISIONS.md first
-/// (D32 item 9). `qr_code` in particular comes only with the owner's approval.
-const ICED_FEATURES: [&str; 10] = [
+/// beyond iced 0.14.0's own defaults. D41 added `qr_code`, for the code on
+/// Receive, which the owner approved on 2026-10-13. Each feature turns on code,
+/// crates or a platform backend in every build, so a change to this list needs
+/// a decision, recorded in docs/DECISIONS.md first (D32 item 9).
+const ICED_FEATURES: [&str; 11] = [
     "wgpu",
     "tiny-skia",
     "canvas",
     "advanced",
+    "qr_code",
     "crisp",
     "web-colors",
     "thread-pool",
