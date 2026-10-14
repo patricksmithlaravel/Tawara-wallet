@@ -187,6 +187,10 @@ pub struct NodeState {
 /// Which screen is shown (docs/SCREENS.md).
 #[derive(Debug)]
 pub enum Screen {
+    /// S0, on a phone alone, when the phone's folder holds no store: the
+    /// brand panel and "Get started", which leads to S1 (docs/DECISIONS.md
+    /// D37).
+    Welcome,
     /// S1.
     Start { choice: StartChoice },
     /// S2.
@@ -317,6 +321,10 @@ pub struct PhraseState {
     pub positions: [usize; 3],
     /// The person said they wrote it down.
     pub written: bool,
+    /// The person pressed "Show the phrase" (docs/DECISIONS.md D44). On a phone
+    /// too short for the library's warning and the phrase on one frame, the
+    /// warning comes first, on its own, and the words only after this.
+    pub shown: bool,
     pub words: [String; 3],
     pub error: Option<String>,
 }
@@ -422,6 +430,8 @@ pub enum Message {
     Word(usize, Typed),
     CreateWallet,
     Written(bool),
+    /// S4's "Show the phrase" (docs/DECISIONS.md D44).
+    ShowPhrase,
     ToConfirm,
     BackToPhrase,
     StartOver,
@@ -764,7 +774,7 @@ fn wipe_typed(screen: &mut Screen) {
                 wipe(w);
             }
         }
-        Screen::Start { .. } | Screen::Node(_) | Screen::Wallet(_) => {}
+        Screen::Welcome | Screen::Start { .. } | Screen::Node(_) | Screen::Wallet(_) => {}
     }
 }
 
@@ -861,6 +871,14 @@ impl Model {
     #[must_use]
     pub(crate) fn phone(&self) -> bool {
         self.confined.is_some()
+    }
+
+    /// Whether this is a phone whose own folder already holds a store. That
+    /// store is the only one the phone can open, so S7 is its first screen,
+    /// and S1 and S3 are not offered (docs/DECISIONS.md D37).
+    #[must_use]
+    pub(crate) fn phone_holds_store(&self) -> bool {
+        self.phone() && self.store_to_open().is_some()
     }
 
     /// Confine this model to `private_dir`, the app-private folder a phone
@@ -1031,15 +1049,14 @@ impl App {
         // (docs/DECISIONS.md D32 item 10 (b)).
         app.model.width = NARROWEST;
         // The first screen again, now that the store is the default folder's
-        // alone: the unlock screen when a store is there, else the start.
+        // alone: the unlock screen when a store is there, else the welcome
+        // screen, which leads to the start (docs/DECISIONS.md D37).
         app.model.screen = match app.model.store_to_open() {
             Some(dir) => Screen::Unlock(UnlockForm {
                 dir,
                 ..UnlockForm::default()
             }),
-            None => Screen::Start {
-                choice: StartChoice::Create,
-            },
+            None => Screen::Welcome,
         };
         (app, task)
     }
@@ -1301,10 +1318,14 @@ impl App {
                 return operation::focus_previous();
             }
             Message::Go(Go::Start) => {
-                let _ = m.leave();
-                m.screen = Screen::Start {
-                    choice: StartChoice::Create,
-                };
+                // On a phone with a store, the start screens are not offered:
+                // S7 is its first screen (docs/DECISIONS.md D37).
+                if !m.phone_holds_store() {
+                    let _ = m.leave();
+                    m.screen = Screen::Start {
+                        choice: StartChoice::Create,
+                    };
+                }
             }
             Message::Go(Go::Unlock) => m.unlock_screen(None, None, None),
             Message::Go(Go::Wallet) => {
@@ -1411,6 +1432,11 @@ impl App {
             Message::Written(yes) => {
                 if let Screen::Phrase(p) = &mut m.screen {
                     p.written = yes;
+                }
+            }
+            Message::ShowPhrase => {
+                if let Screen::Phrase(p) = &mut m.screen {
+                    p.shown = true;
                 }
             }
             Message::ToConfirm => {
@@ -1994,6 +2020,7 @@ impl App {
                     dir,
                     positions: confirm_positions,
                     written: false,
+                    shown: false,
                     words: Default::default(),
                     error: None,
                 });
@@ -2043,19 +2070,19 @@ impl App {
     fn go_back(&mut self, back: Back) {
         let m = &mut self.model;
         match back {
-            Back::Start => {
-                m.screen = Screen::Start {
-                    choice: StartChoice::Create,
-                };
+            Back::Wallet if m.wallet.is_some() => {
+                m.screen = Screen::Wallet(WalletPage::default());
             }
             Back::Unlock => m.unlock_screen(None, None, None),
-            Back::Wallet => {
-                m.screen = if m.wallet.is_some() {
-                    Screen::Wallet(WalletPage::default())
-                } else {
-                    Screen::Start {
-                        choice: StartChoice::Create,
-                    }
+            // A phone that holds a store is not offered the start screens,
+            // whichever way back leads there: its first screen is S7
+            // (docs/DECISIONS.md D37).
+            Back::Start | Back::Wallet if m.phone_holds_store() => {
+                m.unlock_screen(None, None, None);
+            }
+            Back::Start | Back::Wallet => {
+                m.screen = Screen::Start {
+                    choice: StartChoice::Create,
                 };
             }
         }
@@ -2096,7 +2123,7 @@ impl App {
             Screen::Confirm(p) => p.error = text,
             Screen::Node(f) => f.error = text,
             Screen::Wallet(p) => p.error = text,
-            Screen::Start { .. } | Screen::Phrase(_) => {}
+            Screen::Welcome | Screen::Start { .. } | Screen::Phrase(_) => {}
         }
     }
 }
@@ -3045,7 +3072,7 @@ mod tests {
     #[test]
     fn a_phone_offers_no_remembered_folder_and_starts_on_the_first_screen() {
         // A folder remembered from an earlier run is not one a phone chooses,
-        // and the default folder holds no store: the start screen.
+        // and the default folder holds no store: the welcome screen (S0).
         let scratch = Scratch::new("hosted-remembered");
         std::fs::create_dir_all(&scratch.0).unwrap();
         let elsewhere = scratch.0.join("elsewhere").join("keystore");
@@ -3055,6 +3082,175 @@ mod tests {
         };
         preferences::save(&scratch.0.join(preferences::FILE_NAME), &prefs).unwrap();
         let (app, _) = App::hosted(&scratch.0);
+        assert!(
+            matches!(app.model.screen, Screen::Welcome),
+            "{:?}",
+            app.model.screen
+        );
+    }
+
+    /// The snapshot file of a store, which `tawara_wallet_core::store_exists`
+    /// looks for, as the library's `keystore::occupied` does. The interface
+    /// only checks that the file is there, so a file of this name, empty, is
+    /// enough for these tests: nothing here opens it.
+    const STORE_SNAPSHOT: &str = "accounts.mks";
+
+    /// The app-private folders the two phones' shells give `App::hosted`, as
+    /// paths under a scratch folder: Android's `no_backup`, beside the app's
+    /// `files`, and iOS's `Library/Application Support/Tawara` in the app's
+    /// container, whose name has a space in it (Tawara-mobile's
+    /// `crates/mobile/src/android.rs` and `ios.rs`). The store is looked for
+    /// in a `keystore` folder inside either.
+    const PHONE_LAYOUTS: [&str; 2] = [
+        "data/user/0/com.patricksmithlaravel.tawara/no_backup",
+        "var/mobile/Containers/Data/Application/0A1B2C3D/Library/Application Support/Tawara",
+    ];
+
+    /// A phone's private folder in `layout` under `scratch`, holding a store
+    /// when `store` says so, and the store's folder as S7 names it.
+    fn phone_folder(scratch: &Scratch, layout: &str, store: bool) -> (PathBuf, String) {
+        let private = scratch.0.join(layout);
+        let keystore = private.join("keystore");
+        std::fs::create_dir_all(&private).unwrap();
+        if store {
+            std::fs::create_dir_all(&keystore).unwrap();
+            std::fs::write(keystore.join(STORE_SNAPSHOT), b"").unwrap();
+        }
+        (private, keystore.display().to_string())
+    }
+
+    #[test]
+    fn a_hosted_phone_with_no_store_starts_on_the_welcome_screen() {
+        // The phone's own folder holds no store: S0 is the first screen, and
+        // its "Get started" leads on to S1 (docs/DECISIONS.md D37), in either
+        // phone's folder layout.
+        let scratch = Scratch::new("hosted-welcome");
+        for layout in PHONE_LAYOUTS {
+            let (private, _) = phone_folder(&scratch, layout, false);
+            let (mut app, _) = App::hosted(&private);
+            assert!(
+                matches!(app.model.screen, Screen::Welcome),
+                "{layout}: {:?}",
+                app.model.screen
+            );
+            assert!(!app.model.phone_holds_store(), "{layout}");
+            let _ = app.update(Message::Go(Go::Start));
+            assert!(
+                matches!(app.model.screen, Screen::Start { .. }),
+                "{layout}: {:?}",
+                app.model.screen
+            );
+        }
+    }
+
+    #[test]
+    fn a_hosted_phone_with_a_store_opens_on_unlock_and_go_start_does_nothing() {
+        // The phone's own folder holds a store: S7 is its first screen, and
+        // Go::Start leaves it there, so S1 and S3 are not reached
+        // (docs/DECISIONS.md D37), in either phone's folder layout.
+        let scratch = Scratch::new("hosted-store");
+        for layout in PHONE_LAYOUTS {
+            let (private, folder) = phone_folder(&scratch, layout, true);
+            let (mut app, _) = App::hosted(&private);
+            assert!(app.model.phone_holds_store(), "{layout}");
+            assert!(
+                matches!(&app.model.screen, Screen::Unlock(u) if u.dir == folder),
+                "{layout}: {:?}",
+                app.model.screen
+            );
+            let _ = app.update(Message::Go(Go::Start));
+            assert!(
+                matches!(&app.model.screen, Screen::Unlock(u) if u.dir == folder),
+                "{layout}: {:?}",
+                app.model.screen
+            );
+        }
+    }
+
+    #[test]
+    fn a_hosted_phone_with_a_store_goes_back_from_the_node_to_unlock_not_to_the_start() {
+        // Back from S2 leads to S1 only where S1 is offered: a phone that holds
+        // a store goes back to S7, whichever screen S2 was opened from
+        // (docs/DECISIONS.md D37).
+        let scratch = Scratch::new("hosted-store-back");
+        let (private, folder) = phone_folder(&scratch, PHONE_LAYOUTS[0], true);
+        let (mut app, _) = App::hosted(&private);
+        for back in [Back::Start, Back::Wallet] {
+            app.model.screen = Screen::Node(NodeForm::default());
+            app.go_back(back);
+            assert!(
+                matches!(&app.model.screen, Screen::Unlock(u) if u.dir == folder),
+                "{back:?}: {:?}",
+                app.model.screen
+            );
+        }
+    }
+
+    /// What a tap on S2's "Back" sends, for a node screen opened from `back`.
+    fn node_back_link(app: &mut App, back: Back, size: (u32, u32)) -> Vec<Message> {
+        app.model.screen = Screen::Node(NodeForm {
+            url: String::new(),
+            error: None,
+            back,
+        });
+        let mut screen = Driver::new(crate::screens::view(&app.model), size);
+        let at = screen.text_bounds("Back").expect("'Back' is drawn");
+        let (messages, _, _) = screen.send(&[
+            mouse_move(at.center_x(), at.center_y()),
+            mouse_press(),
+            mouse_release(),
+        ]);
+        messages
+    }
+
+    #[test]
+    fn s2s_back_link_leads_a_phone_with_a_store_to_unlock_and_the_desktop_to_the_start() {
+        // The link S2 draws leads where `go_back` does: on a phone that holds a
+        // store, to S7, since a link to S1 would do nothing there; on the
+        // desktop, to S1 as before (docs/DECISIONS.md D37).
+        let scratch = Scratch::new("hosted-store-link");
+        let (private, folder) = phone_folder(&scratch, PHONE_LAYOUTS[1], true);
+        let (mut phone, _) = App::hosted(&private);
+        for back in [Back::Start, Back::Wallet] {
+            let messages = node_back_link(&mut phone, back, (360, 844));
+            assert!(
+                matches!(messages.as_slice(), [Message::Go(Go::Unlock)]),
+                "{back:?}: {messages:?}"
+            );
+            for message in messages {
+                let _ = phone.update(message);
+            }
+            assert!(
+                matches!(&phone.model.screen, Screen::Unlock(u) if u.dir == folder),
+                "{back:?}: {:?}",
+                phone.model.screen
+            );
+        }
+
+        let mut desktop = alone();
+        let messages = node_back_link(&mut desktop, Back::Start, (1440, 900));
+        assert!(
+            matches!(messages.as_slice(), [Message::Go(Go::Start)]),
+            "{messages:?}"
+        );
+    }
+
+    #[test]
+    fn on_the_desktop_go_start_offers_the_start_screen_whatever_store_there_is() {
+        // The desktop is not confined, so no store changes what Go::Start
+        // offers (docs/DECISIONS.md D37).
+        let scratch = Scratch::new("desktop-store");
+        let keystore = scratch.0.join("keystore");
+        std::fs::create_dir_all(&keystore).unwrap();
+        std::fs::write(keystore.join(STORE_SNAPSHOT), b"").unwrap();
+        let mut app = alone();
+        app.model.default_dir = Some(keystore.clone());
+        app.model.screen = Screen::Unlock(UnlockForm {
+            dir: keystore.display().to_string(),
+            ..UnlockForm::default()
+        });
+        assert!(!app.model.phone_holds_store());
+        let _ = app.update(Message::Go(Go::Start));
         assert!(
             matches!(app.model.screen, Screen::Start { .. }),
             "{:?}",
@@ -3292,6 +3488,7 @@ mod tests {
                     dir: String::new(),
                     positions: tawara_wallet_core::CONFIRM_POSITIONS,
                     written: true,
+                    shown: true,
                     words: Default::default(),
                     error: None,
                 }),
@@ -3391,6 +3588,7 @@ mod tests {
                 dir: String::new(),
                 positions: tawara_wallet_core::CONFIRM_POSITIONS,
                 written: true,
+                shown: true,
                 words: ["abandon".into(), "abandon".into(), String::new()],
                 error: None,
             }),
@@ -3399,6 +3597,7 @@ mod tests {
                 dir: String::new(),
                 positions: tawara_wallet_core::CONFIRM_POSITIONS,
                 written: false,
+                shown: false,
                 words: Default::default(),
                 error: None,
             }),
@@ -3478,6 +3677,7 @@ mod tests {
                 dir: "/a/chosen/folder".to_owned(),
                 positions: tawara_wallet_core::CONFIRM_POSITIONS,
                 written: true,
+                shown: true,
                 words: Default::default(),
                 error: None,
             })
@@ -3525,6 +3725,39 @@ mod tests {
     }
 
     #[test]
+    fn show_the_phrase_marks_the_words_shown_and_only_on_the_phrase() {
+        // docs/DECISIONS.md D44: "Show the phrase" moves a short phone past the
+        // library's warning. It changes nothing else, and does nothing on any
+        // other screen.
+        let mut app = alone();
+        app.model.screen = Screen::Phrase(PhraseState {
+            phrase: PhraseForDisplay::example(),
+            dir: "/a/chosen/folder".to_owned(),
+            positions: tawara_wallet_core::CONFIRM_POSITIONS,
+            written: false,
+            words: Default::default(),
+            error: None,
+            shown: false,
+        });
+        let _ = app.update(Message::ShowPhrase);
+        assert!(
+            matches!(&app.model.screen, Screen::Phrase(p) if p.shown && !p.written),
+            "{:?}",
+            app.model.screen
+        );
+
+        app.model.screen = Screen::Start {
+            choice: StartChoice::Create,
+        };
+        let _ = app.update(Message::ShowPhrase);
+        assert!(
+            matches!(app.model.screen, Screen::Start { .. }),
+            "{:?}",
+            app.model.screen
+        );
+    }
+
+    #[test]
     fn starting_over_keeps_the_folder_chosen() {
         let mut app = alone();
         app.model.screen = Screen::Confirm(PhraseState {
@@ -3532,6 +3765,7 @@ mod tests {
             dir: "/a/chosen/folder".to_owned(),
             positions: tawara_wallet_core::CONFIRM_POSITIONS,
             written: true,
+            shown: true,
             words: Default::default(),
             error: None,
         });

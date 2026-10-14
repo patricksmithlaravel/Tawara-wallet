@@ -14,12 +14,15 @@
 //! the rendering it follows and a scale of 1. The desktop's images are
 //! `<name>.png`. The phone's are `phone-<name>.png` at 390 by 844 logical
 //! pixels with a safe area of 47 at the top and 34 at the bottom, the long
-//! pages again scrolled to their end (`phone-<name>-end.png`), and two with
+//! pages again scrolled to their end (`phone-<name>-end.png`), two with
 //! the keyboard up (`phone-<name>-keyboard.png`), the field typed into
 //! focused and the page scrolled to it as the keyboard's coming up scrolls
-//! it: 64 in all. Every piece of
-//! text names a bundled face (`tawara_app::fonts`), so the pixels do not
-//! depend on the fonts a machine has installed.
+//! it, and two frames of the recovery phrase on a short phone, 640 tall
+//! (`phone-s4-phrase-warning.png` and `phone-s4-phrase-shown.png`). The
+//! phone's welcome screen, S0, has no desktop image: it is drawn only as
+//! `phone-s0-welcome.png` (docs/DECISIONS.md D37), so the phone's images are
+//! 67 in all. Every piece of text names a bundled face (`tawara_app::fonts`),
+//! so the pixels do not depend on the fonts a machine has installed.
 //!
 //! Flags:
 //!
@@ -39,13 +42,19 @@
 //! - `--phone-width N`: draws the phone's images N logical pixels wide rather
 //!   than 390, for looking at a width, and with `--fit` lays them out at N
 //!   rather than 360. It is refused with `--check`.
-//! - `--fit`: lays every selected phone sample out 844 tall, at the width
-//!   `--phone-width` gives or else at 360, and prints `OVERFLOW name:
-//!   left..right` for each node whose right edge passes that width, and for
-//!   each text whose words do, with its content (ten a sample at most). The
-//!   phone's wallet page is also laid out in nanoMCM. It exits non-zero if
-//!   there is any, and writes nothing. `--fit --phone-width 390` holds the
-//!   phone set to the width it is drawn at.
+//! - `--fit`: lays every selected phone sample out at its own height (844,
+//!   or 640 for the two short frames), at the width `--phone-width` gives or
+//!   else at 360, and prints `OVERFLOW name: left..right` for each node
+//!   whose right edge passes that width, and for each text whose words do,
+//!   with its content (ten a sample at most). The screens that show all of
+//!   their words at once, S0 and each frame of S4, are held further, as their
+//!   tests hold them (`tawara_app::overflow::viewport_problems`;
+//!   docs/DECISIONS.md D37, D44): `OVERFLOW name:` is also printed, with the
+//!   problem, for a word above the top inset or below the bottom one, a page
+//!   that scrolls, and a word wider than its box. The phone's wallet page is
+//!   also laid out in nanoMCM. It exits non-zero if there is any, and writes
+//!   nothing. `--fit --phone-width 390` holds the phone set to the width it is
+//!   drawn at.
 //! - The environment variable `TAWARA_SCREENSHOTS_PRINT`: with `--check`,
 //!   prints each image that DIFFERS or is MISSING as base64, between
 //!   `----- BEGIN <name>.png -----` and `----- END <name>.png -----`, so that
@@ -203,6 +212,7 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         written: true,
         words: Default::default(),
         error: None,
+        shown: false,
     };
     let synced = SyncWarning {
         service: "Dropbox",
@@ -719,6 +729,7 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         ),
         ("stopped-spends", FIRST_RUN, stopped),
         ("narrow-s1-get-started", SMALLEST, base()),
+        ("narrow-s4-phrase", SMALLEST, with(Screen::Phrase(phrase()))),
         ("narrow-w1-wallet", DASHBOARD_NARROW, wallet()),
         ("narrow-w4-send", DASHBOARD_NARROW, compose()),
         ("narrow-e1-explorer", DASHBOARD_NARROW, explorer()),
@@ -731,10 +742,17 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
 const PHONE: (u32, u32) = (390, 844);
 const PHONE_DIR: &str =
     "/private/var/mobile/Containers/Data/Application/0A1B2C3D/Library/Application Support/Tawara";
+/// A short phone's height (docs/DECISIONS.md D44 item 2): under 733 pixels
+/// between its insets, so the recovery phrase is drawn in two frames on it.
+/// D44 item 2 gives the 733, held as `PHRASE_ONE_FRAME` in
+/// crates/app/src/screens/first_run.rs.
+const SHORT_PHONE: u32 = 640;
 
 /// The long pages drawn a second time scrolled to their end. Receive is one,
 /// so that its QR code, which is below the fold at the top, is in an image the
-/// owner can approve it by (docs/DECISIONS.md D41).
+/// owner can approve (docs/DECISIONS.md D41). S4 is not among them: its
+/// frame fits 390 by 844 without scrolling (docs/DECISIONS.md D44), so its end
+/// is the image itself.
 const PHONE_ENDS: [&str; 11] = [
     "w1-wallet",
     "w2-receive",
@@ -834,8 +852,9 @@ fn sample_named(name: &str) -> Model {
 }
 
 /// The phone images at `width` logical pixels across: every desktop sample
-/// but the narrow ones, the long pages scrolled to their end, and two drawn
-/// with the keyboard up (docs/DECISIONS.md D32 item 10 (c)).
+/// but the narrow ones, the phone's welcome screen, which the desktop does not
+/// have, the long pages scrolled to their end, and two drawn with the keyboard
+/// up (docs/DECISIONS.md D32 item 10 (c), D37).
 fn phones(width: u32) -> Vec<Image> {
     let size = (width, PHONE.1);
     let mut out: Vec<Image> = samples()
@@ -849,12 +868,36 @@ fn phones(width: u32) -> Vec<Image> {
             focus: None,
         })
         .collect();
+    // S0 is a phone's screen alone (docs/DECISIONS.md D37), so it has no
+    // desktop image. The sample's phone holds no store, so S0 is its first screen.
+    out.push(Image {
+        name: "phone-s0-welcome".to_owned(),
+        size,
+        model: phone(with(Screen::Welcome), 0.0),
+        to_end: false,
+        focus: None,
+    });
     for name in PHONE_ENDS {
         out.push(Image {
             name: format!("phone-{name}-end"),
             size,
             model: phone(sample_named(name), 0.0),
             to_end: true,
+            focus: None,
+        });
+    }
+    // A short phone draws the recovery phrase in two frames: the library's
+    // warning with "Show the phrase", then the words (docs/DECISIONS.md D44).
+    for (name, shown) in [("s4-phrase-warning", false), ("s4-phrase-shown", true)] {
+        let mut model = sample_named("s4-phrase");
+        if let Screen::Phrase(p) = &mut model.screen {
+            p.shown = shown;
+        }
+        out.push(Image {
+            name: format!("phone-{name}"),
+            size: (width, SHORT_PHONE),
+            model: phone(model, 0.0),
+            to_end: false,
             focus: None,
         });
     }
@@ -1031,11 +1074,17 @@ fn base64(bytes: &[u8]) -> String {
         .join("\n")
 }
 
-/// What `model`'s window at `width` logical pixels draws past its right edge,
-/// as `OVERFLOW name: left..right` lines, each text's content after its
-/// extent (docs/DECISIONS.md D32 item 10 (b); `tawara_app::overflow`).
-fn overflow_lines(renderer: &iced::Renderer, name: &str, model: &Model, width: f32) -> Vec<String> {
-    overflow::past_the_edge(screens::view(model), renderer, width, PHONE.1 as f32)
+/// What `model`'s window at `width` by `height` logical pixels draws past its
+/// right edge, as `OVERFLOW name: left..right` lines, each text's content after
+/// its extent (docs/DECISIONS.md D32 item 10 (b); `tawara_app::overflow`).
+fn overflow_lines(
+    renderer: &iced::Renderer,
+    name: &str,
+    model: &Model,
+    width: f32,
+    height: f32,
+) -> Vec<String> {
+    overflow::past_the_edge(screens::view(model), renderer, width, height)
         .into_iter()
         .map(|past| {
             let (left, right) = (past.bounds.x, past.bounds.x + past.bounds.width);
@@ -1045,6 +1094,38 @@ fn overflow_lines(renderer: &iced::Renderer, name: &str, model: &Model, width: f
             }
         })
         .collect()
+}
+
+/// The phone images of the screens that show all of their words at once: S0,
+/// and S4 in each of its frames. `--fit` holds them to the part of the window a
+/// person sees between the safe area's insets, with no page that scrolls and
+/// no word wider than its box, as their tests do (docs/DECISIONS.md D37, D44).
+const WHOLE: [&str; 4] = [
+    "phone-s0-welcome",
+    "phone-s4-phrase",
+    "phone-s4-phrase-warning",
+    "phone-s4-phrase-shown",
+];
+
+/// What `model`'s window at `width` by `height` logical pixels draws outside
+/// the part of it a person sees, between the insets of `model`'s safe area, as
+/// `OVERFLOW name: problem` lines (`tawara_app::overflow::viewport_problems`).
+fn viewport_lines(
+    renderer: &iced::Renderer,
+    name: &str,
+    model: &Model,
+    width: f32,
+    height: f32,
+) -> Vec<String> {
+    overflow::viewport_problems(
+        screens::view(model),
+        renderer,
+        Size::new(width, height),
+        model.safe_area.padding(0.0),
+    )
+    .into_iter()
+    .map(|problem| format!("OVERFLOW {name}: {problem}"))
+    .collect()
 }
 
 /// The phone images selected, laid out at `width` logical pixels: prints
@@ -1061,10 +1142,14 @@ fn fit(renderer: &iced::Renderer, only: &[String], except: &[String], width: u32
         }
         let mut model = image.model;
         model.width = logical;
-        for line in overflow_lines(renderer, &image.name, &model, logical)
-            .into_iter()
-            .take(10)
-        {
+        #[allow(clippy::cast_precision_loss)]
+        let height = image.size.1 as f32;
+        let lines = if WHOLE.contains(&image.name.as_str()) {
+            viewport_lines(renderer, &image.name, &model, logical, height)
+        } else {
+            overflow_lines(renderer, &image.name, &model, logical, height)
+        };
+        for line in lines.into_iter().take(10) {
             println!("{line}");
             failed = true;
         }

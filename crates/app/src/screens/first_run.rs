@@ -1,10 +1,12 @@
-//! First run and unlocking (docs/SCREENS.md S1 to S8): the layout of
+//! First run and unlocking (docs/SCREENS.md S0 to S8): the layout of
 //! rendering 01, the brand panel on the left and the form on the right. On a
 //! phone the brand panel is not drawn: the form is one page under the wordmark
-//! (docs/DECISIONS.md D32 item 10 (b)).
+//! (docs/DECISIONS.md D32 item 10 (b)). The one exception is the welcome
+//! screen, S0, which a phone without a store shows as the brand panel whole,
+//! before S1 (docs/DECISIONS.md D37).
 
 use iced::widget::text::{LineHeight, Wrapping};
-use iced::widget::{checkbox, column, container, row, scrollable, space, text_input};
+use iced::widget::{checkbox, column, container, responsive, row, scrollable, space, text_input};
 use iced::{Alignment, Element, Length, Padding};
 use tawara_wallet_core::preferences::DEFAULT_NODE;
 use tawara_wallet_core::{MIN_PASSWORD_LEN, SCHEME_WARNING};
@@ -21,12 +23,36 @@ use crate::ui::{self, Size, Type, t, ty};
 
 /// The first-run and unlock screens.
 pub fn view(model: &Model) -> Element<'_, Message> {
+    let words = match &model.screen {
+        Screen::Phrase(p) => p.phrase.words().collect(),
+        _ => Vec::new(),
+    };
+    view_of(model, words)
+}
+
+/// [`view`], with S4's `words` given beside the model rather than read from
+/// its phrase. The phrase on S4 comes only from the worker, so this is what
+/// lets the tests lay S4 out with the widest words of the library's list
+/// (docs/DECISIONS.md D44).
+fn view_of<'a>(model: &'a Model, words: Vec<&'a str>) -> Element<'a, Message> {
+    // A phone's recovery phrase picks its frame by the height its page is
+    // given, which only the layout knows, so it is built inside `responsive`
+    // (docs/DECISIONS.md D44). It has no wordmark, so it is not wrapped by
+    // `phone_frame`.
+    if let (None, Screen::Phrase(p)) = (&model.busy, &model.screen)
+        && model.compact()
+    {
+        return responsive(move |size| phone_phrase(&words, p, size.height)).into();
+    }
+    let phrase_screen = matches!((&model.busy, &model.screen), (None, Screen::Phrase(_)));
     let form: Element<'_, Message> = match (&model.busy, &model.screen) {
         (Some(busy), _) => opening(busy),
+        // S0 is the brand panel whole, on a phone alone (docs/DECISIONS.md D37).
+        (None, Screen::Welcome) => return welcome(),
         (None, Screen::Start { choice }) => start(model, *choice),
         (None, Screen::Node(f)) => node(model, f),
         (None, Screen::NewWallet(f)) => new_wallet(model, f),
-        (None, Screen::Phrase(p)) => phrase(model.compact(), p),
+        (None, Screen::Phrase(p)) => phrase_content(&words, p.written, PhraseFrame::Whole),
         (None, Screen::Confirm(p)) => confirm(p, model.drawn()),
         (None, Screen::Restore(r)) => restore(model, r, model.drawn()),
         (None, Screen::Unlock(u)) => unlock(model, u),
@@ -35,12 +61,20 @@ pub fn view(model: &Model) -> Element<'_, Message> {
     if model.compact() {
         return phone_frame(form);
     }
+    // The desktop's phrase keeps 24 pixels from the top and the bottom, not 56,
+    // so that its one frame, with the warning, fits the smallest window
+    // (docs/DECISIONS.md D44).
+    let margin = if phrase_screen {
+        Padding::from([sp::S24, sp::S56])
+    } else {
+        Padding::from(sp::S56)
+    };
     row![
         brand(),
         container(
             scrollable(
                 container(container(form).max_width(480.0))
-                    .padding(sp::S56)
+                    .padding(margin)
                     .center_x(Length::Fill),
             )
             .height(Length::Shrink)
@@ -114,9 +148,27 @@ fn phone_block<'a>(
 /// application's own wordmark, the headline and the feature pills. No coin
 /// mark and no pattern (docs/DECISIONS.md D27, item 2).
 fn brand<'a>() -> Element<'a, Message> {
+    container(
+        column![
+            brand_wordmark(ty::WORDMARK_LARGE),
+            space().height(Length::Fill),
+            column![brand_headline(ty::HERO, ty::HERO_ITALIC), brand_pills()].spacing(sp::S24),
+        ]
+        .height(Length::Fill),
+    )
+    .padding(Padding::from([sp::S48, sp::S56]))
+    .width(Length::FillPortion(1))
+    .height(Length::Fill)
+    .style(theme::brand_panel)
+    .into()
+}
+
+/// The application's wordmark over "A wallet for Mochimo", on the brand
+/// field, the name at `name`'s size.
+fn brand_wordmark<'a>(name: Type) -> Element<'a, Message> {
     let ink = color::TEXT_ON_ACCENT;
-    let wordmark = column![
-        t("TAWARA", ty::WORDMARK_LARGE, ink),
+    column![
+        t("TAWARA", name, ink),
         t(
             "A wallet for Mochimo",
             Type {
@@ -126,32 +178,76 @@ fn brand<'a>() -> Element<'a, Message> {
             ink
         ),
     ]
-    .spacing(sp::S2);
-    let headline = column![
-        t("YOUR CRYPTO JOURNEY", ty::HERO, ink)
+    .spacing(sp::S2)
+    .into()
+}
+
+/// The headline on the brand field: its first line in `upright`, its second
+/// in `italic`. Rendering 01 sets both at 52 points; a phone sets them
+/// smaller ([`ty::HERO_PHONE`]).
+fn brand_headline<'a>(upright: Type, italic: Type) -> Element<'a, Message> {
+    let ink = color::TEXT_ON_ACCENT;
+    column![
+        t("YOUR CRYPTO JOURNEY", upright, ink)
             .line_height(LineHeight::Relative(1.05))
             .width(Length::Fill),
-        t("STARTS WITH US.", ty::HERO_ITALIC, ink).line_height(LineHeight::Relative(1.05)),
-    ];
+        t("STARTS WITH US.", italic, ink).line_height(LineHeight::Relative(1.05)),
+    ]
+    .into()
+}
+
+/// The three feature pills on the brand field, which wrap onto a line of
+/// their own when the width runs out.
+fn brand_pills<'a>() -> Element<'a, Message> {
     let pill = |label| ui::pill(label, ty::PILL, color::BG_APP, color::TEXT_PRIMARY, 36.0);
-    let pills = row![
+    row![
         pill("WOTS+ post-quantum signatures"),
         pill("Perpetual account tags"),
         pill("256 destinations per send"),
     ]
     .spacing(sp::S10)
     .wrap()
-    .vertical_spacing(sp::S10);
-    container(
+    .vertical_spacing(sp::S10)
+    .into()
+}
+
+/// S0: the welcome screen on a phone alone, when the phone's own folder holds
+/// no store (docs/DECISIONS.md D37). The brand field whole: the wordmark at its
+/// top, and the headline, the pills and "Get started" at its foot, the button
+/// in thumb reach. It does not scroll, and a test of this module checks that
+/// it fits 360 by 640 with the field's 16-pixel margins. The field lies within
+/// the window's safe area, which pads every screen's root (`screens::view`),
+/// and the strips the safe area leaves are coloured as the field is, so the
+/// green reaches the window's edges.
+fn welcome<'a>() -> Element<'a, Message> {
+    let page = column![
+        brand_wordmark(ty::WORDMARK_LARGE),
+        space().height(Length::Fill),
         column![
-            wordmark,
-            space().height(Length::Fill),
-            column![headline, pills].spacing(sp::S24),
+            brand_headline(ty::HERO_PHONE, ty::HERO_PHONE_ITALIC),
+            brand_pills()
         ]
-        .height(Length::Fill),
+        .spacing(sp::S24),
+        // The button is the dark tonal one, not the green primary: the field
+        // is the primary's colour, so a primary button would not show on it.
+        ui::button_with(
+            "Get started",
+            theme::Button::Tonal,
+            Size::Xl,
+            None,
+            Some(Message::Go(Go::Start)),
+        ),
+    ]
+    .spacing(sp::S40);
+    // The field is the window's whole width and height; its margins are the
+    // padding of the page inside it.
+    container(
+        container(page)
+            .padding(Padding::from([sp::S24, sp::S16]))
+            .width(Length::Fill)
+            .height(Length::Fill),
     )
-    .padding(Padding::from([sp::S48, sp::S56]))
-    .width(Length::FillPortion(1))
+    .width(Length::Fill)
     .height(Length::Fill)
     .style(theme::brand_panel)
     .into()
@@ -239,7 +335,7 @@ fn node_footer(model: &Model, back: Back) -> Element<'_, Message> {
 /// S1: create or restore (01).
 fn start(model: &Model, choice: StartChoice) -> Element<'_, Message> {
     let compact = model.compact();
-    column![
+    let mut body = column![
         heading(
             "Get started",
             format!(
@@ -277,19 +373,19 @@ fn start(model: &Model, choice: StartChoice) -> Element<'_, Message> {
             None,
             Some(Message::Continue),
         ),
-        ui::link(
-            if model.phone() {
-                "Open the wallet on this phone"
-            } else {
-                "Open a wallet already on this computer"
-            },
+    ]
+    .spacing(sp::S24);
+    // A phone has no link to a store here: the store it holds is the one S7
+    // opens, and the phone is shown this screen only when it holds none
+    // (docs/DECISIONS.md D37).
+    if !model.phone() {
+        body = body.push(ui::link(
+            "Open a wallet already on this computer",
             ty::LINK,
             Message::Go(Go::Unlock),
-        ),
-        node_footer(model, Back::Start),
-    ]
-    .spacing(sp::S24)
-    .into()
+        ));
+    }
+    body.push(node_footer(model, Back::Start)).into()
 }
 
 /// A radio card (5.11). It acts on release, not on press, so that a drag which
@@ -373,8 +469,13 @@ fn radio_mark<'a>(selected: bool) -> Element<'a, Message> {
 /// S2: choose the node.
 fn node<'a>(model: &'a Model, form: &'a NodeForm) -> Element<'a, Message> {
     let back = match form.back {
-        Back::Start => Go::Start,
         Back::Unlock => Go::Unlock,
+        Back::Wallet if model.wallet.is_some() => Go::Wallet,
+        // A phone that holds a store is not offered the start screens, so its
+        // way back leads to S7, as `App::go_back`'s does; a link to S1 there
+        // would do nothing (docs/DECISIONS.md D37).
+        Back::Start | Back::Wallet if model.phone_holds_store() => Go::Unlock,
+        Back::Start => Go::Start,
         Back::Wallet => Go::Wallet,
     };
     let mut links = row![ui::link("Back", ty::LINK, Message::Go(back))].spacing(sp::S24);
@@ -545,71 +646,167 @@ const PHRASE_BODY: &str = "It is the ONLY backup of this wallet. It cannot be re
                            the store. The store is sealed with the password you just chose; \
                            forget it and these words are the only way back in.";
 
-/// S4: the phrase, shown once, with no way to copy it (docs/PLAN.md 4.3). Its
-/// words are in three columns, or in two on a phone, whose width has no room
-/// for three (docs/SCREENS.md, "Compact layout").
-fn phrase(compact: bool, p: &PhraseState) -> Element<'_, Message> {
-    let words: Vec<&str> = p.phrase.words().collect();
-    let (columns, padding) = if compact {
-        (2, Padding::from([sp::S8, sp::S10]))
+/// The columns the words are read down: three, on a phone and on the desktop
+/// alike (docs/DECISIONS.md D44).
+const PHRASE_COLUMNS: usize = 3;
+
+/// The gap between the cells of the words, across and down (docs/DECISIONS.md
+/// D44).
+const PHRASE_GAP: f32 = sp::S6;
+
+/// The usable height, in logical pixels, at which a phone draws the warning and
+/// the words on one frame (docs/DECISIONS.md D44 item 2). It is the frame's own
+/// height at 360 wide, where the heading and the warning wrap onto the most
+/// lines, which is 732.4 pixels, rounded up; a phone shorter than this draws
+/// two frames. A 360 by 800 phone has 719 pixels between its insets, so it is
+/// shorter.
+const PHRASE_ONE_FRAME: f32 = 733.0;
+
+/// What S4 draws (docs/DECISIONS.md D44).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PhraseFrame {
+    /// The warning and the words together: the desktop, and a phone tall
+    /// enough for both.
+    Whole,
+    /// A phone shorter than [`PHRASE_ONE_FRAME`], before "Show the phrase": the
+    /// library's warning, on its own.
+    Warning,
+    /// A phone shorter than [`PHRASE_ONE_FRAME`], after "Show the phrase": the
+    /// words, their checkbox and Continue, and the link.
+    Phrase,
+}
+
+/// The frame a phone whose page is `height` pixels tall draws for a phrase,
+/// given whether the person has pressed "Show the phrase" (`shown`).
+fn phrase_frame(height: f32, shown: bool) -> PhraseFrame {
+    if height >= PHRASE_ONE_FRAME {
+        PhraseFrame::Whole
+    } else if shown {
+        PhraseFrame::Phrase
     } else {
-        (3, Padding::from([sp::S8, sp::S12]))
-    };
-    let mut grid = column![].spacing(sp::S8);
-    for cells in phrase_grid(words.len(), columns) {
-        let mut line = row![].spacing(sp::S8);
+        PhraseFrame::Warning
+    }
+}
+
+/// S4 on a phone, for the `words` of `p`: the frame its page of `height`
+/// pixels allows, on a page of its own. The phone's wordmark is left out, which
+/// is what lets the warning and the words share a frame on a 390 by 844 phone
+/// (docs/DECISIONS.md D44).
+fn phone_phrase<'a>(words: &[&'a str], p: &PhraseState, height: f32) -> Element<'a, Message> {
+    let page = phone_block(
+        phrase_content(words, p.written, phrase_frame(height, p.shown)),
+        sp::S24,
+        sp::S32,
+    );
+    container(
+        scrollable(page)
+            .id(crate::screens::page_id())
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(theme::scroll),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
+}
+
+/// S4 (docs/SCREENS.md S4; docs/DECISIONS.md D44): a heading, the library's
+/// warning, and the 24 words in a grid with the checkbox, Continue and a link.
+/// The warning comes before the words. `frame` decides what is drawn: both
+/// together, or the warning with "Show the phrase", or the words alone.
+fn phrase_content<'a>(
+    words: &[&'a str],
+    written: bool,
+    frame: PhraseFrame,
+) -> Element<'a, Message> {
+    let mut body = column![t(
+        "YOUR RECOVERY PHRASE",
+        ty::ONBOARDING_TITLE,
+        color::TEXT_PRIMARY
+    )]
+    .spacing(sp::S20);
+    if frame != PhraseFrame::Phrase {
+        body = body.push(ui::warning_callout(PHRASE_TITLE, PHRASE_BODY));
+    }
+    if frame == PhraseFrame::Warning {
+        return body
+            .push(ui::button_with(
+                "Show the phrase",
+                theme::Button::Primary,
+                Size::Xl,
+                None,
+                Some(Message::ShowPhrase),
+            ))
+            .into();
+    }
+    body.push(words_grid(words))
+        .push(
+            checkbox(written)
+                .label("I have written down every word, in order.")
+                .font(fonts::BODY)
+                .text_size(13)
+                .on_toggle(Message::Written),
+        )
+        .push(ui::button_with(
+            "Continue",
+            theme::Button::Primary,
+            Size::Xl,
+            None,
+            written.then_some(Message::ToConfirm),
+        ))
+        .push(ui::link(
+            "Start over with a new phrase",
+            ty::LINK,
+            Message::StartOver,
+        ))
+        .into()
+}
+
+/// The words in a grid of [`PHRASE_COLUMNS`] columns, read down each column,
+/// with [`PHRASE_GAP`] between the cells (docs/DECISIONS.md D44).
+fn words_grid<'a>(words: &[&'a str]) -> Element<'a, Message> {
+    let mut grid = column![].spacing(PHRASE_GAP);
+    for cells in phrase_grid(words.len(), PHRASE_COLUMNS) {
+        let mut line = row![].spacing(PHRASE_GAP);
         for cell in cells {
             let word = cell.and_then(|n| words.get(n).map(|w| (n, *w)));
-            let cell: Element<'_, Message> = match word {
-                Some((n, w)) => container(
-                    row![
-                        t(format!("{:>2}", n + 1), ty::MONO_SMALL, color::TEXT_MUTED),
-                        t(w, ty::MONO_WORD, color::TEXT_PRIMARY),
-                    ]
-                    .spacing(sp::S10)
-                    .align_y(Alignment::Center),
-                )
-                .padding(padding)
-                .width(Length::FillPortion(1))
-                .style(theme::field_box)
-                .into(),
+            let cell: Element<'a, Message> = match word {
+                Some((n, w)) => phrase_cell(n, w),
                 None => space().width(Length::FillPortion(1)).into(),
             };
             line = line.push(cell);
         }
         grid = grid.push(line);
     }
-    column![
-        t(
-            "YOUR RECOVERY PHRASE",
-            ty::ONBOARDING_TITLE,
-            color::TEXT_PRIMARY
-        ),
-        ui::warning_callout(PHRASE_TITLE, PHRASE_BODY),
-        grid,
-        checkbox(p.written)
-            .label("I have written down every word, in order.")
-            .font(fonts::BODY)
-            .text_size(13)
-            .on_toggle(Message::Written),
-        ui::button_with(
-            "Continue",
-            theme::Button::Primary,
-            Size::Xl,
-            None,
-            p.written.then_some(Message::ToConfirm),
-        ),
-        ui::link("Start over with a new phrase", ty::LINK, Message::StartOver,),
-    ]
-    .spacing(sp::S20)
+    grid.into()
+}
+
+/// One word of the phrase with its number: the number at 11 pixels, the word at
+/// [`ty::PHRASE_WORD`], in a box with 8 pixels either side and 4 above and below.
+/// At 360 wide a cell is about 105 pixels, and the widest word of the library's
+/// list, "abstract", needs 67 at 14 and the number 13, with 6 between them: the
+/// box leaves about 3 pixels spare, which the test
+/// `the_widest_word_fits_its_cell_on_a_phone_of_360` holds to.
+fn phrase_cell<'a>(n: usize, word: &'a str) -> Element<'a, Message> {
+    container(
+        row![
+            t(format!("{:>2}", n + 1), ty::MONO_TINY, color::TEXT_MUTED),
+            t(word, ty::PHRASE_WORD, color::TEXT_PRIMARY),
+        ]
+        .spacing(sp::S6)
+        .align_y(Alignment::Center),
+    )
+    .padding(Padding::from([sp::S4, sp::S8]))
+    .width(Length::FillPortion(1))
+    .style(theme::field_box)
     .into()
 }
 
 /// Where the `len` words of a phrase go in a grid of `columns` columns: one
 /// entry per row, holding the zero-based word each cell shows, or `None` for
 /// a cell with no word. The phrase is read down the first column and then the
-/// next, as the desktop's three columns always were, so on a phone words 1 to
-/// 12 fill the first column and words 13 to 24 the second.
+/// next, so with three columns words 1 to 8 fill the first, 9 to 16 the second
+/// and 17 to 24 the third (docs/DECISIONS.md D44).
 fn phrase_grid(len: usize, columns: usize) -> Vec<Vec<Option<usize>>> {
     let rows = len.div_ceil(columns);
     (0..rows)
@@ -801,20 +998,24 @@ fn unlock<'a>(model: &'a Model, form: &'a UnlockForm) -> Element<'a, Message> {
     if let Some(e) = &form.error {
         body = body.push(ui::refusal(e));
     }
-    body.push(ui::button_with(
+    body = body.push(ui::button_with(
         "Unlock",
         theme::Button::Primary,
         Size::Xl,
         None,
         ready.then_some(Message::UnlockWallet),
-    ))
-    .push(ui::link(
-        "Create or restore a different wallet",
-        ty::LINK,
-        Message::Go(Go::Start),
-    ))
-    .push(node_footer(model, Back::Unlock))
-    .into()
+    ));
+    // On a phone there is no link to a second wallet. The phone's one store is
+    // the one S7 opens, and a new wallet in its folder would be refused only
+    // after its password had been typed (docs/DECISIONS.md D37).
+    if !model.phone() {
+        body = body.push(ui::link(
+            "Create or restore a different wallet",
+            ty::LINK,
+            Message::Go(Go::Start),
+        ));
+    }
+    body.push(node_footer(model, Back::Unlock)).into()
 }
 
 /// S8: the command a store is being made or opened by, waiting its turn or
@@ -842,6 +1043,7 @@ mod tests {
     use iced::advanced::layout;
     use iced::advanced::widget::Tree;
     use iced::advanced::widget::operation::focusable;
+    use iced::mobile::SafeArea;
     use iced::{Point, Rectangle, Size};
     use tawara_wallet_core::preferences::Preferences;
     use tawara_wallet_core::{Activity, CONFIRM_POSITIONS, PhraseForDisplay, Progress, RequestId};
@@ -849,8 +1051,8 @@ mod tests {
     use super::*;
     use crate::app::NARROWEST;
     use crate::harness::{
-        Driver, finger_lift, finger_move, finger_press, fits, mouse_move, mouse_press,
-        mouse_release, texts,
+        Driver, finger_lift, finger_move, finger_press, fits, fits_the_viewport, mouse_move,
+        mouse_press, mouse_release, texts,
     };
     use crate::paste::support::{Holding, paste_keys};
 
@@ -873,7 +1075,7 @@ mod tests {
         model
     }
 
-    /// Every first-run screen, S1 to S8, drawn on a phone, each with a name to
+    /// Every first-run screen, S0 to S8, drawn on a phone, each with a name to
     /// report it by. S1 is also drawn with the restore card chosen, S7 with a
     /// note and with a refusal, and S8 at each of its three stages.
     fn phone_screens() -> Vec<(&'static str, Model)> {
@@ -895,6 +1097,7 @@ mod tests {
             written: true,
             words: Default::default(),
             error: None,
+            shown: false,
         };
         let busy = |activity, progress| Busy {
             id: RequestId::example(),
@@ -916,6 +1119,7 @@ mod tests {
             }),
         ));
         vec![
+            ("S0", phone_model(Screen::Welcome)),
             (
                 "S1",
                 phone_model(Screen::Start {
@@ -1101,49 +1305,515 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_phrase_reads_down_two_columns_of_twelve_rows_on_a_phone() {
-        let grid = phrase_grid(24, 2);
-        assert_eq!(grid.len(), 12, "twelve rows");
-        assert!(
-            grid.iter().all(|cells| cells.len() == 2),
-            "two cells in each row"
-        );
-        assert_eq!(
-            grid[0],
-            [Some(0), Some(12)],
-            "word 1 heads the first column, word 13 the second"
-        );
-        assert_eq!(
-            grid[11],
-            [Some(11), Some(23)],
-            "word 12 ends the first column, word 24 the second"
-        );
-        // The desktop keeps its three columns and their order.
-        let desktop = phrase_grid(24, 3);
-        assert_eq!(desktop.len(), 8, "eight rows");
-        assert_eq!(desktop[0], [Some(0), Some(8), Some(16)]);
+    /// Whether a window of `size` draws a text that reads `text`.
+    fn shows(model: &Model, size: (f32, f32), text: &str) -> bool {
+        texts(view(model), size)
+            .iter()
+            .any(|(drawn, _)| drawn == text)
     }
 
     #[test]
-    fn the_drawn_phrase_is_twelve_rows_of_two_cells_on_a_phone() {
-        // Drawn in a window tall enough for the page, so that no scrollbar takes
-        // width from the columns: each of the two is half of the 328 pixels a
-        // phone's page leaves, less the gap between them.
-        let model = named("S4");
-        let cells: Vec<Rectangle> = drawn_bounds(view(&model), NARROWEST, 2000.0)
-            .into_iter()
-            .filter(|r| (r.width - 160.0).abs() < 0.5 && r.height > 1.0)
+    fn the_welcome_screen_fits_a_phone_of_360_by_640_without_scrolling() {
+        // S0 is the brand field whole, and it has no page to scroll
+        // (docs/DECISIONS.md D37). Nothing it lays out reaches past the window
+        // at 360 by 640, with no safe area. iced fits each child into the room
+        // its parent gives it, so an overflow shows as a squeezed child rather
+        // than a child past the edge: the button's own size and place are the
+        // check. Its 56 pixels and its 328 are kept, and its foot is the page's
+        // bottom margin, which holds only if everything above it fits, since
+        // the room between the wordmark and the headline takes what is left.
+        let model = named("S0");
+        let bounds = drawn_bounds(view(&model), NARROWEST, 640.0);
+        let past: Vec<Rectangle> = bounds
+            .iter()
+            .copied()
+            .filter(|r| {
+                r.x < -0.5
+                    || r.y < -0.5
+                    || r.x + r.width > NARROWEST + 0.5
+                    || r.y + r.height > 640.0 + 0.5
+            })
             .collect();
-        let mut tops: Vec<f32> = cells.iter().map(|r| r.y).collect();
+        assert!(past.is_empty(), "nodes past 360 by 640: {past:?}");
+        let button = bounds
+            .iter()
+            .copied()
+            .find(|r| (r.width - (NARROWEST - 32.0)).abs() < 0.5 && (r.height - 56.0).abs() < 0.5)
+            .expect("the button, at its full size");
+        assert!(
+            (button.y + button.height - (640.0 - 24.0)).abs() < 0.5,
+            "the button does not stand at the foot: {button:?}"
+        );
+        let (_, label) = texts(view(&model), (NARROWEST, 640.0))
+            .into_iter()
+            .find(|(text, _)| text == "Get started")
+            .expect("the button's label");
+        assert!(
+            label.center_y() > button.y && label.center_y() < button.y + button.height,
+            "the label is not in the button: {label:?} in {button:?}"
+        );
+    }
+
+    #[test]
+    fn the_welcome_headline_sets_its_second_line_on_one_line_at_360() {
+        // Its height is one line's, not two (docs/DECISIONS.md D37): a second
+        // line would double it. The line is "STARTS WITH US.", the widest of
+        // the headline, at the phone's 360 with its 16-pixel margins.
+        let model = named("S0");
+        let (_, line) = texts(view(&model), (NARROWEST, 640.0))
+            .into_iter()
+            .find(|(text, _)| text == "STARTS WITH US.")
+            .expect("the headline's second line");
+        assert!(
+            line.height < ty::HERO_PHONE.size * 1.5,
+            "two lines, not one: {line:?}"
+        );
+    }
+
+    #[test]
+    fn the_welcome_screen_draws_the_brand_field_and_get_started_leads_to_s1() {
+        // The parts of rendering 01's brand panel, and the one button. The
+        // button's tap is the start (S1), as the desktop's Continue is not
+        // (docs/DECISIONS.md D37).
+        let model = named("S0");
+        let size = (NARROWEST, 640.0);
+        for part in [
+            "TAWARA",
+            "A wallet for Mochimo",
+            "YOUR CRYPTO JOURNEY",
+            "STARTS WITH US.",
+            "WOTS+ post-quantum signatures",
+            "Perpetual account tags",
+            "256 destinations per send",
+            "Get started",
+        ] {
+            assert!(shows(&model, size, part), "{part} is drawn");
+        }
+        assert!(!shows(&model, size, "Continue"), "S0 has no Continue");
+        let (_, at) = texts(view(&model), size)
+            .into_iter()
+            .find(|(text, _)| text == "Get started")
+            .expect("the button's label");
+        let mut driver = Driver::new(view(&model), (360, 640));
+        let (messages, _, _) = driver.send(&[
+            mouse_move(at.center_x(), at.center_y()),
+            mouse_press(),
+            mouse_release(),
+        ]);
+        assert!(
+            matches!(messages.as_slice(), [Message::Go(Go::Start)]),
+            "{messages:?}"
+        );
+    }
+
+    #[test]
+    fn s1_on_a_phone_offers_no_link_to_a_store_and_the_desktop_keeps_its_link() {
+        // A phone has no store to open from S1: the one it holds is S7's, and
+        // S1 is shown only when it holds none (docs/DECISIONS.md D37). The
+        // desktop keeps its link.
+        let phone = named("S1");
+        let size = (NARROWEST, 844.0);
+        assert!(!shows(&phone, size, "Open the wallet on this phone"));
+        assert!(!shows(
+            &phone,
+            size,
+            "Open a wallet already on this computer"
+        ));
+        let mut desktop = Model::new(Preferences::default(), None);
+        desktop.screen = Screen::Start {
+            choice: StartChoice::Create,
+        };
+        assert!(shows(
+            &desktop,
+            (1440.0, 900.0),
+            "Open a wallet already on this computer"
+        ));
+    }
+
+    #[test]
+    fn s7_on_a_phone_offers_no_link_to_a_second_wallet_and_the_desktop_keeps_its_link() {
+        // The phone's one store is the one S7 opens, and a second wallet in its
+        // folder would be refused only after its password was typed
+        // (docs/DECISIONS.md D37). The desktop keeps the link.
+        let phone = named("S7");
+        let size = (NARROWEST, 844.0);
+        assert!(!shows(&phone, size, "Create or restore a different wallet"));
+        assert!(shows(&phone, size, "Unlock"), "the unlock button is drawn");
+        let mut desktop = Model::new(Preferences::default(), None);
+        desktop.screen = Screen::Unlock(UnlockForm::default());
+        assert!(shows(
+            &desktop,
+            (1440.0, 900.0),
+            "Create or restore a different wallet"
+        ));
+    }
+
+    /// The insets of a phone: 47 pixels at the top, where the status bar is,
+    /// and 34 at the bottom, where the home indicator is, as the screenshot
+    /// example and the phone's shell report them (docs/DECISIONS.md D32 item 10
+    /// (b)).
+    const PHONE_INSETS: Padding = Padding {
+        top: 47.0,
+        right: 0.0,
+        bottom: 34.0,
+        left: 0.0,
+    };
+
+    /// The height of a window whose page, between a phone's insets, is `usable`
+    /// pixels tall.
+    fn window_of(usable: f32) -> f32 {
+        usable + PHONE_INSETS.top + PHONE_INSETS.bottom
+    }
+
+    /// S4's phrase for the tests: the example words, the checkbox left empty,
+    /// and the words shown after the warning if `shown`.
+    fn phrase_state(shown: bool) -> PhraseState {
+        PhraseState {
+            phrase: PhraseForDisplay::example(),
+            dir: String::new(),
+            positions: CONFIRM_POSITIONS,
+            written: false,
+            words: Default::default(),
+            error: None,
+            shown,
+        }
+    }
+
+    /// S4 on a phone `width` wide, with the phone's insets.
+    fn phone_phrase_model(width: f32, shown: bool) -> Model {
+        let mut model = phone_model(Screen::Phrase(phrase_state(shown)));
+        model.width = width;
+        model.safe_area = SafeArea::new(PHONE_INSETS);
+        model
+    }
+
+    /// S4 on the desktop, `width` wide.
+    fn desktop_phrase_model(width: f32) -> Model {
+        let mut model = Model::new(Preferences::default(), None);
+        model.width = width;
+        model.screen = Screen::Phrase(phrase_state(false));
+        model
+    }
+
+    /// The texts `model` draws in a window of `size`, in the order they are drawn.
+    fn words_drawn(model: &Model, size: (f32, f32)) -> Vec<String> {
+        texts(crate::screens::view(model), size)
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect()
+    }
+
+    /// The boxes of the words' numbers in a drawing, one for each word: each
+    /// number stands at the left of its cell.
+    fn number_cells(drawn: &[(String, Rectangle)]) -> Vec<Rectangle> {
+        drawn
+            .iter()
+            .filter(|(text, _)| {
+                text.trim()
+                    .parse::<usize>()
+                    .is_ok_and(|n| (1..=24).contains(&n))
+            })
+            .map(|(_, at)| *at)
+            .collect()
+    }
+
+    /// The boxes grouped into rows by their top edge, each row from the left.
+    fn rows_of(boxes: &[Rectangle]) -> Vec<Vec<Rectangle>> {
+        let mut tops: Vec<f32> = boxes.iter().map(|r| r.y).collect();
         tops.sort_by(f32::total_cmp);
         tops.dedup_by(|a, b| (*a - *b).abs() < 0.5);
-        assert_eq!(cells.len(), 24, "one cell per word");
-        assert_eq!(tops.len(), 12, "twelve rows");
-        for top in tops {
-            let in_row = cells.iter().filter(|r| (r.y - top).abs() < 0.5).count();
-            assert_eq!(in_row, 2, "two cells in the row at {top}");
+        tops.iter()
+            .map(|top| {
+                let mut row: Vec<Rectangle> = boxes
+                    .iter()
+                    .copied()
+                    .filter(|r| (r.y - top).abs() < 0.5)
+                    .collect();
+                row.sort_by(|a, b| a.x.total_cmp(&b.x));
+                row
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_phrase_reads_down_three_columns_of_eight_rows_on_every_size() {
+        // docs/DECISIONS.md D44: one grid on a phone and on the desktop.
+        let grid = phrase_grid(24, PHRASE_COLUMNS);
+        assert_eq!(grid.len(), 8, "eight rows");
+        assert!(
+            grid.iter().all(|cells| cells.len() == 3),
+            "three cells in each row"
+        );
+        assert_eq!(
+            grid[0],
+            [Some(0), Some(8), Some(16)],
+            "word 1 heads the first column, word 9 the second, word 17 the third"
+        );
+        assert_eq!(
+            grid[7],
+            [Some(7), Some(15), Some(23)],
+            "word 8 ends the first column, word 16 the second, word 24 the third"
+        );
+    }
+
+    #[test]
+    fn the_drawn_phrase_is_eight_rows_of_three_numbered_cells() {
+        for (name, model, size) in [
+            (
+                "a phone of 390 by 844",
+                phone_phrase_model(390.0, false),
+                (390.0, 844.0),
+            ),
+            (
+                "the desktop at 1024 by 700",
+                desktop_phrase_model(1024.0),
+                (1024.0, 700.0),
+            ),
+        ] {
+            let drawn = texts(crate::screens::view(&model), size);
+            let cells = number_cells(&drawn);
+            assert_eq!(cells.len(), 24, "{name}: one number per word");
+            let rows = rows_of(&cells);
+            assert_eq!(rows.len(), 8, "{name}: eight rows");
+            assert!(
+                rows.iter().all(|row| row.len() == 3),
+                "{name}: three cells in each row"
+            );
         }
+    }
+
+    #[test]
+    fn a_phone_takes_one_frame_only_when_its_page_is_tall_enough() {
+        assert_eq!(phrase_frame(PHRASE_ONE_FRAME, false), PhraseFrame::Whole);
+        assert_eq!(phrase_frame(PHRASE_ONE_FRAME, true), PhraseFrame::Whole);
+        let short = PHRASE_ONE_FRAME - 0.5;
+        assert_eq!(phrase_frame(short, false), PhraseFrame::Warning);
+        assert_eq!(phrase_frame(short, true), PhraseFrame::Phrase);
+    }
+
+    /// S4 for `model`, its phrase 24 words of "abstract", in the root that
+    /// `screens::view` gives every screen: the page padded by the phone's
+    /// `insets`. "abstract" is the longest word of the library's list, eight
+    /// letters, so these are the widest words a phrase can be
+    /// (docs/DECISIONS.md D44).
+    fn widest_phrase(model: &Model, insets: Padding) -> Element<'_, Message> {
+        container(view_of(model, vec!["abstract"; 24]))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(insets)
+            .into()
+    }
+
+    #[test]
+    fn the_phrase_fits_the_window_at_every_size_the_plan_names() {
+        // docs/DECISIONS.md D44: at 360 by 640, 360 by 800, 390 by 844 and the
+        // desktop's 1024 by 700, every word is inside the part of the window a
+        // person sees, the page does not scroll, and every word fits its cell.
+        // Each size is held to it twice: with the example phrase, as the
+        // application draws it, and with the widest words of the library's
+        // list. The last column says whether the frame shows the words.
+        let none = Padding::ZERO;
+        let cases = [
+            (
+                "360 by 640, the warning",
+                phone_phrase_model(360.0, false),
+                (360.0, 640.0),
+                PHONE_INSETS,
+                false,
+            ),
+            (
+                "360 by 640, the words after the warning",
+                phone_phrase_model(360.0, true),
+                (360.0, 640.0),
+                PHONE_INSETS,
+                true,
+            ),
+            (
+                "360 by 800, the warning",
+                phone_phrase_model(360.0, false),
+                (360.0, 800.0),
+                PHONE_INSETS,
+                false,
+            ),
+            (
+                "360 by 800, the words after the warning",
+                phone_phrase_model(360.0, true),
+                (360.0, 800.0),
+                PHONE_INSETS,
+                true,
+            ),
+            (
+                "360 by the one-frame height, the warning and the words",
+                phone_phrase_model(360.0, false),
+                (360.0, window_of(PHRASE_ONE_FRAME)),
+                PHONE_INSETS,
+                true,
+            ),
+            (
+                "390 by 844, the warning and the words",
+                phone_phrase_model(390.0, false),
+                (390.0, 844.0),
+                PHONE_INSETS,
+                true,
+            ),
+            (
+                "the desktop at 1024 by 700",
+                desktop_phrase_model(1024.0),
+                (1024.0, 700.0),
+                none,
+                true,
+            ),
+        ];
+        for (name, model, size, insets, shows_words) in cases {
+            let problems = fits_the_viewport(crate::screens::view(&model), size, insets);
+            assert!(
+                problems.is_empty(),
+                "{name}, the example phrase: {problems:#?}"
+            );
+            let widest = texts(widest_phrase(&model, insets), size)
+                .into_iter()
+                .filter(|(text, _)| text == "abstract")
+                .count();
+            assert_eq!(
+                widest,
+                if shows_words { 24 } else { 0 },
+                "{name}: the words drawn"
+            );
+            let problems = fits_the_viewport(widest_phrase(&model, insets), size, insets);
+            assert!(
+                problems.is_empty(),
+                "{name}, the widest words: {problems:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_welcome_screen_fits_each_phone_the_plan_names_between_its_insets() {
+        // docs/DECISIONS.md D37: S0 does not scroll, and each of its words is
+        // within the part of the window a person sees, at 360 by 640, 360 by
+        // 800 and 390 by 844, between the phone's insets as the shell reports
+        // them. iced fits a child into the room its parent gives it, so a
+        // screen too tall shows as a squeezed child, not as a word past the
+        // inset: the button keeps its full size, and its foot is the page's
+        // bottom margin above the bottom inset, which holds only if everything
+        // above it fits.
+        for (width, height) in [(360.0, 640.0), (360.0, 800.0), (390.0, 844.0)] {
+            let mut model = phone_model(Screen::Welcome);
+            model.width = width;
+            model.safe_area = SafeArea::new(PHONE_INSETS);
+            let problems =
+                fits_the_viewport(crate::screens::view(&model), (width, height), PHONE_INSETS);
+            assert!(problems.is_empty(), "{width} by {height}: {problems:#?}");
+            let button = drawn_bounds(crate::screens::view(&model), width, height)
+                .into_iter()
+                .find(|r| (r.width - (width - 32.0)).abs() < 0.5 && (r.height - 56.0).abs() < 0.5)
+                .unwrap_or_else(|| panic!("{width} by {height}: the button, at its full size"));
+            assert!(
+                (button.y + button.height - (height - PHONE_INSETS.bottom - 24.0)).abs() < 0.5,
+                "{width} by {height}: the button does not stand at the foot: {button:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_short_phone_shows_the_warning_alone_and_then_the_words() {
+        // docs/DECISIONS.md D44: on a phone shorter than one frame, the library's
+        // warning comes first, alone, with "Show the phrase"; the words, the
+        // checkbox and Continue follow it, and there is no wordmark.
+        let warning = words_drawn(&phone_phrase_model(360.0, false), (360.0, 640.0));
+        assert!(warning.iter().any(|t| t == PHRASE_TITLE), "{warning:?}");
+        assert!(
+            warning.iter().any(|t| t == "Show the phrase"),
+            "{warning:?}"
+        );
+        assert!(
+            !warning
+                .iter()
+                .any(|t| t == "Continue" || t == "abandon" || t == "art"),
+            "the words wait for the button: {warning:?}"
+        );
+        assert!(!warning.iter().any(|t| t == "TAWARA"), "{warning:?}");
+
+        let words = words_drawn(&phone_phrase_model(360.0, true), (360.0, 640.0));
+        assert!(words.iter().any(|t| t == "Continue"), "{words:?}");
+        assert!(
+            words.iter().any(|t| t == "Start over with a new phrase"),
+            "{words:?}"
+        );
+        assert!(words.iter().any(|t| t == "abandon"), "{words:?}");
+        assert!(
+            !words
+                .iter()
+                .any(|t| t == PHRASE_TITLE || t == "Show the phrase"),
+            "the warning and its button are not drawn with the words: {words:?}"
+        );
+    }
+
+    #[test]
+    fn show_the_phrase_asks_for_the_words() {
+        let model = phone_phrase_model(360.0, false);
+        let mut driver = Driver::new(crate::screens::view(&model), (360, 640));
+        let at = driver
+            .text_bounds("Show the phrase")
+            .expect("the button is drawn");
+        let (messages, _, _) = driver.send(&[
+            mouse_move(at.center_x(), at.center_y()),
+            mouse_press(),
+            mouse_release(),
+        ]);
+        assert!(
+            matches!(messages.as_slice(), [Message::ShowPhrase]),
+            "{messages:?}"
+        );
+    }
+
+    #[test]
+    fn the_warning_and_the_phrase_share_one_frame_from_the_threshold_up() {
+        // The one frame is drawn from PHRASE_ONE_FRAME pixels up; a page one
+        // pixel shorter draws the warning alone.
+        let one = words_drawn(
+            &phone_phrase_model(360.0, false),
+            (360.0, window_of(PHRASE_ONE_FRAME)),
+        );
+        assert!(one.iter().any(|t| t == PHRASE_TITLE), "{one:?}");
+        assert!(one.iter().any(|t| t == "Continue"), "{one:?}");
+        assert!(!one.iter().any(|t| t == "Show the phrase"), "{one:?}");
+
+        let two = words_drawn(
+            &phone_phrase_model(360.0, false),
+            (360.0, window_of(PHRASE_ONE_FRAME - 1.0)),
+        );
+        assert!(two.iter().any(|t| t == "Show the phrase"), "{two:?}");
+        assert!(!two.iter().any(|t| t == "Continue"), "{two:?}");
+    }
+
+    #[test]
+    fn the_desktop_draws_the_warning_before_the_words_on_one_frame() {
+        let model = desktop_phrase_model(1024.0);
+        let drawn = texts(crate::screens::view(&model), (1024.0, 700.0));
+        let at = |text: &str| drawn.iter().find(|(t, _)| t == text).map(|(_, r)| *r);
+        let title = at(PHRASE_TITLE).expect("the warning is drawn");
+        let first = at("abandon").expect("the first word is drawn");
+        let last = at("art").expect("the last word is drawn");
+        let next = at("Continue").expect("Continue is drawn");
+        assert!(
+            title.y < first.y && first.y < last.y && last.y < next.y,
+            "the warning, then the words, then Continue: {title:?} {first:?} {last:?} {next:?}"
+        );
+        assert!(
+            !drawn.iter().any(|(t, _)| t == "Show the phrase"),
+            "the desktop has one frame"
+        );
+    }
+
+    #[test]
+    fn the_widest_word_fits_its_cell_on_a_phone_of_360() {
+        // "abstract" is the longest word of the library's list, eight letters,
+        // so the 24 of them in the grid are the widest a phrase can be.
+        let words = ["abstract"; 24];
+        let grid = phone_block(words_grid(&words), 0.0, 0.0);
+        let problems = fits_the_viewport(grid, (360.0, 800.0), Padding::ZERO);
+        assert!(problems.is_empty(), "{problems:#?}");
     }
 
     #[test]
