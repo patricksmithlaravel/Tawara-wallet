@@ -89,13 +89,16 @@ mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-wi
 # D27): `canvas`, which draws the line icons from the renderings' path data
 # (six crates, `lyon` and its parts, where `svg` would add 35), and
 # `advanced`, which adds no crate and opens the renderer's headless
-# screenshot (`Headless`) to the screenshot example. `qr_code` comes only
-# with the owner's approval, with deny.toml run against the result.
+# screenshot (`Headless`) to the screenshot example. `qr_code` is the code on
+# Receive (docs/DECISIONS.md D41), approved by the owner on 2026-10-13: it adds
+# the `qrcode` crate alone, which the fork declares with its default features
+# off (MIT OR Apache-2.0), and deny.toml was run against the result.
 iced = { git = "https://github.com/patricksmithlaravel/iced_mobile", rev = "d4ab3a057db96162b087a27dd0752a3b15abfa6b", default-features = false, features = [
     "wgpu",
     "tiny-skia",
     "canvas",
     "advanced",
+    "qr_code",
     "crisp",
     "web-colors",
     "thread-pool",

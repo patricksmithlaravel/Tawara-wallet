@@ -14,6 +14,9 @@
 //! - `Kdf::CHEAP_FOR_TESTS` never appears outside test code.
 //! - `wallet-core` has no interface dependency, and the interface crates
 //!   never depend on or name the library (docs/PLAN.md section 3).
+//! - The third-party notices accept the licences deny.toml admits and the
+//!   named exceptions, and the committed file ends with the Mochimo agreement
+//!   and holds no licence template's placeholder (docs/DECISIONS.md D35).
 //!
 //! What no check here can see: cargo configuration outside the repository
 //! (`$CARGO_HOME/config.toml`), and flags passed through the environment
@@ -40,14 +43,16 @@ const ICED_GIT: &str = "https://github.com/patricksmithlaravel/iced_mobile";
 
 /// The features the `iced` line in the workspace manifest names, in any order.
 /// D27 added `canvas` and `advanced` to the list the workspace line writes out,
-/// beyond iced 0.14.0's own defaults. Each feature turns on code, crates or a platform backend in every build, so a
-/// change to this list needs a decision, recorded in docs/DECISIONS.md first
-/// (D32 item 9). `qr_code` in particular comes only with the owner's approval.
-const ICED_FEATURES: [&str; 10] = [
+/// beyond iced 0.14.0's own defaults. D41 added `qr_code`, for the code on
+/// Receive, which the owner approved on 2026-10-13. Each feature turns on code,
+/// crates or a platform backend in every build, so a change to this list needs
+/// a decision, recorded in docs/DECISIONS.md first (D32 item 9).
+const ICED_FEATURES: [&str; 11] = [
     "wgpu",
     "tiny-skia",
     "canvas",
     "advanced",
+    "qr_code",
     "crisp",
     "web-colors",
     "thread-pool",
@@ -2509,4 +2514,184 @@ fn the_reexport_detector_sees_what_it_must() {
             "the detector flagged something that is not a wholesale re-export: {source}"
         );
     }
+}
+
+/// The strings of the TOML array at `value`, in order. `what` names the array
+/// in a failure.
+fn string_list(value: Option<&toml::Value>, what: &str) -> Vec<String> {
+    value
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("{what} is not an array"))
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .unwrap_or_else(|| panic!("{what} holds a value that is not a string"))
+                .to_owned()
+        })
+        .collect()
+}
+
+/// The licences the third-party notices may name, beyond deny.toml's allow
+/// list, and the crates each is accepted for (docs/DECISIONS.md D35, items 3
+/// and 6 (d)): the Mochimo agreement for the library and Tawara's crates, and
+/// OFL-1.1 for the fonts tawara-app bundles. tawara-app's code is under the
+/// Mochimo agreement too, which deny.toml reads for it; about.toml names the
+/// crate under OFL-1.1 so that the font licences are printed.
+const NOTICES_EXCEPTIONS: [(&str, &str); 4] = [
+    ("mochimo-crypto", "LicenseRef-Mochimo-Engine-1.0"),
+    ("tawara-wallet-core", "LicenseRef-Mochimo-Engine-1.0"),
+    ("tawara-desktop", "LicenseRef-Mochimo-Engine-1.0"),
+    ("tawara-app", "OFL-1.1"),
+];
+
+/// The notices accept exactly the licences the policy gate admits, and the
+/// named exceptions above, each for its own crate (docs/DECISIONS.md D35).
+/// `about.toml` is checked against `deny.toml` directly: a licence accepted
+/// there and refused here would reach the notices without the gate having
+/// seen it, and one admitted here and not there would stop the generator for
+/// a crate the gate has cleared. A per-crate `accepted` list is a widening of
+/// its own, so every one of them is held to the table, and a new one fails
+/// until the table, and D35, say why.
+#[test]
+fn the_notices_accept_exactly_the_licences_the_policy_admits() {
+    let root = workspace_root();
+    let deny = read_toml(&root.join("deny.toml"));
+    let about = read_toml(&root.join("about.toml"));
+
+    let mut allowed = string_list(
+        deny.get("licenses").and_then(|l| l.get("allow")),
+        "deny.toml's [licenses] allow",
+    );
+    let mut accepted = string_list(about.get("accepted"), "about.toml's accepted");
+    allowed.sort();
+    accepted.sort();
+    assert_eq!(
+        accepted, allowed,
+        "about.toml accepts {accepted:?} and deny.toml admits {allowed:?}; the two lists must \
+         be the same (docs/DECISIONS.md D35, item 3)"
+    );
+
+    let mut per_crate: Vec<(String, Vec<String>)> = about
+        .iter()
+        .filter_map(|(name, value)| {
+            let accepted = value.as_table()?.get("accepted")?;
+            Some((
+                name.clone(),
+                string_list(Some(accepted), &format!("about.toml's [{name}] accepted")),
+            ))
+        })
+        .collect();
+    per_crate.sort();
+    let mut expected: Vec<(String, Vec<String>)> = NOTICES_EXCEPTIONS
+        .iter()
+        .map(|(name, licence)| ((*name).to_owned(), vec![(*licence).to_owned()]))
+        .collect();
+    expected.sort();
+    assert_eq!(
+        per_crate, expected,
+        "about.toml's per-crate accepted lists must be exactly NOTICES_EXCEPTIONS; a new \
+         exception is a decision for docs/DECISIONS.md D35 first"
+    );
+}
+
+/// The committed notices end with LICENSE.md, byte for byte, as ci/notices.sh
+/// appends it, since cargo-about 0.9.2 prints no text for a `LicenseRef-`
+/// licence (docs/DECISIONS.md D35, item 3). They hold no licence template's
+/// placeholder, which would read as a copyright notice naming nobody (item
+/// 6 (a)), and no path of the machine that generated them.
+#[test]
+fn the_committed_notices_end_with_the_agreement_and_hold_no_placeholder() {
+    let root = workspace_root();
+    let notices = fs::read(root.join("THIRD-PARTY-NOTICES.txt"))
+        .expect("THIRD-PARTY-NOTICES.txt is committed at the root");
+    let licence = fs::read(root.join("LICENSE.md")).expect("LICENSE.md is committed at the root");
+    assert!(
+        notices.ends_with(&licence),
+        "THIRD-PARTY-NOTICES.txt does not end with LICENSE.md, byte for byte; run \
+         bash ci/notices.sh (docs/DECISIONS.md D35)"
+    );
+    let text = String::from_utf8_lossy(&notices).to_lowercase();
+    for marker in [
+        "<year>",
+        "<copyright holders>",
+        "<owner>",
+        "/users/",
+        "/home/",
+        "/.cargo/",
+    ] {
+        assert!(
+            !text.contains(marker),
+            "THIRD-PARTY-NOTICES.txt contains {marker:?} (docs/DECISIONS.md D35)"
+        );
+    }
+    assert!(
+        !notices.contains(&b'\r'),
+        "THIRD-PARTY-NOTICES.txt holds a carriage return; ci/notices.sh removes them \
+         (docs/DECISIONS.md D35, item 2)"
+    );
+}
+
+/// The crate versions that publish no text of their MIT licence, in their
+/// package or in their repository at the commit they were published from, and
+/// so are given the standard text without its template line for the holder
+/// (docs/DECISIONS.md D35, item 6 (a); about.toml names them). A crate added
+/// to that entry, or a new version of one of these, has to be looked up again
+/// before it joins this list: it may publish a text that names its holder,
+/// which about.toml then has to take.
+const STANDARD_MIT_TEXT: [&str; 15] = [
+    "block 0.1.6",
+    "block2 0.6.2",
+    "dispatch 0.2.0",
+    "objc2 0.6.4",
+    "objc2-app-kit 0.3.2",
+    "objc2-cloud-kit 0.3.2",
+    "objc2-core-data 0.3.2",
+    "objc2-core-foundation 0.3.2",
+    "objc2-core-graphics 0.3.2",
+    "objc2-core-image 0.3.2",
+    "objc2-core-text 0.3.2",
+    "objc2-core-video 0.3.2",
+    "objc2-encode 4.1.0",
+    "objc2-foundation 0.3.2",
+    "objc2-quartz-core 0.3.2",
+];
+
+/// The committed notices give the standard MIT text to the crates in
+/// STANDARD_MIT_TEXT and to no others (docs/DECISIONS.md D35, item 6 (a)).
+#[test]
+fn only_the_listed_crates_get_the_standard_mit_text() {
+    let notices = read(&workspace_root().join("THIRD-PARTY-NOTICES.txt"));
+    let marker = "They publish none in their repository either";
+    let entries: Vec<&str> = notices
+        .split(
+            "\n================================================================================\n",
+        )
+        .filter(|entry| entry.contains(marker))
+        .collect();
+    assert_eq!(
+        entries.len(),
+        1,
+        "THIRD-PARTY-NOTICES.txt should have one standard MIT entry, and has {}",
+        entries.len()
+    );
+    let mut named: Vec<String> = entries[0]
+        .lines()
+        .skip_while(|line| *line != "Used by:")
+        .skip(1)
+        .take_while(|line| line.starts_with("  "))
+        .map(|line| {
+            line.split_whitespace()
+                .take(2)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect();
+    named.sort();
+    let mut expected: Vec<String> = STANDARD_MIT_TEXT.iter().map(|s| (*s).to_owned()).collect();
+    expected.sort();
+    assert_eq!(
+        named, expected,
+        "the crates given the standard MIT text are not STANDARD_MIT_TEXT; look each new one \
+         up in its repository first (docs/DECISIONS.md D35, item 6 (a))"
+    );
 }
