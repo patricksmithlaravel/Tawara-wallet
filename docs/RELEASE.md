@@ -222,7 +222,7 @@ section 3 costs no new tag; one found at section 8 costs a new version and
 new packages (section 8, "When a check fails and is fixed"). In summary,
 with the threat model's own identifiers:
 
-- [ ] **Every device check, V1 to V17** (its section 5.2), run on the
+- [ ] **Every device check, V1 to V18** (its section 5.2), run on the
   builds to be released and recorded: section 8 here (owner; section 8's
   gate).
 - [ ] **G6**, the Android exit after `Destroy`: its emulator run at the
@@ -245,6 +245,9 @@ with the threat model's own identifiers:
   (section 8's gate). G24's wording is approved on the screens the release
   commit draws, as `design/screenshots/` shows them; CI checks those images
   pixel for pixel against what the screens draw (D27 item 1).
+- [ ] **G27**, iOS while the app is active: a screenshot, recording or
+  mirroring of S4 is not stopped. The owner decides it after V18 has its
+  recorded result (owner; section 8's gate).
 - [ ] **Its section 5.4**: each residual risk accepted, or a control added
   (owner; section 3's gate). The phone part of its item 10, T16 and T31 on
   phones, waits for V1 and V7 (section 8's gate).
@@ -615,7 +618,7 @@ for review or published.
   early then needs the owner's exception in writing in docs/DECISIONS.md.
 - [ ] **Run the device checks** (owner) on an arm64 Android phone and an
   iPhone (D32 item 2), from those testing builds. The list is the threat
-  model's section 5.2 (D34), V1 to V17; if it changes before the release,
+  model's section 5.2 (D34), V1 to V18; if it changes before the release,
   its list is the one run:
   - V1 text entry and keyboard learning; V2 `FLAG_SECURE` from the first
     frame; V3 the Android share chooser; V4 the Android exit after `Destroy`
@@ -627,7 +630,9 @@ for review or published.
   - V11 backup and transfer leave the store out; V12 the app starts on
     arm64; V13 a kill mid-send, and split screen; V14 the copy mark on
     Android; V15 hardware-keyboard copy and cut; V16 the first screen on
-    an iPhone SE; V17 drawing, speed and memory on a phone.
+    an iPhone SE; V17 drawing, speed and memory on a phone; V18 screen
+    recording and mirroring while S4, the recovery phrase, is shown, on an
+    iPhone (G27).
 - [ ] **Record each result** in docs/DECISIONS.md, with the build number it
   ran on (delegated, from the owner's notes).
 - [ ] **What blocks.** A failure of V1, V2, V5 or V6, or of the footer link
