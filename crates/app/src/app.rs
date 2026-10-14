@@ -2123,7 +2123,8 @@ impl App {
     /// that panics drops its queue before its notice reaches the interface, so
     /// this may be a panic's window as well as a graceful stop's, and the
     /// reason is not known until the notice comes. Until it does, the unsaved
-    /// bytes are kept, a move to the background included: a panic keeps them
+    /// bytes are kept, through a move to the background and any lock but the
+    /// shutdown's (see the `Locked` arm of `App::on_event`): a panic keeps them
     /// until Tawara closes, and a graceful stop releases them (docs/DECISIONS.md
     /// D38 item 5; docs/SCREENS.md W6). The stopped screen shows at once. The
     /// worker is kept meanwhile, so the answers it has already sent are still

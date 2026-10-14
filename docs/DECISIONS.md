@@ -2842,9 +2842,10 @@ item 6's.
    - A worker that stops keeps unsaved bytes until Tawara closes, and the
      stopped screen offers to save them. Dated 2026-10-14, this means a worker
      that panics: a graceful stop releases the unsaved bytes, as the shutdown
-     does, and a stop whose reason is not yet known (a command could not be
-     sent to the worker before its `Stopped` came) keeps them, a move to the
-     background included, until that notice says which.
+     does. A stop whose reason is not yet known (a command could not be
+     sent to the worker before its `Stopped` came) keeps them, through a move
+     to the background and any lock but the shutdown's, until that notice says
+     which, as the owner's review of PR #30 (P1) asked on the same day.
 
    One consequence follows whatever the reading. A revert after the bytes
    have gone, through a lock or a dismissal with no save, finds no copy in
@@ -2860,6 +2861,14 @@ item 6's.
    screen's save offer is the only way to keep the only bytes that can move
    those funds while the reservation is open. The bytes are never written to
    disk, and on a phone the app-switcher cover still hides the screen.
+
+   **Note (2026-10-14, the owner's review of PR #30, P1):** W6 now names two
+   exceptions, not one. Besides the panic confirmed above, a stop whose reason
+   is not yet known keeps the unsaved bytes until the worker's `Stopped` says
+   which, since a worker that panics drops its queue before that notice comes.
+   The confirmation above covers the panic only. That a move to the background
+   with no notice at all releases nothing is as built and awaits the owner's
+   confirmation.
 6. **The narrow lock case is accepted, with no library change (owner,
    2026-10-13).** D19 says every walk takes a cancel, and D24 says a walk
    never holds the lock back. The library's `settle_if_landed` reconciles
