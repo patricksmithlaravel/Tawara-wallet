@@ -17,7 +17,7 @@
 //! pages again scrolled to their end (`phone-<name>-end.png`), two with
 //! the keyboard up (`phone-<name>-keyboard.png`), the field typed into
 //! focused and the page scrolled to it as the keyboard's coming up scrolls
-//! it, and two of the recovery phrase on a short phone, 640 tall
+//! it, and two frames of the recovery phrase on a short phone, 640 tall
 //! (`phone-s4-phrase-warning.png` and `phone-s4-phrase-shown.png`). The
 //! phone's welcome screen, S0, has no desktop image: it is drawn only as
 //! `phone-s0-welcome.png` (docs/DECISIONS.md D37), so the phone's images are
@@ -724,12 +724,14 @@ const PHONE: (u32, u32) = (390, 844);
 const PHONE_DIR: &str =
     "/private/var/mobile/Containers/Data/Application/0A1B2C3D/Library/Application Support/Tawara";
 /// A short phone's height (docs/DECISIONS.md D44): under 733 pixels between
-/// its insets, so the recovery phrase is drawn in two frames on it.
+/// its insets, so the recovery phrase is drawn in two frames on it. The 733 is
+/// `PHRASE_ONE_FRAME` in crates/app/src/screens/first_run.rs, measured from the
+/// frame; D44 gives only "about 720".
 const SHORT_PHONE: u32 = 640;
 
 /// The long pages drawn a second time scrolled to their end. Receive is one,
 /// so that its QR code, which is below the fold at the top, is in an image the
-/// owner can approve it by (docs/DECISIONS.md D41). S4 is not among them: its
+/// owner can approve (docs/DECISIONS.md D41). S4 is not among them: its
 /// frame fits 390 by 844 without scrolling (docs/DECISIONS.md D44), so its end
 /// is the image itself.
 const PHONE_ENDS: [&str; 11] = [
