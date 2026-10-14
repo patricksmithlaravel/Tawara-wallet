@@ -323,6 +323,7 @@ impl DivergenceKind {
 pub const DOUBTFUL_POLLS: u8 = 2;
 
 /// What one read of an account means for its polls ([`Watch`]).
+#[derive(Clone, Copy)]
 enum Read {
     /// The reservation is live: the account is polled.
     Live,
@@ -365,11 +366,13 @@ impl Read {
 /// Where one account's polls stand ([`Watch`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Polls {
-    /// Polled, with the number of polls sent about it while its read left
-    /// the spend in doubt, since its last live read or sign
-    /// ([`Watch::signed`]). A silent read neither adds to it nor starts it
-    /// over.
-    Asking(u8),
+    /// Polled. `sent` is the number of polls sent about it while its reads
+    /// left the spend in doubt, since its last live read or sign
+    /// ([`Watch::signed`]); `doubting` is whether its latest read that asked
+    /// a node and said something was in doubt. A silent read changes neither,
+    /// so a poll sent after a silent answer within a run in doubt counts, as
+    /// docs/DECISIONS.md D38 item 2 counts a poll when it is sent.
+    Asking { sent: u8, doubting: bool },
     /// A read ended its polls, and only a live read starts them again.
     Ended,
 }
@@ -441,10 +444,10 @@ impl Watch {
     pub fn asks(&self, account: AccountId, state: &AccountState) -> bool {
         match Read::of(state) {
             Read::Live => true,
-            Read::Silent => matches!(self.accounts.get(&account), Some(Polls::Asking(_))),
+            Read::Silent => matches!(self.accounts.get(&account), Some(Polls::Asking { .. })),
             Read::Doubtful => matches!(
                 self.accounts.get(&account),
-                Some(Polls::Asking(n)) if *n < DOUBTFUL_POLLS
+                Some(Polls::Asking { sent, .. }) if *sent < DOUBTFUL_POLLS
             ),
             Read::Unasked | Read::Ended => false,
         }
@@ -465,21 +468,45 @@ impl Watch {
     }
 
     fn note(&mut self, account: AccountId, state: &AccountState, reserved: bool) {
-        // The same read noted again (every reply notes every row) leaves the
-        // count as it was, so only polls advance it.
-        match (Read::of(state), self.accounts.get(&account).copied()) {
+        // The same read noted again leaves the count as it was, so only polls
+        // advance it.
+        let read = Read::of(state);
+        match (read, self.accounts.get(&account).copied()) {
             (Read::Live, _) => {
-                self.accounts.insert(account, Polls::Asking(0));
+                self.accounts.insert(
+                    account,
+                    Polls::Asking {
+                        sent: 0,
+                        doubting: false,
+                    },
+                );
             }
             // A doubtful read once the polls in doubt are spent ends them, so a
             // silent read after it asks nothing either.
-            (Read::Doubtful, Some(Polls::Asking(n))) if n >= DOUBTFUL_POLLS => {
+            (Read::Doubtful, Some(Polls::Asking { sent, .. })) if sent >= DOUBTFUL_POLLS => {
                 self.accounts.insert(account, Polls::Ended);
+            }
+            // A doubtful read within the polls in doubt opens a run in doubt,
+            // or goes on with it: the polls sent from now count.
+            (Read::Doubtful, Some(Polls::Asking { sent, .. })) => {
+                self.accounts.insert(
+                    account,
+                    Polls::Asking {
+                        sent,
+                        doubting: true,
+                    },
+                );
             }
             (Read::Silent | Read::Doubtful, None)
                 if reserved || state.reservation_held() == Some(true) =>
             {
-                self.accounts.insert(account, Polls::Asking(0));
+                self.accounts.insert(
+                    account,
+                    Polls::Asking {
+                        sent: 0,
+                        doubting: matches!(read, Read::Doubtful),
+                    },
+                );
             }
             (Read::Ended, _) => {
                 self.accounts.insert(account, Polls::Ended);
@@ -490,12 +517,15 @@ impl Watch {
 
     /// Notes that a poll asked the node about `account`, whose row showed
     /// `state`: a poll sent while the spend is in doubt counts towards
-    /// [`DOUBTFUL_POLLS`].
+    /// [`DOUBTFUL_POLLS`]. It is in doubt from a doubtful read until a live
+    /// one: a silent answer between them leaves it in doubt, so the next poll
+    /// counts too (docs/DECISIONS.md D38 item 2: a silent read neither counts
+    /// nor restarts the count, and a poll counts when it is sent).
     pub fn asked(&mut self, account: AccountId, state: &AccountState) {
-        if matches!(Read::of(state), Read::Doubtful)
-            && let Some(Polls::Asking(n)) = self.accounts.get_mut(&account)
+        if let Some(Polls::Asking { sent, doubting }) = self.accounts.get_mut(&account)
+            && (*doubting || matches!(Read::of(state), Read::Doubtful))
         {
-            *n = n.saturating_add(1);
+            *sent = sent.saturating_add(1);
         }
     }
 
@@ -522,7 +552,13 @@ impl Watch {
     /// this, as [`Watch::read_answer`] notes them, so a read that settles the
     /// spend or shows it dead still ends the polls.
     pub fn signed(&mut self, account: AccountId) {
-        self.accounts.insert(account, Polls::Asking(0));
+        self.accounts.insert(
+            account,
+            Polls::Asking {
+                sent: 0,
+                doubting: false,
+            },
+        );
     }
 
     /// Forgets every account: the wallet locked, so its next reads start over.
@@ -870,7 +906,7 @@ mod tests {
             watch.asked(id, &doubtful);
             watch.read(id, &live);
             // Two polls are sent while the reads stay in doubt, and noting the
-            // same read again, as every reply does, counts nothing.
+            // same read again counts nothing.
             for n in 0..DOUBTFUL_POLLS {
                 watch.read(id, &doubtful);
                 watch.read(id, &doubtful);
@@ -880,7 +916,6 @@ mod tests {
                 // starts the count over.
                 watch.read(id, &silent);
                 assert!(watch.asks(id, &silent), "{doubtful:?}, poll {n}");
-                watch.asked(id, &silent);
             }
             // The third doubtful read in a row asks nothing, nor does a silent
             // one after it.
@@ -1040,6 +1075,43 @@ mod tests {
         assert!(!watch.asks(id, &spent_in_doubt));
         watch.signed(id);
         assert!(watch.asks(id, &spent_in_doubt));
+    }
+
+    #[test]
+    fn a_poll_sent_after_a_silent_answer_in_doubt_counts() {
+        // docs/DECISIONS.md D38 item 2: a silent read neither counts nor
+        // restarts the count, and a poll counts when it is sent. A poll sent
+        // after a silent answer, within a run of doubtful reads, is one of the
+        // two that follow the first doubtful read (the second review of PR #30).
+        let id = AccountId::from_tag([7; 20]);
+        let live = outstanding(ReservationState::Live);
+        let silent = diverged(DivergenceKind::Unreachable);
+        let doubtful = diverged(DivergenceKind::NotFound);
+        let mut watch = Watch::default();
+        watch.read(id, &live);
+        watch.read(id, &doubtful);
+        assert!(watch.asks(id, &doubtful));
+        watch.asked(id, &doubtful);
+        watch.read(id, &silent);
+        assert!(watch.asks(id, &silent), "a silent answer keeps the polls");
+        watch.asked(id, &silent);
+        // Two polls have followed the doubtful read: the next doubtful read
+        // ends them.
+        watch.read(id, &doubtful);
+        assert!(
+            !watch.asks(id, &doubtful),
+            "the poll after the silent answer counted"
+        );
+
+        // After a live read, silent answers count nothing, however many.
+        watch.read(id, &live);
+        for _ in 0..5 {
+            watch.read(id, &silent);
+            assert!(watch.asks(id, &silent));
+            watch.asked(id, &silent);
+        }
+        watch.read(id, &doubtful);
+        assert!(watch.asks(id, &doubtful), "no poll was sent in doubt");
     }
 
     #[test]
