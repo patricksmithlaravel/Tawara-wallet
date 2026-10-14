@@ -228,6 +228,10 @@ for hours, and on mobile it is suspended and resumed. The following hold:
 
      So that it is not lost, the app offers to save it as a file.
 
+The full write-up, with each threat's protections, checks, residual risk
+and status, and what must close before release, is `docs/THREAT_MODEL.md`
+(docs/DECISIONS.md D34).
+
 ## 5. Visual design from the owner's renderings
 
 - **Source.** The renderings in `design/renderings/` are the visual

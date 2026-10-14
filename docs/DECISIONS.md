@@ -2432,6 +2432,43 @@ options put in detail.
 Tawara-mobile pins this repository at #13's head until #13 merges; the
 merge keeps that commit reachable, and the pin then moves to `main`.
 
+## Phase 5
+
+### D34. The threat model is written up
+
+**Decided under the owner's delegation, 2026-10-12, for the owner to
+revisit.** docs/PLAN.md section 3 names `docs/THREAT_MODEL.md` as the
+full write-up of section 4, required before any release (phase 5).
+It is written against this repository's `main` at `389f731`,
+Tawara-mobile's `main` at `587329c`, the library at `7cdc2e9` and the iced
+fork at `d4ab3a0`. The choices it makes:
+
+- **It adds no control.** Every protection it names is in the source or in
+  these records, with its place. A threat with no protection, or a
+  protection with no check, is listed as a gap with who closes it: the
+  owner, or work done under the owner's delegation.
+- **Status says what was exercised.** "verified" means a named test or a CI
+  check exercises the control, and says when that is only the emulator,
+  the simulator or a desktop host; "source only" means the control was
+  read and nothing exercises it; "owed" means the control or its check
+  does not exist yet. No check of any kind has run on a physical phone,
+  so every phone control is at most verified on the emulator or simulator.
+- **Residual risks are listed for acceptance, not accepted.** Only D21's
+  desktop backups and D22's bundled roots were accepted by the owner. The
+  others (THREAT_MODEL section 5.4) wait on the owner, and section 6 makes
+  their acceptance, or a control, a condition of release.
+- **The records that disagree are listed, not corrected.** The largest:
+  D19 says an app ended between signing and recording leaves the account
+  behind the chain, while D28 and item 6 of D32 say the index is written
+  before a spend is signed. The library's invariant I2 bears out D28 and
+  D32 for a process killed at a syscall boundary, and leaves power loss
+  outside its claim. Correcting D19, and D28's causes, changes text the
+  person reads, which is the owner's (docs/PLAN.md section 3), so it is
+  recommended there (THREAT_MODEL section 5.3, C1) rather than made here.
+
+The file is kept current: a change that adds, removes or weakens a
+control updates its row in the same pull request.
+
 ### D35. Third-party notices: cargo-about 0.9.2, generated and checked in CI
 
 **Proposed, 2026-10-13.** PLAN section 6 asks for the notices to be generated
