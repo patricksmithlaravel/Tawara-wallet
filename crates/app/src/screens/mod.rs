@@ -182,19 +182,27 @@ pub fn view(model: &Model) -> Element<'_, Message> {
     } else {
         page
     };
-    // A compact wallet's bars are the chrome colour, and the strips the system
-    // covers above and below them take the same colour, so they read as part
-    // of the bars.
-    let chrome =
-        model.compact() && model.stopped.is_none() && matches!(model.screen, Screen::Wallet(_));
-    let style: fn(&iced::Theme) -> iced::widget::container::Style =
-        if chrome { theme::sidebar } else { theme::page };
     container(page)
         .width(Length::Fill)
         .height(Length::Fill)
         .padding(root_padding(model.safe_area, model.phone() && IPHONE))
-        .style(style)
+        .style(root_style(model))
         .into()
+}
+
+/// The colour of the window behind the page, which is all that shows in the
+/// strips the system covers above and below it.
+fn root_style(model: &Model) -> fn(&iced::Theme) -> iced::widget::container::Style {
+    match (&model.stopped, &model.busy, &model.screen) {
+        // A compact wallet's bars are the chrome colour, and the strips take
+        // the same colour, so they read as part of the bars.
+        (None, _, Screen::Wallet(_)) if model.compact() => theme::sidebar,
+        // The welcome screen is the green brand field from edge to edge, so
+        // the strips are green too, and the field does not stop short of the
+        // status bar and the home indicator (docs/DECISIONS.md D37).
+        (None, None, Screen::Welcome) => theme::brand_panel,
+        _ => theme::page,
+    }
 }
 
 /// What the worker is doing for the command the screen waits on, as a title
@@ -361,6 +369,35 @@ mod tests {
             out.push(Rectangle::new(at, bounds.size()));
             collect(child, at, out);
         }
+    }
+
+    #[test]
+    fn the_welcome_screen_is_green_under_the_status_bar_and_the_home_indicator() {
+        // S0's field reaches the window's edges: the strips the safe area
+        // leaves are the brand field's green, not the page's colour
+        // (docs/DECISIONS.md D37). Every other first-run screen keeps the
+        // page's colour there.
+        let background = |screen: Screen| {
+            let mut model = Model::new(Preferences::default(), None);
+            model.width = 390.0;
+            model.safe_area = phone_area(0.0);
+            model.screen = screen;
+            root_style(&model)(&iced::Theme::Dark).background
+        };
+        let green = Some(iced::Background::Color(color::ACCENT));
+        assert_eq!(background(Screen::Welcome), green);
+        assert_ne!(
+            background(Screen::Unlock(UnlockForm::default())),
+            green,
+            "S7 keeps the page's colour"
+        );
+        assert_ne!(
+            background(Screen::Start {
+                choice: crate::app::StartChoice::Create,
+            }),
+            green,
+            "S1 keeps the page's colour"
+        );
     }
 
     #[test]
