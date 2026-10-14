@@ -2691,14 +2691,16 @@ item 6's.
    dismissed or locked.** Unsaved signed bytes are kept until the person
    saves them, dismisses them, or the wallet locks, and not until the first
    read that finds the account in sync. That first-read rule is the code's
-   rule today (`forget_settled`, `crates/app/src/app/wallet.rs:769-770`,
-   called from `crates/app/src/app.rs:1701`); it is not changed in this PR.
-   The bytes live in memory only and nothing is written to disk, so a
-   restart also loses them. This replaces the owner's earlier answer of the
-   same day, to forget them on settle. That answer rested on the wrong
-   premise that a reverted settle reopens the reservation, as the corrected
-   facts below show. No dismiss control exists on this branch; PR #30 adds
-   one, and it and its copy are new wording (item 3).
+   rule on main (`forget_settled`, `crates/app/src/app/wallet.rs`, called
+   from `on_reply` in `crates/app/src/app.rs`); PR #30 replaces it with the
+   rule above (owner, 2026-10-13: wording corrected). The bytes live in
+   memory only and nothing is written to disk, so a restart also loses
+   them. This replaces the owner's earlier answer of the same day, to
+   forget them on settle. That answer rested on the wrong premise that a
+   reverted settle reopens the reservation, as the corrected facts below
+   show. No dismiss control exists on main (owner, 2026-10-13: wording
+   corrected); PR #30 adds Dismiss, with a confirming second press, and the
+   control and its copy are new wording (item 3).
 
    If a reorganisation of the chain then reverts the settle, the reservation
    is not reopened: `persist_settled` closes it and keeps only the settle's

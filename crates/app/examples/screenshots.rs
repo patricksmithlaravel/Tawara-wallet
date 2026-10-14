@@ -762,7 +762,7 @@ const PHONE_DIR: &str =
 
 /// The long pages drawn a second time scrolled to their end. Receive is one,
 /// so that its QR code, which is below the fold at the top, is in an image the
-/// owner can approve it by (docs/DECISIONS.md D41).
+/// owner can approve (docs/DECISIONS.md D41).
 const PHONE_ENDS: [&str; 11] = [
     "w1-wallet",
     "w2-receive",
