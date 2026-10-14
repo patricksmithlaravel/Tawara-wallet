@@ -43,12 +43,6 @@ pub use wallet::{
 /// left unanswered (docs/DECISIONS.md D38 item 2, as [`Watch`] extends it).
 const POLL_EVERY: Duration = Duration::from_secs(60);
 
-/// The accounts the worker settled on its own in answering with `reply`
-/// (docs/DECISIONS.md D38), from the store's view the reply carries. Every
-/// reply that opens or reads the wallet can carry them: a refresh, an unlock,
-/// the read after a send, and the reopen after a restore or an advance. A
-/// check's or a poll's own settlement is `Reply::Status::settled`, which the
-/// check's answer shows itself.
 /// The accounts an answer reads afresh (see [`Reads`]): a check or a poll
 /// reads its account, a send the account it spent from (the read after the
 /// sign), a settle the account it settled, and an opened or refreshed store
@@ -63,6 +57,7 @@ fn reads_of(purpose: Purpose, reply: &Reply) -> Reads {
             _,
             Reply::Wallet(_)
             | Reply::Unlocked(_)
+            | Reply::Created { opened: Ok(_), .. }
             | Reply::Reconciled { opened: Ok(_), .. }
             | Reply::Restored { opened: Ok(_), .. },
         ) => Reads::Every,
@@ -70,6 +65,12 @@ fn reads_of(purpose: Purpose, reply: &Reply) -> Reads {
     }
 }
 
+/// The accounts the worker settled on its own in answering with `reply`
+/// (docs/DECISIONS.md D38), from the store's view the reply carries. Every
+/// reply that opens or reads the wallet can carry them: a refresh, an unlock,
+/// the read after a send, and the reopen after a restore or an advance. A
+/// check's or a poll's own settlement is `Reply::Status::settled`, which the
+/// check's answer shows itself.
 fn settled_in(reply: &Reply) -> Vec<SettledAccount> {
     let view = match reply {
         Reply::Wallet(view) | Reply::Unlocked(view) | Reply::Settled { view, .. } => Some(view),
@@ -1527,6 +1528,10 @@ impl App {
         // it.
         if left != self.model.left_seen {
             self.model.left_seen = left;
+            // With no worker left, this is the move's only wipe. It leaves the
+            // unsaved bytes of a worker that stopped on a fault, for the stopped
+            // screen to save until Tawara closes (docs/DECISIONS.md D38 item 5;
+            // docs/SCREENS.md W6).
             self.model.backgrounded();
             self.model.wiped.wiped(left);
         }
@@ -2070,7 +2075,11 @@ impl App {
                 self.model.backgrounded();
                 // A store the worker closed for a read-back that failed sends no
                 // `Locked` for the move, so the unsaved bytes it kept are released
-                // here, before the move is taken (docs/SCREENS.md W6).
+                // here, before the move is taken (docs/SCREENS.md W6). With a
+                // store open, the worker's `Locked` comes first and has wiped
+                // them, with S7's note (wallet-core's test
+                // `every_move_to_the_background_is_reported_after_any_lock`), so
+                // this finds nothing more.
                 self.model.release_unsaved();
                 // Taken in turn: every answer before it, a recovery phrase
                 // among them, and the `Locked` that dropped it, have been
@@ -5042,6 +5051,113 @@ mod tests {
         );
     }
 
+    /// Marks the spend's page shown on W6 as saved to a file.
+    fn save_shown(app: &mut App) {
+        let Screen::Wallet(WalletPage {
+            page:
+                Page::Send(SendPage {
+                    stage: SendStage::Sent(s),
+                    ..
+                }),
+            ..
+        }) = &mut app.model.screen
+        else {
+            panic!("expected the sent page");
+        };
+        s.saved = Some(Ok(std::env::temp_dir().join("tawara-saved-shown.hex")));
+    }
+
+    #[test]
+    fn a_saved_spend_stays_through_a_move_and_a_shutdown_with_no_lock() {
+        // docs/SCREENS.md W6: only unsaved bytes go with a move to the
+        // background or a shutdown; a saved spend is kept, shown or not.
+        let scratch = Scratch::new("saved-kept-boundaries");
+        let (mut app, sent) = signed_then_locked(&scratch, LockReason::ReopenFailed);
+        app.model.signed[0].sent.saved =
+            Some(Ok(std::env::temp_dir().join("tawara-saved-kept.hex")));
+        let _ = app.on_event(Event::Backgrounded { seq: 1 });
+        assert_eq!(app.model.signed.len(), 1, "the move keeps a saved spend");
+        assert_eq!(
+            app.model.signed[0].sent.sent.artifact_hex,
+            sent.artifact_hex
+        );
+        let _ = app.on_event(Event::Stopped { panicked: false });
+        assert_eq!(app.model.signed.len(), 1, "and so does the shutdown");
+        assert_eq!(
+            app.model.signed[0].sent.sent.artifact_hex,
+            sent.artifact_hex
+        );
+
+        let (mut app, sent) = just_sent();
+        save_shown(&mut app);
+        let _ = app.on_event(Event::Backgrounded { seq: 1 });
+        let (_, shown) = sent_shown(&app).expect("a saved page stays shown");
+        assert_eq!(shown.sent.artifact_hex, sent.artifact_hex);
+    }
+
+    #[test]
+    fn leaving_the_application_releases_a_shown_unsaved_page_and_keeps_a_saved_one() {
+        // docs/SCREENS.md W6: the drop releases unsaved bytes shown as well as
+        // kept, and a saved spend is not released.
+        let (app, _) = just_sent();
+        let before = RELEASED_IN_TESTS.with(std::cell::Cell::get);
+        drop(app);
+        assert_eq!(
+            RELEASED_IN_TESTS.with(std::cell::Cell::get) - before,
+            1,
+            "the shown bytes went with the application"
+        );
+
+        let (mut app, _) = just_sent();
+        save_shown(&mut app);
+        let before = RELEASED_IN_TESTS.with(std::cell::Cell::get);
+        drop(app);
+        assert_eq!(
+            RELEASED_IN_TESTS.with(std::cell::Cell::get) - before,
+            0,
+            "a saved page is not released"
+        );
+    }
+
+    #[test]
+    fn a_move_with_a_store_open_wipes_at_its_lock_and_s7_says_so() {
+        // The worker sends `Locked` before `Backgrounded` (wallet-core's
+        // `every_move_to_the_background_is_reported_after_any_lock`): the lock
+        // wipes the shown bytes and S7 says so, and the move's release finds
+        // nothing more (docs/SCREENS.md W6).
+        let (mut app, _) = just_sent();
+        let _ = app.on_event(Event::Locked {
+            reason: LockReason::Background,
+        });
+        let before = RELEASED_IN_TESTS.with(std::cell::Cell::get);
+        let _ = app.on_event(Event::Backgrounded { seq: 1 });
+        assert_eq!(RELEASED_IN_TESTS.with(std::cell::Cell::get) - before, 0);
+        assert!(app.model.signed.is_empty());
+        match &app.model.screen {
+            Screen::Unlock(u) => {
+                let note = u.note.as_deref().unwrap_or_default();
+                assert!(note.contains(WIPED_NOTE), "{note}");
+            }
+            other => panic!("expected the unlock screen, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_stopped_worker_keeps_the_unsaved_bytes_through_a_move() {
+        // docs/DECISIONS.md D38 item 5; docs/SCREENS.md W6: a worker that
+        // stopped on a fault keeps unsaved bytes until Tawara closes, a move
+        // to the background included, for the stopped screen to save.
+        let (mut app, sent) = just_sent();
+        let _ = app.on_event(Event::Stopped { panicked: true });
+        app.model.left.fetch_add(1, Ordering::SeqCst);
+        let _ = app.update(Message::Tick(now_ms()));
+        assert_eq!(app.model.signed.len(), 1);
+        assert_eq!(
+            app.model.signed[0].sent.sent.artifact_hex,
+            sent.artifact_hex
+        );
+    }
+
     #[test]
     fn signed_bytes_pasted_on_w9_are_wiped_with_a_move_to_the_background() {
         // A pasted artifact may be a copy of unsaved bytes, so it goes as they
@@ -5060,6 +5176,32 @@ mod tests {
             "{:?}",
             wallet_page(&app).page
         );
+    }
+
+    #[test]
+    fn an_opened_store_reads_every_account_however_it_was_opened() {
+        // view::Reads: an opened or refreshed store reads every account, a
+        // store just created among them (docs/DECISIONS.md D38 item 2;
+        // docs/SCREENS.md W7).
+        let view = tawara_wallet_core::sample::wallet_view();
+        let first = tawara_wallet_core::view::AccountId::from_tag([0; 20]);
+        for purpose in [Purpose::CreateConfirm, Purpose::CreateFromPhrase] {
+            let reply = Reply::Created {
+                dir: view.dir.clone(),
+                first,
+                opened: Ok(view.clone()),
+            };
+            assert_eq!(reads_of(purpose, &reply), Reads::Every, "{purpose:?}");
+        }
+        let refused = Reply::Created {
+            dir: view.dir.clone(),
+            first,
+            opened: Err(Refusal {
+                kind: RefusalKind::StoreInUse,
+                text: "the store is in use".to_owned(),
+            }),
+        };
+        assert_eq!(reads_of(Purpose::CreateConfirm, &refused), Reads::Nothing);
     }
 
     #[test]
