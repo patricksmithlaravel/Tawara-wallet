@@ -1543,7 +1543,7 @@ impl App {
             }
             WalletMsg::Settle(account) => {
                 self.page_error(None);
-                self.send(Command::Settle { account }, Purpose::Settle);
+                self.send(Command::Settle { account }, Purpose::Settle(account));
             }
             WalletMsg::Check(account) => {
                 self.page_error(None);
@@ -2224,7 +2224,7 @@ impl App {
                     return crate::screens::page_top();
                 }
             }
-            (Purpose::Settle, Reply::Settled { text, view }) => {
+            (Purpose::Settle(_), Reply::Settled { text, view }) => {
                 self.model.wallet = Some(view);
                 if let Some(WalletPage {
                     page: Page::Account(a),

@@ -25,7 +25,7 @@ use tawara_wallet_core::explorer::{
 };
 use tawara_wallet_core::location::{self, Environment, Platform};
 use tawara_wallet_core::preferences::{self, Preferences};
-use tawara_wallet_core::view::{AccountId, SettledAccount, WalletView, Watch};
+use tawara_wallet_core::view::{AccountId, Reads, SettledAccount, WalletView, Watch};
 use tawara_wallet_core::{
     Activity, Command, Config, Event, HttpsNode, LockReason, NetworkName, PhraseForDisplay,
     Progress, Refusal, RefusalKind, Reply, RequestId, SecretText, SyncState, WorkerHandle,
@@ -49,6 +49,27 @@ const POLL_EVERY: Duration = Duration::from_secs(60);
 /// the read after a send, and the reopen after a restore or an advance. A
 /// check's or a poll's own settlement is `Reply::Status::settled`, which the
 /// check's answer shows itself.
+/// The accounts an answer reads afresh (see [`Reads`]): a check or a poll
+/// reads its account, a send the account it spent from (the read after the
+/// sign), a settle the account it settled, and an opened or refreshed store
+/// every account. Any other answer reads nothing, and the rows it carries are
+/// the store as it was (docs/DECISIONS.md D38 item 2; docs/SCREENS.md W7).
+fn reads_of(purpose: Purpose, reply: &Reply) -> Reads {
+    match (purpose, reply) {
+        (_, Reply::Status { account, .. }) => Reads::One(*account),
+        (_, Reply::Sent(sent)) => Reads::One(sent.from),
+        (Purpose::Settle(account), Reply::Settled { .. }) => Reads::One(account),
+        (
+            _,
+            Reply::Wallet(_)
+            | Reply::Unlocked(_)
+            | Reply::Reconciled { opened: Ok(_), .. }
+            | Reply::Restored { opened: Ok(_), .. },
+        ) => Reads::Every,
+        _ => Reads::Nothing,
+    }
+}
+
 fn settled_in(reply: &Reply) -> Vec<SettledAccount> {
     let view = match reply {
         Reply::Wallet(view) | Reply::Unlocked(view) | Reply::Settled { view, .. } => Some(view),
@@ -647,7 +668,9 @@ enum Purpose {
     PlanSend,
     ConfirmSend,
     DiscardPlan,
-    Settle,
+    /// The person's Settle of an account: its answer reads that account
+    /// (see [`reads_of`]).
+    Settle(AccountId),
     Resign,
     SubmitArtifact,
     Status,
@@ -701,7 +724,7 @@ impl Purpose {
                 | Purpose::Restore
                 | Purpose::PlanSend
                 | Purpose::ConfirmSend
-                | Purpose::Settle
+                | Purpose::Settle(_)
                 | Purpose::Resign
                 | Purpose::SubmitArtifact
                 | Purpose::Status
@@ -721,7 +744,7 @@ impl Purpose {
                 | Purpose::PlanSend
                 | Purpose::ConfirmSend
                 | Purpose::DiscardPlan
-                | Purpose::Settle
+                | Purpose::Settle(_)
                 | Purpose::Resign
                 | Purpose::SubmitArtifact
                 | Purpose::Status
@@ -2030,6 +2053,8 @@ impl App {
         if let Reply::Sent(sent) = &reply {
             self.model.watch.signed(sent.from);
         }
+        // The accounts the answer reads, taken before the answer is applied.
+        let reads = reads_of(purpose, &reply);
         let task = if purpose.wallet_page() {
             self.on_wallet_reply(purpose, reply)
         } else {
@@ -2042,9 +2067,11 @@ impl App {
         self.model.forget_settled();
         // The reads the answer carries are noted here, whatever page sent the
         // command, so that the next poll asks about what they left
-        // (docs/DECISIONS.md D38 item 2).
+        // (docs/DECISIONS.md D38 item 2). Only the accounts it read: the other
+        // rows are the store as it was, and noting them again could end another
+        // account's watch before that account's own answer has come.
         if let Some(view) = &self.model.wallet {
-            self.model.watch.read_view(view);
+            self.model.watch.read_answer(view, reads);
         }
         task
     }
@@ -4337,7 +4364,7 @@ mod tests {
         // (D38 item 5, as revised on 2026-10-13; unsaved bytes are kept past
         // that, as the tests below show).
         let _ = app.on_reply(
-            Purpose::Settle,
+            Purpose::Settle(sent.from),
             Reply::Settled {
                 text: "not landed".to_owned(),
                 view: sent.view.clone(),
@@ -4652,7 +4679,7 @@ mod tests {
         let mut view = sent.view.clone();
         in_sync(&mut view, sent.from);
         let _ = app.on_reply(
-            Purpose::Settle,
+            Purpose::Settle(sent.from),
             Reply::Settled {
                 text: "settled: the library's page".to_owned(),
                 view,
@@ -6185,6 +6212,75 @@ mod tests {
         if let Some(w) = app.worker.as_mut() {
             w.waiting.clear();
         }
+    }
+
+    #[test]
+    fn a_reply_reads_only_its_own_account_so_a_watch_ends_on_that_accounts_answer() {
+        // The owner's review (docs/DECISIONS.md D38 item 2): B is on its final
+        // follow-up poll, and A's answer comes first. It carries B's cached row,
+        // which is no read of B, so B stays watched; B's own answer then decides
+        // it: a silent one continues the watch, and a third doubtful one in a
+        // row ends it.
+        use tawara_wallet_core::view::{AccountState, DivergenceKind, ReservationState};
+        let mut app = on_wallet(Page::Dashboard);
+        let view = app.model.wallet.clone().expect("the sample store");
+        let (a, b) = (view.accounts[0].id, view.accounts[1].id);
+        let live = AccountState::SpendOutstanding {
+            balance: 3_180_000_000_000,
+            spent_index: 6,
+            reservation: ReservationState::Live,
+        };
+        let diverged = |kind| AccountState::Diverged {
+            kind,
+            report: "the library's report".to_owned(),
+            advance_to: None,
+        };
+        let silent = diverged(DivergenceKind::Unreachable);
+        let not_found = diverged(DivergenceKind::NotFound);
+        let answer = |app: &mut App, account: AccountId, state: AccountState| {
+            let _ = app.on_reply(
+                Purpose::Poll,
+                Reply::Status {
+                    account,
+                    state,
+                    spendable: false,
+                    text: "checked".to_owned(),
+                    settled: None,
+                },
+            );
+        };
+        // Both accounts are polled from their live reads.
+        answer(&mut app, a, live.clone());
+        answer(&mut app, b, live.clone());
+        // B answers "account not found", and its two polls in doubt are sent:
+        // the second is B's final follow-up poll, and it is still on its way.
+        answer(&mut app, b, not_found.clone());
+        app.model.watch.asked(b, &not_found);
+        answer(&mut app, b, not_found.clone());
+        app.model.watch.asked(b, &not_found);
+        // A's answer comes first, and carries B's cached row: B is still watched.
+        answer(&mut app, a, live.clone());
+        assert!(
+            app.model.watch.asks(b, &silent),
+            "B's own answer has not come"
+        );
+        // B's own answer is silent: the watch continues, within the bound.
+        answer(&mut app, b, silent.clone());
+        assert!(
+            app.model.watch.asks(b, &silent),
+            "a silent answer continues it"
+        );
+        app.model.watch.asked(b, &silent);
+        // B's third doubtful answer in a row ends its polls.
+        answer(&mut app, b, not_found.clone());
+        assert!(
+            !app.model.watch.asks(b, &not_found),
+            "the third doubtful answer ends it"
+        );
+        assert!(
+            !app.model.watch.asks(b, &silent),
+            "and a silent one does not restart it"
+        );
     }
 
     #[test]

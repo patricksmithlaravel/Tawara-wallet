@@ -17,7 +17,7 @@ use tawara_wallet_core::explorer::IndexState;
 use tawara_wallet_core::location::{Environment, Platform, default_store_dir};
 use tawara_wallet_core::spend::{Amount, DestinationInput, SpendInputError, SpendRequest};
 use tawara_wallet_core::view::{
-    AccountId, AccountRow, AccountState, DivergenceKind, NoticeKind, ReservationState,
+    AccountId, AccountRow, AccountState, DivergenceKind, NoticeKind, Reads, ReservationState,
     SettledAccount, Total, WalletView, Watch,
 };
 use tawara_wallet_core::{
@@ -2542,7 +2542,7 @@ fn a_wallet_opened_while_the_node_fails_for_the_spend_polls_it() {
             "and none for the other account"
         );
         let mut watch = Watch::default();
-        watch.read_view(&view);
+        watch.read_answer(&view, Reads::Every);
         assert!(
             watch.asks(account0(), &row.state),
             "a wallet opened during an outage polls the outstanding spend"
@@ -2599,7 +2599,7 @@ fn a_spend_signed_after_an_unlock_in_sync_polls_through_a_failed_read_and_settle
     // The unlock: the account reads in sync, and nothing is asked about it.
     assert!(matches!(h.call(Command::Lock), Reply::Locked));
     let view = opened(h.unlock(&scratch.store(), PASSWORD));
-    watch.read_view(&view);
+    watch.read_answer(&view, Reads::Every);
     let state = row_of(&view, account0()).state;
     assert_eq!(state, AccountState::InSync { balance: FUNDS });
     assert!(!watch.asks(account0(), &state));
@@ -2614,7 +2614,7 @@ fn a_spend_signed_after_an_unlock_in_sync_polls_through_a_failed_read_and_settle
     assert!(signed.submitted);
     // The interface notes the sign, then the reads its reply carries.
     watch.signed(signed.from);
-    watch.read_view(&signed.view);
+    watch.read_answer(&signed.view, Reads::One(signed.from));
     let state = row_of(&signed.view, account0()).state;
     assert!(
         matches!(

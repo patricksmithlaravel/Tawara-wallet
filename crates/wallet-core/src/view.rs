@@ -374,6 +374,32 @@ enum Polls {
     Ended,
 }
 
+/// The accounts an answer reads afresh, so that the polls of a [`Watch`] follow
+/// those reads alone ([`Watch::read_answer`]). A check or a poll reads its
+/// account; the read after a send reads the account the spend came from, and a
+/// settle the account it settled; an opened or refreshed store reads every
+/// account (docs/DECISIONS.md D38 item 2; docs/SCREENS.md W7). The rows an
+/// answer carries for the other accounts are the store as it was.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reads {
+    /// No account: the answer carries the store as it was.
+    Nothing,
+    /// One account, read on its own.
+    One(AccountId),
+    /// Every account of the store.
+    Every,
+}
+
+impl Reads {
+    fn covers(self, account: AccountId) -> bool {
+        match self {
+            Reads::Nothing => false,
+            Reads::One(read) => read == account,
+            Reads::Every => true,
+        }
+    }
+}
+
 /// The accounts a poll asks the node about (docs/DECISIONS.md D38 item 2), as
 /// the reads so far say. The rule extends D38 item 2, which polls only a live
 /// reservation, so that an outage does not stop the polls that settle a spend:
@@ -396,6 +422,9 @@ enum Polls {
 ///   the reservation is dead or unrecorded, or the account diverged in a way
 ///   that is for the person to look at. A read that asked no node changes
 ///   nothing.
+/// - A reply notes only the reads it carries ([`Reads`]). A row it carries for
+///   any other account is the store as it was, and moves nothing: a doubtful
+///   read ends the polls only as that account's own read.
 /// - A lock forgets every account ([`Watch::clear`]), and a view forgets the
 ///   accounts it does not hold.
 ///
@@ -470,12 +499,15 @@ impl Watch {
         }
     }
 
-    /// Notes each row of `view` (see [`Watch::read_row`]), and forgets the
-    /// accounts the view does not hold.
-    pub fn read_view(&mut self, view: &WalletView) {
+    /// Notes the reads an answer carries, as `reads` names them (see
+    /// [`Reads`] and [`Watch::read_row`]), and forgets the accounts `view`
+    /// does not hold. A row the answer does not read is the store as it was,
+    /// not a read: noting it again could end another account's watch before
+    /// that account's own answer has come (docs/DECISIONS.md D38 item 2).
+    pub fn read_answer(&mut self, view: &WalletView, reads: Reads) {
         self.accounts
             .retain(|id, _| view.accounts.iter().any(|row| row.id == *id));
-        for row in &view.accounts {
+        for row in view.accounts.iter().filter(|row| reads.covers(row.id)) {
             self.read_row(row);
         }
     }
@@ -487,7 +519,7 @@ impl Watch {
     /// unlock that found the account in sync ended them, and without this the
     /// spend would go unpolled through a first read that failed, and through a
     /// settle the node interrupted. The reads the reply carries are noted after
-    /// this, as [`Watch::read_view`] notes them, so a read that settles the
+    /// this, as [`Watch::read_answer`] notes them, so a read that settles the
     /// spend or shows it dead still ends the polls.
     pub fn signed(&mut self, account: AccountId) {
         self.accounts.insert(account, Polls::Asking(0));
@@ -956,16 +988,16 @@ mod tests {
             settled: Vec::new(),
         };
         let mut watch = Watch::default();
-        watch.read_view(&view);
+        watch.read_answer(&view, Reads::Every);
         assert!(watch.asks(one, &silent));
         assert!(watch.asks(two, &silent));
         // A view that leaves an account out forgets it, so a later silent read
         // of it does not ask.
         view.accounts.retain(|r| r.id == one);
-        watch.read_view(&view);
+        watch.read_answer(&view, Reads::Every);
         assert!(watch.asks(one, &silent));
         view.accounts = vec![row(2, silent.clone())];
-        watch.read_view(&view);
+        watch.read_answer(&view, Reads::Every);
         assert!(!watch.asks(one, &silent));
         assert!(!watch.asks(two, &silent));
         // A lock forgets every account.
@@ -1008,5 +1040,67 @@ mod tests {
         assert!(!watch.asks(id, &spent_in_doubt));
         watch.signed(id);
         assert!(watch.asks(id, &spent_in_doubt));
+    }
+
+    #[test]
+    fn a_reply_notes_only_the_row_it_reads_so_a_watch_ends_on_its_own_account() {
+        // The sequence the owner's review named (docs/DECISIONS.md D38 item 2):
+        // two accounts are polled; B is on its final follow-up poll; A's reply
+        // comes first and carries B's cached row, which is not a read of B; B's
+        // own reply then decides its watch, and a silent one continues it.
+        let (a, b) = (AccountId::from_tag([1; 20]), AccountId::from_tag([2; 20]));
+        let row = |id, state| AccountRow {
+            id,
+            kind: AccountKind::Derived,
+            index: 0,
+            state,
+            spendable: false,
+            number: None,
+            reserved: true,
+        };
+        let live = outstanding(ReservationState::Live);
+        let doubtful = diverged(DivergenceKind::NotFound);
+        let view = |a_state: AccountState, b_state: AccountState| WalletView {
+            dir: PathBuf::new(),
+            accounts: vec![row(a, a_state), row(b, b_state)],
+            opened: true,
+            notice: None,
+            settled: Vec::new(),
+        };
+        for own in [
+            diverged(DivergenceKind::Unreachable),
+            outstanding(ReservationState::Unclassified),
+        ] {
+            let mut watch = Watch::default();
+            watch.read_answer(&view(live.clone(), live.clone()), Reads::Every);
+            // B reads "account not found", and each poll sent about it in doubt
+            // is answered the same way: the second poll is its final follow-up,
+            // and it is still on its way.
+            watch.read_answer(&view(live.clone(), doubtful.clone()), Reads::One(b));
+            watch.asked(b, &doubtful);
+            watch.read_answer(&view(live.clone(), doubtful.clone()), Reads::One(b));
+            watch.asked(b, &doubtful);
+            // A's reply comes first, with B's cached row: that is not a read of
+            // B, so B is still watched.
+            watch.read_answer(&view(live.clone(), doubtful.clone()), Reads::One(a));
+            assert!(watch.asks(b, &own), "{own:?}: B's own reply has not come");
+            // B's own reply is silent: the watch continues, and the count stays.
+            watch.read_answer(&view(live.clone(), own.clone()), Reads::One(b));
+            assert!(
+                watch.asks(b, &own),
+                "{own:?}: a silent read continues the watch"
+            );
+            watch.asked(b, &own);
+            // B's own third doubtful read in a row ends the polls.
+            watch.read_answer(&view(live.clone(), doubtful.clone()), Reads::One(b));
+            assert!(
+                !watch.asks(b, &doubtful),
+                "{own:?}: the third doubtful read ends them"
+            );
+            assert!(
+                !watch.asks(b, &own),
+                "{own:?}: and a silent one does not restart them"
+            );
+        }
     }
 }
