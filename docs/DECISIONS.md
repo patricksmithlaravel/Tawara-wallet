@@ -2437,6 +2437,8 @@ options put in detail.
 Tawara-mobile pins this repository at #13's head until #13 merges; the
 merge keeps that commit reachable, and the pin then moves to `main`.
 
+## Phase 5
+
 ### D35. Third-party notices: cargo-about 0.9.2, generated and checked in CI
 
 **Proposed, 2026-10-13.** PLAN section 6 asks for the notices to be generated
@@ -2552,8 +2554,6 @@ merge in.
      and so do deny.toml's view and these notices. (Recommended) the owner
      puts to counsel whether bindings generated from those files carry their
      licences, before the first Linux distribution.
-
-## Phase 5
 
 ### D36. Packaging: the platform's own tools for each target
 
