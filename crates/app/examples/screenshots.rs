@@ -21,7 +21,7 @@
 //! (`phone-s4-phrase-warning.png` and `phone-s4-phrase-shown.png`). The
 //! phone's welcome screen, S0, has no desktop image: it is drawn only as
 //! `phone-s0-welcome.png` (docs/DECISIONS.md D37), so the phone's images are
-//! 66 in all. Every piece of text names a bundled face (`tawara_app::fonts`),
+//! 67 in all. Every piece of text names a bundled face (`tawara_app::fonts`),
 //! so the pixels do not depend on the fonts a machine has installed.
 //!
 //! Flags:
@@ -507,10 +507,10 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         (
             "w2-receive",
             DASHBOARD,
-            on(Page::Receive(ReceivePage {
-                account: Some(accounts[0].id),
-                view: Some(sample::receive_view()),
-            })),
+            on(Page::Receive(ReceivePage::answered(
+                accounts[0].id,
+                sample::receive_view(),
+            ))),
         ),
         (
             "w3-add-account",
@@ -727,11 +727,14 @@ const PHONE_DIR: &str =
 /// its insets, so the recovery phrase is drawn in two frames on it.
 const SHORT_PHONE: u32 = 640;
 
-/// The long pages drawn a second time scrolled to their end. S4 is not among
-/// them: its frame fits 390 by 844 without scrolling (docs/DECISIONS.md D44),
-/// so its end is the image itself.
-const PHONE_ENDS: [&str; 10] = [
+/// The long pages drawn a second time scrolled to their end. Receive is one,
+/// so that its QR code, which is below the fold at the top, is in an image the
+/// owner can approve it by (docs/DECISIONS.md D41). S4 is not among them: its
+/// frame fits 390 by 844 without scrolling (docs/DECISIONS.md D44), so its end
+/// is the image itself.
+const PHONE_ENDS: [&str; 11] = [
     "w1-wallet",
+    "w2-receive",
     "w4-send",
     "w5-review",
     "w6-sent",

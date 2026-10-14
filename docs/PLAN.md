@@ -159,6 +159,12 @@ for hours, and on mobile it is suspended and resumed. The following hold:
    exposed as a value to accessibility services. Their contents move into
    `Zeroizing` buffers at once and the field is cleared. They are never
    logged and never written to disk.
+
+   *Amended (owner, 2026-10-13): one exception, on iOS only and only when
+   the person turns it on. The store's password is then kept in the iOS
+   Keychain and released only after the system's check of Face ID, Touch
+   ID or the device passcode; the Tawara password always remains the way
+   in. See `docs/DECISIONS.md` D45.*
 3. **Showing the phrase.** It is shown once, at creation, behind a
    confirmation, and is never copied to the clipboard.
    - Android: `FLAG_SECURE` on every screen that shows a secret.
@@ -198,6 +204,10 @@ for hours, and on mobile it is suspended and resumed. The following hold:
      is refused except to loopback.
    - There is no default node. The user chooses whom to trust, as with
      `--node`.
+
+     *Amended (owner, 2026-10-13): `https://api.mochimo.org` is now
+     chosen in advance on desktop and phone, and the person can change it
+     or forget it. See `docs/DECISIONS.md` D43.*
    - Trust roots, per platform, are recorded in `DECISIONS.md`. The
      options are the bundled `webpki-roots` (what the command-line wallet
      uses) and the platform's own roots (`FORK.md` expects Rep-2 to weigh
