@@ -2848,6 +2848,14 @@ item 6's.
    While the reservation is still open, Re-sign (W8) can sign the same
    spend again: the library refuses any rebuilt plan whose digest differs
    from the reserved one (library `wallet.rs:813-814`).
+
+   **Confirmed (owner, 2026-10-14):** after Tawara's worker panics, the unsaved
+   signed bytes are kept until Tawara closes, including across a move to the
+   background. This keeps the code as built, follows D38 item 5, and makes W6
+   (docs/SCREENS.md) name this as its one exception. The reason: the stopped
+   screen's save offer is the only way to keep the only bytes that can move
+   those funds while the reservation is open. The bytes are never written to
+   disk, and on a phone the app-switcher cover still hides the screen.
 6. **The narrow lock case is accepted, with no library change (owner,
    2026-10-13).** D19 says every walk takes a cancel, and D24 says a walk
    never holds the lock back. The library's `settle_if_landed` reconciles
