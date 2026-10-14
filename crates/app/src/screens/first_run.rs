@@ -8,11 +8,12 @@
 use iced::widget::text::{LineHeight, Wrapping};
 use iced::widget::{checkbox, column, container, responsive, row, scrollable, space, text_input};
 use iced::{Alignment, Element, Length, Padding};
+use tawara_wallet_core::preferences::DEFAULT_NODE;
 use tawara_wallet_core::{MIN_PASSWORD_LEN, SCHEME_WARNING};
 
 use crate::app::{
-    Back, Busy, Go, Message, Model, NodeForm, PasswordForm, PasteInto, PhraseState, RestoreForm,
-    Screen, StartChoice, Typed, UnlockForm,
+    Back, Busy, Go, HELD_BODY, HELD_TITLE, Message, Model, NodeForm, PasswordForm, PasteInto,
+    PhraseState, RestoreForm, Screen, StartChoice, Typed, UnlockForm,
 };
 use crate::fonts;
 use crate::paste;
@@ -276,14 +277,21 @@ fn heading<'a>(
 }
 
 /// The node footer (5.23): which node the wallet asks, and a way to change
-/// it. On a phone the URL takes a line of its own, broken at its glyphs when
+/// it. A node not asked yet, as the default is until a wallet opens
+/// (docs/DECISIONS.md D43), is drawn muted and says so, apart from one that
+/// answered. On a phone the URL takes a line of its own, broken at its glyphs when
 /// it is long, so that a long address cannot push the link off the edge
 /// (docs/SCREENS.md, "Compact layout").
 fn node_footer(model: &Model, back: Back) -> Element<'_, Message> {
-    let (dot, label, url) = match (&model.node.url, &model.node.error) {
-        (Some(url), None) => (color::ACCENT, "Mesh API node", url.as_str()),
-        (Some(url), Some(_)) => (color::WARNING, "Mesh API node, not answering", url.as_str()),
-        (None, _) => (color::TEXT_MUTED, "No node chosen", ""),
+    let (dot, label, url) = match (&model.node.url, &model.node.tip, &model.node.error) {
+        (Some(url), Some(_), None) => (color::ACCENT, "Mesh API node", url.as_str()),
+        (Some(url), None, None) => (
+            color::TEXT_MUTED,
+            "Mesh API node, not asked yet",
+            url.as_str(),
+        ),
+        (Some(url), _, Some(_)) => (color::WARNING, "Mesh API node, not answering", url.as_str()),
+        (None, ..) => (color::TEXT_MUTED, "No node chosen", ""),
     };
     let change = if model.node.url.is_some() {
         "Change node"
@@ -471,7 +479,10 @@ fn node<'a>(model: &'a Model, form: &'a NodeForm) -> Element<'a, Message> {
         Back::Wallet => Go::Wallet,
     };
     let mut links = row![ui::link("Back", ty::LINK, Message::Go(back))].spacing(sp::S24);
-    if model.node.url.is_some() {
+    // Forget is also the way out of a preferences file that could not be read,
+    // since the wallet has no node until the person chooses one or forgets it
+    // (PR #29's review, P2-2; docs/DECISIONS.md D43).
+    if model.node.url.is_some() || model.prefs_held {
         links = links.push(ui::link("Forget the node", ty::LINK, Message::ForgetNode));
     }
     // On a phone the links wrap onto a second line when the width runs out.
@@ -480,13 +491,26 @@ fn node<'a>(model: &'a Model, form: &'a NodeForm) -> Element<'a, Message> {
     } else {
         links.into()
     };
+    // With no node in use, after Forget or while the preferences cannot be
+    // read, "by default the wallet uses" would be read as the node in use, and
+    // would contradict the held note, so the text says none is, as Settings'
+    // node card does (PR #29's review; docs/DECISIONS.md D43). Provisional
+    // wording, for the owner's approval.
+    let using = if model.node.url.is_some() {
+        format!("By default the wallet uses {DEFAULT_NODE}; you can choose another node, or none.")
+    } else {
+        format!("The wallet uses no node now; you can choose one. The default is {DEFAULT_NODE}.")
+    };
     let mut body = column![
         heading(
             "Choose a node",
             format!(
-                "There is no default node: you choose whom to trust. Every balance, key index \
-                 and chain tip the wallet works from comes from this node, so use one you \
-                 trust. https:// is required; http:// is accepted only to this {}.",
+                "{using} Every balance, key index and chain tip the wallet works from comes from \
+                 the node it uses, so use one you trust. That node learns which tags the wallet \
+                 asks about, and so their balances, and when the wallet is used; it can also \
+                 learn your network address. Requests to {DEFAULT_NODE} pass through \
+                 Cloudflare, which can read them and sees your network address. https:// is \
+                 required; http:// is accepted only to this {}.",
                 place(model)
             ),
         ),
@@ -501,6 +525,9 @@ fn node<'a>(model: &'a Model, form: &'a NodeForm) -> Element<'a, Message> {
         ),
     ]
     .spacing(sp::S24);
+    if model.prefs_held {
+        body = body.push(ui::warning_callout(HELD_TITLE, HELD_BODY));
+    }
     if let Some(e) = &form.error {
         body = body.push(ui::refusal(e));
     } else if let Some(e) = &model.node.error {
@@ -1113,6 +1140,16 @@ mod tests {
                     back: Back::Start,
                 })),
             ),
+            ("S2 with the preferences held", {
+                let mut model = phone_model(Screen::Node(NodeForm {
+                    url: String::new(),
+                    error: None,
+                    back: Back::Start,
+                }));
+                model.node.url = None;
+                model.prefs_held = true;
+                model
+            }),
             ("S3", phone_model(Screen::NewWallet(form()))),
             (
                 "S3 with a discarded phrase",
@@ -1919,6 +1956,42 @@ mod tests {
                 ),
                 "{messages:?}"
             );
+        }
+    }
+
+    #[test]
+    fn a_node_not_asked_yet_is_not_drawn_as_one_that_answered() {
+        // At start-up the default node is set and asked nothing until a wallet
+        // opens (docs/DECISIONS.md D43): S1 and S7 must not draw it as a node
+        // that answered. Each label is drawn whole, and only its own.
+        let labels = [
+            "Mesh API node",
+            "Mesh API node, not asked yet",
+            "Mesh API node, not answering",
+        ];
+        let answered = Some((871_173, std::time::Duration::from_millis(42)));
+        let failed = Some("the node did not answer".to_owned());
+        for (screen, tip, error, label) in [
+            ("S1", None, None, labels[1]),
+            ("S7", None, None, labels[1]),
+            ("S1", answered, None, labels[0]),
+            ("S1", None, failed.clone(), labels[2]),
+            ("S1", answered, failed, labels[2]),
+        ] {
+            let mut model = named(screen);
+            model.node.tip = tip;
+            model.node.error = error;
+            let drawn: Vec<String> = texts(view(&model), (NARROWEST, 1400.0))
+                .into_iter()
+                .map(|(text, _)| text)
+                .collect();
+            for other in labels {
+                assert_eq!(
+                    drawn.iter().any(|t| t == other),
+                    other == label,
+                    "{screen}, tip {tip:?}: `{other}` in {drawn:?}"
+                );
+            }
         }
     }
 }

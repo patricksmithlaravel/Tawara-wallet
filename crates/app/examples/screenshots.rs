@@ -84,7 +84,7 @@ use tawara_app::history::Filter;
 use tawara_app::{fonts, overflow, screens, theme};
 use tawara_wallet_core::explorer::{BlockAt, IndexState, LedgerRead, Party, TagView};
 use tawara_wallet_core::location::SyncWarning;
-use tawara_wallet_core::preferences::{AmountUnit, Preferences};
+use tawara_wallet_core::preferences::{AmountUnit, DEFAULT_NODE, Preferences};
 use tawara_wallet_core::sample;
 use tawara_wallet_core::view::AccountState;
 use tawara_wallet_core::{
@@ -176,6 +176,19 @@ fn read<T>(value: T) -> Explored<T> {
 fn with(screen: Screen) -> Model {
     let mut m = base();
     m.screen = screen;
+    m
+}
+
+/// `screen` at start-up as most people meet S1 and S7, before a wallet is
+/// opened: no node was ever chosen, so the default is set, and nothing has
+/// asked it yet (docs/DECISIONS.md D43).
+fn first_start(screen: Screen) -> Model {
+    let mut m = with(screen);
+    m.prefs = Preferences::default();
+    m.node = NodeState {
+        url: Some(DEFAULT_NODE.to_owned()),
+        ..NodeState::default()
+    };
     m
 }
 
@@ -386,7 +399,13 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         .expect("the sample block's spend has a payee");
     let found = sample::transaction();
     vec![
-        ("s1-get-started", FIRST_RUN, base()),
+        (
+            "s1-get-started",
+            FIRST_RUN,
+            first_start(Screen::Start {
+                choice: StartChoice::Create,
+            }),
+        ),
         (
             "s1-get-started-restore",
             FIRST_RUN,
@@ -449,7 +468,7 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         (
             "s7-unlock",
             FIRST_RUN,
-            with(Screen::Unlock(UnlockForm {
+            first_start(Screen::Unlock(UnlockForm {
                 dir: DIR.to_owned(),
                 ..UnlockForm::default()
             })),
