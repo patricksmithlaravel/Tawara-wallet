@@ -1162,8 +1162,8 @@ mod tests {
 
     #[test]
     fn w6_fits_a_phone_screen_with_its_report_open() {
-        // On a phone Save artifact opens the share sheet, and the page says so
-        // (docs/DECISIONS.md D32 item 10 (i)).
+        // On a phone Save artifact asks the system for the share sheet, and the
+        // page says so (docs/DECISIONS.md D32 item 10 (i)).
         let sent = SentPage {
             sent: sample::sent_view(),
             resigned: false,
@@ -1181,7 +1181,7 @@ mod tests {
         let drawn = texts(screens::view(&model), (NARROWEST, 2400.0));
         assert!(
             drawn.iter().any(|(text, _)| text == crate::app::SHARED),
-            "the page says the sheet was opened"
+            "the page says the sheet was asked for"
         );
     }
 

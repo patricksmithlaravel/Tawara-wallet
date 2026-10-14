@@ -27,9 +27,14 @@ pub struct Host {
     /// no Downloads folder for Save artifact to write to, and the sheet is
     /// how it hands text to Files, a note or a message. iOS presents
     /// `UIActivityViewController`; Android sends `ACTION_SEND` as `text/plain`
-    /// through `Intent.createChooser`. `Ok` says only that the sheet was
-    /// shown: the application cannot learn what was done with it. `Err` says
-    /// why it was not shown.
+    /// through `Intent.createChooser`. `Ok` says only that the platform was
+    /// asked to show the sheet, not that it was shown. The call returns before
+    /// the platform presents the sheet (UIKit does so 2.4 s after the call on a
+    /// first press and 0.6 s on a second, on the simulator), so a refusal the
+    /// platform makes then is not reported. The application cannot learn what
+    /// was done with the sheet, so the bytes still count as not saved. `Err`
+    /// says why the platform was not asked (docs/DECISIONS.md D32 item 10 (i),
+    /// as amended on 2026-10-13).
     pub share: fn(name: &str, text: &str) -> Result<(), String>,
     /// Android's Back: the application goes to the background, as Android
     /// 12 and later do themselves for a launcher's first activity. It is

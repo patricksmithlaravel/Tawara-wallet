@@ -39,6 +39,14 @@ comes before any mobile screen, and all wallet logic lives in
 Mobile platform glue that is not Rust is kept to the minimum and listed here
 when phase 4 adds it. Linking OS libraries is not an exception.
 
+*Amended (owner, 2026-10-13), the reading of the last sentence: linking an
+OS library is not one of the non-Rust exceptions this entry lists, so it is
+allowed without one. Each entry that adds a link lists the OS libraries it
+adds (D42, D45). Tawara-mobile already links one: `ndk-sys` links
+`libandroid` by default, and links its other platform libraries
+(`mediandk`, `nativewindow`, `jnigraphics`, `aaudio`, `sync`) only behind
+features that Tawara-mobile's build does not turn on today.*
+
 ## Phase 0
 
 ### D5. The compiler: Rust 1.98.0
@@ -563,6 +571,12 @@ describes it, with these choices inside that design:
   and the owner approved a bound of 100,000 (2026-10-04) to be lifted once
   they could.
 
+  *Amended (owner, 2026-10-13): one walk takes no cancel. A settle
+  reconciles through the library's `settle_if_landed`, which cannot be
+  stopped, and walks only when the reservation turns out unexplained
+  between two reads. Settles now run without a press, and the owner
+  accepts that narrow case; D38 item 6 records it.*
+
 **Owner, 2026-10-04: the interface offers the acknowledged advance and
 restore, on these terms.** The worker offers the library's acknowledged
 advance (`Command::Reconcile`) and restore (`Command::Restore`) because
@@ -707,6 +721,10 @@ platform-specific verification and trust any root installed on the
 machine, including a corporate inspection root; they are worth revisiting
 only if people need private nodes with their own certificates.
 
+*Amended (owner, 2026-10-13): there is now a default node,
+`https://api.mochimo.org`, which the person can change or forget. D43
+supersedes this entry's "there is no default node"; the rest stands.*
+
 ### D23. Library changes this phase would use
 
 **proposed; decided by the owner on 2026-10-04 (below); items 1 to 4
@@ -781,6 +799,10 @@ every command sent so far, so nothing still queued, a spend among it,
 runs on the way out). Each reports `Locked` with
 its reason, and so does an idle or background lock that drops a recovery
 phrase waiting for its confirmation.
+
+*Amended (owner, 2026-10-13): "a walk to a far key index never holds the
+lock back" has one exception the owner accepts, an automatic settle whose
+reservation turns out unexplained between two reads (D38 item 6).*
 
 ### D25. Wording the worker writes itself
 
@@ -971,6 +993,17 @@ to them.
    under a new name (never overwriting), shows the full path, and offers
    to copy the hex to the clipboard. The artifact is not secret: it is
    the bytes the node is sent.
+
+   *Amended 2026-10-13, to follow the owner's decision of that day in D32
+   item 10 (i): the last sentence above is withdrawn. The artifact is the
+   bytes the node is sent, but while the reservation is open they are the
+   only bytes that can move these funds, as `crates/wallet-core/src/event.rs`
+   says and as the send page and the report tell the person
+   (`crates/app/src/screens/wallet/send.rs`, `report.rs`). The owner had
+   the same claim reworded in Tawara-mobile's comment on copy.*
+
+   *Amended (owner, 2026-10-13): "Scan QR" is built on phones only, with the
+   phone's camera (D42). The desktop's Send has no scanner.*
 6. **Fonts.** Static TTF instances of the renderings' three families,
    bundled in `crates/app/fonts/` with each family's SIL Open Font
    License 1.1 beside them: Poppins Regular, Medium and SemiBold and IBM
@@ -1069,6 +1102,10 @@ to them.
     tag's history into rows is Activity's own question (W10); both come
     with (c). The sidebar's network panel shows the node, the tip and the
     latency meanwhile. *Built in (c): D29.*
+
+    *Amended (owner, 2026-10-13): a spend now also settles without a
+    press, once the chain shows it landed (D38). That W7's Settle stays as
+    a fallback is recommended there.*
 
 ### D28. The library's pages: a banner, a summary, then the page
 
@@ -1477,6 +1514,14 @@ on the three conditions D18 left open.
    any screen, and the recent-apps thumbnail shows none of the balances,
    addresses or history, as iOS hides everything from its app switcher
    (item 6). Copy still copies an address.
+
+   *Amended, proposed (2026-10-13, D44 item 4): "no ... recording" is what
+   the flag asks of the system, not what every device gives. Android's
+   guide says that in some cases the flag "does not correctly predict if
+   screen recording is active", and that on Android 11 (API 30) and lower
+   it helps around 70% of devices reliably, because on some devices
+   keyboard taps can be recorded. No comment or text says that it stops
+   every recording.*
 5. **The phase in three parts.** (a) The shells: the fork's pin;
    `crates/mobile` running the application on Android (NativeActivity,
    no Java, the APK built with aapt2, zipalign and apksigner as phase 1's
@@ -1836,6 +1881,13 @@ on the three conditions D18 left open.
    later. The move's pull request keeps a hand-run desktop check on macOS,
    Windows and Linux.
 
+   *Amended (owner, 2026-10-13): D43 makes `https://api.mochimo.org` the
+   default node, so once that work lands a fresh `HOME` does name a node,
+   and the premise above no longer holds. Start-up still needs no network
+   if D43 item 2's recommended safeguard is taken: no node is asked at
+   launch until a wallet is opened or the person presses Check now. The
+   reference to `app.rs:898-900` is now lines 1087 and 1088.*
+
    **(i) Android: configChanges now, target 36 later: owner, 2026-10-12.**
    Two Tawara-mobile pull requests, kept apart from the move. PR A, now: add
    `mcc|mnc|grammaticalGender` to `configChanges` at
@@ -1864,6 +1916,39 @@ on the three conditions D18 left open.
    apart, a failure on the API 36 emulator is not confused with the fork
    change; the 36 path has so far run only on an API 35 emulator.
 
+   *Amended (owner, 2026-10-13), `assetsPaths` now: the owner decided that
+   `assetsPaths` leaves PR B and ships now, in a Tawara-mobile pull request
+   of its own, not yet merged. That pull request adds it to
+   `configChanges`, for 19 names, PR A's 18 and `assetsPaths`, which aapt2
+   reads as `0xd000ffff`, and makes `tawara.sh` pin the compile jar to
+   `platforms/android-36` and stop if it is missing, since aapt2 knows
+   `assetsPaths` only from the API 36 jar. Until it merges, `main` holds
+   the 18 names and `0x5000ffff`. The target stays at 35 until PR B. The
+   reason is a start-up quit, proven on a local arm64 API 36 emulator
+   with Tawara-mobile's `main` at `1cbcc1a`. Just after an install, the
+   system's overlay manager adds the framework overlays to the new app's
+   `ApplicationInfo`, 67 to 691 ms after the install in the local runs.
+   When that lands after the Activity has resumed, Android relaunches the
+   Activity for an asset-path change the manifest does not declare
+   (`wm_relaunch_resume_activity` with the change `80000000`). The relaunch
+   destroys the Activity, `run_in` returns, and the process ends, as items
+   (d) and (j) decide for a destroyed Activity. When it lands before the
+   first `onCreate`, nothing happens, which is why one tree both passed and
+   failed. Turning the gestural navigation overlay on or off while Tawara
+   was in front ended the process in both runs with the 18 names, and in
+   neither run with `assetsPaths`, where the process and the Activity
+   stayed. A person can meet the same by opening the app just after
+   installing it, or by changing the navigation mode while it runs; a
+   colour or wallpaper change probably does the same, which is inferred and
+   not tested. That this race is behind the failures of CI's x86_64 API 35
+   job is now shown by Tawara-mobile #12's CI: its first commit alone
+   (8972b85) fails there with the relaunch line (run 38377412659), and its
+   second commit, the fix (333dff7), passes (run 38377605869). The platform's
+   data marks the change as new at API 36. `resourcesUnused`, `TARGET_API=36`
+   and the API 36 emulator image stay in PR B, which would then add
+   `resourcesUnused` to the 19, for the 20 names and `0xd800ffff` above.
+   `resourcesUnused` was not tested. Item 10 (k) gives the order.*
+
    **(j) Android exit after destruction: owner, 2026-10-12.** Check first,
    then act. On an emulator, press Back from the foreground, then repeat
    once with "Don't keep activities" switched on. Read the logcat tag
@@ -1888,6 +1973,60 @@ on the three conditions D18 left open.
    its runtime field only at boot, and no shell command calls
    `setAlwaysFinish`, whose binder transaction number differs between Android
    15 builds. The check `exit.runtime` confirms that the setting took.*
+
+   *Amended (owner, 2026-10-13), the exit after Destroy: the check has run on
+   an arm64 API 36 emulator, locally, after the move to the fork's winit, and
+   its facts are these, from Tawara-mobile#4. With the fork's winit, Android's
+   `Destroy` ends the event loop, and `run_in` returns; `exit.destroyed` and
+   `exit.ended` pass 5 of 5. `std::process::exit` then aborted in every run:
+   SIGABRT on Android's renderer threads (`hwuiTask0` and `hwuiTask1`), right
+   after bionic's `FORTIFY: pthread_mutex_lock called on a destroyed mutex`.
+   The fork reported this case in its commit `7a622ab64`. As item 9 (j)
+   prescribes for a reproduced SIGABRT, Tawara-mobile now ends the process with
+   `libc::_exit`, including the early exit on a private-folder failure.
+   android-activity 0.6.1 also says not to call `process::exit` from
+   `android_main` (its `src/lib.rs`, lines 227 to 231). The lock's `Leaving`
+   completed before the exit in 14 of 15 runs; the one exception came when
+   `Destroy` arrived 123 ms after the app went to the background. A bounded
+   wait after `run_in`, which (j) named, cannot help: `Leaving` completes only
+   inside `App::update`, where `Wiped::wiped` is called
+   (`crates/app/src/app.rs:1164`) and `Wiped::taken` is called (lines 1666 and
+   1672) through `on_event` (line 1555), which `update` calls at line 1189. The
+   state they raise is `Wiped` (`crates/app/src/host.rs:103-139`). `run_in`
+   hands `App::update` to `iced::application(...).run()`
+   (`crates/app/src/lib.rs:59-75`), so once winit's loop has ended on
+   `Destroy`, no update runs.*
+
+   *Decided (owner, 2026-10-13): `exit.lock` in Tawara-mobile's emulator check
+   becomes a reported count, not a required gate. Why this is safe: ending the
+   process erases every secret held in its memory, and the library's store
+   writes are single atomic commits (an interrupted write leaves the store
+   fully before or fully after), so an unfinished lock leaves nothing behind.
+   No `tawara-app` change.*
+
+   *A note on the amendment above, not part of the owner's words. The library's
+   claim, as checked: in `mochimo-crypto` at `7cdc2e9`, `Keystore::commit`
+   (`src/keystore/mod.rs:1006`) makes four steps on Unix: write a temporary
+   file, `fsync` it, `rename` it over the store, and `fsync` the directory
+   (lines 1013 to 1016). `persist_settled` commits through it (line 1354). The
+   proof `spend_state_is_never_observed_half_advanced`
+   (`tests/invariants.rs:3532-3534`, `cfg(unix)`) kills a commit at each of
+   those steps, reopens the store, and finds the spend state fully before or
+   fully after. It covers a process that ends, since the store changes only at
+   the `rename`, which is one syscall. It does not reach power loss, an `fsync`
+   that lies, or a rename on a filesystem that does not journal it
+   (`tests/invariants.rs:3489-3493`). The Windows layout has its own proof
+   (`tests/invariants.rs:3831-3833`, `cfg(windows)`), which runs only on a
+   Windows host and was not run for this record. Two qualifications to 'leaves
+   nothing behind'. The lock writes nothing: it drops the session, the pending
+   plan and any phrase (`crates/wallet-core/src/worker.rs:1205-1215`). A commit
+   killed before its `rename` can leave `accounts.mks.tmp` in the store
+   directory, whose header is plaintext metadata and not key material
+   (`src/keystore/medium.rs:228-230`); the next commit or open removes it
+   (`src/keystore/medium.rs:231`, `src/keystore/mod.rs:696`). Process exit also
+   releases the process's memory without overwriting it, so 'erases' means that
+   no process holds the secrets afterwards; it does not mean that they are
+   zeroed.*
 
 10. **Phase 4 (b): the phone layout and its glue. Decided under the owner's
    delegation, 2026-10-12.** On 2026-10-12 the owner asked that the questions
@@ -1974,6 +2113,13 @@ on the three conditions D18 left open.
    stays on one line. The check is of the window's edge only, so a text wider
    than its card but inside the window passes it; the balance's figure is
    also held inside its card by a test of its own.*
+
+   *Amended, proposed (2026-10-13): on a phone the brand panel would
+   return, as a screen of its own before S1, while S1 to S8 keep the
+   wordmark above the form (D37, recommended). The phone's W1 would show
+   less than the desktop's, not the same content arranged anew (D39 item 2,
+   recommended). The owner decided on 2026-10-13 only that the phone's W1
+   keeps Recent, at three rows, and the latest-block chip (D39 item 1).*
 
    **(c) Phone screenshots (decided under the owner's delegation,
    2026-10-12).** Every screen drawn for the desktop, except the `narrow-*`
@@ -2181,6 +2327,39 @@ on the three conditions D18 left open.
    which is Java (D4), or MediaStore's Downloads, which starts at API 29 while
    Tawara's minimum is 26.
 
+   *Amended (owner, 2026-10-13), the Android chooser: the owner accepts the
+   share sheet on Android, as decided on Tawara-mobile PR #8, with an exception
+   to item 4's `FLAG_SECURE`. Android's chooser is the system's own window,
+   which `FLAG_SECURE` does not cover: a screenshot taken while it was up
+   showed the chooser's preview of the signed transaction's text over Tawara's
+   black window. The chooser also offers a "Copy text" action
+   (`com.android.intentresolver:id/copy`) whose copy Tawara cannot mark
+   sensitive. Tawara sets no option that removes either. A file through a
+   `FileProvider` would avoid the preview, but D4 rules it out. The exception
+   holds only for the sheet's lifetime, which begins only when the person
+   presses Save artifact to hand these same bytes to another app; Tawara's own
+   Copy, marked sensitive as item (j) says, remains. The comment on copy in
+   Tawara-mobile's `crates/mobile/src/android.rs`, from its PR #7, calls a
+   signed spend "not secret". It is reworded to match
+   `crates/wallet-core/src/event.rs`, which calls these bytes "the only bytes
+   that can move these funds while the reservation is open".*
+
+   *A note on the amendment above, not part of the owner's words: item (j)'s
+   mark is read only from API 33, and Tawara's minimum is API 26, so on API
+   26 to 32 Tawara's own Copy is unmarked in effect as well.*
+
+   *Amended (owner, 2026-10-13), what `Ok` means: `Host::share` returning `Ok`
+   says that the platform was asked to show the sheet, not that it was shown.
+   A refusal the platform makes later is not reported, since the call has
+   already returned. On the simulator, UIKit presents the sheet 2.4 s after the
+   call on a first press and 0.6 s after it on a second. The note the page
+   shows reads "Tawara asked the system to open the share sheet", and keeps
+   the rest of its sense: Tawara cannot tell whether the bytes were saved
+   there, so they still count as not saved and the banner stays. `Host::share`'s
+   documentation says the same. This supersedes the paragraph above where it
+   says that the page says the sheet was opened and that `Host::share`
+   returns `Ok` when the sheet was shown.*
+
    **(j) Clipboard protection (decided under the owner's delegation,
    2026-10-12).** Tawara-mobile's copy path marks every copy as sensitive on
    Android (`ClipDescription` extras `android.content.extra.IS_SENSITIVE` set
@@ -2195,6 +2374,20 @@ on the three conditions D18 left open.
    the owner's delegation, 2026-10-12).** Item 9 (i)'s PR B is made after #4
    and #5 merge, so that the three do not edit `platform/android/tawara.sh`
    at once. It names the 20 configChanges, `0xd800ffff`.
+
+   *Amended (owner, 2026-10-13): the start-up fix of item 9 (i)'s amendment
+   takes `assetsPaths` out of PR B, into Tawara-mobile PR #12. The order is
+   now (owner, 2026-10-13): #12 merges first, and then Tawara-mobile #4 (the
+   exit check) merges `main`. That replaces the owner's earlier answer of the
+   same day, which put the fix after #4, and the open question about the
+   order. The reason is that #4 hits the same start-up quit, so its Android
+   CI cannot pass until the fix is on `main`. #12's CI has also shown the bug
+   on CI's own API 35 image: its first commit alone (8972b85) fails with the
+   relaunch line `wm_relaunch_resume_activity ...,80000000`
+   (run 38377412659), and its second commit (333dff7) passes
+   (run 38377605869). PR B still comes after #4 (#5 has merged), and still
+   names the 20 configChanges, `0xd800ffff`, by adding `resourcesUnused` to
+   the 19.*
 
    **(l) CI watched on the open wallet pull request (decided under the owner's
    delegation, 2026-10-12).** Automatic fixing of CI failures is on for the
@@ -2243,6 +2436,122 @@ options put in detail.
 
 Tawara-mobile pins this repository at #13's head until #13 merges; the
 merge keeps that commit reachable, and the pin then moves to `main`.
+
+### D35. Third-party notices: cargo-about 0.9.2, generated and checked in CI
+
+**Proposed, 2026-10-13.** PLAN section 6 asks for the notices to be generated
+in CI, not written by hand. Item 6 lists what is open for the owner. The
+number is fixed: D34 is the threat model's entry and D36 packaging's, each
+added by its own pull request, so each keeps its number whatever order they
+merge in.
+
+1. **Tool and pin.** cargo-about 0.9.2, built from crates.io with
+   `cargo install --locked --features cli cargo-about --version 0.9.2`, in the
+   form cargo-deny is installed in `ci.yml` (D13). Without `--features cli`,
+   cargo installs nothing and still exits 0, so `ci/notices.sh` refuses any
+   other version. Of the tools examined, it is the only one that writes the
+   full licence texts from `Cargo.lock` in one command. cargo-bundle-licenses
+   4.2.0 leaves about a hundred texts as `NOT FOUND`, and cargo-license and
+   `cargo deny list` name the licences without their texts.
+2. **File.** `THIRD-PARTY-NOTICES.txt` at the repository root, in plain text,
+   so that each text reads as its crate carries it. Markdown would reinterpret
+   its characters, and HTML would need escaping. `ci/notices.sh` changes the
+   generated text in two ways and leaves the words of the licences alone, and
+   Tawara-mobile's `ci/notices.sh` does the same, so the rule is one for both
+   repositories:
+   - carriage returns are removed, because both repositories keep text files
+     with LF (`.gitattributes`), and a CRLF copy would be rewritten on commit
+     and could never match the generator again;
+   - the standard MIT text's template line, "Copyright (c) <year> <copyright
+     holders>", is removed with the blank line after it (item 6 (a)). Any
+     other template marker stops the script, since it means a crate has
+     fallen back to a standard text that `about.toml` does not account for.
+3. **Contents** (`about.toml`, `THIRD-PARTY-NOTICES.hbs`). The six desktop
+   targets, x86_64 and aarch64 for Windows, Linux and macOS; every feature;
+   build dependencies; no development-only crates. The accepted licences are
+   deny.toml's ten (D10, D12), with two exceptions, each for named crates
+   only: the Mochimo agreement's `LicenseRef-` identifier for the library and
+   Tawara's crates, as in deny.toml's own exceptions, and OFL-1.1 for
+   tawara-app's fonts (item 6 (d)). `crates/wallet-core/tests/policy.rs` holds
+   the list to deny.toml's and the exceptions to a table. The iced fork (D32
+   item 9), ring 0.17.14, the bundled fonts, the Mochimo agreement and the
+   copyright holders' texts (item 6 (a)) are clarified by the SHA-256 of their
+   files. Each crate is listed with the authors its metadata names, and the
+   file says that they are not necessarily its copyright holders.
+   `ci/notices.sh` appends `LICENSE.md`, because cargo-about 0.9.2 does not
+   print a `LicenseRef-` text.
+4. **CI.** On Linux, after the pinned install, `bash ci/notices.sh --check`
+   fails, with a diff and the regeneration command, if the committed file
+   differs from what `Cargo.lock` gives, so a dependency change comes with its
+   regenerated file. The other hosts build from the same lockfile and do not
+   repeat the check. No action and no artifact (D13, D27 item 1); the tool is
+   built cold on every run, like the rest of the job. The texts that
+   `about.toml` takes from crates' repositories are fetched from
+   raw.githubusercontent.com on every run, so the check needs the network, as
+   the clone and the install already do; if GitHub cannot serve them, the
+   check fails rather than passing on a different file. A clarification file
+   that cannot be read only warns, so the byte comparison is what guards
+   against it. To regenerate, run `bash ci/notices.sh`.
+5. **Packaging.** Any distributed desktop build must ship the file beside the
+   application. This change does not package it; packaging is phase 5 (PLAN
+   section 7) and D36.
+6. **Open, for the owner.**
+   - (a) **Copyright holders.** The MIT, ISC and BSD licences ask for the
+     copyright notice to go with the software. Where a package has no licence
+     file of a name cargo-about reads, it prints the licence's standard text,
+     whose copyright line is a template that names nobody. Before this was
+     fixed, 58 crate versions were printed with that template line, and 62
+     with a text that has no copyright line. `about.toml` now gives 42 of the
+     58 their holder's text, from a file in the package (the 24 windows
+     crates' `license-mit`, libm's `LICENSE.txt`) or from the crate's
+     repository at the commit it was published from (lyon, gpu-alloc,
+     gpu-descriptor, profiling, svg_fmt, malloc_buf, and the objc2 crates up
+     to 0.5), all pinned by SHA-256. The 58th was a second, wrong entry for
+     wayland-protocols-plasma, which is gone. Of the 62, zvariant_utils now
+     takes its repository's text, which names its holders, and cfg_aliases no
+     longer has a second text. What is left:
+     - 60 crate versions publish their MIT text with no copyright line, in
+       the package and in the repository alike (most of dtolnay's, serde's
+       and smol-rs's crates, among others). Their text is printed as
+       published.
+     - 15 crate versions publish no MIT text at all: block 0.1.6, dispatch
+       0.2.0, and madsmtm's objc2 0.6 and framework 0.3 crates. They get the
+       standard text without its template line, under an entry that says so,
+       and the policy test lists them, so that a new one is looked up before
+       it joins them. Ten of them name no author in their metadata either;
+       their repository is named.
+
+     (Recommended) ship these as published, after counsel's review and before
+     first distribution: the notice that MIT asks to keep is the one the
+     holder published, and for these there is none, so any line written here
+     would name a holder the crate does not. The alternative is to ask
+     madsmtm/objc2 and SSheldon's repositories to publish licence files, and
+     for the objc2 framework crates, which are also offered under Apache-2.0
+     and Zlib, to choose Apache-2.0, whose text needs no holder line.
+   - (b) `Iced-Icons.ttf` is compiled into every iced build
+     (`graphics/src/text.rs`) and declares no licence. (Recommended) the owner
+     confirms its licence with iced's upstream and the fontello source before
+     first distribution.
+   - (c) The Fira Sans OFL text (`graphics/fonts/OFL.txt` in the fork) is not
+     in the file. Fira Sans is compiled only with the `fira-sans` features,
+     which are off. If one is switched on, its text must be added by hand, and
+     nothing detects that.
+   - (d) OFL-1.1 is accepted for tawara-app alone, and deny.toml is unchanged.
+     (Recommended) keep it so.
+   - (e) The Mochimo text is appended verbatim. (Recommended) keep it so.
+     Whether that suffices is one of the questions Rep-0's `FORK.md` puts to
+     counsel (D10).
+   - (f) The six desktop targets are (Recommended) until phase 5 fixes the
+     shipped set.
+   - (g) The `LicenseRef-` defect in cargo-about 0.9.2 is not reported
+     upstream. Whether to report it is the owner's call.
+   - (h) wayland-protocols-plasma 0.3.12, which winit's Wayland backend
+     brings into the Linux builds, generates its code from KDE's protocol
+     files. Its package carries them, and most declare LGPL-2.1-or-later;
+     others declare MIT-CMU or BSD-3-Clause. The crate itself declares MIT,
+     and so do deny.toml's view and these notices. (Recommended) the owner
+     puts to counsel whether bindings generated from those files carry their
+     licences, before the first Linux distribution.
 
 ## Phase 5
 
@@ -2647,3 +2956,689 @@ packaging study of 2026-10-12, whose notes are not in the repository.
     ITMS-90048 over a `._Symbols` path. No reply gives a cause; the
     workarounds remove the path from the `.ipa` or rebuild.
     https://developer.apple.com/forums/thread/776996 (2026-10-13)
+
+## The owner's nine items, October 2026
+
+In October 2026 the owner asked for nine changes: on phones, a lead-in
+screen before a wallet is created, and a phone that always opens its own
+wallet (D37); spends that settle without a press, on desktop and phone
+(D38); a shorter phone main screen (D39); Send on phones as a series of
+pages (D40); a QR code on Receive (D41) and QR scanning on Send (D42);
+`https://api.mochimo.org` chosen in advance as the node (D43); the
+recovery phrase on one screen (D44); and an unlock with the phone's own
+checks (D45). On 2026-10-13 the owner answered eight of the questions they
+raised: the default node, biometric unlock on iOS with the passcode, the
+`qr_code` feature, scanning on phones only, the settled bytes and the
+narrow lock case, Recent and the chip on the phone's W1, the order of the
+warning and the phrase, and the reading of D4. Every entry below is
+proposed until the owner approves it. Each marks what the owner decided
+**(owner, 2026-10-13)**, what is **recommended** and waits for the owner's
+approval, and what is **open**, with the question and the recommendation.
+None of the nine needs a change to the library. Each entry lists the OS
+libraries it links, as D4's reading of 2026-10-13 asks, and new wording
+that protects the person ships only once the owner approves it (PLAN
+section 3, D25). The pull requests that build these entries cite them,
+and each changes docs/SCREENS.md as its entry's records say.
+
+### D37. The phone's first run: a lead-in screen, and the phone's own wallet
+
+**proposed, 2026-10-13; asked by the owner (items 1 and 2); recommended,
+with the images for the owner's approval.** Item 1 asks for one lead-in
+screen on a phone before a wallet is created. Item 2 asks that a phone
+find the wallet it already holds and not prompt to create a new one.
+
+1. **S0, a phone-only lead-in (recommended).** A new screen, "Welcome",
+   shown only when the phone's store folder holds no store. It carries the
+   green brand field, the wordmark, the headline and the three pills, all
+   already approved in rendering 01, and one "Get started" button at the
+   foot, within reach of a thumb, which leads to S1. It fits 360 × 640
+   without scrolling, and the node footer stays on S1. This would amend
+   D32 item 10 (b): on a phone the brand panel returns, as a screen of its
+   own, while S1 to S8 keep the wordmark above the form. The desktop is
+   unchanged. **Open:** one optional sentence on what comes next ("You will
+   write down 24 words; have paper ready") would be new protective wording.
+   (Recommended) leave it out unless the owner approves its words.
+2. **The phone's own wallet (recommended).** On a phone that holds a store,
+   S7 is the only first screen, and neither S1 nor S3 is offered: S7 loses
+   "Create or restore a different wallet", which on a phone leads only to
+   the worker's refusal of an occupied folder after a password has been
+   typed. On a phone with no store, S0 leads to S1, and S1 offers no link to
+   S7. Starting again with another wallet on a phone means removing the app,
+   since a phone has one store folder (D32 item 10 (a)) and no button may
+   delete the store (PLAN 4.9). **Open:** one line on S7 that says so is new
+   wording, for the owner's approval.
+3. **First, a reproduction.** Tawara-mobile at `1cbcc1a`, an ancestor of
+   its `main`, already holds the change that picks the first screen again
+   once the store is confined to the private folder (Tawara-wallet#19).
+   Which build showed the owner the create prompt is not known, so the work
+   starts with an install, a create, a killed process and a relaunch, and
+   again after a reinstall on top, on an iPhone and on an Android phone with
+   a build of that commit.
+
+The owner approves the phone screens by approving their images (D32 item
+10 (c)); S0 is new, and S1 and S7 are redrawn. docs/SCREENS.md gains an S0
+row in the first-run table, and its S1 and S7 rows and the compact row for
+S1 to S8 change with the work. OS libraries: none added.
+
+### D38. Spends settle automatically
+
+**proposed; the direction, and items 5 and 6, decided by the owner on
+2026-10-13. Item 5 was REVISED by the owner the same day, and its item (b)
+is wanted for a later PR. Item 2's additions are proposed; the rest
+recommended.** Until now only W7's Settle button calls
+the library's `Wallet::settle_if_landed`, from the worker's `settle()`
+(`crates/wallet-core/src/worker.rs:2040`), and Refresh, Check now and
+unlock read the chain without settling. The owner decided that a spend
+settles automatically once the chain shows it landed, on desktop and
+phone. This changes how D27 item 16's settling, built in its pull request
+(b) as a step the person takes on W7, is reached; the step itself is the
+library's, as before. The words the person sees are the worker's own and
+the library's page, under D25 and D28, and the walk D19 and D24 speak of is
+item 6's.
+
+1. **When (recommended).** On any fresh read that classifies an account as
+   `SpendLanded`: a Refresh that was not cancelled, Check now, unlock, and
+   the read that follows a send. One private helper in the worker calls
+   `cli::key_access` and then `settle_if_landed`, as `settle()` does, and
+   reads that account again. It calls nothing else: no direct
+   `persist_settled` (the library calls it inside the settle), no advance,
+   no abandon, and it never writes a key index, so PLAN 4.9 holds. It is
+   skipped when a cancel has been asked or no wallet is open. Accounts set
+   aside at open settle once the node shows them landed, as D19 decides;
+   an account the read does not classify as `SpendLanded`, a diverged one
+   among them, is left as it is.
+2. **A poll (recommended).** Every 60 seconds, only while the wallet is
+   unlocked and in the foreground and some account is `SpendOutstanding`
+   with a live reservation, driven by the existing one-second tick. It is
+   not the person's input, so it does not hold the idle lock back (D24),
+   and it stops on lock and on a move to the background. On a phone the
+   move to the background locks the wallet, so there the settle on unlock
+   covers the common case. D31 item 6 keeps the explorer off timers; this
+   poll asks only about an open reservation, and is not the explorer's.
+   Without it, a settle waits for the next Refresh, Check now or unlock.
+
+   **Additions (proposed; recommended; the owner may revisit).** The rule
+   above polls only an account whose reservation is live. As built in PR
+   #30 (`view::Watch`; docs/SCREENS.md's W7 row states the whole rule):
+   - a read that says nothing, because the node does not answer or the
+     expiry cannot be read, keeps the polls going;
+   - a wallet opened during such an outage polls a reservation the store
+     holds, from its first read;
+   - a read in doubt is "account not found", which the node also answers
+     for a failed lookup, or a spend that has landed and not yet been
+     settled. At most two more polls follow such a read in a row, and the
+     third such read in a row ends the polls. A silent read between them
+     neither counts nor restarts the count, and a poll counts when it is
+     sent;
+   - the polls end on a read that shows the account in sync, the
+     reservation dead or unrecorded, or a divergence for the person to
+     look at; they stay ended until a read shows the reservation live
+     again;
+   - a lock (on a phone, a move to the background), a stopped worker and
+     a view that omits the account clear the watch. A poll is not the
+     person's input (D24), so it does not hold the idle lock back.
+3. **What the person sees (recommended).** The existing banner, "Settled:
+   the account can spend again" (`report::done`), with the library's page
+   one step away (D28). W6's Settle step follows the account's state.
+   **Open:** where the banner sits, the W7 panel and the copy for a dead
+   reservation are new wording, for the owner's approval. So are the copy for
+   signed bytes kept after a settle, the dismiss control item 5 names (built in
+   PR #30, with a confirming second press), and W7's copy for a settle that a
+   reorganisation reverted (item 5). Its summary says spending is paused and the
+   other accounts are unaffected, and its causes are a spend not landed, a store
+   moved ahead and another chain (`crates/app/src/screens/wallet/report.rs:241`,
+   `:266-275`). None of them names a reorg, which only the library's full report
+   beneath does, and none says that the pause lasts until the spend lands or a
+   saved copy is re-submitted (library `recon.rs:962-964`, `:986-1000`).
+4. **The Settle button stays as a fallback (recommended).** It stays on W7
+   for a landed spend whose automatic settle could not reach the node, and
+   is hidden on a dead reservation, whose present copy promises a
+   resolution that cannot come: a dead reservation whose chain still shows
+   the spent address never settles.
+5. **REVISED (owner, 2026-10-13): signed bytes are kept until saved,
+   dismissed or locked.** Unsaved signed bytes are kept until the person
+   saves them, dismisses them, or the wallet locks, and not until the first
+   read that finds the account in sync. That first-read rule is the code's
+   rule today (`forget_settled`, `crates/app/src/app/wallet.rs:769-770`,
+   called from `crates/app/src/app.rs:1701`); it is not changed in this PR.
+   The bytes live in memory only and nothing is written to disk, so a
+   restart also loses them. This replaces the owner's earlier answer of the
+   same day, to forget them on settle. That answer rested on the wrong
+   premise that a reverted settle reopens the reservation, as the corrected
+   facts below show. No dismiss control exists on this branch; PR #30 adds
+   one, and it and its copy are new wording (item 3).
+
+   If a reorganisation of the chain then reverts the settle, the reservation
+   is not reopened: `persist_settled` closes it and keeps only the settle's
+   digest, index and, where recorded, figures (library at `7cdc2e9`,
+   `keystore/mod.rs:1332-1363`), so the bytes are not in the store. The
+   account is then diverged, not reserved. The chain holds it at the settled
+   key's address, one index behind the store's, and the next read that
+   reconciles it reports `IndexMismatch` with that block (library
+   `recon.rs:1546-1558`). Re-sign is refused, since `resign_pending` needs a
+   reconciled account and an open reservation (library `wallet.rs:738-740`).
+   The library's report names two causes it cannot tell apart: a reorg that
+   reverted the settle, or a settle taken on the single observation the
+   settle rule permits, where the spend may yet land. For a chain behind the
+   store, the report's action is to wait for the spend to land and reconcile
+   again; if it never lands, the difference is permanent, and advancing
+   local state backwards is never a remedy (library `recon.rs:962-964`). It
+   also says that a copy the person saved outside the store can be
+   re-submitted while the balance at the source has not moved and a non-zero
+   block-to-live has not passed, and that this build has no command that
+   turns the retained block back into those bytes (library
+   `recon.rs:986-1000`).
+
+   What is lost, in plain words. From this store, the balance at the
+   reverted address moves only if the reverted spend lands after all, or if
+   a copy the person saved is re-submitted while that balance has not moved
+   and a non-zero block-to-live has not passed. With no saved copy, neither
+   Tawara nor the library's commands can spend that balance from this store.
+   Tawara offers no route to a saved copy from this account either: Submit
+   saved artifact is offered only for an open reservation
+   (`crates/app/src/screens/wallet/account.rs:187-191`), and the
+   acknowledged advance writes nothing for a chain behind the store (library
+   `cli/reconcile.rs:272-281`).
+
+   **(b) Wanted (owner, 2026-10-13), in a later PR, not this one.** A
+   diverged account one key behind, with a retained settle, should offer
+   Submit saved artifact, and accept only a saved copy whose digest
+   matches the retained one. It moves no key index (PLAN 4.9). Its
+   constraints:
+   - only for an account one key behind, with a retained settle (owner,
+     2026-10-13);
+   - only a saved copy whose digest matches the retained digest (owner,
+     2026-10-13);
+   - only the identical saved bytes may be re-submitted, and only under the
+     library's conditions: the balance at the source has not moved, and a
+     non-zero block-to-live has not passed (library `recon.rs:992-994`;
+     proposed, for the owner's approval when that PR is made);
+   - signing anything else with that key is never allowed, whether or not
+     the reverted spend has expired (library `recon.rs:991-992`,
+     `wallet.rs:810-812` and `README.md:339`; proposed, for the owner's
+     approval when that PR is made);
+   - no key index moves (owner, 2026-10-13; PLAN 4.9).
+
+   What happens to the wallet. Refresh and Check now mark the account
+   diverged and leave an open wallet open. `Wallet::open`, though, refuses a
+   store in which no account is operable (library `wallet.rs:418-427`). So
+   in a store whose only account diverged this way, the next open shows the
+   library's WALLET WILL NOT START page and the wallet stays closed
+   (`crates/wallet-core/src/worker.rs:967-999`, `:1639-1656`). With another
+   account reconciled, the wallet opens and sets this one aside.
+
+   Nothing in this store moves a key index to clear the divergence, as PLAN
+   4.9's rule that no button moves a key index to make a refusal go away
+   requires: the acknowledged advance names no index for a chain behind the
+   store (library `recon.rs:865-873` and `:1149`, and
+   `cli/reconcile.rs:273`), the recovery page offers no remedy for it
+   (`crates/app/src/app/wallet.rs:213-225`), and restore writes nothing for
+   an account the store already holds (library `cli/restore.rs:163-168`).
+   D27 item 5's amendment holds only while the reservation is open. Tawara's
+   side of this is pinned by
+   `a_reverted_settle_leaves_the_account_behind_with_no_way_to_advance`
+   (`crates/wallet-core/tests/worker.rs`) and
+   `a_reverted_settle_is_offered_no_button_and_no_remedy`
+   (`crates/app/src/screens/wallet/account.rs`).
+
+   A store made from the same recovery phrase elsewhere is different, and
+   making one is a natural step after a lost device. It creates account 0 at
+   index 0 (library `cli/create.rs:167`,
+   `crates/wallet-core/src/worker.rs:1557`), so it sees the chain ahead, at
+   the settled key's index, and the report names that index as the advance
+   target (library `recon.rs:865-873`, `:941-951`). Tawara's account
+   recovery offers that advance
+   (`crates/app/src/screens/wallet/account.rs:237`,
+   `crates/app/src/screens/wallet/recovery.rs:137`), and an account added
+   there by restore is placed at that index (library
+   `cli/restore.rs:173-176`). That store could then sign with the key the
+   reverted settle used, whose signature the library's report calls the only
+   one that key may ever give (library `recon.rs:991-992`). That is PLAN
+   4.5's key-reuse hazard. A store made from the same seed must never
+   advance to that index or sign anything with that key. That holds whether
+   the reverted spend lands, is re-submitted or expires, because the hazard
+   is the signature itself, which already exists. After expiry the signed
+   bytes may never be accepted (library `README.md:339`). Expiry does not
+   undo the private material that the WOTS+ signature exposed, so a second
+   signature with that key stays what the library's re-sign guard calls the
+   second-signature-under-one-key catastrophe (library `wallet.rs:810-812`);
+   that step is analysis, not library text. Only the identical saved bytes
+   may be re-submitted, and only while the balance at the source has not
+   moved and a non-zero block-to-live has not passed (library
+   `recon.rs:992-994`; item (b)). Neither store can see the other, so this
+   is recorded here and not enforced.
+
+   **Why the answer changed (owner, 2026-10-13).** The earlier answer
+   rested on the premise that a reverted settle reopens the reservation. It
+   does not, so the owner revised it: unsaved bytes are kept until the
+   person saves or dismisses them or the wallet locks, in memory only.
+
+   Notes on the revision (analysis recorded with it, not the owner's
+   words). Re-sign is refused after a revert, and no command rebuilds the
+   bytes (library `recon.rs:995-996`), so a copy held outside the store is
+   the only way the library names to move the balance before the spend
+   lands. The library's full report, one step away in Tawara
+   (`crates/app/src/screens/wallet/report.rs:318`,
+   `crates/app/src/app/wallet.rs:1302-1314`), says to keep any copy of the
+   artifact (library `recon.rs:999-1000`). Keeping the bytes until the
+   balance at the source has moved or a non-zero block-to-live has passed
+   would have been another rule. Those are the library's conditions for
+   re-submitting a saved copy, which item (b) uses, not a measure of how
+   long the bytes are kept.
+
+   **As built in PR #30 (proposed, for the owner's confirmation).**
+   - A read that finds the account in sync forgets only a saved spend;
+     unsaved bytes stay offered after an automatic or a manual settle.
+   - W6 offers Dismiss only while the bytes are not saved, on its own row
+     below Save artifact and Copy hex. It asks to be confirmed, and says
+     that dismissing wipes the only copy Tawara holds.
+   - "The wallet locks" is read as a lock asked for, the idle lock, a move
+     to the background (D32 item 6) and the worker's shutdown. Each wipes
+     unsaved bytes, shown or kept, and S7 says so. A store the worker
+     closed because it could not be read back, which can follow a send's
+     answer at once, and one replaced by another unlock, keep them: no one
+     asked for that close, and the bytes may not have been seen.
+   - Saved bytes are not wiped by a lock. Their page is kept over it and
+     shown again on unlock, as `keep_signed` and `bring_back_signed`
+     (`crates/app/src/app/wallet.rs:713` and `:752`) do today, and they are
+     forgotten once the account is in sync.
+   - Whenever a kept spend is dropped, its hex and the library's page,
+     which repeats the hex, are wiped. Copies outside the model (a
+     clipboard, a share sheet, messages in flight) are not.
+   - A worker that stops keeps unsaved bytes until Tawara closes, and the
+     stopped screen offers to save them.
+
+   One consequence follows whatever the reading. A revert after the bytes
+   have gone, through a lock or a dismissal with no save, finds no copy in
+   the store, and the account is then as the paragraphs above describe.
+   While the reservation is still open, Re-sign (W8) can sign the same
+   spend again: the library refuses any rebuilt plan whose digest differs
+   from the reserved one (library `wallet.rs:813-814`).
+6. **The narrow lock case is accepted, with no library change (owner,
+   2026-10-13).** D19 says every walk takes a cancel, and D24 says a walk
+   never holds the lock back. The library's `settle_if_landed` reconciles
+   the account again through `recon::reconcile_account`, which passes
+   `Cancel::NEVER` (library at `7cdc2e9`, `wallet.rs:652-660`,
+   `recon.rs:1474-1481`). That reconcile walks key positions only when it
+   finds the reservation unexplained (`recon.rs:1618-1624`); a
+   `SpendLanded` or `SpendOutstanding` read takes no walk
+   (`recon.rs:1570-1612`). The automatic settle runs only after a fresh
+   `SpendLanded` read, so it walks only if the chain changes between that
+   read and the settle's own, or if a node answers differently on purpose.
+   Then the walk cannot be stopped, at about 1.6 ms a position (D19), and a
+   lock, or on a phone the move to the background, waits for it (D32 item
+   6). The Settle button has the same exposure today; the automatic settle
+   makes it happen without a press. The owner accepts this case. A cancel
+   on `settle_if_landed` (Rep-0) would make D24 hold strictly; it is not
+   proposed unless the owner asks.
+7. **Recorded risks.** The node's answers are not authenticated, and the
+   library settles on one observation. A reorganisation that reverts a
+   settle is caught by the next read that reconciles the account, for
+   example Refresh, Check now or the next open, as `IndexMismatch`, with no
+   path to acknowledge it. In a store with no other operable account, that
+   open refuses the wallet (item 5). The poll adds traffic to the node, and
+   with D43's default node that traffic reaches its operator and Cloudflare
+   (T28, PR #21).
+
+Records that change with the work: docs/SCREENS.md's rows for a
+reservation not settled and for a spend between submission and settlement
+(lines 25 and 28), which say "settle", and its W1, W6 and W7 rows; W7's
+row adds that an account set aside at open may settle without a press and
+rejoins on Refresh. Item 5's revision changes W6's row, which keeps a
+spend's page until its account is in sync again and across a lock, and
+the S7 row that says a lock keeps such a page. (b), when built, changes
+W7's and W9's rows. OS libraries: none added.
+
+### D39. The phone's main screen
+
+**proposed; asked by the owner (item 4); item 1 decided by the owner on
+2026-10-13; the rest recommended.** Item 4 asks for only high-level
+details on the phone's W1: One-time keys and Network move elsewhere, and
+each account is shown as a short line that opens into a larger card.
+
+1. **Recent and the chip (owner, 2026-10-13).** Recent stays on the
+   phone's W1, cut to three rows, with a "View activity" link to the full
+   list. The latest-block chip stays in the top bar.
+2. **What phone W1 shows (recommended).** The balance, the notice banners,
+   the Accounts card and Recent. One-time keys leave W1: each account's
+   next key appears in its card, and the explanation and the table stay in
+   Settings. Network leaves W1 and stays in Explorer E1 and Settings, Node.
+   No new screen and no seventh tab, since the bar holds six at 360 (D32
+   item 10 (b)).
+3. **Account rows (recommended).** One line each: the short name on the
+   left, the Base58 destination's first six and last six characters as
+   `short()` builds them, and the balance on the right. An account that is
+   not reconciled gets a state dot and word on a second line, so a paused
+   or outstanding account is never hidden. Rows act on release (D32 item
+   10 (d)). **Open:** that the item's "TAG" means this short name, since
+   the desktop's column is headed "Address (tag)" and Settings shows
+   shortened hex tags.
+4. **Rows expand in place (recommended).** A tap opens the row where it
+   is, one at a time, and it closes when the page is left. The card holds
+   the full destination with Copy, the next key and its kind, the state,
+   and "Send from it" (only when it can spend), "Receive" and "Open
+   account". The actions on a state, Settle, Re-sign, Submit and account
+   recovery, stay on W7 (D19). The alternative, a tap that opens W7 at
+   once, costs a page for each look.
+5. **Phones, not widths (recommended).** These changes follow `phone()`,
+   not the window's width, so a phone held sideways shows the same content
+   and a narrow desktop window keeps today's. This is a new rule beside D27
+   item 9. Every desktop image, the `narrow-*` ones included, stays byte
+   for byte.
+
+This would amend D32 item 10 (b). The owner approves the result by
+approving the phone W1 images (D32 item 10 (c)), which for the first time
+draw the Accounts card. docs/SCREENS.md's W1 rows (lines 59 and 131) and
+E1's compact row change with the work. OS libraries: none added.
+
+### D40. Send on phones as a series of pages
+
+**proposed; asked by the owner (item 5); recommended.** On a phone, Send is
+one long scroll from W4 to W6 today. The owner asked for a series of pages.
+
+1. **Five pages (recommended).** To (1 of 4): the From line, with
+   "Change" when more than one account can spend, one destination at a
+   time with Paste, the reference, "Add another destination" and Remove.
+   Amount and fee (2 of 4): the amounts, "Send everything" for a single
+   destination, fee and blocks to live, live totals, and "Review spend"
+   with the library's refusals beside it. Review (3 of 4): the NOT SIGNED
+   banner, the destinations in full, the library's totals and "Continue to
+   signing", with no Sign button. Sign and submit (4 of 4): "Sign & submit"
+   alone, disabled while busy, with one line in W6's words that a submit is
+   a socket write, not a verdict. Sent: W6, unchanged, with no way back
+   into the flow. Signing stays a step of its own, as D27 item 3 decides.
+2. **Back (recommended).** A Back at the top of each page keeps what was
+   typed. Back from Review to Amount discards the plan, as Edit does today;
+   Back from Sign to Review keeps it, and leaving the Sign page by any other
+   way discards the worker's pending plan as leaving Review does. A tap on
+   the Send tab during the flow keeps the form. Reason: today a tap on the
+   Send tab builds an empty form (`crates/app/src/app/wallet.rs:929-932`),
+   and pages make that tap likelier.
+3. **Android's Back steps within the send pages (recommended).** On pages
+   1 to 4 the system's Back steps back one page, handled in `tawara-app`
+   before `Host::back`; everywhere else it keeps its meaning
+   (docs/SCREENS.md, "Android's Back keeps its meaning"). The lock on a
+   move to the background is kept. Reason: today Back moves the app to the
+   background (`crates/app/src/app.rs:1193`), which locks it and drops a
+   composed spend.
+4. **Refusals where they arise (recommended).** Field checks show under
+   their field when Continue is pressed, and refusals and the busy card
+   show beside the button that caused them. Reason: today they are drawn at
+   the top of the page (`crates/app/src/screens/wallet.rs:395-408`), while
+   Review spend is pressed at its foot, so a refusal can be off-screen. The
+   destination check needs `parse_destination` made public in
+   `tawara-wallet-core` (`crates/wallet-core/src/spend.rs:151`), which is
+   not a library change.
+5. **The destination page and Paste (recommended).** The destination page
+   joins `form_of` and `form()` (`crates/app/src/app/wallet.rs:691` and
+   `1029`), so that a Paste read comes back to the form it was asked for,
+   as D32 item 10 (g) requires; otherwise its reads are dropped.
+6. **Open:** a note on S7 after a lock, that an unsigned spend was
+   discarded, is new wording, for the owner's approval.
+
+The desktop's W4 to W6, `narrow-w4-send.png` included, are unchanged. The
+threat model's Locking row (PR #21) and docs/SCREENS.md's Back rule (lines
+108 to 110) and its W4 to W6 rows (lines 62 to 64 and 134 to 136) change
+with the work. The owner approves the pages by approving their images. OS
+libraries: none added.
+
+### D41. A QR code on Receive
+
+**proposed; the feature decided by the owner on 2026-10-13; the rest
+recommended.**
+
+1. **iced's `qr_code` feature is approved (owner, 2026-10-13).** It adds
+   the fork's `qr_code` widget and the `qrcode` crate it takes (0.13.0, MIT
+   OR Apache-2.0, default features off). `ICED_FEATURES` in
+   `crates/wallet-core/tests/policy.rs` grows to eleven; its comment says
+   that `qr_code` comes only with the owner's approval, and this is it.
+2. **What is encoded (recommended).** The Base58 destination, exactly as
+   Receive prints it, with no URI prefix, since none is established for
+   Mochimo and the parser would need changing. Never the hex fallback,
+   which has no checksum, and never the ledger address.
+3. **How it is drawn (recommended).** Error correction level Q, version 3.
+   The encoder chooses the mode, byte or alphanumeric, depending on the
+   destination's characters. Black modules on a white card with a quiet
+   zone of four modules, since the widget's palette colours come out
+   inverted on Tawara's dark theme. Each module is 7 logical pixels, so the
+   code is 259 pixels square on a phone at 360 wide, and the same on
+   desktop; 8 would make it 296 pixels wide, more than the 294 a phone's
+   card holds inside its border and padding. The size is listed for the
+   owner's approval through the phone image `phone-w2-receive-end.png`, the
+   one that shows the whole code. Receive has no design rendering (01 to
+   05), so the owner approves its layout by the redrawn `w2-receive.png`,
+   `phone-w2-receive.png` and `phone-w2-receive-end.png`.
+
+OS libraries: none added.
+
+### D42. QR scanning on phones
+
+**proposed; items 1 to 3 decided by the owner on 2026-10-13, in outline;
+the details recommended.** Item 6 asks that Send can scan a QR code.
+
+1. **Phones only (owner, 2026-10-13).** The desktop has no scanning, and
+   rendering 03's "Scan QR" is not drawn on the desktop's Send: a desktop
+   camera is uncommon, and there the destination is usually pasted. This
+   supersedes D27 item 5's exclusion of a camera dialog, for phones.
+2. **iOS: Apple's scanner (owner, 2026-10-13).** A native scanner screen,
+   which the shell presents as it presents the share sheet, with
+   `AVCaptureMetadataOutput`, so Apple decodes the code and draws the
+   preview. No decoder crate and no iced `image` feature are needed.
+   (Recommended) the bindings are declared by hand on objc2, or come from a
+   bindings crate whose name and version are confirmed with `cargo info`
+   before it is pinned.
+3. **Android: the NDK camera and `rqrr`, after a device spike (owner,
+   2026-10-13).** Camera2 through the NDK and `AImageReader`, using the Y
+   plane, decoded by `rqrr` with its default features off, and the preview
+   drawn in iced. (Recommended) the camera permission is asked through JNI
+   and then polled, since a NativeActivity is not expected to receive the
+   result; that is an inference, to be checked on a device. This is
+   without Java, and it is the largest single piece of these nine items.
+   (Recommended) the spike puts about 50 real captures through each
+   decoder, in varied light, angle and distance.
+4. **The scanned text is untrusted (recommended).** It is trimmed, bounded
+   in length and refused unless it is UTF-8, and `parse_destination`
+   decides whether it is a destination. It fills only the row it was asked
+   for, is dropped if the page changed while the camera ran, and never
+   reaches a password or phrase field. The camera stops when the page is
+   left and on a move to the background. A swapped sticker gives a valid
+   but wrong destination, which only the review catches, as with Paste.
+   The threat model gains the camera as an input.
+5. **Open.** iced's `image` feature, which Android's preview needs and
+   which reaches the desktop builds as well, is a new feature for the
+   owner's approval before the Android work (D32 item 9). The usage text,
+   `NSCameraUsageDescription` on iOS, and the Android manifest's
+   `android.permission.CAMERA`, with `android.hardware.camera.any` not
+   required, are for the owner's approval with the work. Tawara-mobile's
+   `MOBILE_DEPENDENCIES` gains `ndk-sys` and any new crate.
+
+docs/SCREENS.md's W4 row, which says "Scan QR" is not built, changes with
+the work. OS libraries: AVFoundation on iOS; `camera2ndk` and `mediandk`,
+which holds `AImageReader`, on Android, linked by Tawara-mobile. `ndk-sys`
+declares their functions, but links `mediandk` only behind its `media`
+feature, which Tawara-mobile's build does not turn on today, and links
+nothing for `camera2ndk`.
+
+### D43. A default node: `https://api.mochimo.org`
+
+**proposed; the default decided by the owner on 2026-10-13; the safeguards
+recommended; item 6's rules proposed, for the owner to revisit; the operator
+and the threat model's acceptance open.**
+
+1. **The default (owner, 2026-10-13).** `https://api.mochimo.org` is
+   chosen in advance on desktop and phone, and the person can change it to
+   any other node or forget it. The owner's reason: "many users will not be
+   aware of the functionality of nodes. These users should not have to
+   suffer." The owner confirmed that the endpoint works in both wallets,
+   and the iPhone simulator's Explorer read live chain data through it.
+   This supersedes PLAN 4.8's "There is no default node" and the same rule
+   in D22, which is itself still proposed. The library's command line keeps
+   its own rule ("--node has no default precisely because the operator
+   chooses whom to believe", library `FORK.md:168`): a person who runs it
+   chooses a node. Tawara's people may not know what a node is, and the
+   owner decided that they should not be made to choose before the wallet
+   works. The node's rules are otherwise unchanged: https, or http to
+   loopback, and the library's bundled roots (D22).
+2. **Safeguards (recommended).** The default lives in
+   `tawara-wallet-core`'s `Preferences::default()`. A remembered "none"
+   (`node = none`) keeps "Forget the node" forgotten across a restart; once
+   the default is a node, an absent or empty `node` line means the default.
+   No node is asked at launch until a wallet is opened or the person
+   presses Check now, which keeps true D32 item 9 (h)'s note that start-up
+   needs no network (its reference to `app.rs:898-900` is now lines 1087
+   and 1088). Asking the person to confirm a suggested node was considered
+   and not taken: it would still ask someone who does not know what a node
+   is to act.
+3. **Open: who operates `api.mochimo.org`.** No public source found names
+   the operator. One check showed a certificate from Google Trust Services
+   (WE1) for `CN=mochimo.org`, valid from 2026-08-25 to 2026-11-23, and a
+   reply with `server: cloudflare` and a `cf-ray` header, so Cloudflare is
+   in the path. (Recommended) the owner names the operator, and S2 and W11
+   name the operator and Cloudflare and say what they see, in words the
+   owner approves.
+4. **Open: the threat model's T27 and T28 for those who keep the default
+   (PR #21).** Everyone who keeps the default sends their tags, network
+   address and timing to one operator and through Cloudflare (T28), with
+   no second node to compare with (T27), and one endpoint carries every
+   default user. (Recommended) the owner accepts both for those users, with
+   Cloudflare named as a party under T28.
+5. **Records that follow.** docs/SCREENS.md's S2 row; the comments that
+   say there is no default (`crates/wallet-core/src/node.rs:3-5`,
+   `crates/wallet-core/src/command.rs:50-51`); the S2 text
+   (`crates/app/src/screens/first_run.rs:384-388`) and the W11 text
+   (`crates/app/src/screens/wallet/settings.rs:487-489`), which say "There
+   is no default node"; and the release privacy answers and review notes
+   in PR #22's docs/RELEASE.md, which say the app talks only to the node
+   the person chooses. The certificate's renewal, due by 2026-11-23, is
+   tracked, and the chain checked again on each platform after it.
+6. **A file that cannot be read, and a choice that cannot be saved (proposed;
+   recommended; the owner may revisit).** PR #29's finding 7 asked for these
+   rules to be recorded here, since items 1 to 5 cover the default and
+   `node = none` only. The copy the person sees is PR #29's wording list,
+   which is provisional and for the owner's approval.
+   - A preferences file that cannot be read (a folder at its path, or bytes
+     that are not text) gives no node, not the default. The wallet uses no
+     node until the person chooses one or forgets it. A missing file still
+     gives the default.
+   - While the file cannot be read, an ordinary change (the unit, the
+     auto-lock period, the store last opened) does not write over it.
+     Choosing a node, or forgetting it, does, since that is the person's
+     choice.
+   - While the file cannot be read, Forget is offered on S2, beside Back,
+     and on Settings' node card, beside Check now, each with a note. S2
+     also offers Forget when a node is set; Settings offers it only in
+     that state. A Forget that succeeds clears any address or error left
+     on the page.
+   - A choice or a forget that cannot be saved is said on the screen it
+     was made on, and that screen does not go back as if the choice were
+     saved. With no folder for the preferences, the node is used, or
+     forgotten, for this run only, and the note says that the next start
+     uses the default.
+
+No library change. OS libraries: none added.
+
+### D44. The recovery phrase on one screen
+
+**proposed; the order decided by the owner on 2026-10-13; the details
+recommended.** Item 8 asks for the whole phrase in one frame, with no
+scrolling. On a 360 × 640 phone that fits only if the library's warning
+moves off the frame or is shortened, and the warning is the library's text
+(PLAN section 3, D25).
+
+1. **Warning first, then the phrase (owner, 2026-10-13).** On short
+   phones the library's warning comes first, on a frame of its own, whole
+   and unchanged. Then all 24 words appear in a grid of three columns and
+   eight rows on one frame, with the checkbox and Continue. Larger phones
+   and the desktop show everything on one frame. The phrase itself is never
+   split across frames.
+2. **The grid (recommended).** Three columns by eight rows on every size,
+   read down the columns as the desktop's already is, at 14-pixel words.
+   A phone counts as short below about 720 usable pixels. The tests measure
+   the fit at 360 × 640, 360 × 800, 390 × 844 and 1024 × 700, and the
+   screenshot check gains a check of the bottom edge.
+3. **iOS (recommended).** A warning follows a screenshot taken while the
+   phrase is shown (`UIApplicationUserDidTakeScreenshotNotification`, which
+   arrives after the capture and cannot block it), and the grid is blanked
+   while the screen is reported as recorded or mirrored, as far as iOS
+   reports it. Reports from developers say the capture state can read
+   inactive while a recording runs, so the blanking is a best effort and
+   the copy must not promise it.
+4. **Android and the desktop (recommended).** Android keeps `FLAG_SECURE`
+   (D32 item 4). Android's guide to securing sensitive activities says that
+   in some cases the flag "does not correctly predict if screen recording
+   is active", and that on Android 11 (API 30) and lower it helps around
+   70% of devices reliably, because on some devices keyboard taps can be
+   recorded. So no comment or text may say that `FLAG_SECURE` stops every
+   recording, or that it stops recording on every device. The desktop
+   keeps no capture protection, as the threat model in PR #21 accepts.
+5. **Open:** "Show the phrase", the screenshot warning and the
+   placeholder shown while recording are new wording, for the owner's
+   approval.
+
+The phone S4 images are redrawn for the owner's approval (D32 item 10
+(c)), and docs/SCREENS.md's rule that S4's twelve rows are two columns
+(line 129) changes with the work. So does the threat model's T16 (PR #21,
+`docs/THREAT_MODEL.md:141`): on iOS it gains the screenshot warning and the
+best-effort blanking of item 3, and on Android the recording caveat of item
+4. OS libraries: none added; the iOS observers use UIKit, which the shell
+already links.
+
+### D45. Unlock with Face ID, Touch ID or the passcode, on iOS
+
+**proposed; items 1 to 3 decided by the owner on 2026-10-13; the details
+recommended.** Item 9 asks that the keystore can be opened with the
+system's credentials or biometrics. Today the store opens only with its
+password, typed on S7, and on a phone every move to the background locks
+it (PLAN 4.1, D32 item 6).
+
+1. **iOS only, for now (owner, 2026-10-13).** Android keeps the Tawara
+   password. No Java is added, so D4 and D32 item 10 (i)'s reading of it are
+   unchanged; Android may be revisited later. **Open:** the desktop.
+   (Recommended) later, not in this work: Touch ID on macOS needs a signed
+   app with the data-protection keychain's entitlement (D36's packaging),
+   Windows Hello needs WinRT bindings, and Linux has no standard.
+2. **The device passcode is accepted (owner, 2026-10-13).** The system's
+   prompt may accept Face ID, Touch ID or the device passcode, so the
+   Keychain item uses the `.userPresence` access control, not biometrics
+   only. Anyone who knows the phone's passcode can then open the wallet,
+   and the threat model (PR #21) records it. (Recommended) the item is
+   created with `kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly`. With
+   `.userPresence` a change to the enrolled faces or fingers does not
+   invalidate the item, as `.biometryCurrentSet` would; adding one needs
+   the passcode, which this decision already trusts. This supersedes the
+   design put to the owner before the answer, biometrics only with
+   `.biometryCurrentSet`, in which a new enrolment invalidated the item;
+   the test and the device check that expected that invalidation are
+   dropped.
+3. **PLAN 4.2 gains one exception (owner, 2026-10-13).** Passwords are
+   never written to disk, except that on iOS, only when the person turns
+   this on, the store's password is kept in the Keychain, released only
+   after the system's check. The Tawara password always remains the way
+   in, and its field stays on S7.
+4. **How (recommended).** Off by default, and offered once after a
+   successful unlock with the password. The password is kept only once it
+   has opened the store, tied to a random store identifier in the private
+   folder, since a Keychain item can outlive an uninstall; an item whose
+   identifier does not match is deleted, not used. A failed unlock with the
+   kept password deletes it, and turning the unlock off in Settings deletes
+   it. The password read back moves into `Zeroizing` at once, as a typed
+   one does. S7 offers the unlock when the app returns to the foreground,
+   and prompts once. The `Host` additions are optional fields, `None` where
+   a shell has none. That differs from `Host::share`, which D32 item 10 (i)
+   makes a field every shell must fill: a shell may leave these empty, and
+   the app then offers no unlock. Like `Host::share`, they are fields of a
+   struct each shell builds by name, so adding them breaks both shells'
+   literals, and the Tawara-mobile pull request that takes them fills both
+   shells' `Host` in one commit.
+5. **Risks, recorded.** The password lives in a new place, held by the
+   system's secure hardware. A face or a finger can be compelled, and a
+   passcode can be watched or shared. Whether a Keychain item survives an
+   uninstall is to be checked on a device.
+6. **Open:** the offer, its Settings text and `NSFaceIDUsageDescription`
+   are new wording, for the owner's approval. A device with Face ID and an
+   iPhone SE with Touch ID are needed for the checks; the simulator tests
+   them only in part.
+
+docs/SCREENS.md's S7 row changes with the work. OS libraries:
+Security.framework and LocalAuthentication, on iOS, linked by
+Tawara-mobile.

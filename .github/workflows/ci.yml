@@ -24,10 +24,11 @@
 # and documents without warnings on the three hosts, with the compiler
 # rust-toolchain.toml pins; that the committed screenshots are pixel for
 # pixel what the screens draw on Linux; that cargo-deny found nothing against
-# deny.toml on the day it ran; and that on Linux the desktop app starts under
-# Xvfb, on wgpu and on tiny-skia, and is still running after a fixed wait with
-# no panic in its log (docs/DECISIONS.md D32 item 9). It says nothing about
-# Android or iOS, which phase 1's spike measures.
+# deny.toml on the day it ran; that on Linux the committed third-party notices
+# are what Cargo.lock gives (docs/DECISIONS.md D35); and that on Linux the
+# desktop app starts under Xvfb, on wgpu and on tiny-skia, and is still running
+# after a fixed wait with no panic in its log (docs/DECISIONS.md D32 item 9).
+# It says nothing about Android or iOS, which phase 1's spike measures.
 
 name: ci
 
@@ -211,3 +212,23 @@ jobs:
           cargo install --quiet --locked cargo-deny --version 0.20.2
           cargo deny --version
           cargo deny --locked check
+
+      - name: the third-party notices match Cargo.lock (Linux)
+        # docs/DECISIONS.md D35. cargo-about is built from crates.io at its
+        # pinned version, with --locked, as cargo-deny is above (D13), cold
+        # on every run like the rest of this job. The generator fetches the
+        # licence files about.toml pins from raw.githubusercontent.com, so
+        # the step needs the network, as the clone and the install do.
+        # `--features cli` is what installs the binary: without it cargo
+        # installs nothing and still succeeds. ci/notices.sh refuses any
+        # version but the pinned one. The check regenerates
+        # THIRD-PARTY-NOTICES.txt from Cargo.lock and fails, with a diff and
+        # the command that regenerates it, if the committed copy differs. It
+        # runs on Linux only, as the screenshots check does: one run holds the
+        # committed file to the generator, and the other hosts would repeat it.
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && runner.os == 'Linux' }}
+        run: |
+          cd "$TAWARA"
+          cargo install --quiet --locked --features cli cargo-about --version 0.9.2
+          cargo about --version
+          bash ci/notices.sh --check
