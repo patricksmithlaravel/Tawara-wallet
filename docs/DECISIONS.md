@@ -3184,6 +3184,12 @@ moves off the frame or is shortened, and the warning is the library's text
    A phone counts as short below about 720 usable pixels. The tests measure
    the fit at 360 × 640, 360 × 800, 390 × 844 and 1024 × 700, and the
    screenshot check gains a check of the bottom edge.
+   **Amended (owner, 2026-10-13):** a phone counts as short below 733
+   usable pixels. That is the frame's height at 360 wide, measured at
+   732.4 and rounded up (`PHRASE_ONE_FRAME` in
+   `crates/app/src/screens/first_run.rs`). A phone of 733 pixels or more
+   draws one frame. This amends the "about 720" above, which stays as
+   written.
 3. **iOS (recommended).** A warning follows a screenshot taken while the
    phrase is shown (`UIApplicationUserDidTakeScreenshotNotification`, which
    arrives after the capture and cannot block it), and the grid is blanked
