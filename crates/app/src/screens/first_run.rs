@@ -628,11 +628,11 @@ const PHRASE_COLUMNS: usize = 3;
 const PHRASE_GAP: f32 = sp::S6;
 
 /// The usable height, in logical pixels, at which a phone draws the warning and
-/// the words on one frame (docs/DECISIONS.md D44, which says only "about 720"
-/// usable pixels; this is the measured figure). It is the frame's own height
-/// at 360 wide, where the heading and the warning wrap onto the most lines, which
-/// is 732.4 pixels, rounded up; a phone shorter than this draws two frames. A
-/// 360 by 800 phone has 719 pixels between its insets, so it is shorter.
+/// the words on one frame (docs/DECISIONS.md D44 item 2). It is the frame's own
+/// height at 360 wide, where the heading and the warning wrap onto the most
+/// lines, which is 732.4 pixels, rounded up; a phone shorter than this draws
+/// two frames. A 360 by 800 phone has 719 pixels between its insets, so it is
+/// shorter.
 const PHRASE_ONE_FRAME: f32 = 733.0;
 
 /// What S4 draws (docs/DECISIONS.md D44).

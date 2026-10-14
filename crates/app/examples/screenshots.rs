@@ -723,10 +723,10 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
 const PHONE: (u32, u32) = (390, 844);
 const PHONE_DIR: &str =
     "/private/var/mobile/Containers/Data/Application/0A1B2C3D/Library/Application Support/Tawara";
-/// A short phone's height (docs/DECISIONS.md D44): under 733 pixels between
-/// its insets, so the recovery phrase is drawn in two frames on it. The 733 is
-/// `PHRASE_ONE_FRAME` in crates/app/src/screens/first_run.rs, measured from the
-/// frame; D44 gives only "about 720".
+/// A short phone's height (docs/DECISIONS.md D44 item 2): under 733 pixels
+/// between its insets, so the recovery phrase is drawn in two frames on it.
+/// D44 item 2 gives the 733, held as `PHRASE_ONE_FRAME` in
+/// crates/app/src/screens/first_run.rs.
 const SHORT_PHONE: u32 = 640;
 
 /// The long pages drawn a second time scrolled to their end. Receive is one,
