@@ -589,12 +589,23 @@ fn a_spend_is_planned_signed_submitted_and_settled() {
 
 /// Every file under a store's folder, with its bytes: a store writes nothing
 /// unless one of them changes.
+///
+/// The lock file is not read. An open store holds it under an exclusive lock,
+/// and Windows enforces a lock against every other handle, so a read of it
+/// while the store is open fails with `ERROR_LOCK_VIOLATION` (33). The library
+/// takes that lock and never writes the file, so it is recorded as empty, and
+/// checked to be: its length is read from its metadata, which takes no handle
+/// on its contents.
 fn store_files(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     fn walk(dir: &Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
         for entry in std::fs::read_dir(dir).expect("the store's folder") {
             let path = entry.expect("a folder entry").path();
             if path.is_dir() {
                 walk(&path, out);
+            } else if path.file_name() == Some(std::ffi::OsStr::new("keystore.lock")) {
+                let len = std::fs::metadata(&path).expect("the lock file").len();
+                assert_eq!(len, 0, "the library never writes the lock file");
+                out.push((path, Vec::new()));
             } else {
                 let bytes = std::fs::read(&path).expect("a store file");
                 out.push((path, bytes));
@@ -2965,7 +2976,7 @@ fn queued_polls_do_not_keep_the_store_open() {
         {
             Event::Locked { reason } => locked = Some(reason),
             Event::Done { id, reply } => {
-                assert!(matches!(reply, Reply::Network { .. }), "{reply:?}");
+                assert!(matches!(*reply, Reply::Network { .. }), "{reply:?}");
                 if id == last {
                     break;
                 }
@@ -3434,7 +3445,7 @@ fn dropping_the_last_handle_stops_a_queued_spend_before_it_signs() {
             .recv_timeout(Duration::from_secs(60))
             .expect("an event")
         {
-            Event::Done { id, reply } => answers.push((id, reply)),
+            Event::Done { id, reply } => answers.push((id, *reply)),
             Event::Locked { reason } => locked = Some(reason),
             Event::Stopped { panicked } => {
                 assert!(!panicked);

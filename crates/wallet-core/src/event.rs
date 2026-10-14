@@ -28,8 +28,12 @@ pub enum Event {
     /// acknowledged advance or a discovery sweep. Sent between `Busy` and
     /// `Done`, before each account and every few hundred key positions.
     Progress { id: RequestId, progress: Progress },
-    /// A command finished. Every command gets exactly one.
-    Done { id: RequestId, reply: Reply },
+    /// A command finished. Every command gets exactly one. The reply is
+    /// boxed so that an event stays small: unboxed, every event would be as
+    /// large as the largest reply, and whether that crosses clippy's
+    /// `large_enum_variant` limit depends on the platform (a `PathBuf` is 32
+    /// bytes on Windows, 24 elsewhere).
+    Done { id: RequestId, reply: Box<Reply> },
     /// The store was closed: its secret is dropped and its lock released.
     /// Sent whenever an open store closes, for any reason, including in
     /// answer to [`crate::Command::Lock`], and whenever a recovery phrase

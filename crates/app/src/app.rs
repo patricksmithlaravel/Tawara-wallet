@@ -1872,7 +1872,7 @@ impl App {
                     Some(w.waiting.remove(at).1)
                 });
                 if let Some(purpose) = purpose {
-                    return self.on_reply(purpose, reply);
+                    return self.on_reply(purpose, *reply);
                 }
             }
             Event::Locked { reason } => {
@@ -4187,7 +4187,7 @@ mod tests {
         for event in [
             Event::Done {
                 id,
-                reply: Reply::Sent(sent.clone()),
+                reply: Box::new(Reply::Sent(sent.clone())),
             },
             Event::Locked { reason },
         ] {

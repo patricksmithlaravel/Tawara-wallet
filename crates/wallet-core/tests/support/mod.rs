@@ -804,7 +804,7 @@ impl Harness {
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             match self.events.recv_timeout(left) {
-                Ok(Event::Done { id: got, reply }) if got == id => return reply,
+                Ok(Event::Done { id: got, reply }) if got == id => return *reply,
                 Ok(other) => self.seen.push(other),
                 Err(e) => panic!("no answer to {id:?}: {e}"),
             }

@@ -1310,7 +1310,10 @@ impl<C: Connect> Worker<C> {
                     if typed {
                         self.activity.mark();
                     }
-                    self.emit(Event::Done { id, reply });
+                    self.emit(Event::Done {
+                        id,
+                        reply: Box::new(reply),
+                    });
                     if self.poisoned {
                         self.close_poisoned();
                     }
