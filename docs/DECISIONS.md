@@ -2840,7 +2840,11 @@ item 6's.
      which repeats the hex, are wiped. Copies outside the model (a
      clipboard, a share sheet, messages in flight) are not.
    - A worker that stops keeps unsaved bytes until Tawara closes, and the
-     stopped screen offers to save them.
+     stopped screen offers to save them. Dated 2026-10-14, this means a worker
+     that panics: a graceful stop releases the unsaved bytes, as the shutdown
+     does, and a stop whose reason is not yet known (a command could not be
+     sent to the worker before its `Stopped` came) keeps them, a move to the
+     background included, until that notice says which.
 
    One consequence follows whatever the reading. A revert after the bytes
    have gone, through a lock or a dismissal with no save, finds no copy in
