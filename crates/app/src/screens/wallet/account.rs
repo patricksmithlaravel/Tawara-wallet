@@ -147,18 +147,22 @@ fn panel<'a>(
                      the signed bytes were lost, re-sign the same spend, or submit the bytes \
                      saved from the sent page."
                 }
+                // A dead reservation never settles, so its copy promises no
+                // settle (docs/DECISIONS.md D38). Its last sentence is the
+                // library's own, from its page on a dead reservation, reused
+                // rather than rewritten (docs/PLAN.md section 3, D25).
                 ReservationState::Dead {
                     balance_moved: true,
                     ..
                 } => {
                     "This reservation can no longer be accepted: the balance it was built on \
-                     has moved. Re-signing would reproduce bytes the ledger refuses. Settle once \
-                     the chain shows how it was resolved."
+                     has moved. Re-signing would reproduce bytes the ledger refuses. A dead \
+                     reservation has no route out."
                 }
                 ReservationState::Dead { .. } => {
                     "This reservation can no longer be accepted: its block-to-live has passed. \
-                     Re-signing would reproduce bytes the ledger refuses. Settle once the chain \
-                     shows how it was resolved."
+                     Re-signing would reproduce bytes the ledger refuses. A dead reservation \
+                     has no route out."
                 }
                 ReservationState::Unrecorded => {
                     "A spend from this account is reserved, and the store records no figures \
@@ -171,25 +175,27 @@ fn panel<'a>(
                      shows it landed."
                 }
             };
+            let mut buttons = Vec::new();
+            if settle_offered(&account.state) {
+                buttons.push(button(
+                    "Settle",
+                    theme::Button::WarningPrimary,
+                    WalletMsg::Settle(id),
+                ));
+            }
+            buttons.push(button(
+                "Re-sign",
+                theme::Button::Secondary,
+                WalletMsg::Open(To::Resign(id)),
+            ));
+            buttons.push(button(
+                "Submit saved artifact",
+                theme::Button::Secondary,
+                WalletMsg::Open(To::Submit),
+            ));
             (
                 ui::warning_callout("Reserved and not settled", why),
-                vec![
-                    button(
-                        "Settle",
-                        theme::Button::WarningPrimary,
-                        WalletMsg::Settle(id),
-                    ),
-                    button(
-                        "Re-sign",
-                        theme::Button::Secondary,
-                        WalletMsg::Open(To::Resign(id)),
-                    ),
-                    button(
-                        "Submit saved artifact",
-                        theme::Button::Secondary,
-                        WalletMsg::Open(To::Submit),
-                    ),
-                ],
+                buttons,
             )
         }
         AccountState::SpendLanded { .. } => (
@@ -198,6 +204,8 @@ fn panel<'a>(
                 "The chain shows the change key: the spend from this account landed. Settle \
                  records it and frees the account to spend again.",
             ),
+            // The fallback for a settle the automatic step did not make
+            // (docs/DECISIONS.md D38).
             vec![button(
                 "Settle",
                 theme::Button::WarningPrimary,
@@ -277,6 +285,20 @@ fn panel<'a>(
     ui::card_for(model.compact(), panel).into()
 }
 
+/// Whether the account's panel offers Settle (docs/DECISIONS.md D38): on a
+/// landed spend, where it is the fallback for a settle the automatic step did
+/// not make, and on an outstanding spend whose reservation can still land. A
+/// dead reservation never settles, so the button is not offered for one.
+fn settle_offered(state: &AccountState) -> bool {
+    match state {
+        AccountState::SpendLanded { .. } => true,
+        AccountState::SpendOutstanding { reservation, .. } => {
+            !matches!(reservation, ReservationState::Dead { .. })
+        }
+        _ => false,
+    }
+}
+
 /// The id of the `n`-th button of a state panel on a phone. It draws nothing:
 /// the tests find where the button is drawn by it.
 fn button_id(n: usize) -> iced::widget::Id {
@@ -304,11 +326,12 @@ mod tests {
         size: (u32, u32),
         id: &iced::widget::Id,
     ) -> iced::Rectangle {
-        drawn(root, size, id).expect("the container is drawn")
+        find_bounds(root, size, id).expect("the container is drawn")
     }
 
-    /// As [`bounds_of`], or `None` when nothing carries `id`.
-    fn drawn(
+    /// The bounds of the container that carries `id`, or `None` when `root`
+    /// draws none.
+    fn find_bounds(
         root: Element<'_, Message>,
         size: (u32, u32),
         id: &iced::widget::Id,
@@ -399,6 +422,81 @@ mod tests {
     }
 
     #[test]
+    fn the_landed_and_dead_panels_fit_at_360() {
+        let accounts = sample::wallet_view().accounts;
+        let (landed, dead) = landed_and_dead();
+        for (label, wallet) in [("landed", landed), ("dead", dead)] {
+            let model = phone(wallet, accounts[1].id, None);
+            assert_eq!(
+                fits(crate::screens::view(&model), NARROWEST),
+                Ok(()),
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_landed_spend_offers_settle_and_a_dead_reservation_does_not() {
+        // On a phone each button of the panel is drawn with its id: a landed
+        // spend has Settle alone; a dead reservation has Re-sign and Submit
+        // saved artifact, and no third button.
+        let accounts = sample::wallet_view().accounts;
+        let (landed, dead) = landed_and_dead();
+        let drawn = |wallet: WalletView| {
+            let model = phone(wallet, accounts[1].id, None);
+            (0..3)
+                .filter(|&n| {
+                    find_bounds(crate::screens::view(&model), TALL, &button_id(n)).is_some()
+                })
+                .count()
+        };
+        assert_eq!(drawn(landed), 1, "Settle, the fallback");
+        assert_eq!(drawn(dead), 2, "no Settle");
+    }
+
+    #[test]
+    fn settle_is_offered_for_a_landed_spend_and_a_live_one_never_for_a_dead_one() {
+        let landed = AccountState::SpendLanded {
+            balance: 1,
+            spent_index: 1,
+            settled_index: 2,
+        };
+        let outstanding = |reservation| AccountState::SpendOutstanding {
+            balance: 1,
+            spent_index: 1,
+            reservation,
+        };
+        let dead = |balance_moved, expired| {
+            outstanding(ReservationState::Dead {
+                balance_moved,
+                expired,
+            })
+        };
+        assert!(settle_offered(&landed));
+        assert!(settle_offered(&outstanding(ReservationState::Live)));
+        assert!(settle_offered(&outstanding(ReservationState::Unrecorded)));
+        assert!(!settle_offered(&dead(true, false)));
+        assert!(!settle_offered(&dead(false, true)));
+        assert!(!settle_offered(&AccountState::InSync { balance: 1 }));
+    }
+
+    /// The sample store with the second account's spend landed, and the same
+    /// store with that account's reservation dead, the balance it was built
+    /// on having moved.
+    fn landed_and_dead() -> (WalletView, WalletView) {
+        let mut dead = sample::wallet_view();
+        dead.accounts[1].state = AccountState::SpendOutstanding {
+            balance: 3_180_000_000_000,
+            spent_index: 6,
+            reservation: ReservationState::Dead {
+                balance_moved: true,
+                expired: false,
+            },
+        };
+        (sample::landed_view(), dead)
+    }
+
+    #[test]
     fn on_a_phone_the_state_buttons_wrap_onto_a_second_line() {
         // Outstanding: Settle, Re-sign and Submit saved artifact. The first two
         // share a line, and the third is too wide for that line at 360, so it
@@ -432,7 +530,7 @@ mod tests {
         assert_eq!(crate::app::remedy(&wallet.accounts[2].state), None);
         let model = phone(wallet, id, None);
         assert_eq!(
-            drawn(crate::screens::view(&model), TALL, &button_id(0)),
+            find_bounds(crate::screens::view(&model), TALL, &button_id(0)),
             None,
             "a Behind account draws no button"
         );

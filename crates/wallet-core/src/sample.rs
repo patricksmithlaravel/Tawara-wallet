@@ -111,6 +111,7 @@ pub fn wallet_view() -> WalletView {
             },
             spendable: true,
             number: Some(0),
+            reserved: false,
         },
         AccountRow {
             id: AccountId::from_tag(tag(2)),
@@ -123,6 +124,7 @@ pub fn wallet_view() -> WalletView {
             },
             spendable: false,
             number: Some(1),
+            reserved: true,
         },
         AccountRow {
             id: AccountId::from_tag(tag(3)),
@@ -131,6 +133,7 @@ pub fn wallet_view() -> WalletView {
             state: AccountState::from_divergence(&diverged),
             spendable: false,
             number: None,
+            reserved: false,
         },
     ];
     WalletView {
@@ -141,7 +144,28 @@ pub fn wallet_view() -> WalletView {
             kind: NoticeKind::NotWhole,
             text,
         }),
+        settled: Vec::new(),
     }
+}
+
+/// The sample store with the second account's spend landed: the chain holds
+/// that account at its change key, and the account reads `SpendLanded` until
+/// the worker settles it (docs/DECISIONS.md D38). Its other accounts are as
+/// in [`wallet_view`]. It is a separate view because the committed
+/// screenshots draw [`wallet_view`]; the screenshots' `w7-account-landed`
+/// draws this one.
+#[must_use]
+pub fn landed_view() -> WalletView {
+    let mut view = wallet_view();
+    let row = &mut view.accounts[1];
+    row.index = 7;
+    row.state = AccountState::SpendLanded {
+        balance: 2_640_000_000_000,
+        spent_index: 6,
+        settled_index: 7,
+    };
+    row.spendable = false;
+    view
 }
 
 /// The same store opened while its node did not answer: no account was
@@ -293,15 +317,16 @@ pub fn sent_view() -> SentView {
         },
     );
     let mut view = wallet_view();
-    view.accounts[0].state = AccountState::SpendOutstanding {
+    view.accounts[0].set_state(AccountState::SpendOutstanding {
         balance: FIRST_BALANCE,
         spent_index: 49,
         reservation: ReservationState::Live,
-    };
+    });
     view.accounts[0].spendable = false;
     view.accounts[0].index = 50;
     SentView {
         from: AccountId::from_tag(tag(1)),
+        spent_index: Some(49),
         submitted: true,
         tx_id: Some(hex(&id.0)),
         artifact_hex: hex(&wire),

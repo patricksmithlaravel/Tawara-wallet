@@ -10,6 +10,7 @@
 
 mod wallet;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -24,7 +25,7 @@ use tawara_wallet_core::explorer::{
 };
 use tawara_wallet_core::location::{self, Environment, Platform};
 use tawara_wallet_core::preferences::{self, Preferences};
-use tawara_wallet_core::view::{AccountId, WalletView};
+use tawara_wallet_core::view::{AccountId, Reads, SettledAccount, WalletView, Watch};
 use tawara_wallet_core::{
     Activity, Command, Config, Event, HttpsNode, LockReason, NetworkName, PhraseForDisplay,
     Progress, Refusal, RefusalKind, Reply, RequestId, SecretText, SyncState, WorkerHandle,
@@ -36,6 +37,63 @@ pub use wallet::{
     ReportKey, ResignPage, SHARED, SendPage, SendStage, SentPage, SettingsPage, Signed, SpendForm,
     SubmitPage, TagPage, To, TransactionPage, WalletMsg, remedy, spend_request,
 };
+
+/// How often a poll asks the node about an account [`Watch::asks`] names: one
+/// whose reservation is live and outstanding, or whose spend a failed read
+/// left unanswered (docs/DECISIONS.md D38 item 2, as [`Watch`] extends it).
+const POLL_EVERY: Duration = Duration::from_secs(60);
+
+/// The accounts an answer reads afresh (see [`Reads`]): a check or a poll
+/// reads its account, a send the account it spent from (the read after the
+/// sign), a settle the account it settled, and an opened or refreshed store
+/// every account, as a recovery review does too, since it reconciles every
+/// account and updates each row. Any other answer reads nothing, and the rows
+/// it carries are the store as it was (docs/DECISIONS.md D38 item 2;
+/// docs/SCREENS.md W7).
+fn reads_of(purpose: Purpose, reply: &Reply) -> Reads {
+    match (purpose, reply) {
+        (_, Reply::Status { account, .. }) => Reads::One(*account),
+        (_, Reply::Sent(sent)) => Reads::One(sent.from),
+        (Purpose::Settle(account), Reply::Settled { .. }) => Reads::One(account),
+        (
+            _,
+            Reply::Wallet(_)
+            | Reply::Unlocked(_)
+            | Reply::Created { opened: Ok(_), .. }
+            | Reply::Reconciled { opened: Ok(_), .. }
+            | Reply::Restored { opened: Ok(_), .. },
+        ) => Reads::Every,
+        // A recovery review reconciles every account the store holds, and
+        // updates each row from what it found.
+        (Purpose::Review, Reply::Reviewed(_)) => Reads::Every,
+        _ => Reads::Nothing,
+    }
+}
+
+/// The accounts the worker settled on its own in answering with `reply`
+/// (docs/DECISIONS.md D38), from the store's view the reply carries. Every
+/// reply that opens or reads the wallet can carry them: a refresh, an unlock,
+/// the read after a send, and the reopen after a restore or an advance. A
+/// check's or a poll's own settlement is `Reply::Status::settled`, which the
+/// check's answer shows itself.
+fn settled_in(reply: &Reply) -> Vec<SettledAccount> {
+    let view = match reply {
+        Reply::Wallet(view) | Reply::Unlocked(view) | Reply::Settled { view, .. } => Some(view),
+        Reply::Sent(sent) => Some(&sent.view),
+        Reply::Created {
+            opened: Ok(view), ..
+        }
+        | Reply::Reconciled {
+            opened: Ok(view), ..
+        }
+        | Reply::Restored {
+            opened: Ok(view), ..
+        } => Some(view),
+        Reply::NodeSet { view, .. } | Reply::NodeCleared { view } => view.as_ref(),
+        _ => None,
+    };
+    view.map(|v| v.settled.clone()).unwrap_or_default()
+}
 
 /// What the application shows and holds. Plain data, apart from the
 /// recovery phrase while it is being shown and confirmed, and the text of
@@ -68,13 +126,30 @@ pub struct Model {
     /// (docs/PLAN.md section 4.9), so leaving the page, however it is left
     /// (another page, the node screen, a lock, the worker stopping), keeps
     /// it: the wallet's pages offer it again while its bytes are not saved,
-    /// re-signing starts from what was typed for it, a lock brings it back
-    /// once its store is unlocked, and the stopped screen offers to save
-    /// it. It is forgotten once its account is in sync again. Nothing in it
-    /// is secret, and what the store showed is dropped from it.
+    /// and re-signing starts from what was typed for it. A saved spend is
+    /// forgotten once its account is in sync again. Unsaved bytes are kept
+    /// past that, since a reorganisation of the chain can revert a settle
+    /// (docs/DECISIONS.md D38 item 5, as revised on 2026-10-13): they go
+    /// only when they are saved, dismissed, or the wallet locks. The locks
+    /// that release them are the person's, the idle one, the move to the
+    /// background and the worker's shutdown; a store the worker closed after
+    /// a failed read-back, or one another unlock replaced, keeps them, since
+    /// no one asked for that and the bytes may not have been seen. A lock
+    /// brings a saved spend's page back once its store is unlocked, and the
+    /// stopped screen offers to save what is left. What the store showed is
+    /// dropped from it, and whenever a spend is dropped its bytes are wiped,
+    /// with the library's page, which repeats them. They are kept in the order
+    /// they were signed: leaving or showing a page never reorders them, and a
+    /// re-sign keeps its spend's place ([`SentPage::order`]).
     pub signed: Vec<Signed>,
+    /// The place the next spend signed in this run takes in the signing history
+    /// ([`SentPage::order`]).
+    next_signing: u64,
     /// The worker stopped: `Some(true)` when it panicked. Nothing more can
-    /// be done in this run.
+    /// be done in this run. `Some(false)` is also a stop whose reason is not
+    /// yet known, since a command could not be sent to the worker
+    /// (`App::lost_worker`): until its notice says which, the unsaved bytes
+    /// are kept, as a panic keeps them.
     pub stopped: Option<bool>,
     /// The window's width in logical pixels. Below [`COMPACT`] the phone
     /// layout is drawn; from there up, the layouts of docs/DECISIONS.md D27,
@@ -89,6 +164,23 @@ pub struct Model {
     /// The wall clock, in milliseconds since the epoch, moved on each
     /// second: what a block's age is told against.
     pub clock_ms: i64,
+    /// The settlements the worker reported while no page of their account was
+    /// shown: each one's banner waits for that page (docs/DECISIONS.md D38).
+    settled_waiting: BTreeMap<AccountId, String>,
+    /// When the last poll was sent, so that the polls come once a minute
+    /// (docs/DECISIONS.md D38 item 2). A monotonic clock,
+    /// not `clock_ms`: a wall clock set back would hold the polls back by as
+    /// much.
+    polled_at: Option<Instant>,
+    /// The accounts a poll asks the node about, as the reads so far say
+    /// (docs/DECISIONS.md D38 item 2; [`Watch`]). A lock and a stopped worker
+    /// empty it.
+    watch: Watch,
+    /// Whether the window has the system's focus, as its last focus event
+    /// said; a window starts with it. A poll asks only while it does, since
+    /// D38 item 2 polls only in the foreground: a desktop window left behind
+    /// others or minimised asks nothing until it is brought back.
+    foreground: bool,
     /// The time zone dates are shown in: the system's.
     pub zone: crate::ui::Zone,
     /// The open store's transactions from the node's index (W1, W10).
@@ -459,6 +551,11 @@ pub enum Message {
     /// A second passed: the wall clock, in milliseconds since the epoch.
     /// Not the person's input.
     Tick(i64),
+    /// The window gained (`true`) or lost (`false`) the system's focus. Not
+    /// the person's input, so it does not restart the idle period: it says
+    /// only whether the wallet is in the foreground, which a poll needs
+    /// (docs/DECISIONS.md D38 item 2).
+    Foreground(bool),
 }
 
 /// The field a Paste button fills (docs/DECISIONS.md D32 item 10 (g)).
@@ -580,7 +677,9 @@ enum Purpose {
     PlanSend,
     ConfirmSend,
     DiscardPlan,
-    Settle,
+    /// The person's Settle of an account: its answer reads that account
+    /// (see [`reads_of`]).
+    Settle(AccountId),
     Resign,
     SubmitArtifact,
     Status,
@@ -612,6 +711,10 @@ enum Purpose {
     Find([u8; 32]),
     /// The node's whole queue, for its own page.
     Queue,
+    /// An account the poll asks about once a minute (`Watch::asks`): a
+    /// settlement it finds is the worker's own, and a refusal says nothing
+    /// (docs/DECISIONS.md D38).
+    Poll,
 }
 
 impl Purpose {
@@ -630,7 +733,7 @@ impl Purpose {
                 | Purpose::Restore
                 | Purpose::PlanSend
                 | Purpose::ConfirmSend
-                | Purpose::Settle
+                | Purpose::Settle(_)
                 | Purpose::Resign
                 | Purpose::SubmitArtifact
                 | Purpose::Status
@@ -650,12 +753,13 @@ impl Purpose {
                 | Purpose::PlanSend
                 | Purpose::ConfirmSend
                 | Purpose::DiscardPlan
-                | Purpose::Settle
+                | Purpose::Settle(_)
                 | Purpose::Resign
                 | Purpose::SubmitArtifact
                 | Purpose::Status
                 | Purpose::Review
                 | Purpose::Reconcile
+                | Purpose::Poll
                 | Purpose::Block(_)
                 | Purpose::Tag(_)
                 | Purpose::TagHistory(_)
@@ -669,6 +773,10 @@ impl Purpose {
 struct Worker {
     handle: WorkerHandle,
     waiting: Vec<(RequestId, Purpose)>,
+    /// A command could not be sent to the worker, whose queue is gone: it has
+    /// stopped or is stopping, and its `Stopped` has not come yet. Until that
+    /// does, whether it panicked is not known (see [`App::lost_worker`]).
+    lost: bool,
 }
 
 /// The application: the model, and the worker it talks to.
@@ -680,6 +788,16 @@ pub struct App {
     /// to tell the person's input from what is not, without the wall clock.
     #[cfg(test)]
     touches: std::cell::Cell<u64>,
+}
+
+impl Drop for App {
+    /// The application is gone, and with it the unsaved bytes it still holds.
+    /// The worker's `Locked` and `Stopped` for the shutdown reach the
+    /// application only while it runs, so the release does not wait for them
+    /// (docs/SCREENS.md W6).
+    fn drop(&mut self) {
+        self.model.release_unsaved();
+    }
 }
 
 /// Empty a secret field so its text is zeroized, not just dropped:
@@ -774,6 +892,12 @@ fn wipe_typed(screen: &mut Screen) {
                 wipe(w);
             }
         }
+        // Signed bytes pasted on W9 may be a copy of unsaved bytes (Copy hex),
+        // and go as those do (docs/DECISIONS.md D38 item 5; docs/SCREENS.md W9).
+        Screen::Wallet(WalletPage {
+            page: Page::Submit(s),
+            ..
+        }) => wipe(&mut s.hex),
         Screen::Welcome | Screen::Start { .. } | Screen::Node(_) | Screen::Wallet(_) => {}
     }
 }
@@ -798,6 +922,27 @@ fn cleaned_phrase(field: &mut String) -> String {
     wipe(field);
     phrase
 }
+
+#[cfg(test)]
+thread_local! {
+    /// The unsaved spends a release has wiped on this thread. Once the
+    /// application is gone nothing is left to look at, so a test reads this to
+    /// see that the release on its drop ran.
+    static RELEASED_IN_TESTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// What S7 says of a signed spend's page that a lock kept, to show again once
+/// its store is unlocked (docs/SCREENS.md W6).
+const KEPT_NOTE: &str = "A signed spend's page was open when the wallet locked. It is kept, \
+                         with the signed bytes, and shown again when this store is unlocked.";
+
+/// What S7 says of unsaved signed bytes that a lock or a release wiped
+/// (docs/SCREENS.md W6).
+const WIPED_NOTE: &str = "Signed bytes that were not saved were wiped when the wallet \
+                          locked. Nothing is written to disk, so they are gone: if the \
+                          spend has not landed, its account's page offers Re-sign, which \
+                          takes the same destinations, amounts, references, fee and \
+                          block-to-live typed again.";
 
 impl Model {
     /// The model at start-up: the first screen, before the worker has said
@@ -827,6 +972,7 @@ impl Model {
             busy: None,
             wallet: None,
             signed: Vec::new(),
+            next_signing: 0,
             stopped: None,
             left: Arc::new(AtomicU64::new(0)),
             left_seen: 0,
@@ -835,6 +981,10 @@ impl Model {
             width: crate::WINDOW.0,
             safe_area: iced::mobile::SafeArea::ZERO,
             clock_ms: now_ms(),
+            settled_waiting: BTreeMap::new(),
+            polled_at: None,
+            watch: Watch::default(),
+            foreground: true,
             zone: crate::ui::Zone::System,
             activity: Explored::default(),
             blocks: Explored::default(),
@@ -951,6 +1101,39 @@ impl Model {
             return;
         }
         wipe_typed(&mut self.screen);
+    }
+
+    /// Releases the unsaved bytes that a lock releases, when no lock comes for
+    /// them: a store the worker closed for a read-back that failed keeps them,
+    /// and nothing is open for a move to the background or a shutdown to close,
+    /// so no `Locked` comes (docs/DECISIONS.md D38 item 5; docs/SCREENS.md W6).
+    /// They are wiped, shown or kept, and S7 says so: its note no longer says a
+    /// kept page comes back once no kept spend is left to come back.
+    fn release_unsaved(&mut self) {
+        let released = self.drop_unsaved_at_lock();
+        #[cfg(test)]
+        RELEASED_IN_TESTS.with(|n| n.set(n.get() + released.len()));
+        if released.is_empty() {
+            return;
+        }
+        let resumes = self.signed.iter().any(|s| s.resume);
+        let Screen::Unlock(u) = &mut self.screen else {
+            return;
+        };
+        let note = u.note.take().unwrap_or_default();
+        let note = if resumes {
+            note
+        } else {
+            note.replace(KEPT_NOTE, "")
+        };
+        let note = note.trim();
+        u.note = Some(if note.is_empty() {
+            WIPED_NOTE.to_owned()
+        } else if note.contains(WIPED_NOTE) {
+            note.to_owned()
+        } else {
+            format!("{note} {WIPED_NOTE}")
+        });
     }
 
     /// Back to S3, in the folder the pending phrase was for (the default
@@ -1163,6 +1346,7 @@ impl App {
             worker: Some(Worker {
                 handle,
                 waiting: Vec::new(),
+                lost: false,
             }),
             prefs_path,
             #[cfg(test)]
@@ -1205,7 +1389,7 @@ impl App {
                 Some(id)
             }
             Err(_) => {
-                self.stop(false);
+                self.lost_worker();
                 None
             }
         }
@@ -1218,6 +1402,86 @@ impl App {
         if let Some(w) = &self.worker {
             w.handle.touch();
         }
+    }
+
+    /// Asks the node about each account that [`Watch::asks`] names, once a
+    /// minute, while a wallet is open and its window is in the foreground
+    /// (docs/DECISIONS.md D38 item 2): an account whose reservation is live and
+    /// outstanding, and one whose spend a failed read left unanswered, as
+    /// [`Watch`] sets out. Each poll is noted in the watch, which bounds the
+    /// polls of a spend in doubt.
+    /// The worker's own read settles an account whose chain shows the change
+    /// key, and the answer is shown as a settlement's banner when it does. A
+    /// poll is not the person's input, so it does not restart the idle period
+    /// (D24). Nothing shows for a poll that is refused or unanswered: the next
+    /// one asks again. On the desktop a window that loses the focus asks
+    /// nothing until it has it again. On a phone a move to the background locks
+    /// the wallet, which leaves nothing open to poll and forgets which accounts
+    /// were polled (docs/DECISIONS.md D32 item 6).
+    fn poll(&mut self, now: Instant) {
+        let accounts = self.polled_accounts(now);
+        if accounts.is_empty() {
+            return;
+        }
+        self.model.polled_at = Some(now);
+        for account in accounts {
+            let m = &mut self.model;
+            if let Some(row) = m
+                .wallet
+                .as_ref()
+                .and_then(|w| w.accounts.iter().find(|a| a.id == account))
+            {
+                m.watch.asked(account, &row.state);
+            }
+            self.send(
+                Command::Status {
+                    account,
+                    scan_to: None,
+                },
+                Purpose::Poll,
+            );
+        }
+    }
+
+    /// The accounts a poll asks about at `now` (see [`App::poll`]): in an open
+    /// wallet whose window is in the foreground, when a minute has passed since
+    /// the last poll and nothing else is awaited, those that [`Watch::asks`]
+    /// names. An account whose reservation is live is polled. One whose read
+    /// failed is polled once a read showed its reservation live, when the store
+    /// holds a reservation for it, or once a spend was signed for it in this
+    /// run ([`Watch::signed`]), so a wallet opened during an outage polls its
+    /// outstanding spend; an answer of "account not found", and a
+    /// landed spend the automatic settle did not make, are polled at most
+    /// twice more in a row, after which Refresh, Check now or the Settle button
+    /// remain (docs/DECISIONS.md D38 item 2, as [`Watch`] extends it). A dead
+    /// reservation is never polled, since it never settles. Any other diverged
+    /// account is not polled either: it is for the person to look at, not for
+    /// a timer to walk the chain for (docs/DECISIONS.md D19, D38).
+    fn polled_accounts(&self, now: Instant) -> Vec<AccountId> {
+        let m = &self.model;
+        let due = m
+            .polled_at
+            .is_none_or(|at| now.saturating_duration_since(at) >= POLL_EVERY);
+        // A poll waits behind nothing the person asked for, and never queues
+        // a second behind one still on its way.
+        if !due
+            || !m.foreground
+            || m.busy.is_some()
+            || self.waiting_on(|p| matches!(p, Purpose::Poll))
+        {
+            return Vec::new();
+        }
+        // Only an open wallet settles: a store open on its own, with no node
+        // or with the node not answering, has nothing a poll could settle.
+        let Some(wallet) = m.wallet.as_ref().filter(|w| w.opened) else {
+            return Vec::new();
+        };
+        wallet
+            .accounts
+            .iter()
+            .filter(|a| m.watch.asks(a.id, &a.state))
+            .map(|a| a.id)
+            .collect()
     }
 
     /// Save an ordinary change. A preference that cannot be written is lost
@@ -1277,6 +1541,10 @@ impl App {
         // it.
         if left != self.model.left_seen {
             self.model.left_seen = left;
+            // With no worker left, this is the move's only wipe. It leaves the
+            // unsaved bytes of a worker that stopped on a fault, for the stopped
+            // screen to save until Tawara closes (docs/DECISIONS.md D38 item 5;
+            // docs/SCREENS.md W6).
             self.model.backgrounded();
             self.model.wiped.wiped(left);
         }
@@ -1571,7 +1839,13 @@ impl App {
                         .discard();
                 }
             }
-            Message::Tick(ms) => m.clock_ms = ms,
+            // The clock's second is what a poll waits for (docs/DECISIONS.md D38).
+            // It is not the person's input.
+            Message::Tick(ms) => {
+                m.clock_ms = ms;
+                self.poll(Instant::now());
+            }
+            Message::Foreground(focused) => m.foreground = focused,
         }
         Task::none()
     }
@@ -1709,7 +1983,7 @@ impl App {
                     Some(w.waiting.remove(at).1)
                 });
                 if let Some(purpose) = purpose {
-                    return self.on_reply(purpose, reply);
+                    return self.on_reply(purpose, *reply);
                 }
             }
             Event::Locked { reason } => {
@@ -1718,8 +1992,34 @@ impl App {
                     .wallet
                     .take()
                     .map(|w| w.dir.display().to_string());
+                // A lock wipes the signed bytes that were not saved, and drops the
+                // page of such a spend when it is shown (docs/DECISIONS.md D38
+                // item 5, as revised on 2026-10-13). A saved spend is kept as it
+                // was. Only the locks the owner named release them (asked for,
+                // idle, the background) and the shutdown, which ends the run.
+                // A store the worker closed because it could not be read back
+                // after a send or a settle, or one replaced by another unlock,
+                // keeps them: no one asked for that close, and bytes just signed
+                // may not have been seen yet. A lock that comes after a send
+                // failed, while the stop's reason is not yet known, keeps them
+                // too, unless it is the shutdown's: the worker may have sent it
+                // just before it panicked, and a panic keeps them until Tawara
+                // closes (see `App::lost_worker`).
+                let lost = self.worker.as_ref().is_some_and(|w| w.lost);
+                let releases = match reason {
+                    LockReason::Shutdown => true,
+                    LockReason::Asked | LockReason::Idle | LockReason::Background => !lost,
+                    LockReason::Replaced | LockReason::ReopenFailed => false,
+                };
+                let wiped = releases && !self.model.drop_unsaved_at_lock().is_empty();
                 self.model.busy = None;
-                // What the index holds for the store goes with it.
+                // What the index holds for the store goes with it, and so does a
+                // settlement's banner that waited for a page of the store
+                // (docs/DECISIONS.md D38).
+                self.model.settled_waiting.clear();
+                // The polls of the store close with it: an unlock starts from
+                // its own reads (docs/DECISIONS.md D38 item 2).
+                self.model.watch.clear();
                 self.model.activity = Explored::default();
                 // With no store open, the lock dropped a recovery phrase
                 // waiting to be confirmed (wallet-core's `Event::Locked`):
@@ -1755,6 +2055,12 @@ impl App {
                     ),
                     LockReason::Asked | LockReason::Replaced | LockReason::Shutdown => None,
                 };
+                if wiped {
+                    note = Some(match note {
+                        Some(n) => format!("{n} {WIPED_NOTE}"),
+                        None => WIPED_NOTE.to_owned(),
+                    });
+                }
                 let exists = dir.is_some()
                     || self
                         .model
@@ -1766,12 +2072,9 @@ impl App {
                     // after it, so its sent page may only just have been
                     // shown: it is kept, not closed with the screen.
                     if self.model.keep_signed(true) {
-                        let kept = "A signed spend's page was open when the wallet locked. It \
-                                    is kept, with the signed bytes, and shown again when this \
-                                    store is unlocked: save the bytes then.";
                         note = Some(match note {
-                            Some(n) => format!("{n} {kept}"),
-                            None => kept.to_owned(),
+                            Some(n) => format!("{n} {KEPT_NOTE}"),
+                            None => KEPT_NOTE.to_owned(),
                         });
                     }
                     if exists || note.is_some() {
@@ -1786,6 +2089,20 @@ impl App {
             }
             Event::Backgrounded { seq } => {
                 self.model.backgrounded();
+                // A store the worker closed for a read-back that failed sends no
+                // `Locked` for the move, so the unsaved bytes it kept are released
+                // here, before the move is taken (docs/SCREENS.md W6). With a
+                // store open, the worker's `Locked` comes first and has wiped
+                // them, with S7's note (wallet-core's test
+                // `every_move_to_the_background_is_reported_after_any_lock`), so
+                // this finds nothing more. A worker whose stop is not yet known
+                // keeps them, a move's notice included, since a panic keeps them:
+                // its `Stopped` releases them if the stop was graceful (see
+                // `App::lost_worker`).
+                let lost = self.worker.as_ref().is_some_and(|w| w.lost);
+                if !lost {
+                    self.model.release_unsaved();
+                }
                 // Taken in turn: every answer before it, a recovery phrase
                 // among them, and the `Locked` that dropped it, have been
                 // too. The shell may let the process be suspended.
@@ -1801,30 +2118,94 @@ impl App {
         Task::none()
     }
 
-    /// The worker has stopped (`panicked` when it faulted). Nothing more
-    /// can be done in this run, and what the screens held goes with it:
-    /// the open store's view, and the secret a form or the phrase screens
-    /// held, zeroized. With no worker left to lock on idle, nothing secret
-    /// would otherwise go before the application closed.
+    /// A command could not be sent, because the worker's queue is gone: it
+    /// has stopped or is stopping, and its `Stopped` has not come yet. A worker
+    /// that panics drops its queue before its notice reaches the interface, so
+    /// this may be a panic's window as well as a graceful stop's, and the
+    /// reason is not known until the notice comes. Until it does, the unsaved
+    /// bytes are kept, through a move to the background and any lock but the
+    /// shutdown's (see the `Locked` arm of `App::on_event`): a panic keeps them
+    /// until Tawara closes, and a graceful stop releases them (docs/DECISIONS.md
+    /// D38 item 5; docs/SCREENS.md W6). The stopped screen shows at once. The
+    /// worker is kept meanwhile, so the answers it has already sent are still
+    /// taken, a spend's among them, since they may hold the only copy of its
+    /// bytes.
+    fn lost_worker(&mut self) {
+        if let Some(w) = &mut self.worker {
+            w.lost = true;
+        }
+        let m = &mut self.model;
+        if m.stopped.is_none() {
+            m.stopped = Some(false);
+        }
+        // The page shown is kept with the other spends, as a stop keeps it.
+        drop(m.leave());
+        m.busy = None;
+        m.wallet = None;
+        m.watch.clear();
+    }
+
+    /// The worker has stopped, as its `Stopped` says (`panicked` when it
+    /// faulted). Nothing more can be done in this run, and what the screens
+    /// held goes with it: the open store's view, and the secret a form or the
+    /// phrase screens held, zeroized. With no worker left to lock on idle,
+    /// nothing secret would otherwise go before the application closed. The
+    /// unsaved bytes go only with a graceful stop: a panic keeps them until
+    /// Tawara closes (docs/DECISIONS.md D38 item 5). This notice also settles
+    /// a stop that [`App::lost_worker`] left of unknown reason.
     fn stop(&mut self, panicked: bool) {
         let m = &mut self.model;
         m.stopped = Some(panicked || m.stopped == Some(true));
         drop(m.leave());
+        // A graceful shutdown ends the run, so the unsaved bytes go, as its lock
+        // would take them, even when no `Locked` came (docs/SCREENS.md W6). A
+        // worker that panicked keeps them, to save from the stopped card.
+        if !panicked {
+            m.release_unsaved();
+        }
         m.busy = None;
         m.wallet = None;
+        m.watch.clear();
         self.worker = None;
     }
 
-    /// The worker's answer to a command. A spend kept for a reservation the
-    /// answer shows settled is forgotten after it (see [`Model::signed`]).
+    /// The worker's answer to a command. A saved spend kept for a reservation
+    /// the answer shows settled is forgotten after it, and unsaved bytes are
+    /// kept (see [`Model::signed`]).
+    /// An account the worker settled on its own in answering has its banner
+    /// shown once the answer has taken its page (docs/DECISIONS.md D38): on
+    /// the account's page if that is the one shown, and otherwise when it is
+    /// next opened. A refresh or an unlock shows the dashboard, and a send
+    /// shows its sent page, so for those the banner waits.
     fn on_reply(&mut self, purpose: Purpose, reply: Reply) -> Task<Message> {
+        let settled = settled_in(&reply);
+        // A spend signed now holds a reservation, whatever its account's polls were
+        // before (docs/DECISIONS.md D38 item 2, as docs/SCREENS.md W7 extends it;
+        // `Watch::signed`). The reads the reply carries are noted below, as every
+        // reply's are.
+        if let Reply::Sent(sent) = &reply {
+            self.model.watch.signed(sent.from);
+        }
+        // The accounts the answer reads, taken before the answer is applied.
+        let reads = reads_of(purpose, &reply);
         let task = if purpose.wallet_page() {
             self.on_wallet_reply(purpose, reply)
         } else {
             self.answer(purpose, reply);
             Task::none()
         };
+        for settled in settled {
+            self.model.show_settled(settled);
+        }
         self.model.forget_settled();
+        // The reads the answer carries are noted here, whatever page sent the
+        // command, so that the next poll asks about what they left
+        // (docs/DECISIONS.md D38 item 2). Only the accounts it read: the other
+        // rows are the store as it was, and noting them again could end another
+        // account's watch before that account's own answer has come.
+        if let Some(view) = &self.model.wallet {
+            self.model.watch.read_answer(view, reads);
+        }
         task
     }
 
@@ -2162,6 +2543,10 @@ fn person_input(event: IcedEvent, status: event::Status, _: iced::window::Id) ->
         IcedEvent::Window(
             iced::window::Event::Opened { size, .. } | iced::window::Event::Resized(size),
         ) => Some(Message::Width(size.width)),
+        // Whether the window is in the foreground, for the poll of a live
+        // reservation (docs/DECISIONS.md D38 item 2). Not the person's input.
+        IcedEvent::Window(iced::window::Event::Focused) => Some(Message::Foreground(true)),
+        IcedEvent::Window(iced::window::Event::Unfocused) => Some(Message::Foreground(false)),
         _ => None,
     }
 }
@@ -3928,29 +4313,94 @@ mod tests {
         }
     }
 
+    /// The application on W5 with a worker, the sample spend being signed:
+    /// the worker's answer to it, then a lock for `reason`, reach the
+    /// interface as events, in that order, as a lock queued behind a sign
+    /// does (the worker finishes a spend it has started, then locks).
+    fn signed_then_locked(
+        scratch: &Scratch,
+        reason: LockReason,
+    ) -> (App, tawara_wallet_core::SentView) {
+        let (mut app, _events) = app(scratch);
+        let plan = tawara_wallet_core::sample::plan_view();
+        app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        app.model.screen = Screen::Wallet(WalletPage {
+            page: Page::Send(SendPage {
+                from: Some(plan.from),
+                form: spend_typed(),
+                stage: SendStage::Review(Box::new(plan)),
+            }),
+            ..WalletPage::default()
+        });
+        let id = RequestId::example();
+        app.worker
+            .as_mut()
+            .expect("a worker")
+            .waiting
+            .push((id, Purpose::ConfirmSend));
+        app.model.busy = Some(Busy {
+            id,
+            activity: None,
+            progress: None,
+        });
+        let sent = tawara_wallet_core::sample::sent_view();
+        for event in [
+            Event::Done {
+                id,
+                reply: Box::new(Reply::Sent(sent.clone())),
+            },
+            Event::Locked { reason },
+        ] {
+            let _ = app.update(Message::Worker(WorkerEvent::new(event)));
+        }
+        (app, sent)
+    }
+
     #[test]
-    fn a_lock_while_signing_keeps_the_sent_page_until_its_store_is_unlocked() {
+    fn a_lock_while_signing_wipes_the_unsaved_sent_page() {
         // Lock is pressed while the spend waits on the node. The worker does
         // not stop a spend it has started: the spend answers, then the lock.
-        let (mut app, sent) = just_sent();
-        wallet(&mut app, WalletMsg::Report(ReportKey::Sent, Level::Full));
-        let _ = app.on_event(Event::Locked {
-            reason: LockReason::Asked,
-        });
+        // The bytes were not saved, so the lock wipes them (docs/DECISIONS.md
+        // D38 item 5, as revised on 2026-10-13).
+        let scratch = Scratch::new("lock-while-signing");
+        let (mut app, sent) = signed_then_locked(&scratch, LockReason::Asked);
         assert_eq!(app.model.wallet, None);
         match &app.model.screen {
             Screen::Unlock(u) => {
                 assert_eq!(u.dir, sent.view.dir.display().to_string());
                 assert!(
-                    u.note
-                        .as_deref()
-                        .is_some_and(|n| n.contains("signed spend")),
+                    u.note.as_deref().is_some_and(|n| n.contains("wiped")),
                     "{:?}",
                     u.note
                 );
             }
             other => panic!("expected the unlock screen, got {other:?}"),
         }
+        assert!(app.model.signed.is_empty(), "nothing unsaved is kept");
+
+        // Its store unlocked: the page is not brought back, and nothing is
+        // offered.
+        let _ = app.on_reply(Purpose::Unlock, Reply::Unlocked(sent.view.clone()));
+        assert!(matches!(wallet_page(&app).page, Page::Dashboard));
+        assert_eq!(app.model.unsaved_signed().count(), 0);
+        assert!(app.model.signed.is_empty());
+    }
+
+    #[test]
+    fn a_lock_keeps_a_saved_sent_page_until_its_store_is_unlocked() {
+        // The bytes are saved first, so the lock keeps the page as it was
+        // left, and the unlock brings it back.
+        let scratch = Scratch::new("lock-saved-sent");
+        let (mut app, sent) = just_sent();
+        app.model.downloads = Some(scratch.0.join("Downloads"));
+        wallet(&mut app, WalletMsg::SaveArtifact);
+        wallet(&mut app, WalletMsg::Report(ReportKey::Sent, Level::Full));
+        let _ = app.on_event(Event::Locked {
+            reason: LockReason::Asked,
+        });
+        assert_eq!(app.model.wallet, None);
+        assert!(matches!(&app.model.screen, Screen::Unlock(u)
+            if u.note.as_deref().is_some_and(|n| n.contains("signed spend"))));
         assert_eq!(app.model.signed.len(), 1);
         let kept = &app.model.signed[0];
         assert!(kept.resume);
@@ -3968,8 +4418,8 @@ mod tests {
         assert_eq!(app.model.signed.len(), 1);
         assert_eq!(app.model.unsaved_signed().count(), 0);
 
-        // Its own store unlocked: the page as it was left, with the bytes
-        // and what was typed for them.
+        // Its own store unlocked: the page as it was left, with the bytes and
+        // what was typed for them.
         let _ = app.on_reply(Purpose::Unlock, Reply::Unlocked(sent.view.clone()));
         let (form, s) = sent_shown(&app).expect("the sent page");
         assert_eq!(*form, spend_typed());
@@ -3981,8 +4431,8 @@ mod tests {
         );
         assert!(app.model.signed.is_empty());
 
-        // Left for another page and then locked: kept and offered, not
-        // brought back by the unlock.
+        // Left for another page and then locked: kept, not brought back by the
+        // unlock, and not offered, since it is saved.
         wallet(&mut app, WalletMsg::Open(To::Dashboard));
         let _ = app.on_event(Event::Locked {
             reason: LockReason::Idle,
@@ -3991,7 +4441,7 @@ mod tests {
             if u.note.as_deref().is_some_and(|n| !n.contains("signed spend"))));
         let _ = app.on_reply(Purpose::Unlock, Reply::Unlocked(sent.view.clone()));
         assert!(matches!(wallet_page(&app).page, Page::Dashboard));
-        assert_eq!(app.model.unsaved_signed().count(), 1);
+        assert_eq!(app.model.unsaved_signed().count(), 0);
     }
 
     #[test]
@@ -4029,39 +4479,525 @@ mod tests {
         assert!(matches!(&wallet_page(&app).page,
             Page::Resign(ResignPage { form, .. }) if *form == spend_typed()));
 
-        // Re-signed, the same bytes again: kept once, as the newest page.
+        // Re-signed, the same bytes again: kept once, in the place it held, and
+        // saved, since those bytes were (D38 item 5, as revised on 2026-10-13).
         let _ = app.on_reply(Purpose::Resign, Reply::Sent(sent.clone()));
-        assert!(sent_shown(&app).is_some_and(|(_, s)| s.resigned));
+        assert!(sent_shown(&app).is_some_and(|(_, s)| s.resigned && !s.unsaved()));
         let other = app.model.wallet.as_ref().unwrap().accounts[1].id;
         wallet(&mut app, WalletMsg::Open(To::Resign(other)));
         assert_eq!(app.model.signed.len(), 1);
         assert!(app.model.signed[0].sent.resigned);
+        assert!(!app.model.signed[0].unsaved());
+        assert_eq!(app.model.unsaved_signed().count(), 0);
         assert!(matches!(&wallet_page(&app).page,
             Page::Resign(ResignPage { form, .. }) if *form == SpendForm::default()));
 
-        // Settling that finds the spend not landed keeps it; a check that
-        // finds the account in sync forgets it.
+        // Settling that finds the spend not landed keeps it. A check that
+        // finds the account in sync forgets it, since its bytes are saved
+        // (D38 item 5, as revised on 2026-10-13; unsaved bytes are kept past
+        // that, as the tests below show).
         let _ = app.on_reply(
-            Purpose::Settle,
+            Purpose::Settle(sent.from),
             Reply::Settled {
                 text: "not landed".to_owned(),
                 view: sent.view.clone(),
             },
         );
         assert_eq!(app.model.signed.len(), 1);
+        let _ = app.on_reply(Purpose::Status, in_sync_status(from));
+        assert!(app.model.signed.is_empty());
+        wallet(&mut app, WalletMsg::Open(To::Resign(from)));
+        assert!(matches!(&wallet_page(&app).page,
+            Page::Resign(ResignPage { form, .. }) if *form == SpendForm::default()));
+    }
+
+    /// What was typed for the second of the two spends [`two_spends`] signs:
+    /// other parameters than [`spend_typed`].
+    fn second_form() -> SpendForm {
+        SpendForm {
+            rows: vec![DestinationRow {
+                to: "other".to_owned(),
+                amount: "2".to_owned(),
+                reference: String::new(),
+            }],
+            fee: "1000".to_owned(),
+            ..SpendForm::default()
+        }
+    }
+
+    /// Signs `sent` from the review of `plan`, typed as `form`, and leaves its
+    /// page for the dashboard, so that the spend is kept.
+    fn signed_and_left(
+        app: &mut App,
+        plan: tawara_wallet_core::PlanView,
+        form: SpendForm,
+        sent: tawara_wallet_core::SentView,
+    ) {
+        app.model.screen = Screen::Wallet(WalletPage {
+            page: Page::Send(SendPage {
+                from: Some(plan.from),
+                form,
+                stage: SendStage::Review(Box::new(plan)),
+            }),
+            ..WalletPage::default()
+        });
+        let _ = app.on_reply(Purpose::ConfirmSend, Reply::Sent(sent));
+        wallet(app, WalletMsg::Open(To::Dashboard));
+    }
+
+    /// Two spends this run signed from the sample account, in this order, with
+    /// the dashboard shown after both. The first, typed as [`spend_typed`], was
+    /// left unsaved and has settled since, so its account's next key is the
+    /// second's. The second, typed as `second`, holds the account's open
+    /// reservation, and is left unsaved. Their reservations are at the one-time
+    /// key indexes 49 and 50. Returns the application and the two spends.
+    fn two_spends(
+        second: SpendForm,
+    ) -> (
+        App,
+        tawara_wallet_core::SentView,
+        tawara_wallet_core::SentView,
+    ) {
+        use tawara_wallet_core::view::{AccountState, ReservationState, SettledAccount};
+        let mut app = alone();
+        app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        let plan = tawara_wallet_core::sample::plan_view();
+        let first = tawara_wallet_core::sample::sent_view();
+        signed_and_left(&mut app, plan.clone(), spend_typed(), first.clone());
+        // The first lands, and the check settles it on its own.
+        let _ = app.on_reply(
+            Purpose::Status,
+            Reply::Status {
+                account: first.from,
+                state: AccountState::InSync { balance: 1 },
+                spendable: true,
+                text: "settled".to_owned(),
+                settled: Some(SettledAccount {
+                    account: first.from,
+                    text: "settled: the library's page".to_owned(),
+                }),
+            },
+        );
+        let mut next = tawara_wallet_core::sample::sent_view();
+        next.spent_index = Some(50);
+        next.artifact_hex = "bb".repeat(8);
+        next.view.accounts[0].set_state(AccountState::SpendOutstanding {
+            balance: 1,
+            spent_index: 50,
+            reservation: ReservationState::Live,
+        });
+        signed_and_left(&mut app, plan, second, next.clone());
+        (app, first, next)
+    }
+
+    /// The bytes of the kept spends, in the order the application keeps them.
+    fn kept_bytes(app: &App) -> Vec<String> {
+        app.model
+            .signed
+            .iter()
+            .map(|s| s.sent.sent.artifact_hex.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_re_sign_offers_the_spend_its_reservation_holds_and_leaving_pages_keeps_the_order() {
+        // D38, as docs/SCREENS.md W6 and W8 state the rules: the first spend is left
+        // unsaved and settles, and the second, with other parameters, holds the
+        // account's reservation. Reopening the first, and then the account's page,
+        // reorders nothing, and the re-sign offers the second's parameters. The library
+        // accepts those for its reservation, as the worker test
+        // `a_re_sign_is_for_the_spend_whose_reservation_is_open_and_the_library_refuses_another`
+        // shows.
+        let (mut app, first, second) = two_spends(second_form());
+        let from = first.from;
+        let both = vec![first.artifact_hex.clone(), second.artifact_hex.clone()];
+        assert_eq!(kept_bytes(&app), both);
+        wallet(&mut app, WalletMsg::ShowSigned(first.artifact_hex.clone()));
+        wallet(&mut app, WalletMsg::Open(To::Account(from)));
+        assert_eq!(kept_bytes(&app), both, "navigation reorders nothing");
+        wallet(&mut app, WalletMsg::Open(To::Resign(from)));
+        assert!(
+            matches!(&wallet_page(&app).page,
+                Page::Resign(ResignPage { form, .. }) if *form == second_form()),
+            "{:?}",
+            wallet_page(&app).page
+        );
+    }
+
+    #[test]
+    fn a_re_sign_offers_nothing_once_the_spend_holding_the_reservation_is_dismissed() {
+        // D38, as docs/SCREENS.md W8 states the rule: the second spend holds the
+        // account's reservation, and is dismissed, its bytes wiped. The first is
+        // another spend, still kept: the re-sign offers nothing for the reservation,
+        // not the first spend's parameters, which the library would refuse.
+        let (mut app, first, second) = two_spends(second_form());
+        wallet(
+            &mut app,
+            WalletMsg::DismissSigned(second.artifact_hex.clone()),
+        );
+        assert_eq!(kept_bytes(&app), vec![first.artifact_hex.clone()]);
+        wallet(&mut app, WalletMsg::Open(To::Resign(first.from)));
+        assert!(
+            matches!(&wallet_page(&app).page,
+                Page::Resign(ResignPage { form, .. }) if *form == SpendForm::default()),
+            "{:?}",
+            wallet_page(&app).page
+        );
+    }
+
+    #[test]
+    fn a_re_sign_keeps_the_place_its_spend_holds_in_the_signing_order() {
+        // D38, as docs/SCREENS.md W6 states the rule: a re-sign gives the same bytes
+        // again, so its spend keeps the place it held, though a spend of another
+        // account was signed after it.
+        use tawara_wallet_core::view::{AccountState, ReservationState};
+        let (mut app, first, second) = two_spends(second_form());
+        let other = app.model.wallet.as_ref().map(|w| w.accounts[1].id);
+        let mut third = tawara_wallet_core::sample::sent_view();
+        third.from = other.expect("the store is open");
+        third.spent_index = Some(6);
+        third.artifact_hex = "cc".repeat(8);
+        third.view = second.view.clone();
+        third.view.accounts[1].set_state(AccountState::SpendOutstanding {
+            balance: 1,
+            spent_index: 6,
+            reservation: ReservationState::Live,
+        });
+        signed_and_left(
+            &mut app,
+            tawara_wallet_core::sample::plan_view(),
+            SpendForm::default(),
+            third.clone(),
+        );
+        wallet(&mut app, WalletMsg::Open(To::Resign(second.from)));
+        let _ = app.on_reply(Purpose::Resign, Reply::Sent(second.clone()));
+        wallet(&mut app, WalletMsg::Open(To::Dashboard));
+        assert_eq!(
+            kept_bytes(&app),
+            vec![
+                first.artifact_hex.clone(),
+                second.artifact_hex.clone(),
+                third.artifact_hex.clone(),
+            ]
+        );
+        assert!(app.model.signed[1].sent.resigned);
+    }
+
+    #[test]
+    fn a_re_signed_spend_is_not_offered_beside_its_own_page() {
+        // docs/SCREENS.md W6: a re-sign's page takes the place of its spend's
+        // kept copy, so no "Open it" banner offers the spend shown. Left, it is
+        // kept once, and offered again.
+        let (mut app, sent) = just_sent();
+        let from = sent.from;
+        wallet(&mut app, WalletMsg::Open(To::Account(from)));
+        assert_eq!(app.model.unsaved_signed().count(), 1);
+        wallet(&mut app, WalletMsg::Open(To::Resign(from)));
+        let _ = app.on_reply(Purpose::Resign, Reply::Sent(sent.clone()));
+        assert!(sent_shown(&app).is_some_and(|(_, s)| s.resigned && s.unsaved()));
+        assert_eq!(
+            app.model.unsaved_signed().count(),
+            0,
+            "no banner offers the spend its own page shows"
+        );
+        assert!(app.model.signed.is_empty());
+        wallet(&mut app, WalletMsg::Open(To::Dashboard));
+        assert_eq!(kept_bytes(&app), vec![sent.artifact_hex.clone()]);
+        assert_eq!(app.model.unsaved_signed().count(), 1);
+    }
+
+    #[test]
+    fn a_re_sign_that_could_not_read_its_reservation_keeps_the_index_it_had() {
+        // docs/SCREENS.md W8: a re-sign whose read of the store failed reports
+        // no index. The spend keeps the one its sign reported, so the next
+        // re-sign still offers what was typed for it, not an empty form.
+        let (mut app, sent) = just_sent();
+        let from = sent.from;
+        wallet(&mut app, WalletMsg::Open(To::Account(from)));
+        wallet(&mut app, WalletMsg::Open(To::Resign(from)));
+        let mut again = sent.clone();
+        again.spent_index = None;
+        let _ = app.on_reply(Purpose::Resign, Reply::Sent(again));
+        assert!(sent_shown(&app).is_some_and(|(_, s)| s.sent.spent_index == Some(49)));
+        wallet(&mut app, WalletMsg::Open(To::Resign(from)));
+        assert!(
+            matches!(&wallet_page(&app).page,
+                Page::Resign(ResignPage { form, .. }) if *form == spend_typed()),
+            "{:?}",
+            wallet_page(&app).page
+        );
+    }
+
+    /// A check's answer that finds `account` in sync.
+    fn in_sync_status(account: AccountId) -> Reply {
+        Reply::Status {
+            account,
+            state: tawara_wallet_core::view::AccountState::InSync { balance: 5 },
+            spendable: true,
+            text: "in sync".to_owned(),
+            settled: None,
+        }
+    }
+
+    /// `view` with `account` in sync and spendable, as a read after its
+    /// settle shows it.
+    fn in_sync(view: &mut tawara_wallet_core::view::WalletView, account: AccountId) {
+        let row = view
+            .accounts
+            .iter_mut()
+            .find(|a| a.id == account)
+            .expect("the account is in the store");
+        row.state = tawara_wallet_core::view::AccountState::InSync { balance: 1 };
+        row.spendable = true;
+    }
+
+    #[test]
+    fn an_automatic_settle_keeps_the_unsaved_bytes_offered() {
+        // A refresh reads the account in sync and settles it itself (D38 item
+        // 1). The bytes are not saved, so they stay offered: a reorganisation
+        // can revert the settle, and then a saved copy may be the only way to
+        // move the balance (D38 item 5, as revised on 2026-10-13).
+        let (mut app, sent) = just_sent();
+        let from = sent.from;
+        wallet(&mut app, WalletMsg::Open(To::Dashboard));
+        assert_eq!(app.model.unsaved_signed().count(), 1);
+
+        let mut view = sent.view.clone();
+        in_sync(&mut view, from);
+        view.settled = vec![tawara_wallet_core::view::SettledAccount {
+            account: from,
+            text: "the library's page".to_owned(),
+        }];
+        let _ = app.on_reply(Purpose::Refresh, Reply::Wallet(view));
+        assert_eq!(
+            app.model.unsaved_signed().count(),
+            1,
+            "in sync, but not saved"
+        );
+        assert_eq!(
+            app.model.signed[0].sent.sent.artifact_hex,
+            sent.artifact_hex
+        );
+        assert!(app.model.settled_waiting.contains_key(&from));
+
+        // A check that settles the account itself keeps them too.
         let _ = app.on_reply(
             Purpose::Status,
             Reply::Status {
                 account: from,
                 state: tawara_wallet_core::view::AccountState::InSync { balance: 5 },
                 spendable: true,
-                text: "in sync".to_owned(),
+                text: "settled".to_owned(),
+                settled: Some(tawara_wallet_core::view::SettledAccount {
+                    account: from,
+                    text: "the library's page".to_owned(),
+                }),
             },
         );
+        assert_eq!(
+            app.model.unsaved_signed().count(),
+            1,
+            "a check's settle keeps them too"
+        );
+    }
+
+    #[test]
+    fn a_manual_settle_keeps_the_unsaved_bytes_offered() {
+        // Settle on the account's own page, the same rule as an automatic one
+        // (D38 item 5, as revised on 2026-10-13).
+        let (mut app, sent) = just_sent();
+        wallet(&mut app, WalletMsg::Open(To::Account(sent.from)));
+        assert_eq!(app.model.unsaved_signed().count(), 1);
+
+        let mut view = sent.view.clone();
+        in_sync(&mut view, sent.from);
+        let _ = app.on_reply(
+            Purpose::Settle(sent.from),
+            Reply::Settled {
+                text: "settled: the library's page".to_owned(),
+                view,
+            },
+        );
+        assert!(matches!(wallet_page(&app).page, Page::Account(_)));
+        assert_eq!(app.model.unsaved_signed().count(), 1);
+    }
+
+    #[test]
+    fn saving_clears_the_unsaved_state_and_a_saved_spend_is_forgotten_once_in_sync() {
+        let scratch = Scratch::new("saved-then-in-sync");
+        let (mut app, sent) = just_sent();
+        app.model.downloads = Some(scratch.0.join("Downloads"));
+        wallet(&mut app, WalletMsg::SaveArtifact);
+        wallet(&mut app, WalletMsg::Open(To::Dashboard));
+        assert_eq!(app.model.signed.len(), 1);
+        assert_eq!(
+            app.model.unsaved_signed().count(),
+            0,
+            "saved, so no longer unsaved"
+        );
+        let _ = app.on_reply(Purpose::Status, in_sync_status(sent.from));
+        assert!(
+            app.model.signed.is_empty(),
+            "a saved spend is forgotten once in sync"
+        );
+    }
+
+    #[test]
+    fn dismissing_unsaved_bytes_drops_and_wipes_them() {
+        // On the sent page that shows them: Dismiss asks first, and the bytes
+        // stay until it is confirmed.
+        let (mut app, sent) = just_sent();
+        wallet(&mut app, WalletMsg::AskDismiss);
+        assert!(sent_shown(&app).is_some_and(|(_, s)| s.dismissing));
+        wallet(&mut app, WalletMsg::CancelDismiss);
+        let (_, s) = sent_shown(&app).expect("the page stays");
+        assert!(!s.dismissing && s.sent.artifact_hex == sent.artifact_hex);
+        wallet(&mut app, WalletMsg::AskDismiss);
+        // Confirmed: the page is left with them.
+        wallet(
+            &mut app,
+            WalletMsg::DismissSigned(sent.artifact_hex.clone()),
+        );
         assert!(app.model.signed.is_empty());
-        wallet(&mut app, WalletMsg::Open(To::Resign(from)));
-        assert!(matches!(&wallet_page(&app).page,
-            Page::Resign(ResignPage { form, .. }) if *form == SpendForm::default()));
+        assert_eq!(app.model.unsaved_signed().count(), 0);
+        assert!(matches!(wallet_page(&app).page, Page::Dashboard));
+
+        // Kept and not shown: dropped from the kept spends, and wiped as it
+        // goes.
+        let (mut app, sent) = just_sent();
+        wallet(&mut app, WalletMsg::Open(To::Dashboard));
+        let dropped = app.model.dismiss_signed(&sent.artifact_hex);
+        assert_eq!(dropped.len(), 1);
+        assert!(
+            dropped
+                .iter()
+                .all(|s| s.sent.sent.artifact_hex.is_empty() && s.sent.sent.text.is_empty()),
+            "the bytes are wiped, and the library's page that repeats them"
+        );
+
+        // Saved bytes are not dismissed: Dismiss is not asked for them.
+        let scratch = Scratch::new("dismiss-saved");
+        let (mut app, _) = just_sent();
+        app.model.downloads = Some(scratch.0.join("Downloads"));
+        wallet(&mut app, WalletMsg::SaveArtifact);
+        wallet(&mut app, WalletMsg::AskDismiss);
+        assert!(sent_shown(&app).is_some_and(|(_, s)| !s.dismissing));
+        assert!(app.model.signed.is_empty());
+        assert_eq!(app.model.unsaved_signed().count(), 0);
+    }
+
+    #[test]
+    fn a_lock_asked_for_idle_background_or_at_shutdown_wipes_the_unsaved_bytes_shown_or_kept() {
+        // The locks the owner named, and the shutdown that ends the run: nothing
+        // unsaved survives one (D38 item 5, as revised on 2026-10-13).
+        for reason in [
+            LockReason::Asked,
+            LockReason::Idle,
+            LockReason::Background,
+            LockReason::Shutdown,
+        ] {
+            let (mut app, _) = just_sent();
+            let _ = app.on_event(Event::Locked { reason });
+            assert!(app.model.signed.is_empty(), "{reason:?}: the shown bytes");
+
+            let (mut app, sent) = just_sent();
+            wallet(&mut app, WalletMsg::Open(To::Dashboard));
+            let _ = app.on_event(Event::Locked { reason });
+            assert!(app.model.signed.is_empty(), "{reason:?}: the kept bytes");
+            let _ = app.on_reply(Purpose::Unlock, Reply::Unlocked(sent.view.clone()));
+            assert_eq!(
+                app.model.unsaved_signed().count(),
+                0,
+                "{reason:?}: nothing offered"
+            );
+        }
+    }
+
+    #[test]
+    fn bytes_saved_before_a_resign_stay_saved_over_a_lock() {
+        // The bytes are saved, the page left, and a re-sign gives the same
+        // bytes again: they are on disk, so the re-signed page is saved, and
+        // a lock keeps it to show again rather than wiping it (D38 item 5, as
+        // revised on 2026-10-13).
+        let scratch = Scratch::new("resign-saved-lock");
+        let (mut app, sent) = just_sent();
+        app.model.downloads = Some(scratch.0.join("Downloads"));
+        wallet(&mut app, WalletMsg::SaveArtifact);
+        wallet(&mut app, WalletMsg::Open(To::Resign(sent.from)));
+        let _ = app.on_reply(Purpose::Resign, Reply::Sent(sent.clone()));
+        assert!(sent_shown(&app).is_some_and(|(_, s)| !s.unsaved()));
+        let _ = app.on_event(Event::Locked {
+            reason: LockReason::Asked,
+        });
+        assert_eq!(app.model.signed.len(), 1);
+        assert!(app.model.signed[0].resume && !app.model.signed[0].unsaved());
+        assert!(matches!(&app.model.screen, Screen::Unlock(u)
+            if u.note.as_deref().is_some_and(|n| !n.contains("wiped"))));
+    }
+
+    #[test]
+    fn a_close_no_one_asked_for_keeps_the_unsaved_bytes() {
+        // The worker closes a store it could not read back after a send's
+        // settle, right after the send's answer, and an unlock replaces a
+        // store: neither is a lock the person asked for or one the wallet
+        // makes on idle or in the background, so bytes just signed are kept,
+        // not wiped before they are seen (D38 item 5, as revised on
+        // 2026-10-13).
+        let scratch = Scratch::new("reopen-failed-keeps");
+        let (mut app, sent) = signed_then_locked(&scratch, LockReason::ReopenFailed);
+        assert_eq!(app.model.signed.len(), 1);
+        let kept = &app.model.signed[0];
+        assert!(kept.unsaved() && kept.resume);
+        assert_eq!(kept.sent.sent.artifact_hex, sent.artifact_hex);
+        assert_eq!(kept.sent.sent.text, sent.text);
+        match &app.model.screen {
+            Screen::Unlock(u) => {
+                let note = u.note.as_deref().unwrap_or_default();
+                assert!(note.contains("signed spend"), "{note}");
+                assert!(!note.contains("wiped"), "{note}");
+            }
+            other => panic!("expected the unlock screen, got {other:?}"),
+        }
+        // Its store unlocked: the page as it was left, still unsaved.
+        let _ = app.on_reply(Purpose::Unlock, Reply::Unlocked(sent.view.clone()));
+        let (_, s) = sent_shown(&app).expect("the sent page");
+        assert!(s.unsaved());
+        assert_eq!(s.sent.artifact_hex, sent.artifact_hex);
+
+        // Kept and not shown: a store replaced, or closed, keeps it offered.
+        for reason in [LockReason::Replaced, LockReason::ReopenFailed] {
+            let (mut app, sent) = just_sent();
+            wallet(&mut app, WalletMsg::Open(To::Dashboard));
+            let _ = app.on_event(Event::Locked { reason });
+            assert_eq!(app.model.signed.len(), 1, "{reason:?}");
+            assert_eq!(
+                app.model.signed[0].sent.sent.artifact_hex, sent.artifact_hex,
+                "{reason:?}"
+            );
+            let _ = app.on_reply(Purpose::Unlock, Reply::Unlocked(sent.view.clone()));
+            assert_eq!(app.model.unsaved_signed().count(), 1, "{reason:?}");
+        }
+    }
+
+    #[test]
+    fn the_lock_wipes_what_it_drops_and_keeps_a_saved_spend() {
+        let (mut app, _) = just_sent();
+        wallet(&mut app, WalletMsg::Open(To::Dashboard));
+        // A saved spend kept beside the unsaved one: the lock keeps it.
+        let mut saved = app.model.signed[0].clone();
+        saved.sent.saved = Some(Ok(std::env::temp_dir().join("tawara-saved-spend.hex")));
+        app.model.signed.push(saved);
+
+        let dropped = app.model.drop_unsaved_at_lock();
+        assert_eq!(dropped.len(), 1, "the unsaved one");
+        assert!(
+            dropped
+                .iter()
+                .all(|s| s.sent.sent.artifact_hex.is_empty() && s.sent.sent.text.is_empty()),
+            "the bytes are wiped, and the library's page that repeats them"
+        );
+        assert_eq!(app.model.signed.len(), 1);
+        assert!(!app.model.signed[0].unsaved());
     }
 
     #[test]
@@ -4085,6 +5021,434 @@ mod tests {
         );
         wallet(&mut app, WalletMsg::Copy(sent.artifact_hex.clone()));
         assert!(app.model.signed[0].copied);
+    }
+
+    #[test]
+    fn a_move_to_the_background_releases_the_bytes_a_failed_read_back_kept() {
+        // A store the worker closed for a read-back that failed keeps its unsaved
+        // bytes, and sends no `Locked` for the move: the move wipes them, and S7
+        // says so (docs/DECISIONS.md D38 item 5; docs/SCREENS.md W6).
+        let scratch = Scratch::new("background-kept");
+        let (mut app, sent) = signed_then_locked(&scratch, LockReason::ReopenFailed);
+        assert_eq!(app.model.signed.len(), 1, "kept, as the close leaves it");
+        let _ = app.on_event(Event::Backgrounded { seq: 1 });
+        assert!(
+            app.model.signed.is_empty(),
+            "the kept bytes went with the move"
+        );
+        match &app.model.screen {
+            Screen::Unlock(u) => {
+                let note = u.note.as_deref().unwrap_or_default();
+                assert!(note.contains("wiped"), "{note}");
+                assert!(!note.contains("shown again"), "{note}");
+            }
+            other => panic!("expected the unlock screen, got {other:?}"),
+        }
+        // Unlocked again: the page does not come back, and nothing is offered.
+        let _ = app.on_reply(Purpose::Unlock, Reply::Unlocked(sent.view.clone()));
+        assert!(sent_shown(&app).is_none());
+        assert_eq!(app.model.unsaved_signed().count(), 0);
+    }
+
+    #[test]
+    fn a_move_to_the_background_wipes_a_shown_unsaved_page_when_no_lock_comes() {
+        // The page is shown, and the move's `Locked` does not come: the move
+        // wipes it all the same (docs/SCREENS.md W6).
+        let (mut app, _) = just_sent();
+        let _ = app.on_event(Event::Backgrounded { seq: 1 });
+        assert!(
+            app.model.signed.is_empty(),
+            "the shown bytes went with the move"
+        );
+        assert!(sent_shown(&app).is_none(), "and so did their page");
+    }
+
+    #[test]
+    fn a_graceful_shutdown_releases_the_unsaved_bytes_and_a_panic_keeps_them() {
+        // The shutdown ends the run, so unsaved bytes go even when no `Locked`
+        // came with it; a worker that panicked keeps them to save (docs/
+        // DECISIONS.md D38 item 5; docs/SCREENS.md W6).
+        let scratch = Scratch::new("shutdown-kept-panic");
+        let (mut app, _) = signed_then_locked(&scratch, LockReason::ReopenFailed);
+        let _ = app.on_event(Event::Stopped { panicked: true });
+        assert_eq!(app.model.signed.len(), 1, "a panic keeps the kept bytes");
+        assert!(app.model.signed[0].unsaved());
+
+        let scratch = Scratch::new("shutdown-kept");
+        let (mut app, _) = signed_then_locked(&scratch, LockReason::ReopenFailed);
+        let _ = app.on_event(Event::Stopped { panicked: false });
+        assert!(
+            app.model.signed.is_empty(),
+            "the shutdown released the kept bytes"
+        );
+
+        let (mut app, _) = just_sent();
+        let _ = app.on_event(Event::Stopped { panicked: false });
+        assert!(app.model.signed.is_empty(), "and the shown bytes");
+    }
+
+    /// Stops the worker as a panic leaves it to the interface: its queue goes
+    /// before any notice of the stop reaches the interface, so a command sent
+    /// now fails. The notice is not read here; a test hands it on itself.
+    fn queue_gone(app: &App) {
+        let handle = &app.worker.as_ref().expect("a worker").handle;
+        handle.shutdown();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while handle.send(Command::Review).is_ok() {
+            assert!(Instant::now() < deadline, "the worker's queue did not go");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn a_send_that_fails_before_a_panic_notice_keeps_the_unsaved_bytes() {
+        // The owner's review (P1): a worker that panics drops its queue before its
+        // `Stopped` reaches the interface, so a command sent in between fails. The
+        // failure releases nothing: the notice that follows says whether the worker
+        // panicked, and a panic keeps the bytes (docs/DECISIONS.md D38 item 5;
+        // docs/SCREENS.md W6).
+        let scratch = Scratch::new("send-fails-then-panic");
+        let (mut app, _) = signed_then_locked(&scratch, LockReason::ReopenFailed);
+        assert_eq!(app.model.signed.len(), 1, "kept, as the close leaves it");
+        queue_gone(&app);
+        assert!(app.send(Command::Review, Purpose::Review).is_none());
+        assert_eq!(app.model.signed.len(), 1, "the failure released nothing");
+        assert!(app.model.signed[0].unsaved());
+        assert_eq!(app.model.stopped, Some(false), "the stop shows at once");
+
+        let _ = app.on_event(Event::Stopped { panicked: true });
+        assert_eq!(app.model.stopped, Some(true));
+        assert_eq!(app.model.signed.len(), 1, "the panic keeps the bytes");
+        assert!(app.model.signed[0].unsaved());
+    }
+
+    #[test]
+    fn a_graceful_stop_after_a_failed_send_releases_the_unsaved_bytes() {
+        // The counterpart: the notice says the stop was graceful, so the bytes the
+        // failed send kept are released, as the shutdown releases them.
+        let scratch = Scratch::new("send-fails-then-graceful");
+        let (mut app, _) = signed_then_locked(&scratch, LockReason::ReopenFailed);
+        queue_gone(&app);
+        assert!(app.send(Command::Review, Purpose::Review).is_none());
+        assert_eq!(
+            app.model.signed.len(),
+            1,
+            "not yet: the reason is not known"
+        );
+
+        let _ = app.on_event(Event::Stopped { panicked: false });
+        assert_eq!(app.model.stopped, Some(false));
+        assert!(app.model.signed.is_empty(), "a graceful stop releases them");
+    }
+
+    #[test]
+    fn a_move_after_a_failed_send_with_no_notice_keeps_the_bytes_until_the_app_ends() {
+        // A failed send and then no notice at all: the move to the background
+        // releases nothing, since the reason is not known and a panic keeps the
+        // bytes. Leaving the application releases them (docs/DECISIONS.md D38
+        // item 5).
+        let scratch = Scratch::new("send-fails-then-move");
+        let (mut app, _) = signed_then_locked(&scratch, LockReason::ReopenFailed);
+        queue_gone(&app);
+        assert!(app.send(Command::Review, Purpose::Review).is_none());
+        app.model.left.fetch_add(1, Ordering::SeqCst);
+        let _ = app.update(Message::Input);
+        assert_eq!(app.model.signed.len(), 1, "the move released nothing");
+        assert!(app.model.signed[0].unsaved());
+
+        let before = RELEASED_IN_TESTS.with(std::cell::Cell::get);
+        drop(app);
+        assert_eq!(
+            RELEASED_IN_TESTS.with(std::cell::Cell::get) - before,
+            1,
+            "leaving the application released the kept bytes"
+        );
+    }
+
+    #[test]
+    fn a_move_notice_after_a_failed_send_releases_nothing_and_a_panic_keeps_the_bytes() {
+        // The worker's `Backgrounded` for a move it took before it stopped can come
+        // after the failed send. For a store its read-back closed, that notice
+        // would release the bytes, so it must not while the reason is unknown; the
+        // panic that follows keeps them.
+        let scratch = Scratch::new("send-fails-then-backgrounded");
+        let (mut app, _) = signed_then_locked(&scratch, LockReason::ReopenFailed);
+        queue_gone(&app);
+        assert!(app.send(Command::Review, Purpose::Review).is_none());
+
+        let _ = app.on_event(Event::Backgrounded { seq: 1 });
+        assert_eq!(app.model.signed.len(), 1, "the notice released nothing");
+        let _ = app.on_event(Event::Stopped { panicked: true });
+        assert_eq!(app.model.signed.len(), 1, "and the panic keeps them");
+    }
+
+    /// The application with a store its read-back closed and one unsaved spend
+    /// kept, after a send failed for a queue that went: then the worker's
+    /// `Locked` for `reason`, sent before it stopped, is taken.
+    fn locked_after_a_failed_send(scratch: &Scratch, reason: LockReason) -> App {
+        let (mut app, _) = signed_then_locked(scratch, LockReason::ReopenFailed);
+        queue_gone(&app);
+        assert!(app.send(Command::Review, Purpose::Review).is_none());
+        let _ = app.on_event(Event::Locked { reason });
+        app
+    }
+
+    #[test]
+    fn a_lock_notice_after_a_failed_send_releases_nothing_and_a_panic_keeps_the_bytes() {
+        // A lock the worker sent just before it panicked can reach the interface
+        // after a send failed. While the stop's reason is not known, the lock
+        // keeps the bytes, as a move's notice does; the panic that follows keeps
+        // them (docs/DECISIONS.md D38 item 5; docs/SCREENS.md W6).
+        for reason in [LockReason::Asked, LockReason::Idle, LockReason::Background] {
+            let scratch = Scratch::new("send-fails-then-locked");
+            let mut app = locked_after_a_failed_send(&scratch, reason);
+            assert_eq!(
+                app.model.signed.len(),
+                1,
+                "the lock ({reason:?}) released nothing"
+            );
+            assert!(app.model.signed[0].unsaved());
+            let _ = app.on_event(Event::Stopped { panicked: true });
+            assert_eq!(app.model.signed.len(), 1, "and the panic keeps them");
+            assert!(app.model.signed[0].unsaved());
+        }
+    }
+
+    #[test]
+    fn a_lock_notice_after_a_failed_send_then_a_graceful_stop_releases_the_bytes() {
+        // The counterpart: the notice that follows says the stop was graceful, so
+        // the bytes the lock kept are released then.
+        let scratch = Scratch::new("send-fails-locked-graceful");
+        let mut app = locked_after_a_failed_send(&scratch, LockReason::Background);
+        assert_eq!(
+            app.model.signed.len(),
+            1,
+            "not yet: the reason is not known"
+        );
+        let _ = app.on_event(Event::Stopped { panicked: false });
+        assert!(app.model.signed.is_empty(), "a graceful stop releases them");
+    }
+
+    #[test]
+    fn a_shutdown_lock_after_a_failed_send_releases_the_bytes() {
+        // A shutdown's lock says the stop is graceful, so it releases the bytes,
+        // whether or not a send failed first.
+        let scratch = Scratch::new("send-fails-then-shutdown-lock");
+        let app = locked_after_a_failed_send(&scratch, LockReason::Shutdown);
+        assert!(app.model.signed.is_empty(), "the shutdown releases them");
+    }
+
+    #[test]
+    fn a_spend_answered_after_a_failed_send_is_taken_and_its_bytes_are_kept() {
+        // The worker signed a spend and then stopped, so the answer comes after the
+        // failed send. It is taken, and its bytes are kept with the stop: they are
+        // not lost to a queue dropped first.
+        let scratch = Scratch::new("send-fails-then-answer");
+        let (mut app, _events) = app(&scratch);
+        app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        let id = RequestId::example();
+        app.worker
+            .as_mut()
+            .expect("a worker")
+            .waiting
+            .push((id, Purpose::ConfirmSend));
+        queue_gone(&app);
+        assert!(app.send(Command::Review, Purpose::Review).is_none());
+
+        let sent = tawara_wallet_core::sample::sent_view();
+        let _ = app.on_event(Event::Done {
+            id,
+            reply: Box::new(Reply::Sent(sent.clone())),
+        });
+        assert!(sent_shown(&app).is_some(), "the answer is taken");
+
+        let _ = app.on_event(Event::Stopped { panicked: true });
+        assert_eq!(app.model.signed.len(), 1, "kept with the stop");
+        assert_eq!(
+            app.model.signed[0].sent.sent.artifact_hex,
+            sent.artifact_hex
+        );
+        assert!(app.model.signed[0].unsaved());
+    }
+
+    #[test]
+    fn leaving_the_application_releases_the_unsaved_bytes_it_still_holds() {
+        // The application's end, with the store closed for a read-back that
+        // failed and no event reaching it: its drop releases the kept bytes
+        // (docs/DECISIONS.md D38 item 5; docs/SCREENS.md W6).
+        let scratch = Scratch::new("drop-kept");
+        let (app, _) = signed_then_locked(&scratch, LockReason::ReopenFailed);
+        let before = RELEASED_IN_TESTS.with(std::cell::Cell::get);
+        drop(app);
+        assert_eq!(
+            RELEASED_IN_TESTS.with(std::cell::Cell::get) - before,
+            1,
+            "the kept bytes went with the application"
+        );
+    }
+
+    /// Marks the spend's page shown on W6 as saved to a file.
+    fn save_shown(app: &mut App) {
+        let Screen::Wallet(WalletPage {
+            page:
+                Page::Send(SendPage {
+                    stage: SendStage::Sent(s),
+                    ..
+                }),
+            ..
+        }) = &mut app.model.screen
+        else {
+            panic!("expected the sent page");
+        };
+        s.saved = Some(Ok(std::env::temp_dir().join("tawara-saved-shown.hex")));
+    }
+
+    #[test]
+    fn a_saved_spend_stays_through_a_move_and_a_shutdown_with_no_lock() {
+        // docs/SCREENS.md W6: only unsaved bytes go with a move to the
+        // background or a shutdown; a saved spend is kept, shown or not.
+        let scratch = Scratch::new("saved-kept-boundaries");
+        let (mut app, sent) = signed_then_locked(&scratch, LockReason::ReopenFailed);
+        app.model.signed[0].sent.saved =
+            Some(Ok(std::env::temp_dir().join("tawara-saved-kept.hex")));
+        let _ = app.on_event(Event::Backgrounded { seq: 1 });
+        assert_eq!(app.model.signed.len(), 1, "the move keeps a saved spend");
+        assert_eq!(
+            app.model.signed[0].sent.sent.artifact_hex,
+            sent.artifact_hex
+        );
+        let _ = app.on_event(Event::Stopped { panicked: false });
+        assert_eq!(app.model.signed.len(), 1, "and so does the shutdown");
+        assert_eq!(
+            app.model.signed[0].sent.sent.artifact_hex,
+            sent.artifact_hex
+        );
+
+        let (mut app, sent) = just_sent();
+        save_shown(&mut app);
+        let _ = app.on_event(Event::Backgrounded { seq: 1 });
+        let (_, shown) = sent_shown(&app).expect("a saved page stays shown");
+        assert_eq!(shown.sent.artifact_hex, sent.artifact_hex);
+    }
+
+    #[test]
+    fn leaving_the_application_releases_a_shown_unsaved_page_and_keeps_a_saved_one() {
+        // docs/SCREENS.md W6: the drop releases unsaved bytes shown as well as
+        // kept, and a saved spend is not released.
+        let (app, _) = just_sent();
+        let before = RELEASED_IN_TESTS.with(std::cell::Cell::get);
+        drop(app);
+        assert_eq!(
+            RELEASED_IN_TESTS.with(std::cell::Cell::get) - before,
+            1,
+            "the shown bytes went with the application"
+        );
+
+        let (mut app, _) = just_sent();
+        save_shown(&mut app);
+        let before = RELEASED_IN_TESTS.with(std::cell::Cell::get);
+        drop(app);
+        assert_eq!(
+            RELEASED_IN_TESTS.with(std::cell::Cell::get) - before,
+            0,
+            "a saved page is not released"
+        );
+    }
+
+    #[test]
+    fn a_move_with_a_store_open_wipes_at_its_lock_and_s7_says_so() {
+        // The worker sends `Locked` before `Backgrounded` (wallet-core's
+        // `every_move_to_the_background_is_reported_after_any_lock`): the lock
+        // wipes the shown bytes and S7 says so, and the move's release finds
+        // nothing more (docs/SCREENS.md W6).
+        let (mut app, _) = just_sent();
+        let _ = app.on_event(Event::Locked {
+            reason: LockReason::Background,
+        });
+        let before = RELEASED_IN_TESTS.with(std::cell::Cell::get);
+        let _ = app.on_event(Event::Backgrounded { seq: 1 });
+        assert_eq!(RELEASED_IN_TESTS.with(std::cell::Cell::get) - before, 0);
+        assert!(app.model.signed.is_empty());
+        match &app.model.screen {
+            Screen::Unlock(u) => {
+                let note = u.note.as_deref().unwrap_or_default();
+                assert!(note.contains(WIPED_NOTE), "{note}");
+            }
+            other => panic!("expected the unlock screen, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_stopped_worker_keeps_the_unsaved_bytes_through_a_move() {
+        // docs/DECISIONS.md D38 item 5; docs/SCREENS.md W6: a worker that
+        // stopped on a fault keeps unsaved bytes until Tawara closes, a move
+        // to the background included, for the stopped screen to save.
+        let (mut app, sent) = just_sent();
+        let _ = app.on_event(Event::Stopped { panicked: true });
+        app.model.left.fetch_add(1, Ordering::SeqCst);
+        let _ = app.update(Message::Tick(now_ms()));
+        assert_eq!(app.model.signed.len(), 1);
+        assert_eq!(
+            app.model.signed[0].sent.sent.artifact_hex,
+            sent.artifact_hex
+        );
+    }
+
+    #[test]
+    fn signed_bytes_pasted_on_w9_are_wiped_with_a_move_to_the_background() {
+        // A pasted artifact may be a copy of unsaved bytes, so it goes as they
+        // do (docs/DECISIONS.md D38 item 5): wiped where it is, with the typed
+        // secrets, on a move to the background, and when its page or screen is
+        // left.
+        let mut app = on_wallet(Page::Submit(SubmitPage::default()));
+        let _ = app.update(Message::Pasted(
+            PasteInto::SignedBytes,
+            Some(Clip("4f2a00ab11cd".to_owned())),
+        ));
+        assert!(matches!(&wallet_page(&app).page, Page::Submit(s) if !s.hex.is_empty()));
+        app.model.backgrounded();
+        assert!(
+            matches!(&wallet_page(&app).page, Page::Submit(s) if s.hex.is_empty()),
+            "{:?}",
+            wallet_page(&app).page
+        );
+    }
+
+    #[test]
+    fn an_opened_store_reads_every_account_however_it_was_opened() {
+        // view::Reads: an opened or refreshed store reads every account, a
+        // store just created among them (docs/DECISIONS.md D38 item 2;
+        // docs/SCREENS.md W7).
+        let view = tawara_wallet_core::sample::wallet_view();
+        let first = tawara_wallet_core::view::AccountId::from_tag([0; 20]);
+        for purpose in [Purpose::CreateConfirm, Purpose::CreateFromPhrase] {
+            let reply = Reply::Created {
+                dir: view.dir.clone(),
+                first,
+                opened: Ok(view.clone()),
+            };
+            assert_eq!(reads_of(purpose, &reply), Reads::Every, "{purpose:?}");
+        }
+        let refused = Reply::Created {
+            dir: view.dir.clone(),
+            first,
+            opened: Err(Refusal {
+                kind: RefusalKind::StoreInUse,
+                text: "the store is in use".to_owned(),
+            }),
+        };
+        assert_eq!(reads_of(Purpose::CreateConfirm, &refused), Reads::Nothing);
+    }
+
+    #[test]
+    fn a_recovery_review_reads_every_account_it_reconciled() {
+        // view::Reads: a review reconciles every account of the store and updates
+        // each row, so its answer reads them all (docs/DECISIONS.md D38 item 2).
+        let reports = tawara_wallet_core::sample::review();
+        assert_eq!(
+            reads_of(Purpose::Review, &Reply::Reviewed(reports)),
+            Reads::Every
+        );
     }
 
     #[test]
@@ -4514,6 +5878,7 @@ mod tests {
                     state,
                     spendable,
                     text: "checked".to_owned(),
+                    settled: None,
                 },
             );
             app.model.wallet.as_ref().unwrap().accounts[n].clone()
@@ -4987,6 +6352,7 @@ mod tests {
                 state: tawara_wallet_core::view::AccountState::InSync { balance: 1 },
                 spendable: false,
                 text: "found".to_owned(),
+                settled: None,
             },
         );
         assert!(matches!(&wallet_page(&app).page,
@@ -5395,6 +6761,888 @@ mod tests {
             },
         );
         assert!(app.model.chain.last.is_none() && app.model.pending.last.is_none());
+    }
+
+    /// The sample store's second account: outstanding, with a live reservation.
+    fn live_account() -> AccountId {
+        tawara_wallet_core::sample::wallet_view().accounts[1].id
+    }
+
+    /// The worker has answered every command sent so far: its queue is empty.
+    fn answered(app: &mut App) {
+        if let Some(w) = app.worker.as_mut() {
+            w.waiting.clear();
+        }
+    }
+
+    #[test]
+    fn a_reply_reads_only_its_own_account_so_a_watch_ends_on_that_accounts_answer() {
+        // The owner's review (docs/DECISIONS.md D38 item 2): B is on its final
+        // follow-up poll, and A's answer comes first. It carries B's cached row,
+        // which is no read of B, so B stays watched; B's own answer then decides
+        // it: a silent one continues the watch, and a third doubtful one in a
+        // row ends it.
+        use tawara_wallet_core::view::{AccountState, DivergenceKind, ReservationState};
+        let mut app = on_wallet(Page::Dashboard);
+        let view = app.model.wallet.clone().expect("the sample store");
+        let (a, b) = (view.accounts[0].id, view.accounts[1].id);
+        let live = AccountState::SpendOutstanding {
+            balance: 3_180_000_000_000,
+            spent_index: 6,
+            reservation: ReservationState::Live,
+        };
+        let diverged = |kind| AccountState::Diverged {
+            kind,
+            report: "the library's report".to_owned(),
+            advance_to: None,
+        };
+        let silent = diverged(DivergenceKind::Unreachable);
+        let not_found = diverged(DivergenceKind::NotFound);
+        let answer = |app: &mut App, account: AccountId, state: AccountState| {
+            let _ = app.on_reply(
+                Purpose::Poll,
+                Reply::Status {
+                    account,
+                    state,
+                    spendable: false,
+                    text: "checked".to_owned(),
+                    settled: None,
+                },
+            );
+        };
+        // Both accounts are polled from their live reads.
+        answer(&mut app, a, live.clone());
+        answer(&mut app, b, live.clone());
+        // B answers "account not found", and its two polls in doubt are sent:
+        // the second is B's final follow-up poll, and it is still on its way.
+        answer(&mut app, b, not_found.clone());
+        app.model.watch.asked(b, &not_found);
+        answer(&mut app, b, not_found.clone());
+        app.model.watch.asked(b, &not_found);
+        // A's answer comes first, and carries B's cached row: B is still watched.
+        answer(&mut app, a, live.clone());
+        assert!(
+            app.model.watch.asks(b, &silent),
+            "B's own answer has not come"
+        );
+        // B's own answer is silent: the watch continues, within the bound.
+        answer(&mut app, b, silent.clone());
+        assert!(
+            app.model.watch.asks(b, &silent),
+            "a silent answer continues it"
+        );
+        app.model.watch.asked(b, &silent);
+        // B's third doubtful answer in a row ends its polls.
+        answer(&mut app, b, not_found.clone());
+        assert!(
+            !app.model.watch.asks(b, &not_found),
+            "the third doubtful answer ends it"
+        );
+        assert!(
+            !app.model.watch.asks(b, &silent),
+            "and a silent one does not restart it"
+        );
+    }
+
+    #[test]
+    fn a_spend_signed_in_this_run_is_polled_whatever_its_account_watched_before() {
+        // An unlock that finds the account in sync ends its polls (docs/DECISIONS.md
+        // D38 item 2). A spend signed after it holds a reservation whose first read
+        // failed, so the account is polled from the sign's reply; a re-sign is
+        // polled the same way.
+        use tawara_wallet_core::view::{AccountState, ReservationState};
+        let mut app = alone();
+        let account = tawara_wallet_core::sample::wallet_view().accounts[0].id;
+        let polled = |app: &App| app.polled_accounts(Instant::now()).contains(&account);
+        let _ = app.on_reply(
+            Purpose::Unlock,
+            Reply::Unlocked(tawara_wallet_core::sample::wallet_view()),
+        );
+        assert!(
+            !polled(&app),
+            "an account an unlock found in sync is not polled"
+        );
+
+        // The sign's reply: its first read could not read the spend's expiry.
+        let mut sent = tawara_wallet_core::sample::sent_view();
+        sent.view.accounts[0].set_state(AccountState::SpendOutstanding {
+            balance: 1,
+            spent_index: 49,
+            reservation: ReservationState::Unclassified,
+        });
+        let _ = app.on_reply(Purpose::ConfirmSend, Reply::Sent(sent.clone()));
+        assert!(polled(&app), "a spend signed in this run is polled");
+
+        // Settled, and in sync again: not polled. Re-signed, with the first read
+        // failing again: polled.
+        let _ = app.on_reply(
+            Purpose::Status,
+            Reply::Status {
+                account,
+                state: AccountState::InSync { balance: 1 },
+                spendable: true,
+                text: "in sync".to_owned(),
+                settled: None,
+            },
+        );
+        assert!(!polled(&app), "a settled account is not polled");
+        let _ = app.on_reply(Purpose::Resign, Reply::Sent(sent));
+        assert!(polled(&app), "a re-sign is polled as a sign is");
+    }
+
+    #[test]
+    fn a_sign_the_library_refused_reads_its_account_again() {
+        // The library records a reservation before it signs, so a sign it
+        // refused may have left one with no bytes. The account is read again,
+        // quietly, as a poll is (D38 item 2). A refusal of the worker's own, for
+        // a plan that is gone, reaches no reservation and reads nothing.
+        use tawara_wallet_core::{Refusal, RefusalKind};
+        let scratch = Scratch::new("refused-sign");
+        let (mut app, _events) = app(&scratch);
+        app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        let reviewing = |app: &mut App| {
+            let plan = tawara_wallet_core::sample::plan_view();
+            app.model.screen = Screen::Wallet(WalletPage {
+                page: Page::Send(SendPage {
+                    from: Some(plan.from),
+                    form: spend_typed(),
+                    stage: SendStage::Review(Box::new(plan)),
+                }),
+                ..WalletPage::default()
+            });
+        };
+        reviewing(&mut app);
+        let _ = app.on_reply(
+            Purpose::ConfirmSend,
+            Reply::Refused(Refusal {
+                kind: RefusalKind::NoSuchPlan,
+                text: "plan it again".to_owned(),
+            }),
+        );
+        assert!(!app.waiting_on(|p| matches!(p, Purpose::Poll)));
+        reviewing(&mut app);
+        let _ = app.on_reply(
+            Purpose::ConfirmSend,
+            Reply::Refused(Refusal {
+                kind: RefusalKind::Library,
+                text: "the library refused".to_owned(),
+            }),
+        );
+        assert!(app.waiting_on(|p| matches!(p, Purpose::Poll)), "read again");
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Compose,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_poll_asks_about_a_live_reservation_once_a_minute_and_is_not_input() {
+        let scratch = Scratch::new("poll");
+        let (mut app, _events) = app(&scratch);
+        app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        let touched = app.touches.get();
+        // The tick polls, by the monotonic clock.
+        let _ = app.update(Message::Tick(100_000));
+        assert!(app.waiting_on(|p| matches!(p, Purpose::Poll)), "sent");
+        let first = app.model.polled_at.expect("the poll's time is kept");
+        assert_eq!(
+            app.touches.get(),
+            touched,
+            "a poll is not the person's input"
+        );
+        // Not again while the last one is on its way, nor within the minute,
+        // whatever the wall clock says: one set back, or forward, moves
+        // nothing.
+        answered(&mut app);
+        let _ = app.update(Message::Tick(0));
+        let _ = app.update(Message::Tick(10_000_000));
+        assert!(
+            !app.waiting_on(|p| matches!(p, Purpose::Poll)),
+            "a minute has not passed"
+        );
+        app.poll(first + Duration::from_secs(30));
+        assert!(!app.waiting_on(|p| matches!(p, Purpose::Poll)));
+        assert_eq!(app.model.polled_at, Some(first));
+        // Again once a minute has passed.
+        app.poll(first + Duration::from_secs(60));
+        assert!(
+            app.waiting_on(|p| matches!(p, Purpose::Poll)),
+            "a minute has passed"
+        );
+        assert_eq!(app.touches.get(), touched, "still not the person's input");
+    }
+
+    #[test]
+    fn a_window_without_the_focus_polls_nothing_until_it_has_it_again() {
+        // D38 item 2: the poll runs only in the foreground. A desktop window
+        // behind others, or minimised, keeps the wallet open until the idle
+        // lock, and asks the node nothing meanwhile.
+        let scratch = Scratch::new("poll-focus");
+        let (mut app, _events) = app(&scratch);
+        app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        let touched = app.touches.get();
+        let now = Instant::now();
+        assert_eq!(
+            person_input(
+                IcedEvent::Window(iced::window::Event::Unfocused),
+                event::Status::Ignored,
+                iced::window::Id::unique(),
+            )
+            .map(|m| matches!(m, Message::Foreground(false))),
+            Some(true)
+        );
+        let _ = app.update(Message::Foreground(false));
+        assert_eq!(app.touches.get(), touched, "not the person's input");
+        app.poll(now);
+        assert!(!app.waiting_on(|p| matches!(p, Purpose::Poll)));
+        assert_eq!(app.polled_accounts(now), Vec::<AccountId>::new());
+        assert_eq!(app.model.polled_at, None);
+        // Back in the foreground, it polls at the next tick.
+        assert_eq!(
+            person_input(
+                IcedEvent::Window(iced::window::Event::Focused),
+                event::Status::Ignored,
+                iced::window::Id::unique(),
+            )
+            .map(|m| matches!(m, Message::Foreground(true))),
+            Some(true)
+        );
+        let _ = app.update(Message::Foreground(true));
+        assert_eq!(app.touches.get(), touched, "not the person's input");
+        let _ = app.update(Message::Tick(now_ms()));
+        assert!(app.waiting_on(|p| matches!(p, Purpose::Poll)), "sent");
+    }
+
+    #[test]
+    fn a_poll_asks_about_a_live_reservation_and_stops_on_lock() {
+        use tawara_wallet_core::view::{AccountState, DivergenceKind, ReservationState};
+        let scratch = Scratch::new("poll-stops");
+        let (mut app, _events) = app(&scratch);
+        let account = live_account();
+        let outstanding = |reservation| AccountState::SpendOutstanding {
+            balance: 1,
+            spent_index: 6,
+            reservation,
+        };
+        let cases = [
+            ("live", outstanding(ReservationState::Live), vec![account]),
+            (
+                "dead, the balance moved",
+                outstanding(ReservationState::Dead {
+                    balance_moved: true,
+                    expired: false,
+                }),
+                vec![],
+            ),
+            (
+                "dead, expired",
+                outstanding(ReservationState::Dead {
+                    balance_moved: false,
+                    expired: true,
+                }),
+                vec![],
+            ),
+            (
+                "not known to be live",
+                outstanding(ReservationState::Unrecorded),
+                vec![],
+            ),
+            (
+                "landed, with no read noted",
+                AccountState::SpendLanded {
+                    balance: 1,
+                    spent_index: 6,
+                    settled_index: 7,
+                },
+                vec![],
+            ),
+            ("in sync", AccountState::InSync { balance: 1 }, vec![]),
+            (
+                "unreachable, with no read noted",
+                AccountState::Diverged {
+                    kind: DivergenceKind::Unreachable,
+                    report: "no answer".to_owned(),
+                    advance_to: None,
+                },
+                vec![],
+            ),
+        ];
+        // Each state is put on the row with no read of it noted in the watch,
+        // so only a live reservation is polled. What a noted read starts is
+        // for the tests after this one.
+        for (label, state, polled) in cases {
+            let mut wallet = tawara_wallet_core::sample::wallet_view();
+            wallet.accounts[1].state = state;
+            app.model.wallet = Some(wallet);
+            app.model.polled_at = None;
+            assert_eq!(app.polled_accounts(Instant::now()), polled, "{label}");
+        }
+
+        // With no wallet open there is nothing to poll.
+        app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        app.model.polled_at = None;
+        assert_eq!(app.polled_accounts(Instant::now()), vec![account]);
+        app.model.settled_waiting.insert(account, "kept".to_owned());
+        let _ = app.on_event(Event::Locked {
+            reason: LockReason::Background,
+        });
+        assert!(app.model.wallet.is_none());
+        assert!(
+            app.model.settled_waiting.is_empty(),
+            "a lock drops the banners"
+        );
+        assert_eq!(app.polled_accounts(Instant::now()), Vec::<AccountId>::new());
+        let _ = app.update(Message::Tick(500_000));
+        assert!(
+            !app.waiting_on(|p| matches!(p, Purpose::Poll)),
+            "nothing is sent"
+        );
+    }
+
+    #[test]
+    fn a_poll_keeps_asking_through_transient_failures_after_a_live_read_and_drops_on_any_other() {
+        use tawara_wallet_core::view::{
+            AccountState, DivergenceKind, ReservationState, SettledAccount,
+        };
+        let scratch = Scratch::new("poll-watch");
+        let (mut app, _events) = app(&scratch);
+        let account = live_account();
+        app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        let touched = app.touches.get();
+        let outstanding = |reservation: ReservationState| AccountState::SpendOutstanding {
+            balance: 3_180_000_000_000,
+            spent_index: 6,
+            reservation,
+        };
+        let live = outstanding(ReservationState::Live);
+        let silent = AccountState::Diverged {
+            kind: DivergenceKind::Unreachable,
+            report: "no answer".to_owned(),
+            advance_to: None,
+        };
+        // The worker's answer to a poll of the account, taken as the app takes it.
+        let answer = |app: &mut App, state: AccountState, settled: Option<SettledAccount>| {
+            let _ = app.on_reply(
+                Purpose::Poll,
+                Reply::Status {
+                    account,
+                    state,
+                    spendable: false,
+                    text: "checked".to_owned(),
+                    settled,
+                },
+            );
+        };
+        // Whether the next tick sends a poll: the last one's time is forgotten,
+        // so that a poll is due, and its answer is taken.
+        let polls = |app: &mut App| {
+            app.model.polled_at = None;
+            answered(app);
+            let _ = app.update(Message::Tick(now_ms()));
+            let sent = app.waiting_on(|p| matches!(p, Purpose::Poll));
+            answered(app);
+            sent
+        };
+        // The first read the app takes of the account here shows its reservation
+        // live. A wallet opened while the node fails for the account is the
+        // next test's.
+        answer(&mut app, live.clone(), None);
+        assert!(polls(&mut app), "a live reservation is polled");
+
+        // The node does not answer for the account, and is asked again.
+        answer(&mut app, silent.clone(), None);
+        assert!(
+            polls(&mut app),
+            "a node that does not answer does not stop the polls"
+        );
+        // The expiry cannot be read, and is asked again.
+        answer(&mut app, outstanding(ReservationState::Unclassified), None);
+        assert!(
+            polls(&mut app),
+            "an expiry that cannot be read does not stop the polls"
+        );
+        // The reservation is live again.
+        answer(&mut app, live.clone(), None);
+        assert!(polls(&mut app));
+
+        // A real divergence ends the polls, and a node that then does not
+        // answer does not restart them.
+        answer(
+            &mut app,
+            AccountState::Diverged {
+                kind: DivergenceKind::ReservationUnexplained,
+                report: "unexplained".to_owned(),
+                advance_to: None,
+            },
+            None,
+        );
+        assert!(!polls(&mut app), "a divergence is not polled");
+        answer(&mut app, silent.clone(), None);
+        assert!(!polls(&mut app), "nor is a node that then does not answer");
+        // A live read starts them again.
+        answer(&mut app, live.clone(), None);
+        assert!(polls(&mut app));
+
+        // The spend lands and the poll settles it: nothing is polled afterwards.
+        answer(
+            &mut app,
+            AccountState::InSync {
+                balance: 3_180_000_000_000,
+            },
+            Some(SettledAccount {
+                account,
+                text: "settled: the library's page".to_owned(),
+            }),
+        );
+        assert!(!polls(&mut app), "a settled account is not polled");
+        answer(&mut app, silent.clone(), None);
+        assert!(!polls(&mut app));
+
+        // A lock forgets the polls, and the next unlock starts from its reads.
+        answer(&mut app, live.clone(), None);
+        assert!(polls(&mut app));
+        let _ = app.on_event(Event::Locked {
+            reason: LockReason::Background,
+        });
+        assert!(app.model.wallet.is_none());
+        // The row says the store holds no reservation, so only what the watch
+        // kept from before the lock could poll it.
+        let mut wallet = tawara_wallet_core::sample::wallet_view();
+        wallet.accounts[1].state = silent.clone();
+        wallet.accounts[1].reserved = false;
+        let _ = app.on_reply(Purpose::Refresh, Reply::Wallet(wallet));
+        assert!(
+            !polls(&mut app),
+            "a node that does not answer after a lock does not restart the polls"
+        );
+        assert_eq!(
+            app.touches.get(),
+            touched,
+            "a poll is not the person's input"
+        );
+    }
+
+    #[test]
+    fn a_poll_asks_about_a_spend_a_failed_first_read_left_and_bounds_a_spend_in_doubt() {
+        use tawara_wallet_core::view::{AccountState, DivergenceKind, ReservationState};
+        let scratch = Scratch::new("poll-first-read");
+        let (mut app, _events) = app(&scratch);
+        let account = live_account();
+        let diverged = |kind| AccountState::Diverged {
+            kind,
+            report: "the library's report".to_owned(),
+            advance_to: None,
+        };
+        let silent = diverged(DivergenceKind::Unreachable);
+        let not_found = diverged(DivergenceKind::NotFound);
+        let landed = AccountState::SpendLanded {
+            balance: 2_640_000_000_000,
+            spent_index: 6,
+            settled_index: 7,
+        };
+        let live = AccountState::SpendOutstanding {
+            balance: 3_180_000_000_000,
+            spent_index: 6,
+            reservation: ReservationState::Live,
+        };
+        let answer = |app: &mut App, state: AccountState| {
+            let _ = app.on_reply(
+                Purpose::Poll,
+                Reply::Status {
+                    account,
+                    state,
+                    spendable: false,
+                    text: "checked".to_owned(),
+                    settled: None,
+                },
+            );
+        };
+        let polls = |app: &mut App| {
+            app.model.polled_at = None;
+            answered(app);
+            let _ = app.update(Message::Tick(now_ms()));
+            let sent = app.waiting_on(|p| matches!(p, Purpose::Poll));
+            answered(app);
+            sent
+        };
+        // A wallet opens while the node does not answer, or answers "account
+        // not found", for the account whose spend is outstanding: the store
+        // holds its reservation, so it is polled from that first read.
+        for first in [&silent, &not_found] {
+            let _ = app.on_event(Event::Locked {
+                reason: LockReason::Asked,
+            });
+            let mut wallet = tawara_wallet_core::sample::wallet_view();
+            wallet.accounts[1].state = first.clone();
+            assert!(wallet.accounts[1].reserved, "the sample's spend");
+            let _ = app.on_reply(Purpose::Refresh, Reply::Wallet(wallet));
+            assert!(polls(&mut app), "{first:?} at open");
+            answer(&mut app, silent.clone());
+            assert!(polls(&mut app), "{first:?}, then no answer");
+        }
+
+        // "Account not found" leaves the spend in doubt: it is asked about twice
+        // more in a row, and the third such read ends the polls.
+        answer(&mut app, live.clone());
+        for n in 0..2 {
+            answer(&mut app, not_found.clone());
+            assert!(polls(&mut app), "not found, poll {n}");
+        }
+        answer(&mut app, not_found.clone());
+        assert!(!polls(&mut app), "the third read not found ends the polls");
+        answer(&mut app, silent.clone());
+        assert!(!polls(&mut app), "and a silent one does not restart them");
+
+        // A landed spend the automatic settle did not make is asked about in the
+        // same way, so a settle the node interrupted is tried again.
+        answer(&mut app, live.clone());
+        for n in 0..2 {
+            answer(&mut app, landed.clone());
+            assert!(polls(&mut app), "landed, poll {n}");
+        }
+        answer(&mut app, landed.clone());
+        assert!(!polls(&mut app), "the third landed read ends the polls");
+
+        // A row whose store holds no reservation is not polled on a failed read.
+        let _ = app.on_event(Event::Locked {
+            reason: LockReason::Asked,
+        });
+        let mut wallet = tawara_wallet_core::sample::wallet_view();
+        wallet.accounts[1].state = silent.clone();
+        wallet.accounts[1].reserved = false;
+        let _ = app.on_reply(Purpose::Refresh, Reply::Wallet(wallet));
+        assert!(!polls(&mut app));
+    }
+
+    #[test]
+    fn a_recovery_review_that_finds_a_live_reservation_restarts_an_ended_watch() {
+        // The owner's review (P2; docs/DECISIONS.md D38 item 2): a recovery review
+        // reconciles every account and updates its rows, so its reads reset the
+        // watch. An account whose watch ended, and which the review finds with a
+        // live reservation, is polled afresh: a transient failure keeps the polls
+        // going, and the poll that finds the spend landed settles it.
+        use tawara_wallet_core::view::{
+            AccountState, DivergenceKind, ReservationState, SettledAccount,
+        };
+        let scratch = Scratch::new("review-restarts");
+        let (mut app, _events) = app(&scratch);
+        app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        let account = live_account();
+        let in_sync = AccountState::InSync {
+            balance: 3_180_000_000_000,
+        };
+        let answer = |app: &mut App, state: AccountState, settled: Option<SettledAccount>| {
+            let _ = app.on_reply(
+                Purpose::Poll,
+                Reply::Status {
+                    account,
+                    state,
+                    spendable: false,
+                    text: "checked".to_owned(),
+                    settled,
+                },
+            );
+        };
+        // Whether the next tick sends a poll: the last one's time is forgotten,
+        // so that a poll is due, and its answer is taken.
+        let polls = |app: &mut App| {
+            app.model.polled_at = None;
+            answered(app);
+            let _ = app.update(Message::Tick(now_ms()));
+            let sent = app.waiting_on(|p| matches!(p, Purpose::Poll));
+            answered(app);
+            sent
+        };
+        // A read showed the account in sync, so its watch ended.
+        answer(&mut app, in_sync.clone(), None);
+        assert!(!polls(&mut app), "an account in sync is not polled");
+
+        // A recovery review finds its reservation live, and the polls start again.
+        let mut reports = tawara_wallet_core::sample::review();
+        let found = reports
+            .iter_mut()
+            .find(|r| r.account == account)
+            .expect("the sample's spend");
+        found.state = AccountState::SpendOutstanding {
+            balance: 3_180_000_000_000,
+            spent_index: 6,
+            reservation: ReservationState::Live,
+        };
+        let _ = app.on_reply(Purpose::Review, Reply::Reviewed(reports));
+        assert!(polls(&mut app), "the review's live reservation is polled");
+
+        // The node does not answer, and the polls go on.
+        let silent = AccountState::Diverged {
+            kind: DivergenceKind::Unreachable,
+            report: "no answer".to_owned(),
+            advance_to: None,
+        };
+        answer(&mut app, silent, None);
+        assert!(polls(&mut app), "a transient failure keeps the polls going");
+
+        // The next poll finds the spend landed, and settles it.
+        answer(
+            &mut app,
+            in_sync,
+            Some(SettledAccount {
+                account,
+                text: "settled: the library's page".to_owned(),
+            }),
+        );
+        assert!(!polls(&mut app), "a settled account is not polled");
+        assert!(
+            app.model.settled_waiting.contains_key(&account),
+            "the settlement's banner waits for the account's page"
+        );
+    }
+
+    #[test]
+    fn a_recovery_review_starts_the_count_of_a_spend_in_doubt_afresh() {
+        // The bound of docs/DECISIONS.md D38 item 2 counts the polls of a spend in
+        // doubt, and the third read in doubt in a row ends them. A review that finds
+        // the reservation live again starts that count afresh, as a sign does, so
+        // the account is polled through the bound once more.
+        use tawara_wallet_core::view::{AccountState, DivergenceKind, ReservationState};
+        let scratch = Scratch::new("review-bound");
+        let (mut app, _events) = app(&scratch);
+        app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        let account = live_account();
+        let live = AccountState::SpendOutstanding {
+            balance: 3_180_000_000_000,
+            spent_index: 6,
+            reservation: ReservationState::Live,
+        };
+        let not_found = AccountState::Diverged {
+            kind: DivergenceKind::NotFound,
+            report: "account not found".to_owned(),
+            advance_to: None,
+        };
+        let answer = |app: &mut App, state: AccountState| {
+            let _ = app.on_reply(
+                Purpose::Poll,
+                Reply::Status {
+                    account,
+                    state,
+                    spendable: false,
+                    text: "checked".to_owned(),
+                    settled: None,
+                },
+            );
+        };
+        // Whether the next tick sends a poll, as the test above has it.
+        let polls = |app: &mut App| {
+            app.model.polled_at = None;
+            answered(app);
+            let _ = app.update(Message::Tick(now_ms()));
+            let sent = app.waiting_on(|p| matches!(p, Purpose::Poll));
+            answered(app);
+            sent
+        };
+        // A recovery review that finds the reservation live.
+        let review = |app: &mut App| {
+            let mut reports = tawara_wallet_core::sample::review();
+            let found = reports
+                .iter_mut()
+                .find(|r| r.account == account)
+                .expect("the sample's spend");
+            found.state = live.clone();
+            let _ = app.on_reply(Purpose::Review, Reply::Reviewed(reports));
+        };
+        // Each round: two polls in doubt, and the third read in doubt ends them.
+        // The second round starts after the first has ended them.
+        for round in 0..2 {
+            review(&mut app);
+            assert!(
+                polls(&mut app),
+                "round {round}: the review's reservation is polled"
+            );
+            for n in 0..2 {
+                answer(&mut app, not_found.clone());
+                assert!(polls(&mut app), "round {round}: not found, poll {n}");
+            }
+            answer(&mut app, not_found.clone());
+            assert!(
+                !polls(&mut app),
+                "round {round}: the third read in doubt ends the polls"
+            );
+        }
+    }
+
+    #[test]
+    fn a_settlement_a_poll_or_a_check_finds_is_the_banner_on_its_page_or_waits_for_it() {
+        use tawara_wallet_core::view::{AccountState, SettledAccount};
+        let account = live_account();
+        let in_sync = AccountState::InSync {
+            balance: 3_180_000_000_000,
+        };
+        let answer = |purpose: Purpose, settled: Option<SettledAccount>, text: &str| {
+            (
+                purpose,
+                Reply::Status {
+                    account,
+                    state: in_sync.clone(),
+                    spendable: true,
+                    text: text.to_owned(),
+                    settled,
+                },
+            )
+        };
+        let settled = || {
+            Some(SettledAccount {
+                account,
+                text: "the library's page".to_owned(),
+            })
+        };
+        let banner = |app: &App| match &wallet_page(app).page {
+            Page::Account(a) => a.report.clone(),
+            _ => None,
+        };
+        let said = Some((Done::Settled, "the library's page".to_owned()));
+
+        // On the account's own page the banner is shown at once.
+        let mut app = on_wallet(Page::Account(AccountPage {
+            account,
+            report: None,
+        }));
+        let (purpose, reply) = answer(Purpose::Poll, settled(), "checked");
+        let _ = app.on_reply(purpose, reply);
+        assert_eq!(banner(&app), said);
+        assert!(app.model.settled_waiting.is_empty());
+        assert_eq!(
+            app.model.wallet.as_ref().unwrap().accounts[1].state,
+            in_sync,
+            "the row shows the state the worker reports"
+        );
+
+        // Elsewhere it waits for the account's page, and is shown once that is
+        // opened, and then only once.
+        let mut app = on_wallet(Page::Dashboard);
+        let (purpose, reply) = answer(Purpose::Poll, settled(), "checked");
+        let _ = app.on_reply(purpose, reply);
+        assert!(matches!(wallet_page(&app).page, Page::Dashboard));
+        wallet(&mut app, WalletMsg::Open(To::Account(account)));
+        assert_eq!(banner(&app), said);
+        wallet(&mut app, WalletMsg::Open(To::Dashboard));
+        wallet(&mut app, WalletMsg::Open(To::Account(account)));
+        assert_eq!(banner(&app), None);
+
+        // A check that settles the account says so, in place of what it found;
+        // a check that settles nothing says what it found.
+        let mut app = on_wallet(Page::Account(AccountPage {
+            account,
+            report: None,
+        }));
+        let (purpose, reply) = answer(Purpose::Status, settled(), "checked");
+        let _ = app.on_reply(purpose, reply);
+        assert_eq!(banner(&app), said);
+        let (purpose, reply) = answer(Purpose::Status, None, "checked again");
+        let _ = app.on_reply(purpose, reply);
+        assert_eq!(
+            banner(&app),
+            Some((Done::Checked, "checked again".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_refresh_that_settles_an_account_leaves_its_banner_for_its_page() {
+        use tawara_wallet_core::view::{AccountState, SettledAccount};
+        let account = live_account();
+        let mut app = on_wallet(Page::Account(AccountPage {
+            account,
+            report: None,
+        }));
+        let mut view = tawara_wallet_core::sample::wallet_view();
+        view.accounts[1].state = AccountState::InSync { balance: 1 };
+        view.settled = vec![SettledAccount {
+            account,
+            text: "the library's page".to_owned(),
+        }];
+        let _ = app.on_reply(Purpose::Refresh, Reply::Wallet(view));
+        // A refresh shows the dashboard, as it always has.
+        assert!(matches!(wallet_page(&app).page, Page::Dashboard));
+        wallet(&mut app, WalletMsg::Open(To::Account(account)));
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Account(AccountPage {
+                report: Some((Done::Settled, text)),
+                ..
+            }) if text == "the library's page"
+        ));
+    }
+
+    #[test]
+    fn a_settlement_in_the_answer_to_a_send_or_a_restore_waits_for_its_page() {
+        use tawara_wallet_core::view::SettledAccount;
+        let account = live_account();
+        let settled = vec![SettledAccount {
+            account,
+            text: "the library's page".to_owned(),
+        }];
+        // The read after a send settled it: the sent page is shown, and the
+        // banner waits for the account's page.
+        let mut app = on_wallet(Page::Dashboard);
+        let mut sent = tawara_wallet_core::sample::sent_view();
+        sent.view.settled.clone_from(&settled);
+        let _ = app.on_reply(Purpose::ConfirmSend, Reply::Sent(sent));
+        assert!(matches!(wallet_page(&app).page, Page::Send(_)));
+        assert_eq!(
+            app.model.settled_waiting.get(&account).map(String::as_str),
+            Some("the library's page")
+        );
+        // The reopen after a restore settled it.
+        let mut app = on_wallet(Page::Dashboard);
+        let mut view = tawara_wallet_core::sample::wallet_view();
+        view.settled = settled;
+        let _ = app.on_reply(
+            Purpose::Restore,
+            Reply::Restored {
+                ok: true,
+                text: "restored".to_owned(),
+                opened: Ok(view),
+            },
+        );
+        wallet(&mut app, WalletMsg::Open(To::Account(account)));
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Account(AccountPage {
+                report: Some((Done::Settled, text)),
+                ..
+            }) if text == "the library's page"
+        ));
+    }
+
+    #[test]
+    fn a_poll_of_a_store_open_on_its_own_asks_nothing() {
+        let scratch = Scratch::new("poll-store");
+        let (mut app, _events) = app(&scratch);
+        let mut wallet = tawara_wallet_core::sample::wallet_view();
+        wallet.opened = false;
+        app.model.wallet = Some(wallet);
+        assert_eq!(app.polled_accounts(Instant::now()), Vec::<AccountId>::new());
+    }
+
+    #[test]
+    fn a_poll_that_is_refused_or_unanswered_says_nothing() {
+        let account = live_account();
+        let mut app = on_wallet(Page::Account(AccountPage {
+            account,
+            report: None,
+        }));
+        let _ = app.on_reply(
+            Purpose::Poll,
+            Reply::Refused(Refusal {
+                kind: RefusalKind::Library,
+                text: "the chain did not answer".to_owned(),
+            }),
+        );
+        assert_eq!(wallet_page(&app).error, None, "nothing is shown");
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Account(AccountPage { report: None, .. })
+        ));
     }
 
     /// The application over `prefs`, saving to `path`, with no worker: the

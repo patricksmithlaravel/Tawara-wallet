@@ -21,7 +21,7 @@
 //! (`phone-s4-phrase-warning.png` and `phone-s4-phrase-shown.png`). The
 //! phone's welcome screen, S0, has no desktop image: it is drawn only as
 //! `phone-s0-welcome.png` (docs/DECISIONS.md D37), so the phone's images are
-//! 67 in all. Every piece of text names a bundled face (`tawara_app::fonts`),
+//! 69 in all. Every piece of text names a bundled face (`tawara_app::fonts`),
 //! so the pixels do not depend on the fonts a machine has installed.
 //!
 //! Flags:
@@ -270,10 +270,12 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         form: typed.clone(),
         stage: SendStage::Sent(Box::new(SentPage {
             sent: sample::sent_view(),
+            order: 0,
             resigned: false,
             saved: Some(Ok(PathBuf::from(
                 "/home/you/Downloads/tawara-spend-5e5e5e5e5e5e5e5e.hex",
             ))),
+            dismissing: false,
         })),
     })));
     sent.wallet = Some(sample::sent_view().view);
@@ -281,8 +283,10 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
     let kept = || Signed {
         sent: SentPage {
             sent: sample::sent_view(),
+            order: 0,
             resigned: false,
             saved: None,
+            dismissing: false,
         },
         form: typed.clone(),
         open: Default::default(),
@@ -301,6 +305,41 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
     let set_aside = |page| {
         let mut m = on(page);
         m.wallet = Some(aside.clone());
+        m
+    };
+    // The second account's spend has landed: the chain shows the change key,
+    // and the automatic settle has not yet been made, so W7 offers Settle as
+    // its fallback (docs/DECISIONS.md D38).
+    let landed_wallet = sample::landed_view();
+    let landed = |page| {
+        let mut m = on(page);
+        m.wallet = Some(landed_wallet.clone());
+        m
+    };
+    // The first account's spend once it has settled: the account is in sync
+    // again, so the sent page's Settle step is done (docs/DECISIONS.md D38).
+    let settled_sent = {
+        let mut settled_wallet = sample::sent_view().view;
+        let balance = settled_wallet.accounts[0]
+            .state
+            .balance()
+            .unwrap_or_default();
+        settled_wallet.accounts[0].state = AccountState::InSync { balance };
+        settled_wallet.accounts[0].spendable = true;
+        let mut m = opened_sent(on(Page::Send(SendPage {
+            from: Some(accounts[0].id),
+            form: typed.clone(),
+            stage: SendStage::Sent(Box::new(SentPage {
+                sent: sample::sent_view(),
+                order: 0,
+                resigned: false,
+                saved: Some(Ok(PathBuf::from(
+                    "/home/you/Downloads/tawara-spend-5e5e5e5e5e5e5e5e.hex",
+                ))),
+                dismissing: false,
+            })),
+        })));
+        m.wallet = Some(settled_wallet);
         m
     };
     let refused = |state| {
@@ -505,8 +544,7 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
                 dir: DIR.to_owned(),
                 note: Some(
                     "A signed spend's page was open when the wallet locked. It is kept, with \
-                     the signed bytes, and shown again when this store is unlocked: save the \
-                     bytes then."
+                     the signed bytes, and shown again when this store is unlocked."
                         .to_owned(),
                 ),
                 ..UnlockForm::default()
@@ -559,10 +597,19 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
             })),
         ),
         ("w6-sent", DASHBOARD, sent),
+        ("w6-sent-settled", DASHBOARD, settled_sent),
         (
             "w7-account-outstanding",
             DASHBOARD,
             on(Page::Account(AccountPage {
+                account: accounts[1].id,
+                report: None,
+            })),
+        ),
+        (
+            "w7-account-landed",
+            DASHBOARD,
+            landed(Page::Account(AccountPage {
                 account: accounts[1].id,
                 report: None,
             })),

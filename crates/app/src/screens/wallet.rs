@@ -423,9 +423,10 @@ fn unsaved<'a>(model: &Model, kept: &'a Signed) -> Element<'a, Message> {
         color::TEXT_PRIMARY,
     );
     let body = t(
-        "Until it settles, its signed bytes are the only ones that can move the \
-         reserved funds, and Tawara keeps them only until it closes. Open its page \
-         to save them.",
+        "Its signed bytes are kept until they are saved, dismissed or the wallet \
+         locks. A reorganisation of the chain can revert a settle, and then a saved \
+         copy may be the only way to move the balance. Open its page to save or \
+         dismiss them.",
         ty::BODY_SMALL,
         color::TEXT_ON_WARNING_SOFT,
     );
@@ -478,8 +479,8 @@ pub fn kept_after_stop(model: &Model) -> Option<Element<'_, Message>> {
     let mut list = column![
         ui::section_label("Spends signed in this run"),
         t(
-            "Until each settles, its signed bytes are the only ones that can move its reserved \
-             funds, and they go when Tawara closes: save them first.",
+            "Until each is saved, its signed bytes are kept, and they go when Tawara closes: \
+             save them first.",
             ty::BODY_SMALL,
             color::TEXT_SECONDARY,
         ),
@@ -850,8 +851,10 @@ mod tests {
                                  instead and keep it somewhere safe.";
         let page = |saved: &str| SentPage {
             sent: tawara_wallet_core::sample::sent_view(),
+            order: 0,
             resigned: false,
             saved: Some(Err(saved.to_owned())),
+            dismissing: false,
         };
         let size = (360, 200);
         let draw = |page: &SentPage| {

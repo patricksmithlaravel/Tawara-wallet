@@ -34,7 +34,7 @@
 
 #![allow(dead_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Condvar, Mutex};
@@ -109,7 +109,21 @@ struct State {
     ledger: BTreeMap<Tag, (Address, u64)>,
     tip: u64,
     unreachable: bool,
+    /// `/network/status` is not answered, so the tip cannot be read and the
+    /// expiry of an outstanding spend cannot be checked (the library's
+    /// `Expiry::Unreadable`).
+    status_down: bool,
+    /// How many more status reads the node answers before it stops answering
+    /// them, from [`Chain::set_status_down_after`]; `None` when no countdown
+    /// is set.
+    status_answers: Option<usize>,
+    /// The tags whose lookups the node does not answer, while it answers the
+    /// rest: one account reads `ChainUnreachable` and the others reconcile.
+    silent_for: BTreeSet<Tag>,
     refuse_submits: bool,
+    /// What the ledger holds once the next submit is taken, from
+    /// [`Chain::land_on_submit`]: the spend lands before any read after it.
+    land_on_submit: Option<(Tag, Address, u64)>,
     submits: Vec<Vec<u8>>,
     calls: usize,
     gate: Option<Gate>,
@@ -290,8 +304,41 @@ impl Chain {
         self.0.lock().expect("chain").unreachable = unreachable;
     }
 
+    /// The node answers the ledger but not its status: a read of the tip fails.
+    /// Setting it clears any countdown from [`Chain::set_status_down_after`].
+    pub fn set_status_down(&self, down: bool) {
+        let mut s = self.0.lock().expect("chain");
+        s.status_down = down;
+        s.status_answers = None;
+    }
+
+    /// The node answers the next `answers` status reads, and then none of them
+    /// until [`Chain::set_status_down`] is called: a spend's own read of the
+    /// tip, which its signing makes first, is answered, and the read its reply
+    /// carries after that is not.
+    pub fn set_status_down_after(&self, answers: usize) {
+        self.0.lock().expect("chain").status_answers = Some(answers);
+    }
+
+    /// The node does not answer a lookup of `tag`, or answers again.
+    pub fn set_silent_for(&self, tag: Tag, silent: bool) {
+        let mut s = self.0.lock().expect("chain");
+        if silent {
+            s.silent_for.insert(tag);
+        } else {
+            s.silent_for.remove(&tag);
+        }
+    }
+
     pub fn refuse_submits(&self, refuse: bool) {
         self.0.lock().expect("chain").refuse_submits = refuse;
+    }
+
+    /// The next submit the node takes lands at once: the ledger then holds
+    /// `tag` at `address` with `balance`, so the read that follows the submit
+    /// finds the spend landed. A refused submit lands nothing.
+    pub fn land_on_submit(&self, tag: Tag, address: Address, balance: u64) {
+        self.0.lock().expect("chain").land_on_submit = Some((tag, address, balance));
     }
 
     /// Every wire image posted to `/construction/submit`.
@@ -460,7 +507,19 @@ impl Transport for Chain {
         }
         let req: serde_json::Value =
             serde_json::from_slice(body).map_err(|_| mesh("test: request json"))?;
+        // A status read the countdown answers uses one of its answers up.
+        let status_refused = s.status_down || s.status_answers == Some(0);
+        if path == "/network/status"
+            && !status_refused
+            && let Some(answers) = s.status_answers.as_mut()
+        {
+            *answers -= 1;
+        }
         match path {
+            "/network/status" if status_refused => Err(Error::Transport {
+                op: "status",
+                kind: TransportKind::Io(std::io::ErrorKind::TimedOut),
+            }),
             "/network/status" => Ok(serde_json::json!({
                 "current_block_identifier": { "index": s.tip, "hash": format!("0x{}", "ab".repeat(32)) },
                 "current_block_timestamp": s.tip * 60_000,
@@ -488,6 +547,12 @@ impl Transport for Chain {
                     .and_then(unhex)
                     .ok_or(mesh("test: tag hex"))?;
                 let tag: Tag = raw.try_into().map_err(|_| mesh("test: tag length"))?;
+                if s.silent_for.contains(&tag) {
+                    return Err(Error::Transport {
+                        op: "call",
+                        kind: TransportKind::Io(std::io::ErrorKind::TimedOut),
+                    });
+                }
                 let nth = {
                     let count = s.resolved.entry(tag).or_default();
                     *count += 1;
@@ -614,6 +679,9 @@ impl Transport for Chain {
                         kind: TransportKind::Io(std::io::ErrorKind::BrokenPipe),
                     });
                 }
+                if let Some((tag, address, balance)) = s.land_on_submit.take() {
+                    s.ledger.insert(tag, (address, balance));
+                }
                 let tx = mochimo_crypto::tx::wire::Transaction::from_wire(&wire)?;
                 Ok(format!(r#"{{"transaction_identifier":{{"hash":"{}"}}}}"#, hex_of(&tx.id_digest())).into_bytes())
             }
@@ -736,7 +804,7 @@ impl Harness {
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             match self.events.recv_timeout(left) {
-                Ok(Event::Done { id: got, reply }) if got == id => return reply,
+                Ok(Event::Done { id: got, reply }) if got == id => return *reply,
                 Ok(other) => self.seen.push(other),
                 Err(e) => panic!("no answer to {id:?}: {e}"),
             }

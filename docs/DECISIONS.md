@@ -2317,7 +2317,8 @@ on the three conditions D18 left open.
    through `Intent.createChooser`, with the file's name as the subject. The
    page then says, as a note and not as a refusal, that the sheet was opened
    and that Tawara cannot tell whether the bytes were saved there, so the
-   spend still counts as not saved and its banner stays until it settles.
+   spend still counts as not saved and its banner stays until the bytes are
+   saved, dismissed or the wallet locks (D38 item 5, as revised on 2026-10-13).
    `Host::share` returns `Ok` when the sheet was shown and `Err` with the
    reason when it was not; a sheet that could not be shown is a refusal, as
    a file that could not be written is on the desktop. `Host::share` is a
@@ -3134,14 +3135,16 @@ item 6's.
    dismissed or locked.** Unsaved signed bytes are kept until the person
    saves them, dismisses them, or the wallet locks, and not until the first
    read that finds the account in sync. That first-read rule is the code's
-   rule today (`forget_settled`, `crates/app/src/app/wallet.rs:769-770`,
-   called from `crates/app/src/app.rs:1701`); it is not changed in this PR.
-   The bytes live in memory only and nothing is written to disk, so a
-   restart also loses them. This replaces the owner's earlier answer of the
-   same day, to forget them on settle. That answer rested on the wrong
-   premise that a reverted settle reopens the reservation, as the corrected
-   facts below show. No dismiss control exists on this branch; PR #30 adds
-   one, and it and its copy are new wording (item 3).
+   rule on main (`forget_settled`, `crates/app/src/app/wallet.rs`, called
+   from `on_reply` in `crates/app/src/app.rs`); PR #30 replaces it with the
+   rule above (owner, 2026-10-13: wording corrected). The bytes live in
+   memory only and nothing is written to disk, so a restart also loses
+   them. This replaces the owner's earlier answer of the same day, to
+   forget them on settle. That answer rested on the wrong premise that a
+   reverted settle reopens the reservation, as the corrected facts below
+   show. No dismiss control exists on main (owner, 2026-10-13: wording
+   corrected); PR #30 adds Dismiss, with a confirming second press, and the
+   control and its copy are new wording (item 3).
 
    If a reorganisation of the chain then reverts the settle, the reservation
    is not reopened: `persist_settled` closes it and keeps only the settle's
@@ -3281,7 +3284,12 @@ item 6's.
      which repeats the hex, are wiped. Copies outside the model (a
      clipboard, a share sheet, messages in flight) are not.
    - A worker that stops keeps unsaved bytes until Tawara closes, and the
-     stopped screen offers to save them.
+     stopped screen offers to save them. Dated 2026-10-14, this means a worker
+     that panics: a graceful stop releases the unsaved bytes, as the shutdown
+     does. A stop whose reason is not yet known (a command could not be
+     sent to the worker before its `Stopped` came) keeps them, through a move
+     to the background and any lock but the shutdown's, until that notice says
+     which, as the owner's review of PR #30 (P1) asked on the same day.
 
    One consequence follows whatever the reading. A revert after the bytes
    have gone, through a lock or a dismissal with no save, finds no copy in
@@ -3289,6 +3297,22 @@ item 6's.
    While the reservation is still open, Re-sign (W8) can sign the same
    spend again: the library refuses any rebuilt plan whose digest differs
    from the reserved one (library `wallet.rs:813-814`).
+
+   **Confirmed (owner, 2026-10-14):** after Tawara's worker panics, the unsaved
+   signed bytes are kept until Tawara closes, including across a move to the
+   background. This keeps the code as built, follows D38 item 5, and makes W6
+   (docs/SCREENS.md) name this as its one exception. The reason: the stopped
+   screen's save offer is the only way to keep the only bytes that can move
+   those funds while the reservation is open. The bytes are never written to
+   disk, and on a phone the app-switcher cover still hides the screen.
+
+   **Note (2026-10-14, the owner's review of PR #30, P1):** W6 now names two
+   exceptions, not one. Besides the panic confirmed above, a stop whose reason
+   is not yet known keeps the unsaved bytes until the worker's `Stopped` says
+   which, since a worker that panics drops its queue before that notice comes.
+   The confirmation above covers the panic only. That a move to the background
+   with no notice at all releases nothing is as built and awaits the owner's
+   confirmation.
 6. **The narrow lock case is accepted, with no library change (owner,
    2026-10-13).** D19 says every walk takes a cancel, and D24 says a walk
    never holds the lock back. The library's `settle_if_landed` reconciles

@@ -11,6 +11,7 @@
 use iced::widget::text::Wrapping;
 use iced::widget::{Row, checkbox, column, container, row, space, text_input};
 use iced::{Alignment, Element, Length, Padding};
+use tawara_wallet_core::view::{AccountId, AccountState};
 use tawara_wallet_core::{MAX_DESTINATIONS, PlanView, REFERENCE_RULE};
 
 use super::{account_choice, action, copy, figure, frame, name, pair, report, row_of};
@@ -442,6 +443,17 @@ enum Step {
     Failed,
 }
 
+/// The settle step of W6 follows the account's live state (docs/DECISIONS.md
+/// D38): done once the account is in sync again, which settling leaves, and
+/// pending until then, whether the spend is still outstanding or has landed
+/// and not yet settled.
+fn settle_step(model: &Model, from: AccountId) -> Step {
+    match row_of(model, from).map(|a| &a.state) {
+        Some(AccountState::InSync { .. }) => Step::Done,
+        _ => Step::Pending,
+    }
+}
+
 /// The three steps of a spend (03): reserving the key, submitting to the
 /// node's socket, and settling once the chain shows the change. They show
 /// what has happened, nothing more (docs/SCREENS.md W6). On a phone they
@@ -665,6 +677,75 @@ fn review<'a>(model: &'a Model, page: &'a WalletPage, plan: &'a PlanView) -> Ele
     )
 }
 
+/// W6's Retry artifact card, for bytes not saved (docs/DECISIONS.md D38 item
+/// 5, as revised on 2026-10-13). Provisional wording, for the owner's
+/// approval.
+const UNSAVED_ARTIFACT: &str = "The signed bytes. The store does not keep them. Tawara keeps \
+                                them until they are saved, dismissed or the wallet locks, and \
+                                a reorganisation of the chain can revert a settle, so save \
+                                them before going further.";
+
+/// W6's Retry artifact card, for bytes saved to a file (docs/DECISIONS.md D38
+/// item 5, as revised on 2026-10-13). Provisional wording, for the owner's
+/// approval.
+const SAVED_ARTIFACT: &str = "The signed bytes, saved to the file named below. The store does \
+                              not keep them, so keep that file: a reorganisation of the chain \
+                              can revert a settle, and then it may be the only way to move \
+                              these funds.";
+
+/// What W6 says once Dismiss is pressed, before it is confirmed
+/// (docs/DECISIONS.md D38 item 5, as revised on 2026-10-13). Provisional
+/// wording, for the owner's approval.
+pub(crate) const DISMISS_WARNING: &str = "Dismissing wipes the only copy of these bytes that \
+                                          Tawara holds, and Tawara wrote none to disk: unless a \
+                                          copy was kept elsewhere, they are gone. If a \
+                                          reorganisation of the chain reverts a settle, a copy \
+                                          may be the only way to move these funds.";
+
+/// W6: Dismiss for bytes not saved, on its own row below the card's other
+/// controls. Pressed once, it asks to be confirmed and says what is lost.
+fn dismiss<'a>(model: &Model, compact: bool, s: &'a SentPage) -> Element<'a, Message> {
+    if !s.dismissing {
+        return button_row(
+            compact,
+            vec![action(
+                model,
+                "Dismiss",
+                theme::Button::Secondary,
+                Size::Medium,
+                None,
+                WalletMsg::AskDismiss,
+            )],
+        );
+    }
+    column![
+        ui::warning_callout("Dismiss the signed bytes?", DISMISS_WARNING),
+        button_row(
+            compact,
+            vec![
+                action(
+                    model,
+                    "Dismiss the bytes",
+                    theme::Button::WarningPrimary,
+                    Size::Medium,
+                    None,
+                    WalletMsg::DismissSigned(s.sent.artifact_hex.clone()),
+                ),
+                action(
+                    model,
+                    "Keep them",
+                    theme::Button::Secondary,
+                    Size::Medium,
+                    None,
+                    WalletMsg::CancelDismiss,
+                ),
+            ],
+        ),
+    ]
+    .spacing(sp::S12)
+    .into()
+}
+
 /// W6: what happened, the bytes the store does not keep, and the library's
 /// page with its three facts, whole.
 fn sent_page<'a>(model: &'a Model, page: &'a WalletPage, s: &'a SentPage) -> Element<'a, Message> {
@@ -675,29 +756,28 @@ fn sent_page<'a>(model: &'a Model, page: &'a WalletPage, s: &'a SentPage) -> Ele
     } else {
         Step::Failed
     };
+    let buttons = vec![
+        action(
+            model,
+            "Save artifact",
+            theme::Button::Primary,
+            Size::Medium,
+            Some(Icon::Download),
+            WalletMsg::SaveArtifact,
+        ),
+        copy(page, &sent.artifact_hex, "Copy hex"),
+    ];
+    // What the card says follows whether the bytes are saved
+    // (docs/DECISIONS.md D38 item 5, as revised on 2026-10-13).
+    let about = if s.unsaved() {
+        UNSAVED_ARTIFACT
+    } else {
+        SAVED_ARTIFACT
+    };
     let mut artifact = column![
         ui::section_label("Retry artifact"),
-        t(
-            "The signed bytes. The store does not keep them, and while the reservation is \
-             open they are the only bytes that can move these funds: save them before going \
-             further.",
-            ty::BODY_SMALL,
-            color::TEXT_SECONDARY,
-        ),
-        button_row(
-            compact,
-            vec![
-                action(
-                    model,
-                    "Save artifact",
-                    theme::Button::Primary,
-                    Size::Medium,
-                    Some(Icon::Download),
-                    WalletMsg::SaveArtifact,
-                ),
-                copy(page, &sent.artifact_hex, "Copy hex"),
-            ],
-        ),
+        t(about, ty::BODY_SMALL, color::TEXT_SECONDARY),
+        button_row(compact, buttons),
     ]
     .spacing(sp::S12);
     if let Some(note) = super::saved_note(s) {
@@ -713,8 +793,19 @@ fn sent_page<'a>(model: &'a Model, page: &'a WalletPage, s: &'a SentPage) -> Ele
             .wrapping(Wrapping::WordOrGlyph),
         );
     }
+    // Dismiss is offered only for bytes that are not saved, apart from Save
+    // and only once confirmed, since it wipes the only copy Tawara holds
+    // (docs/DECISIONS.md D38 item 5, as revised on 2026-10-13).
+    if s.unsaved() {
+        artifact = artifact.push(dismiss(model, compact, s));
+    }
     let body = vec![
-        steps(compact, Step::Done, submitted, Step::Pending),
+        steps(
+            compact,
+            Step::Done,
+            submitted,
+            settle_step(model, sent.from),
+        ),
         report::show_in(compact, page, ReportKey::Sent, report::sent(sent)),
         ui::card_for(compact, artifact).into(),
         button_row(
@@ -1166,8 +1257,10 @@ mod tests {
         // page says so (docs/DECISIONS.md D32 item 10 (i)).
         let sent = SentPage {
             sent: sample::sent_view(),
+            order: 0,
             resigned: false,
             saved: Some(Err(crate::app::SHARED.to_owned())),
+            dismissing: false,
         };
         let model = phone(
             Page::Send(SendPage {
@@ -1183,6 +1276,57 @@ mod tests {
             drawn.iter().any(|(text, _)| text == crate::app::SHARED),
             "the page says the sheet was asked for"
         );
+    }
+
+    #[test]
+    fn w6_offers_dismiss_only_for_unsaved_bytes_and_asks_before_it_drops_them() {
+        // docs/DECISIONS.md D38 item 5, as revised on 2026-10-13: Dismiss is
+        // for bytes not saved, and wipes the only copy Tawara holds, so it is
+        // confirmed first, with what is lost said beside it.
+        let drawn = |saved: Option<Result<std::path::PathBuf, String>>, dismissing: bool| {
+            let sent = SentPage {
+                sent: sample::sent_view(),
+                order: 0,
+                resigned: false,
+                saved,
+                dismissing,
+            };
+            let model = phone(
+                Page::Send(SendPage {
+                    from: Some(accounts()[0]),
+                    form: typed(),
+                    stage: SendStage::Sent(Box::new(sent)),
+                }),
+                Some(ReportKey::Sent),
+            );
+            assert_eq!(fits(screens::view(&model), NARROWEST), Ok(()));
+            texts(screens::view(&model), (NARROWEST, 3000.0))
+                .into_iter()
+                .map(|(text, _)| text)
+                .collect::<Vec<_>>()
+        };
+        let has = |texts: &[String], what: &str| texts.iter().any(|t| t == what);
+
+        let unsaved = drawn(None, false);
+        assert!(has(&unsaved, "Dismiss"), "{unsaved:?}");
+        assert!(has(&unsaved, UNSAVED_ARTIFACT));
+        assert!(!has(&unsaved, DISMISS_WARNING));
+
+        let asked = drawn(Some(Err(crate::app::SHARED.to_owned())), true);
+        assert!(has(&asked, DISMISS_WARNING), "{asked:?}");
+        assert!(has(&asked, "Dismiss the bytes"));
+        assert!(has(&asked, "Keep them"));
+
+        let saved = drawn(
+            Some(Ok(std::path::PathBuf::from(
+                "/home/you/Downloads/spend.hex",
+            ))),
+            false,
+        );
+        assert!(!has(&saved, "Dismiss"), "{saved:?}");
+        assert!(!has(&saved, "Dismiss the bytes"));
+        assert!(has(&saved, SAVED_ARTIFACT));
+        assert!(!has(&saved, UNSAVED_ARTIFACT));
     }
 
     #[test]
@@ -1373,5 +1517,30 @@ mod tests {
         );
         let desktop = child_bounds(button_row(false, vec![wide(), wide()]));
         assert_eq!(desktop[1].y, desktop[0].y, "{desktop:?}");
+    }
+
+    #[test]
+    fn the_settle_step_is_done_once_the_account_is_in_sync_again() {
+        let mut wallet = sample::wallet_view();
+        let account = wallet.accounts[1].id;
+        let mut model = Model::new(Preferences::default(), None);
+        // Outstanding: the step waits.
+        model.wallet = Some(wallet.clone());
+        assert!(matches!(settle_step(&model, account), Step::Pending));
+        // Landed and not yet settled: it waits for the settle that follows.
+        wallet.accounts[1].state = AccountState::SpendLanded {
+            balance: 1,
+            spent_index: 1,
+            settled_index: 2,
+        };
+        model.wallet = Some(wallet.clone());
+        assert!(matches!(settle_step(&model, account), Step::Pending));
+        // Settled: in sync again, and the step is done, as the live view says.
+        wallet.accounts[1].state = AccountState::InSync { balance: 1 };
+        model.wallet = Some(wallet.clone());
+        assert!(matches!(settle_step(&model, account), Step::Done));
+        // With no store open there is nothing that says it settled.
+        model.wallet = None;
+        assert!(matches!(settle_step(&model, account), Step::Pending));
     }
 }

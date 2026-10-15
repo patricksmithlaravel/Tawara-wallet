@@ -17,7 +17,7 @@ use crate::explorer::{
 use crate::node::{NetworkName, SyncState};
 use crate::secret::PhraseForDisplay;
 use crate::spend::SpendInputError;
-use crate::view::{AccountId, AccountState, WalletView};
+use crate::view::{AccountId, AccountState, SettledAccount, WalletView};
 
 /// Something the worker reports.
 #[derive(Debug)]
@@ -28,8 +28,12 @@ pub enum Event {
     /// acknowledged advance or a discovery sweep. Sent between `Busy` and
     /// `Done`, before each account and every few hundred key positions.
     Progress { id: RequestId, progress: Progress },
-    /// A command finished. Every command gets exactly one.
-    Done { id: RequestId, reply: Reply },
+    /// A command finished. Every command gets exactly one. The reply is
+    /// boxed so that an event stays small: unboxed, every event would be as
+    /// large as the largest reply, and whether that crosses clippy's
+    /// `large_enum_variant` limit depends on the platform (a `PathBuf` is 32
+    /// bytes on Windows, 24 elsewhere).
+    Done { id: RequestId, reply: Box<Reply> },
     /// The store was closed: its secret is dropped and its lock released.
     /// Sent whenever an open store closes, for any reason, including in
     /// answer to [`crate::Command::Lock`], and whenever a recovery phrase
@@ -107,7 +111,10 @@ pub enum LockReason {
     /// node, an advance, a restore) and could not be read back; the
     /// command's refusal says why. A wallet the library refuses to open
     /// does not close the store: it stays open on its own, with the
-    /// library's page as its notice.
+    /// library's page as its notice. Also sent, after the command's answer,
+    /// when an automatic settle's write failed and left the store's handle
+    /// unusable (docs/DECISIONS.md D38): the store is closed so that
+    /// unlocking it reads disk again.
     ReopenFailed,
     /// The worker is shutting down.
     Shutdown,
@@ -166,12 +173,17 @@ pub enum Reply {
     /// One account, reconciled now. `spendable` is whether a spend may be
     /// planned from it now, as [`crate::view::AccountRow::spendable`] says:
     /// it reconciled, and the wallet held it when it opened (an account set
-    /// aside then stays aside until the store is opened again).
+    /// aside then stays aside until the store is opened again). `settled` is
+    /// set when the read showed the spend landed and the worker settled the
+    /// account on its own (docs/DECISIONS.md D38); `state`, `spendable` and
+    /// `text` are then what the settle left, with the library's settled
+    /// page as `text`.
     Status {
         account: AccountId,
         state: AccountState,
         spendable: bool,
         text: String,
+        settled: Option<SettledAccount>,
     },
     /// What an acknowledged advance did. `ok` is whether the library counts
     /// it as done (the command line's exit status 0); `advanced_to` is the
@@ -314,6 +326,13 @@ pub struct PlanView {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SentView {
     pub from: AccountId,
+    /// The one-time key index the spend was signed with, which is the index of
+    /// the reservation it holds (`AccountState::SpendOutstanding::spent_index`
+    /// while that reservation is open). A re-sign is for the spend that holds
+    /// the account's open reservation, so the interface finds the spend by it
+    /// (D38, as docs/SCREENS.md W8 states the rule). `None` only when the store
+    /// could not say which reservation it holds.
+    pub spent_index: Option<u32>,
     /// Whether the node's socket took the bytes. **A socket write, not a
     /// verdict**: whether the spend landed is settling's question.
     pub submitted: bool,

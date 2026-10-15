@@ -8,6 +8,7 @@
 
 mod support;
 
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use mochimo_crypto::keystore::{self, Keystore, Unlock};
@@ -16,7 +17,8 @@ use tawara_wallet_core::explorer::IndexState;
 use tawara_wallet_core::location::{Environment, Platform, default_store_dir};
 use tawara_wallet_core::spend::{Amount, DestinationInput, SpendInputError, SpendRequest};
 use tawara_wallet_core::view::{
-    AccountId, AccountState, DivergenceKind, NoticeKind, ReservationState, Total, WalletView,
+    AccountId, AccountRow, AccountState, DivergenceKind, NoticeKind, Reads, ReservationState,
+    SettledAccount, Total, WalletView, Watch,
 };
 use tawara_wallet_core::{
     Activity, CONFIRM_POSITIONS, Command, Config, DISCOVER_MAX_TO, Event, LockReason,
@@ -532,17 +534,34 @@ fn a_spend_is_planned_signed_submitted_and_settled() {
         other => panic!("expected a settlement report, got {other:?}"),
     }
 
-    // The spend lands: the change is at the next key.
+    // The spend lands: the change is at the next key. The next read settles
+    // it by itself (docs/DECISIONS.md D38), so the account is in sync and can
+    // spend again with no Settle, and the settle moves no key index.
     h.chain
         .hold(tag(0), address(0, start + 1), plan.change_total);
     h.chain.hold(tag(1), address(1, 0), 100_000);
+    let before = store_files(&scratch.store());
     let view = opened(h.call(Command::Refresh));
-    assert!(
-        matches!(view.accounts[0].state, AccountState::SpendLanded { spent_index, .. } if spent_index == start),
-        "{:?}",
-        view.accounts[0].state
+    let row = &view.accounts[0];
+    assert_eq!(
+        row.state,
+        AccountState::InSync {
+            balance: plan.change_total
+        },
+        "the refresh settles the landed spend"
+    );
+    assert!(row.spendable);
+    assert_eq!(row.index, start + 1, "settling moves no key index");
+    assert_eq!(settled_ids(&view), vec![account0()]);
+    assert_ne!(
+        store_files(&scratch.store()),
+        before,
+        "the settle is written"
     );
 
+    // Settling again is a no-op: the account stays as it is, and nothing is
+    // written.
+    let settled = store_files(&scratch.store());
     match h.call(Command::Settle {
         account: account0(),
     }) {
@@ -557,9 +576,761 @@ fn a_spend_is_planned_signed_submitted_and_settled() {
             );
             assert_eq!(row.index, start + 1);
             assert!(row.spendable);
+            assert!(view.settled.is_empty(), "Settle says what it did itself");
         }
         other => panic!("expected a settlement, got {other:?}"),
     }
+    assert_eq!(
+        store_files(&scratch.store()),
+        settled,
+        "a second settle writes nothing"
+    );
+}
+
+/// Every file under a store's folder, with its bytes: a store writes nothing
+/// unless one of them changes.
+///
+/// The lock file is not read. An open store holds it under an exclusive lock,
+/// and Windows enforces a lock against every other handle, so a read of it
+/// while the store is open fails with `ERROR_LOCK_VIOLATION` (33). The library
+/// takes that lock and never writes the file, so it is recorded as empty, and
+/// checked to be: its length is read from its metadata, which takes no handle
+/// on its contents.
+fn store_files(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn walk(dir: &Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
+        for entry in std::fs::read_dir(dir).expect("the store's folder") {
+            let path = entry.expect("a folder entry").path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.file_name() == Some(std::ffi::OsStr::new("keystore.lock")) {
+                let len = std::fs::metadata(&path).expect("the lock file").len();
+                assert_eq!(len, 0, "the library never writes the lock file");
+                out.push((path, Vec::new()));
+            } else {
+                let bytes = std::fs::read(&path).expect("a store file");
+                out.push((path, bytes));
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(dir, &mut files);
+    files.sort();
+    files
+}
+
+/// Plan and send `nano` from account 0 to a payee, and return the plan. Its
+/// change is the balance the account holds once the spend lands.
+fn send_from_account0(h: &mut Harness, nano: u64) -> PlanView {
+    let plan = planned(h.call(Command::PlanSend {
+        spend: pay(destination(1), Amount::Nano(nano)),
+    }));
+    let s = sent(h.call(Command::ConfirmSend { plan: plan.plan }));
+    assert!(s.submitted);
+    plan
+}
+
+/// The accounts a view says the worker settled on its own (D38), each with
+/// the library's settled page, as Settle's reply carries it.
+fn settled_ids(view: &WalletView) -> Vec<AccountId> {
+    view.settled
+        .iter()
+        .map(|s| {
+            assert!(s.text.contains("settled:"), "{}", s.text);
+            s.account
+        })
+        .collect()
+}
+
+/// The account `id` in a view.
+fn row_of(view: &WalletView, id: AccountId) -> AccountRow {
+    view.accounts
+        .iter()
+        .find(|r| r.id == id)
+        .cloned()
+        .expect("the account is in the store")
+}
+
+#[test]
+fn a_landed_spend_settles_when_the_wallet_is_unlocked() {
+    let scratch = Scratch::new("settle-unlock");
+    let (mut h, start) = funded(&scratch);
+    let plan = send_from_account0(&mut h, 100_000);
+    assert!(matches!(h.call(Command::Lock), Reply::Locked));
+    // The spend lands while the wallet is locked.
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    let view = opened(h.unlock(&scratch.store(), PASSWORD));
+    let row = &view.accounts[0];
+    assert_eq!(
+        row.state,
+        AccountState::InSync {
+            balance: plan.change_total
+        },
+        "{row:?}"
+    );
+    assert!(row.spendable);
+    assert_eq!(row.index, start + 1);
+    assert_eq!(settled_ids(&view), vec![account0()]);
+
+    // The next refresh has nothing left to settle.
+    let before = store_files(&scratch.store());
+    let view = opened(h.call(Command::Refresh));
+    assert!(view.settled.is_empty());
+    assert_eq!(store_files(&scratch.store()), before);
+}
+
+#[test]
+fn a_check_settles_a_landed_spend_and_says_what_it_did() {
+    let scratch = Scratch::new("settle-check");
+    let (mut h, start) = funded(&scratch);
+    let plan = send_from_account0(&mut h, 100_000);
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    match h.call(Command::Status {
+        account: account0(),
+        scan_to: None,
+    }) {
+        Reply::Status {
+            account,
+            state,
+            spendable,
+            text,
+            settled,
+        } => {
+            assert_eq!(
+                state,
+                AccountState::InSync {
+                    balance: plan.change_total
+                },
+                "{text}"
+            );
+            assert!(spendable);
+            // The library's own settled page, not the page that says it has
+            // landed and waits for a settle.
+            assert!(text.starts_with("settled:"), "{text}");
+            assert_eq!(settled, Some(SettledAccount { account, text }));
+        }
+        other => panic!("expected a status, got {other:?}"),
+    }
+    let view = opened(h.call(Command::Refresh));
+    assert_eq!(
+        view.accounts[0].state,
+        AccountState::InSync {
+            balance: plan.change_total
+        }
+    );
+    assert!(view.settled.is_empty());
+}
+
+#[test]
+fn the_read_after_a_send_settles_a_spend_the_node_already_shows_landed() {
+    let scratch = Scratch::new("settle-after-send");
+    let (mut h, start) = funded(&scratch);
+    let plan = planned(h.call(Command::PlanSend {
+        spend: pay(destination(1), Amount::Nano(100_000)),
+    }));
+    // Sending asks the node twice: the ledger is read once more before the
+    // reservation, and then the bytes are submitted. The first request passes
+    // its gate and reads the ledger as it stood. The submit waits at a second
+    // gate, and while it waits the spend lands, so the read that follows the
+    // submit finds the change key.
+    let first = h.chain.close_gate();
+    let confirm = h
+        .handle
+        .send(Command::ConfirmSend { plan: plan.plan })
+        .expect("worker running");
+    first.wait_reached(1);
+    let submit = h.chain.close_gate();
+    first.open();
+    submit.wait_reached(1);
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    submit.open();
+    let s = sent(h.wait_for(confirm));
+    assert!(s.submitted);
+    let row = &s.view.accounts[0];
+    assert_eq!(
+        row.state,
+        AccountState::InSync {
+            balance: plan.change_total
+        },
+        "{:?}",
+        row.state
+    );
+    assert!(row.spendable);
+    assert_eq!(settled_ids(&s.view), vec![account0()]);
+}
+
+#[test]
+fn a_stop_that_reaches_the_read_after_a_send_settles_nothing() {
+    let scratch = Scratch::new("settle-after-send-stopped");
+    let (mut h, start) = funded(&scratch);
+    let plan = planned(h.call(Command::PlanSend {
+        spend: pay(destination(1), Amount::Nano(100_000)),
+    }));
+    // As in the test above, with a third gate on the read that follows the
+    // submit. The spend lands and a stop is heard while that read waits, so
+    // the read finds the change key but may not settle it.
+    let first = h.chain.close_gate();
+    let confirm = h
+        .handle
+        .send(Command::ConfirmSend { plan: plan.plan })
+        .expect("worker running");
+    first.wait_reached(1);
+    let submit = h.chain.close_gate();
+    first.open();
+    submit.wait_reached(1);
+    let read = h.chain.close_gate();
+    submit.open();
+    read.wait_reached(1);
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    h.handle.cancel();
+    read.open();
+    let s = sent(h.wait_for(confirm));
+    assert!(s.submitted, "the spend was submitted before the stop");
+    assert!(
+        matches!(
+            s.view.accounts[0].state,
+            AccountState::SpendLanded { spent_index, .. } if spent_index == start
+        ),
+        "{:?}",
+        s.view.accounts[0].state
+    );
+    assert!(s.view.settled.is_empty());
+
+    // A refresh that is not stopped settles it.
+    let view = opened(h.call(Command::Refresh));
+    assert_eq!(
+        view.accounts[0].state,
+        AccountState::InSync {
+            balance: plan.change_total
+        }
+    );
+    assert_eq!(settled_ids(&view), vec![account0()]);
+}
+
+#[test]
+fn a_spend_still_outstanding_is_not_settled_and_writes_nothing() {
+    let scratch = Scratch::new("settle-outstanding");
+    let (mut h, start) = funded(&scratch);
+    let _ = send_from_account0(&mut h, 100_000);
+    let before = store_files(&scratch.store());
+
+    // Live: the node still holds the spent key with its balance. One read of
+    // the account is the whole of the refresh's work on it; a settle would
+    // ask the node a second time.
+    let reads = h.chain.resolves(tag(0));
+    let view = opened(h.call(Command::Refresh));
+    assert!(
+        matches!(
+            view.accounts[0].state,
+            AccountState::SpendOutstanding {
+                reservation: ReservationState::Live,
+                ..
+            }
+        ),
+        "{:?}",
+        view.accounts[0].state
+    );
+    assert_eq!(
+        h.chain.resolves(tag(0)) - reads,
+        1,
+        "one read of the account, and no settle"
+    );
+    assert!(view.settled.is_empty());
+    assert_eq!(store_files(&scratch.store()), before, "nothing was written");
+
+    // Dead: the balance the reservation was built on has moved.
+    h.chain.hold(tag(0), address(0, start), FUNDS - 1);
+    let view = opened(h.call(Command::Refresh));
+    assert!(
+        matches!(
+            view.accounts[0].state,
+            AccountState::SpendOutstanding {
+                reservation: ReservationState::Dead {
+                    balance_moved: true,
+                    ..
+                },
+                ..
+            }
+        ),
+        "{:?}",
+        view.accounts[0].state
+    );
+    assert!(view.settled.is_empty());
+    assert_eq!(store_files(&scratch.store()), before, "nothing was written");
+}
+
+#[test]
+fn a_refresh_cancelled_while_it_reads_does_not_settle() {
+    let scratch = Scratch::new("settle-cancelled");
+    let (mut h, start) = funded(&scratch);
+    let plan = send_from_account0(&mut h, 100_000);
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    let before = store_files(&scratch.store());
+    let gate = h.chain.close_gate();
+    let refresh = h.handle.send(Command::Refresh).expect("worker running");
+    // The read of the account is held at the node; the stop lands in it.
+    gate.wait_reached(1);
+    h.handle.cancel();
+    gate.open();
+    assert_eq!(refusal(h.wait_for(refresh)).kind, RefusalKind::Cancelled);
+    assert_eq!(
+        store_files(&scratch.store()),
+        before,
+        "a cancelled read writes nothing"
+    );
+    // The next refresh, not cancelled, settles it.
+    let view = opened(h.call(Command::Refresh));
+    assert_eq!(
+        view.accounts[0].state,
+        AccountState::InSync {
+            balance: plan.change_total
+        }
+    );
+    assert_eq!(settled_ids(&view), vec![account0()]);
+}
+
+#[test]
+fn a_stop_heard_during_one_automatic_settle_leaves_the_others_unsettled() {
+    let scratch = Scratch::new("settle-stop");
+    let (mut h, start) = funded(&scratch);
+    let account1 = AccountId::from_tag(tag(1));
+    h.chain.hold(tag(1), address(1, 0), 1_000_000);
+    match h.call(Command::Restore {
+        account_index: 1,
+        scan_to: None,
+    }) {
+        Reply::Restored { ok: true, .. } => {}
+        other => panic!("expected a restore, got {other:?}"),
+    }
+    let plan0 = send_from_account0(&mut h, 100_000);
+    let plan1 = planned(h.call(Command::PlanSend {
+        spend: SpendRequest {
+            from: account1,
+            ..pay(destination(2), Amount::Nano(100_000))
+        },
+    }));
+    let _ = sent(h.call(Command::ConfirmSend { plan: plan1.plan }));
+    // Both spends land.
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan0.change_total);
+    h.chain.hold(tag(1), address(1, 1), plan1.change_total);
+
+    // Each node request takes a while. The refresh's two reads are its first
+    // two requests, and its first settle's own read is the third. The stop is
+    // heard while that settle waits on the node, so the second landed account
+    // is left for a later read.
+    h.chain.slow(Duration::from_millis(400));
+    let base = h.chain.calls();
+    let refresh = h.handle.send(Command::Refresh).expect("worker running");
+    let until = Instant::now() + Duration::from_secs(60);
+    while h.chain.calls() < base + 3 {
+        assert!(Instant::now() < until, "the settle never asked the node");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    h.handle.cancel();
+    let view = opened(h.wait_for(refresh));
+    h.chain.slow(Duration::ZERO);
+
+    // Which account settles first is the store's order, not this test's to
+    // choose: exactly one settles, and the other stays landed.
+    assert_eq!(view.settled.len(), 1, "{:?}", view.settled);
+    let balance_of = |account: AccountId| {
+        if account == account0() {
+            plan0.change_total
+        } else {
+            plan1.change_total
+        }
+    };
+    let settled = view.settled[0].account;
+    let other = if settled == account0() {
+        account1
+    } else {
+        account0()
+    };
+    assert_eq!(
+        row_of(&view, settled).state,
+        AccountState::InSync {
+            balance: balance_of(settled)
+        }
+    );
+    assert!(
+        matches!(row_of(&view, other).state, AccountState::SpendLanded { .. }),
+        "{:?}",
+        row_of(&view, other).state
+    );
+}
+
+#[test]
+fn a_stop_heard_while_the_wallet_opens_settles_nothing() {
+    let scratch = Scratch::new("settle-open-stop");
+    let dir = scratch.store();
+    let (mut h, start) = funded(&scratch);
+    let account1 = AccountId::from_tag(tag(1));
+    h.chain.hold(tag(1), address(1, 0), 1_000_000);
+    match h.call(Command::Restore {
+        account_index: 1,
+        scan_to: None,
+    }) {
+        Reply::Restored { ok: true, .. } => {}
+        other => panic!("expected a restore, got {other:?}"),
+    }
+    let plan0 = send_from_account0(&mut h, 100_000);
+    let plan1 = planned(h.call(Command::PlanSend {
+        spend: SpendRequest {
+            from: account1,
+            ..pay(destination(2), Amount::Nano(100_000))
+        },
+    }));
+    let _ = sent(h.call(Command::ConfirmSend { plan: plan1.plan }));
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan0.change_total);
+    h.chain.hold(tag(1), address(1, 1), plan1.change_total);
+    assert!(matches!(h.call(Command::Lock), Reply::Locked));
+
+    // The wallet opens against both landed accounts. The library asks before
+    // each account whether to stop, so a stop heard during the second read
+    // lets the open complete. The worker must then settle neither account.
+    let first = h.chain.close_gate();
+    let unlock = h
+        .handle
+        .send(Command::Unlock {
+            dir: dir.clone(),
+            password: secret(PASSWORD),
+        })
+        .expect("worker running");
+    first.wait_reached(1);
+    let second = h.chain.close_gate();
+    first.open();
+    second.wait_reached(1);
+    h.handle.cancel();
+    second.open();
+    let view = opened(h.wait_for(unlock));
+    assert!(view.opened, "{view:?}");
+    assert!(view.settled.is_empty(), "{:?}", view.settled);
+    for account in [account0(), account1] {
+        assert!(
+            matches!(
+                row_of(&view, account).state,
+                AccountState::SpendLanded { .. }
+            ),
+            "{:?}",
+            row_of(&view, account).state
+        );
+    }
+
+    // The next read, not stopped, settles both.
+    let view = opened(h.call(Command::Refresh));
+    assert_eq!(view.settled.len(), 2, "{:?}", view.settled);
+}
+
+#[test]
+fn a_locked_store_settles_nothing_and_asks_the_node_nothing() {
+    let scratch = Scratch::new("settle-locked");
+    let (mut h, start) = funded(&scratch);
+    let plan = send_from_account0(&mut h, 100_000);
+    assert!(matches!(h.call(Command::Lock), Reply::Locked));
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    let before = store_files(&scratch.store());
+    let calls = h.chain.calls();
+    assert_eq!(
+        refusal(h.call(Command::Refresh)).kind,
+        RefusalKind::NotUnlocked
+    );
+    assert_eq!(
+        refusal(h.call(Command::Status {
+            account: account0(),
+            scan_to: None,
+        }))
+        .kind,
+        RefusalKind::NotUnlocked
+    );
+    assert_eq!(
+        h.chain.calls(),
+        calls,
+        "a locked wallet asks the node nothing"
+    );
+    assert_eq!(store_files(&scratch.store()), before);
+}
+
+#[test]
+fn an_idle_period_that_passes_during_a_refresh_settles_nothing_and_locks() {
+    let scratch = Scratch::new("settle-idle-read");
+    let mut h = Harness::with(Config {
+        idle_lock: Duration::from_secs(5),
+    });
+    assert!(matches!(
+        h.call(Command::SetNode { url: NODE.into() }),
+        Reply::NodeSet { .. }
+    ));
+    h.chain.hold(tag(0), address(0, 0), FUNDS);
+    let start = opened(h.create_from_phrase(&scratch.store())).accounts[0].index;
+    h.handle.touch();
+    let plan = send_from_account0(&mut h, 100_000);
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    let before = store_files(&scratch.store());
+    // The last input is marked here, and then the person does nothing for
+    // longer than the idle period, while the read waits on the node.
+    h.handle.touch();
+    let gate = h.chain.close_gate();
+    let refresh = h.handle.send(Command::Refresh).expect("worker running");
+    gate.wait_reached(1);
+    std::thread::sleep(Duration::from_millis(6_000));
+    gate.open();
+    assert_eq!(refusal(h.wait_for(refresh)).kind, RefusalKind::Cancelled);
+    assert_eq!(h.wait_locked(Duration::from_secs(10)), LockReason::Idle);
+    assert_eq!(
+        store_files(&scratch.store()),
+        before,
+        "a stopped read writes nothing"
+    );
+}
+
+#[test]
+fn a_node_that_cannot_be_reached_settles_nothing_and_writes_nothing() {
+    let scratch = Scratch::new("settle-unreachable");
+    let (mut h, start) = funded(&scratch);
+    let plan = send_from_account0(&mut h, 100_000);
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    let before = store_files(&scratch.store());
+    h.chain.set_unreachable(true);
+    let view = opened(h.call(Command::Refresh));
+    assert!(
+        matches!(view.accounts[0].state, AccountState::Diverged { .. }),
+        "{:?}",
+        view.accounts[0].state
+    );
+    assert!(view.settled.is_empty());
+    assert_eq!(store_files(&scratch.store()), before, "nothing was written");
+
+    h.chain.set_unreachable(false);
+    let view = opened(h.call(Command::Refresh));
+    assert_eq!(
+        view.accounts[0].state,
+        AccountState::InSync {
+            balance: plan.change_total
+        }
+    );
+    assert_eq!(settled_ids(&view), vec![account0()]);
+}
+
+#[test]
+fn a_node_that_stops_answering_during_the_automatic_settle_writes_nothing() {
+    let scratch = Scratch::new("settle-refused");
+    let (mut h, start) = funded(&scratch);
+    let plan = send_from_account0(&mut h, 100_000);
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    let before = store_files(&scratch.store());
+    // The refresh's own read is the node's next answer; the settle's read
+    // after it is not, so the library refuses the settle.
+    let reads = h.chain.resolves(tag(0));
+    h.chain.vanish_from(tag(0), reads + 2);
+    let view = opened(h.call(Command::Refresh));
+    assert!(
+        matches!(
+            view.accounts[0].state,
+            AccountState::SpendLanded { spent_index, .. } if spent_index == start
+        ),
+        "{:?}",
+        view.accounts[0].state
+    );
+    assert!(view.settled.is_empty());
+    assert_eq!(store_files(&scratch.store()), before, "nothing was written");
+
+    // Once the node answers again, the next read settles it.
+    h.chain.vanish_from(tag(0), usize::MAX);
+    let view = opened(h.call(Command::Refresh));
+    assert_eq!(
+        view.accounts[0].state,
+        AccountState::InSync {
+            balance: plan.change_total
+        }
+    );
+    assert_eq!(settled_ids(&view), vec![account0()]);
+}
+
+#[test]
+fn a_node_whose_answer_changes_before_the_settle_holds_the_lock_for_its_walk() {
+    // D38 item 6, the case the owner accepted. The check's read shows the
+    // spend landed. The settle's own read, which the library makes inside
+    // `settle_if_landed` with no cancel, then finds the account at a key the
+    // reservation does not explain, so the library walks key positions to
+    // say where it is. A move to the background asked while that read waits
+    // stops nothing: the walk runs to its end, the check answers, and only
+    // then does the lock come.
+    let scratch = Scratch::new("settle-walk");
+    let (mut h, start) = funded(&scratch);
+    let plan = send_from_account0(&mut h, 100_000);
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    let before = store_files(&scratch.store());
+    // The check's own read passes the first gate, and the settle's waits at
+    // the second.
+    let first = h.chain.close_gate();
+    let check = h
+        .handle
+        .send(Command::Status {
+            account: account0(),
+            scan_to: None,
+        })
+        .expect("worker running");
+    first.wait_reached(1);
+    let second = h.chain.close_gate();
+    first.open();
+    second.wait_reached(1);
+    // Five keys past the change key: inside the window the library searches
+    // around it, so the walk is short here. A key no position derives would
+    // be searched for up to the library's ceiling of 10,000 positions, at
+    // about 1.6 ms a position (D19), and the lock would wait as long.
+    h.chain
+        .hold(tag(0), address(0, start + 6), plan.change_total);
+    let asked = Instant::now();
+    let _ = h.handle.background();
+    second.open();
+    match h.wait_for(check) {
+        Reply::Status {
+            state,
+            spendable,
+            settled,
+            ..
+        } => {
+            // What the check's read found; the settle found the account
+            // unexplained, and the library refused it.
+            assert!(
+                matches!(state, AccountState::SpendLanded { spent_index, .. } if spent_index == start),
+                "{state:?}"
+            );
+            assert!(!spendable);
+            assert_eq!(settled, None);
+        }
+        other => panic!("expected a status, not a cancel: {other:?}"),
+    }
+    assert!(
+        !h.seen.iter().any(|e| matches!(e, Event::Locked { .. })),
+        "the lock waited for the check, walk and all: {:?}",
+        h.seen
+    );
+    assert_eq!(
+        h.wait_locked(Duration::from_secs(30)),
+        LockReason::Background
+    );
+    let waited = asked.elapsed();
+    assert!(
+        waited < Duration::from_secs(30),
+        "the lock waited {waited:?} for a walk inside the window"
+    );
+    assert_eq!(store_files(&scratch.store()), before, "nothing was written");
+}
+
+/// A settle whose write fails leaves the library's handle poisoned (D38):
+/// the command answers as if nothing was settled, and then the store is
+/// closed, as a reopen that cannot read it back closes it. Unlocking it reads
+/// disk again, and that unlock settles the account.
+#[cfg(unix)]
+#[test]
+fn a_settle_whose_write_fails_closes_the_store_after_the_answer() {
+    use std::os::unix::fs::PermissionsExt;
+    let scratch = Scratch::new("settle-poisoned");
+    let dir = scratch.store();
+    let (mut h, start) = funded(&scratch);
+    let plan = send_from_account0(&mut h, 100_000);
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    let before = store_files(&dir);
+    // A folder the store cannot write to: the library's commit fails before
+    // anything is durable, and poisons the handle.
+    let writable = std::fs::metadata(&dir).expect("the store").permissions();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500))
+        .expect("the store's folder made read-only");
+    let probe = dir.join("probe");
+    if std::fs::write(&probe, b"").is_ok() {
+        // The superuser writes whatever the mode says: nothing to test here.
+        let _ = std::fs::remove_file(&probe);
+        std::fs::set_permissions(&dir, writable).expect("the store's folder restored");
+        return;
+    }
+    let reply = h.call(Command::Status {
+        account: account0(),
+        scan_to: None,
+    });
+    std::fs::set_permissions(&dir, writable).expect("the store's folder restored");
+    match reply {
+        Reply::Status {
+            state,
+            spendable,
+            settled,
+            ..
+        } => {
+            assert!(
+                matches!(state, AccountState::SpendLanded { spent_index, .. } if spent_index == start),
+                "{state:?}"
+            );
+            assert!(!spendable);
+            assert_eq!(settled, None);
+        }
+        other => panic!("expected a status, got {other:?}"),
+    }
+    assert!(
+        !h.seen.iter().any(|e| matches!(e, Event::Locked { .. })),
+        "the store closes after the answer: {:?}",
+        h.seen
+    );
+    assert_eq!(
+        h.wait_locked(Duration::from_secs(10)),
+        LockReason::ReopenFailed
+    );
+    assert_eq!(store_files(&dir), before, "nothing was written");
+    assert_eq!(
+        refusal(h.call(Command::Refresh)).kind,
+        RefusalKind::NotUnlocked,
+        "the poisoned handle is gone"
+    );
+
+    // Unlocking reads disk again, and that unlock settles the account.
+    let view = opened(h.unlock(&dir, PASSWORD));
+    assert_eq!(
+        view.accounts[0].state,
+        AccountState::InSync {
+            balance: plan.change_total
+        }
+    );
+    assert_eq!(settled_ids(&view), vec![account0()]);
+}
+
+#[test]
+fn a_diverged_account_is_not_settled_by_a_refresh_or_a_check() {
+    let scratch = Scratch::new("settle-diverged");
+    let (mut h, start) = funded(&scratch);
+    let plan = send_from_account0(&mut h, 100_000);
+    // The node holds the account at neither the key that signed nor the
+    // change key: the reservation is unexplained.
+    h.chain
+        .hold(tag(0), address(0, start + 5), plan.change_total);
+    let before = store_files(&scratch.store());
+    let view = opened(h.call(Command::Refresh));
+    assert!(
+        matches!(view.accounts[0].state, AccountState::Diverged { .. }),
+        "{:?}",
+        view.accounts[0].state
+    );
+    assert!(view.settled.is_empty());
+    match h.call(Command::Status {
+        account: account0(),
+        scan_to: None,
+    }) {
+        Reply::Status { state, .. } => {
+            assert!(matches!(state, AccountState::Diverged { .. }), "{state:?}");
+        }
+        other => panic!("expected a status, got {other:?}"),
+    }
+    assert_eq!(store_files(&scratch.store()), before, "nothing was written");
 }
 
 #[test]
@@ -1329,9 +2100,11 @@ fn status_reports_an_account_without_refusing() {
             state,
             spendable,
             text,
+            settled,
         } => {
             assert_eq!(account, account0());
             assert!(!text.is_empty());
+            assert_eq!(settled, None, "nothing here had landed");
             (state, spendable)
         }
         other => panic!("expected a status, got {other:?}"),
@@ -1363,6 +2136,638 @@ fn status_reports_an_account_without_refusing() {
     );
     let view = opened(h.call(Command::Refresh));
     assert!(view.accounts[0].spendable, "{view:?}");
+}
+
+/// A spend from account 0 that may not be included after `blk_to_live`,
+/// planned and confirmed. Its reservation records that block, so a read of the
+/// spend asks the node for the tip, and a tip below the block leaves the
+/// reservation live.
+fn send_expiring_from_account0(h: &mut Harness, nano: u64, blk_to_live: u64) -> PlanView {
+    let plan = planned(h.call(Command::PlanSend {
+        spend: SpendRequest {
+            from: account0(),
+            destinations: vec![DestinationInput {
+                to: destination(1),
+                amount: Amount::Nano(nano),
+                reference: String::new(),
+            }],
+            fee: None,
+            blk_to_live,
+        },
+    }));
+    let s = sent(h.call(Command::ConfirmSend { plan: plan.plan }));
+    assert!(s.submitted);
+    plan
+}
+
+/// One poll of account 0, as the interface asks it: the worker's
+/// `Reply::Status`, with its state noted in `watch`. Returns the state, whether
+/// the account spends, and the settlement the read made, if it made one.
+fn poll_account0(
+    h: &mut Harness,
+    watch: &mut Watch,
+) -> (AccountState, bool, Option<SettledAccount>) {
+    match h.call(Command::Status {
+        account: account0(),
+        scan_to: None,
+    }) {
+        Reply::Status {
+            account,
+            state,
+            spendable,
+            settled,
+            ..
+        } => {
+            assert_eq!(account, account0());
+            watch.read(account, &state);
+            (state, spendable, settled)
+        }
+        other => panic!("expected a status, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_poll_keeps_asking_through_transient_failures_and_settles_the_landed_spend() {
+    // D38 item 2: a node that does not answer, and an expiry that cannot be
+    // read, leave an outstanding spend polled, so that the poll after the
+    // outage finds it landed and settles it on its own.
+    let scratch = Scratch::new("poll-transient");
+    let (mut h, start) = funded(&scratch);
+    let plan = send_expiring_from_account0(&mut h, 100_000, 1_100);
+    let mut watch = Watch::default();
+
+    let (state, spendable, settled) = poll_account0(&mut h, &mut watch);
+    assert!(
+        matches!(
+            state,
+            AccountState::SpendOutstanding {
+                reservation: ReservationState::Live,
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+    assert!(!spendable);
+    assert_eq!(settled, None);
+    assert!(watch.asks(account0(), &state));
+
+    // The node does not answer for the account: diverged for this read, and
+    // still asked about.
+    h.chain.set_unreachable(true);
+    let (state, spendable, settled) = poll_account0(&mut h, &mut watch);
+    assert!(
+        matches!(
+            state,
+            AccountState::Diverged {
+                kind: DivergenceKind::Unreachable,
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+    assert!(!spendable);
+    assert_eq!(settled, None);
+    assert!(
+        watch.asks(account0(), &state),
+        "a node that does not answer does not stop the polls"
+    );
+
+    // The node answers the ledger but not its status, so the expiry cannot be
+    // read: the reservation is unclassified, and still asked about.
+    h.chain.set_unreachable(false);
+    h.chain.set_status_down(true);
+    let (state, _, _) = poll_account0(&mut h, &mut watch);
+    assert!(
+        matches!(
+            state,
+            AccountState::SpendOutstanding {
+                reservation: ReservationState::Unclassified,
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+    assert!(watch.asks(account0(), &state));
+
+    // Recovery: the expiry reads as live again.
+    h.chain.set_status_down(false);
+    let (state, _, _) = poll_account0(&mut h, &mut watch);
+    assert!(
+        matches!(
+            state,
+            AccountState::SpendOutstanding {
+                reservation: ReservationState::Live,
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+    assert!(watch.asks(account0(), &state));
+
+    // The spend lands. The poll that finds the change key settles it on its
+    // own (D38), and nothing is asked about the account afterwards.
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    let (state, spendable, settled) = poll_account0(&mut h, &mut watch);
+    assert_eq!(
+        state,
+        AccountState::InSync {
+            balance: plan.change_total
+        },
+        "{state:?}"
+    );
+    assert!(spendable);
+    let settled = settled.expect("the landed spend settles on this poll");
+    assert_eq!(settled.account, account0());
+    assert!(settled.text.starts_with("settled:"), "{}", settled.text);
+    h.chain.set_unreachable(true);
+    let (state, _, _) = poll_account0(&mut h, &mut watch);
+    assert!(
+        matches!(
+            state,
+            AccountState::Diverged {
+                kind: DivergenceKind::Unreachable,
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+    assert!(
+        !watch.asks(account0(), &state),
+        "a settled account is not asked about"
+    );
+}
+
+#[test]
+fn a_poll_stops_asking_once_a_read_shows_the_reservation_dead() {
+    // D38 item 2: a dead reservation never settles, so it is not polled, and a
+    // node that then fails does not bring the polls back.
+    let scratch = Scratch::new("poll-dead");
+    let (mut h, start) = funded(&scratch);
+    send_expiring_from_account0(&mut h, 100_000, 1_100);
+    let mut watch = Watch::default();
+    let (state, _, _) = poll_account0(&mut h, &mut watch);
+    assert!(watch.asks(account0(), &state));
+
+    // The balance moved on the spent key: the reservation is dead.
+    h.chain.hold(tag(0), address(0, start), FUNDS + 1);
+    let (state, _, _) = poll_account0(&mut h, &mut watch);
+    assert!(
+        matches!(
+            state,
+            AccountState::SpendOutstanding {
+                reservation: ReservationState::Dead {
+                    balance_moved: true,
+                    ..
+                },
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+    assert!(!watch.asks(account0(), &state));
+
+    h.chain.set_unreachable(true);
+    let (state, _, _) = poll_account0(&mut h, &mut watch);
+    assert!(
+        matches!(
+            state,
+            AccountState::Diverged {
+                kind: DivergenceKind::Unreachable,
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+    assert!(!watch.asks(account0(), &state));
+}
+
+#[test]
+fn a_poll_stops_asking_once_a_read_shows_an_unexplained_reservation() {
+    // D38 item 2: a real divergence is for the person to look at, not for a
+    // timer to walk the chain for.
+    let scratch = Scratch::new("poll-diverged");
+    let (mut h, start) = funded(&scratch);
+    send_expiring_from_account0(&mut h, 100_000, 1_100);
+    let mut watch = Watch::default();
+    let (state, _, _) = poll_account0(&mut h, &mut watch);
+    assert!(watch.asks(account0(), &state));
+
+    // The node holds the account at neither the key that signed nor the change
+    // key.
+    h.chain.hold(tag(0), address(0, start + 5), FUNDS);
+    let (state, _, _) = poll_account0(&mut h, &mut watch);
+    assert!(
+        matches!(
+            state,
+            AccountState::Diverged {
+                kind: DivergenceKind::ReservationUnexplained,
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+    assert!(!watch.asks(account0(), &state));
+}
+
+/// The next poll of account 0, as the interface sends it after a read that
+/// showed `last`: only when the watch asks about it, and noted as asked.
+fn poll_after(
+    h: &mut Harness,
+    watch: &mut Watch,
+    last: &AccountState,
+) -> (AccountState, bool, Option<SettledAccount>) {
+    assert!(
+        watch.asks(account0(), last),
+        "no poll is owed after {last:?}"
+    );
+    watch.asked(account0(), last);
+    poll_account0(h, watch)
+}
+
+fn is_not_found(state: &AccountState) -> bool {
+    matches!(
+        state,
+        AccountState::Diverged {
+            kind: DivergenceKind::NotFound,
+            ..
+        }
+    )
+}
+
+fn is_live(state: &AccountState) -> bool {
+    matches!(
+        state,
+        AccountState::SpendOutstanding {
+            reservation: ReservationState::Live,
+            ..
+        }
+    )
+}
+
+#[test]
+fn a_poll_keeps_asking_through_a_mesh_not_found_for_a_bounded_run() {
+    // D38 item 2, as the watch extends it: the Mesh answers "account not
+    // found" for a lookup that failed as well as for an empty account (the
+    // library's recon module, fact 3), so the polls go on through such reads,
+    // but the third in a row ends them, since an account spent to zero reads
+    // so every time.
+    let scratch = Scratch::new("poll-not-found");
+    let (mut h, start) = funded(&scratch);
+    let plan = send_expiring_from_account0(&mut h, 100_000, 1_100);
+    let mut watch = Watch::default();
+    let (state, _, _) = poll_account0(&mut h, &mut watch);
+    assert!(is_live(&state), "{state:?}");
+
+    // Two reads not found, then the node answers again: the polls went on
+    // throughout, and the count starts over.
+    h.chain.vanish_from(tag(0), h.chain.resolves(tag(0)) + 1);
+    let (state, _, _) = poll_after(&mut h, &mut watch, &state);
+    assert!(is_not_found(&state), "{state:?}");
+    let (state, _, _) = poll_after(&mut h, &mut watch, &state);
+    assert!(is_not_found(&state), "{state:?}");
+    h.chain.vanish_from(tag(0), usize::MAX);
+    let (state, _, _) = poll_after(&mut h, &mut watch, &state);
+    assert!(is_live(&state), "{state:?}");
+
+    // Three reads not found in a row end the polls.
+    h.chain.vanish_from(tag(0), h.chain.resolves(tag(0)) + 1);
+    let (state, _, _) = poll_after(&mut h, &mut watch, &state);
+    let (state, _, _) = poll_after(&mut h, &mut watch, &state);
+    let (state, _, _) = poll_after(&mut h, &mut watch, &state);
+    assert!(is_not_found(&state), "{state:?}");
+    assert!(
+        !watch.asks(account0(), &state),
+        "the third read not found in a row ends the polls"
+    );
+
+    // A live read starts them again, and the spend that lands is settled by
+    // the poll that finds it.
+    h.chain.vanish_from(tag(0), usize::MAX);
+    let (state, _, _) = poll_account0(&mut h, &mut watch);
+    assert!(is_live(&state), "{state:?}");
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    let (state, spendable, settled) = poll_after(&mut h, &mut watch, &state);
+    assert_eq!(
+        state,
+        AccountState::InSync {
+            balance: plan.change_total
+        }
+    );
+    assert!(spendable);
+    assert!(settled.is_some(), "the landed spend settles on this poll");
+    assert!(!watch.asks(account0(), &state));
+}
+
+#[test]
+fn a_poll_tries_again_a_landed_spend_whose_automatic_settle_the_node_interrupted() {
+    // D38: a poll that finds the spend landed settles it. When the node stops
+    // answering between the read and the settle, the account is left landed,
+    // and the next poll tries the settle again.
+    let scratch = Scratch::new("poll-landed");
+    let (mut h, start) = funded(&scratch);
+    let plan = send_expiring_from_account0(&mut h, 100_000, 1_100);
+    let mut watch = Watch::default();
+    let (state, _, _) = poll_account0(&mut h, &mut watch);
+    assert!(is_live(&state), "{state:?}");
+
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    // The poll's own read is the node's next answer; the settle's read after
+    // it is not, so the library refuses the settle.
+    h.chain.vanish_from(tag(0), h.chain.resolves(tag(0)) + 2);
+    let (state, _, settled) = poll_after(&mut h, &mut watch, &state);
+    assert!(
+        matches!(state, AccountState::SpendLanded { spent_index, .. } if spent_index == start),
+        "{state:?}"
+    );
+    assert_eq!(settled, None);
+    assert!(
+        watch.asks(account0(), &state),
+        "a settle the node interrupted is tried again"
+    );
+
+    h.chain.vanish_from(tag(0), usize::MAX);
+    let (state, spendable, settled) = poll_after(&mut h, &mut watch, &state);
+    assert_eq!(
+        state,
+        AccountState::InSync {
+            balance: plan.change_total
+        }
+    );
+    assert!(spendable);
+    assert_eq!(settled.map(|s| s.account), Some(account0()));
+    assert!(!watch.asks(account0(), &state));
+}
+
+#[test]
+fn a_wallet_opened_while_the_node_fails_for_the_spend_polls_it() {
+    // D38 item 2, as the watch extends it: the read that opens the wallet may
+    // fail for the account whose spend is outstanding while another account
+    // reconciles, so the wallet opens with that read alone. The row carries
+    // the store's reservation, and the polls start from it.
+    let scratch = Scratch::new("poll-open-outage");
+    let dir = scratch.store();
+    let mut h = two_accounts(&scratch);
+    let plan = send_expiring_from_account0(&mut h, 100_000, 1_100);
+    let row0 = |view: &WalletView| row_of(view, account0());
+
+    // The node does not answer for the account, then answers "account not
+    // found" for it.
+    for silent in [true, false] {
+        assert!(matches!(h.call(Command::Lock), Reply::Locked));
+        assert_eq!(h.wait_locked(Duration::from_secs(5)), LockReason::Asked);
+        if silent {
+            h.chain.set_silent_for(tag(0), true);
+        } else {
+            h.chain.vanish_from(tag(0), h.chain.resolves(tag(0)) + 1);
+        }
+        let view = opened(h.unlock(&dir, PASSWORD));
+        assert!(view.opened, "the other account reconciled: {view:?}");
+        let row = row0(&view);
+        let kind = if silent {
+            DivergenceKind::Unreachable
+        } else {
+            DivergenceKind::NotFound
+        };
+        assert!(
+            matches!(&row.state, AccountState::Diverged { kind: k, .. } if *k == kind),
+            "{:?}",
+            row.state
+        );
+        assert!(row.reserved, "the store holds the spend's reservation");
+        assert!(
+            !row_of(&view, AccountId::from_tag(tag(1))).reserved,
+            "and none for the other account"
+        );
+        let mut watch = Watch::default();
+        watch.read_answer(&view, Reads::Every);
+        assert!(
+            watch.asks(account0(), &row.state),
+            "a wallet opened during an outage polls the outstanding spend"
+        );
+
+        // The node answers again: the poll reads the reservation live.
+        h.chain.set_silent_for(tag(0), false);
+        h.chain.vanish_from(tag(0), usize::MAX);
+        let (state, _, _) = poll_after(&mut h, &mut watch, &row.state);
+        assert!(is_live(&state), "{state:?}");
+        assert!(watch.asks(account0(), &state));
+    }
+
+    // The spend lands, and the poll settles it.
+    let mut watch = Watch::default();
+    let (state, _, _) = poll_account0(&mut h, &mut watch);
+    let start = match state {
+        AccountState::SpendOutstanding { spent_index, .. } => spent_index,
+        other => panic!("expected the spend outstanding, got {other:?}"),
+    };
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    let (state, _, settled) = poll_after(&mut h, &mut watch, &state);
+    assert!(settled.is_some(), "{state:?}");
+    assert!(!watch.asks(account0(), &state));
+}
+
+/// A payment of `nano` from account 0 that may not be included after
+/// `blk_to_live`, the spend `send_expiring_from_account0` makes.
+fn pay_expiring(nano: u64, blk_to_live: u64) -> SpendRequest {
+    SpendRequest {
+        from: account0(),
+        destinations: vec![DestinationInput {
+            to: destination(1),
+            amount: Amount::Nano(nano),
+            reference: String::new(),
+        }],
+        fee: None,
+        blk_to_live,
+    }
+}
+
+#[test]
+fn a_spend_signed_after_an_unlock_in_sync_polls_through_a_failed_read_and_settles() {
+    // D38 item 2: an unlock finds the account in sync, which ends its polls. A
+    // spend signed after that holds a reservation, and its polls
+    // start afresh: the read the sign's reply carries fails, the polls go on
+    // through the outage and the recovery, and the poll that finds the spend
+    // landed settles it on its own.
+    let scratch = Scratch::new("poll-after-sign");
+    let (mut h, start) = funded(&scratch);
+    let mut watch = Watch::default();
+
+    // The unlock: the account reads in sync, and nothing is asked about it.
+    assert!(matches!(h.call(Command::Lock), Reply::Locked));
+    let view = opened(h.unlock(&scratch.store(), PASSWORD));
+    watch.read_answer(&view, Reads::Every);
+    let state = row_of(&view, account0()).state;
+    assert_eq!(state, AccountState::InSync { balance: FUNDS });
+    assert!(!watch.asks(account0(), &state));
+
+    // The spend's expiry is read, so its signing reads the tip. The node
+    // answers that read, and not the read the reply carries after it.
+    let plan = planned(h.call(Command::PlanSend {
+        spend: pay_expiring(100_000, 1_100),
+    }));
+    h.chain.set_status_down_after(1);
+    let signed = sent(h.call(Command::ConfirmSend { plan: plan.plan }));
+    assert!(signed.submitted);
+    // The interface notes the sign, then the reads its reply carries.
+    watch.signed(signed.from);
+    watch.read_answer(&signed.view, Reads::One(signed.from));
+    let state = row_of(&signed.view, account0()).state;
+    assert!(
+        matches!(
+            &state,
+            AccountState::SpendOutstanding {
+                reservation: ReservationState::Unclassified,
+                spent_index,
+                ..
+            } if *spent_index == start
+        ),
+        "{state:?}"
+    );
+    assert!(
+        watch.asks(account0(), &state),
+        "a spend whose first read fails is polled"
+    );
+
+    // The next poll fails too: the expiry still cannot be read.
+    let (state, _, _) = poll_after(&mut h, &mut watch, &state);
+    assert!(
+        matches!(
+            &state,
+            AccountState::SpendOutstanding {
+                reservation: ReservationState::Unclassified,
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+
+    // The node answers again: the reservation reads live, and is still polled.
+    h.chain.set_status_down(false);
+    let (state, _, _) = poll_after(&mut h, &mut watch, &state);
+    assert!(is_live(&state), "{state:?}");
+
+    // The spend lands: the poll settles it, and nothing is asked about it after.
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    let (state, spendable, settled) = poll_after(&mut h, &mut watch, &state);
+    assert_eq!(
+        state,
+        AccountState::InSync {
+            balance: plan.change_total
+        },
+        "{state:?}"
+    );
+    assert!(spendable);
+    assert_eq!(settled.map(|s| s.account), Some(account0()));
+    assert!(!watch.asks(account0(), &state));
+}
+
+#[test]
+fn a_re_sign_is_for_the_spend_whose_reservation_is_open_and_the_library_refuses_another() {
+    // D38, as docs/SCREENS.md W8 states the rule: spend A is signed and lands, and
+    // its settle leaves the next key to spend B, with other parameters. The
+    // reservation open is B's: the library re-signs B's parameters and refuses A's,
+    // so the spend a re-sign is offered must be the one whose sign reply names the
+    // reservation's key index.
+    let scratch = Scratch::new("resign-holds");
+    let (mut h, start) = funded(&scratch);
+    let a = pay(destination(1), Amount::Nano(100_000));
+    let plan_a = planned(h.call(Command::PlanSend { spend: a.clone() }));
+    let sent_a = sent(h.call(Command::ConfirmSend { plan: plan_a.plan }));
+    assert_eq!(sent_a.spent_index, Some(start));
+
+    // A lands, and a check settles it: the account's next key is the one after.
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan_a.change_total);
+    match h.call(Command::Status {
+        account: account0(),
+        scan_to: None,
+    }) {
+        Reply::Status { state, settled, .. } => {
+            assert_eq!(
+                state,
+                AccountState::InSync {
+                    balance: plan_a.change_total
+                },
+                "{state:?}"
+            );
+            assert!(settled.is_some(), "the landed spend settles on the check");
+        }
+        other => panic!("expected a status, got {other:?}"),
+    }
+
+    // B, with other parameters, holds the reservation now.
+    let b = pay(destination(1), Amount::Nano(200_000));
+    let plan_b = planned(h.call(Command::PlanSend { spend: b.clone() }));
+    let sent_b = sent(h.call(Command::ConfirmSend { plan: plan_b.plan }));
+    assert_eq!(sent_b.spent_index, Some(start + 1));
+    assert_eq!(
+        row_of(&sent_b.view, account0()).state.reserved_index(),
+        Some(start + 1)
+    );
+
+    // A's parameters are another spend, and the library refuses them.
+    let other = refusal(h.call(Command::Resign { spend: a }));
+    assert_eq!(other.kind, RefusalKind::Library);
+    assert_eq!(h.chain.submits().len(), 2, "nothing more was sent");
+
+    // B's parameters are the spend the reservation holds: the same bytes again.
+    let again = sent(h.call(Command::Resign { spend: b }));
+    assert!(again.submitted);
+    assert_eq!(again.artifact_hex, sent_b.artifact_hex);
+    assert_eq!(again.spent_index, Some(start + 1));
+}
+
+#[test]
+fn a_sign_reports_its_reservation_though_the_read_after_it_settles_the_spend() {
+    // D38 item 1, and docs/SCREENS.md W8: the spend lands before the read that
+    // follows its submit, and that read settles it, closing the reservation.
+    // The index the reply reports was read before that, so it is still the key
+    // the spend was signed with.
+    let scratch = Scratch::new("sign-index-settled");
+    let (mut h, start) = funded(&scratch);
+    let plan = planned(h.call(Command::PlanSend {
+        spend: pay(destination(1), Amount::Nano(100_000)),
+    }));
+    h.chain
+        .land_on_submit(tag(0), address(0, start + 1), plan.change_total);
+    let s = sent(h.call(Command::ConfirmSend { plan: plan.plan }));
+    assert!(s.submitted);
+    assert_eq!(settled_ids(&s.view), vec![account0()]);
+    assert_eq!(
+        row_of(&s.view, account0()).state,
+        AccountState::InSync {
+            balance: plan.change_total
+        }
+    );
+    assert_eq!(s.spent_index, Some(start));
+}
+
+#[test]
+fn a_re_sign_reports_its_reservation_though_the_read_after_it_settles_the_spend() {
+    // As for a sign: the re-signed bytes land before the read that follows
+    // their submit, and that read settles them. The reply still names the
+    // reservation's index.
+    let scratch = Scratch::new("resign-index-settled");
+    let (mut h, start) = funded(&scratch);
+    let spend = pay(destination(1), Amount::Nano(100_000));
+    let plan = planned(h.call(Command::PlanSend {
+        spend: spend.clone(),
+    }));
+    let first = sent(h.call(Command::ConfirmSend { plan: plan.plan }));
+    assert_eq!(first.spent_index, Some(start));
+    assert!(first.view.settled.is_empty());
+    h.chain
+        .land_on_submit(tag(0), address(0, start + 1), plan.change_total);
+    let again = sent(h.call(Command::Resign { spend }));
+    assert!(again.submitted);
+    assert_eq!(again.artifact_hex, first.artifact_hex);
+    assert_eq!(settled_ids(&again.view), vec![account0()]);
+    assert_eq!(again.spent_index, Some(start));
 }
 
 #[test]
@@ -1571,7 +2976,7 @@ fn queued_polls_do_not_keep_the_store_open() {
         {
             Event::Locked { reason } => locked = Some(reason),
             Event::Done { id, reply } => {
-                assert!(matches!(reply, Reply::Network { .. }), "{reply:?}");
+                assert!(matches!(*reply, Reply::Network { .. }), "{reply:?}");
                 if id == last {
                     break;
                 }
@@ -1730,6 +3135,175 @@ fn an_account_set_aside_at_open_settles_and_rejoins_once_it_reconciles() {
     }));
 }
 
+/// Store with account 1 restored and a spend from it sent, then opened again
+/// while the node answers "account not found" for account 1, so that the
+/// wallet sets it aside; then the spend lands. Returns the harness, the plan
+/// sent, and the store's files from before anything settled.
+fn set_aside_and_landed(scratch: &Scratch) -> (Harness, PlanView, Vec<(PathBuf, Vec<u8>)>) {
+    let dir = scratch.store();
+    let (mut h, _) = funded(scratch);
+    let account1 = AccountId::from_tag(tag(1));
+    h.chain.hold(tag(1), address(1, 0), 1_000_000);
+    match h.call(Command::Restore {
+        account_index: 1,
+        scan_to: None,
+    }) {
+        Reply::Restored { ok: true, .. } => {}
+        other => panic!("expected a restore, got {other:?}"),
+    }
+    let plan = planned(h.call(Command::PlanSend {
+        spend: SpendRequest {
+            from: account1,
+            ..pay(destination(2), Amount::Nano(100_000))
+        },
+    }));
+    let _ = sent(h.call(Command::ConfirmSend { plan: plan.plan }));
+    h.chain.forget(tag(1));
+    assert!(matches!(h.call(Command::Lock), Reply::Locked));
+    let view = opened(h.unlock(&dir, PASSWORD));
+    assert!(
+        matches!(row_of(&view, account1).state, AccountState::Diverged { .. }),
+        "{:?}",
+        row_of(&view, account1)
+    );
+    assert!(view.settled.is_empty());
+    h.chain.hold(tag(1), address(1, 1), plan.change_total);
+    let before = store_files(&dir);
+    (h, plan, before)
+}
+
+#[test]
+fn an_account_set_aside_at_open_settles_on_a_check_and_rejoins_on_refresh() {
+    // D38 item 1 and D19: a set-aside account settles once a read shows it
+    // landed, with no Settle pressed. A check that settles it leaves it
+    // aside, and the refresh after it opens the wallet with it.
+    let scratch = Scratch::new("settle-set-aside-check");
+    let dir = scratch.store();
+    let (mut h, plan, before) = set_aside_and_landed(&scratch);
+    let account1 = AccountId::from_tag(tag(1));
+    match h.call(Command::Status {
+        account: account1,
+        scan_to: None,
+    }) {
+        Reply::Status {
+            account,
+            state,
+            spendable,
+            text,
+            settled,
+        } => {
+            assert_eq!(
+                state,
+                AccountState::InSync {
+                    balance: plan.change_total
+                },
+                "{text}"
+            );
+            assert!(!spendable, "set aside until the wallet opens again");
+            assert!(text.contains("settled:"), "{text}");
+            assert_eq!(settled, Some(SettledAccount { account, text }));
+        }
+        other => panic!("expected a status, got {other:?}"),
+    }
+    assert_ne!(store_files(&dir), before, "the settle is written");
+
+    // The refresh opens the wallet again with the account, and it spends.
+    let view = opened(h.call(Command::Refresh));
+    let row = row_of(&view, account1);
+    assert_eq!(
+        row.state,
+        AccountState::InSync {
+            balance: plan.change_total
+        }
+    );
+    assert!(row.spendable, "{row:?}");
+    assert!(view.settled.is_empty(), "settled already, by the check");
+    let _ = planned(h.call(Command::PlanSend {
+        spend: SpendRequest {
+            from: account1,
+            ..pay(destination(2), Amount::Nano(1_000))
+        },
+    }));
+}
+
+#[test]
+fn an_account_set_aside_at_open_settles_on_refresh_with_no_settle_command() {
+    // The automatic twin of
+    // an_account_set_aside_at_open_settles_and_rejoins_once_it_reconciles
+    // (D38 item 1, D19): the refresh that finds the spend landed opens the
+    // wallet again with the account, and that opening settles it.
+    let scratch = Scratch::new("settle-set-aside-refresh");
+    let dir = scratch.store();
+    let (mut h, plan, before) = set_aside_and_landed(&scratch);
+    let account1 = AccountId::from_tag(tag(1));
+    let view = opened(h.call(Command::Refresh));
+    let row = row_of(&view, account1);
+    assert_eq!(
+        row.state,
+        AccountState::InSync {
+            balance: plan.change_total
+        }
+    );
+    assert!(row.spendable, "{row:?}");
+    assert_eq!(settled_ids(&view), vec![account1]);
+    assert_ne!(store_files(&dir), before, "the settle is written");
+    assert_eq!(row.index, 1, "as Settle leaves it (PLAN 4.9)");
+    let _ = planned(h.call(Command::PlanSend {
+        spend: SpendRequest {
+            from: account1,
+            ..pay(destination(2), Amount::Nano(1_000))
+        },
+    }));
+}
+
+#[test]
+fn a_check_that_settles_does_not_restart_the_idle_clock() {
+    let scratch = Scratch::new("settle-polling");
+    let mut h = Harness::with(Config {
+        idle_lock: Duration::from_secs(8),
+    });
+    assert!(matches!(
+        h.call(Command::SetNode { url: NODE.into() }),
+        Reply::NodeSet { .. }
+    ));
+    h.chain.hold(tag(0), address(0, 0), FUNDS);
+    let start = opened(h.create_from_phrase(&scratch.store())).accounts[0].index;
+    h.handle.touch();
+    let plan = send_from_account0(&mut h, 100_000);
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+
+    // Checks are not the person's input. The store locks eight seconds after
+    // the last input however often the account is checked, and the first
+    // check, which finds the spend landed, settles it. The input is marked
+    // again here, so the period counts from it and not from the signing above.
+    h.handle.touch();
+    let until = Instant::now() + Duration::from_secs(30);
+    let mut first = None;
+    while !h.seen.iter().any(|e| matches!(e, Event::Locked { .. })) {
+        assert!(
+            Instant::now() < until,
+            "the store never locked while it was checked"
+        );
+        let reply = h.call(Command::Status {
+            account: account0(),
+            scan_to: None,
+        });
+        first.get_or_insert(reply);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(h.wait_locked(Duration::ZERO), LockReason::Idle);
+    match first {
+        Some(Reply::Status { state, .. }) => assert_eq!(
+            state,
+            AccountState::InSync {
+                balance: plan.change_total
+            }
+        ),
+        other => panic!("expected the first check, got {other:?}"),
+    }
+}
+
 /// docs/DECISIONS.md D38 item 5: a reorganisation that reverts a settle
 /// does not reopen the reservation. The library keeps only the settled
 /// block, so every read that reconciles the account reports it one key
@@ -1871,7 +3445,7 @@ fn dropping_the_last_handle_stops_a_queued_spend_before_it_signs() {
             .recv_timeout(Duration::from_secs(60))
             .expect("an event")
         {
-            Event::Done { id, reply } => answers.push((id, reply)),
+            Event::Done { id, reply } => answers.push((id, *reply)),
             Event::Locked { reason } => locked = Some(reason),
             Event::Stopped { panicked } => {
                 assert!(!panicked);
