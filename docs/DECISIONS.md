@@ -3784,6 +3784,7 @@ OS libraries: none added.
 ### D42. QR scanning on phones
 
 **proposed; items 1 to 3 decided by the owner on 2026-10-13, in outline;
+item 5 in part on 2026-10-16, its feature narrowed for the owner to confirm;
 the details recommended.** Item 6 asks that Send can scan a QR code.
 
 1. **Phones only (owner, 2026-10-13).** The desktop has no scanning, and
@@ -3814,13 +3815,25 @@ the details recommended.** Item 6 asks that Send can scan a QR code.
    left and on a move to the background. A swapped sticker gives a valid
    but wrong destination, which only the review catches, as with Paste.
    The threat model gains the camera as an input.
-5. **Open.** iced's `image` feature, which Android's preview needs and
-   which reaches the desktop builds as well, is a new feature for the
-   owner's approval before the Android work (D32 item 9). The usage text,
-   `NSCameraUsageDescription` on iOS, and the Android manifest's
-   `android.permission.CAMERA`, with `android.hardware.camera.any` not
-   required, are for the owner's approval with the work. Tawara-mobile's
-   `MOBILE_DEPENDENCIES` gains `ndk-sys` and any new crate.
+5. **iced's image widget, the camera permission and `ndk-sys` (owner,
+   2026-10-16; the feature narrowed, for the owner to confirm).** The owner
+   approved, for Android's preview, iced's `image` feature, the Android
+   manifest's `android.permission.CAMERA` with `android.hardware.camera.any`
+   not required, and `ndk-sys` in Tawara-mobile's `MOBILE_DEPENDENCIES`.
+   The feature enabled is `image-without-codecs`, which is the image widget
+   without the image crate's codecs, and it is what the preview uses: the
+   widget, and `Handle::from_rgba` for each frame. `image` itself turns on
+   `image/default`, the codecs, avif among them. That adds 70 packages to
+   `Cargo.lock`, `rav1e` among them, an AV1 encoder whose `libfuzzer-sys`
+   is NCSA-licensed; deny.toml does not admit that licence, so `cargo deny`
+   fails on `image`. `image-without-codecs` adds six packages: `image` 0.25,
+   `byteorder-lite`, `kamadak-exif`, `moxcms`, `mutate_once` and `pxfm`, all
+   admitted. Both are features of the one iced line, so the desktop builds
+   have the widget too, since the desktop depends on `tawara-app`. Taking
+   `image` instead would need NCSA admitted in deny.toml (D12) as well as the
+   approval. The owner is asked to confirm `image-without-codecs`. The usage
+   text, `NSCameraUsageDescription` on iOS, is new wording and awaits the
+   owner's approval, with the scanner page's text and the Scan label.
 
 docs/SCREENS.md's W4 row, which says "Scan QR" is not built, changes with
 the work. OS libraries: AVFoundation on iOS; `camera2ndk` and `mediandk`,
