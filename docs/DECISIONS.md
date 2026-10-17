@@ -3790,10 +3790,11 @@ Tawara-mobile.
 
 **As built (2026-10-17).** The application side is built in this
 repository, and its tests drive it with a fake shell. The Keychain side is
-not in this change: it is in a Tawara-mobile pull request. Until that pull
-request is merged and its pin moves, no phone keeps a password or offers
-the check. Tawara-mobile's `Host` literals do not build against this change
-until that pull request sets the four fields.
+not in this change: it will be in a Tawara-mobile pull request, not yet
+opened; its number goes here when it is. Until that pull request is merged
+and its pin moves, no phone keeps a password or offers the check.
+Tawara-mobile's `Host` literals do not build against this change until that
+pull request sets the four fields.
 
 The `Host` (`crates/app/src/host.rs`) gains four optional fields, each
 `None` where a shell has none: `device_check`, which gives the check a shell
@@ -3864,8 +3865,8 @@ the wallet, and its buttons "Turn on" and "Not now"; the Settings row's
 label, "Unlock with Face ID", its three notes, and its buttons "Turn off" and
 "Turn on"; the six notes beside `DEVICE_MISSING_NOTE` in
 `crates/app/src/app.rs`; and the usage string `NSFaceIDUsageDescription`,
-which the Tawara-mobile pull request sets. The full texts are in
-docs/SCREENS.md.
+which a Tawara-mobile pull request, not yet opened, will set. The full texts
+are in docs/SCREENS.md.
 
 Choices outside D45's text, for the owner to confirm:
 
