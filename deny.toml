@@ -38,25 +38,28 @@ all-features = true
 # carries a written reason"). Both are maintenance notices, not
 # vulnerabilities, and both arrive with iced 0.14.1: the fork's release
 # v0.14.1-mobile.2 at d4ab3a0, which the owner pinned in place of 71f00e8
-# (docs/DECISIONS.md D32, item 9). FORK.md R2-2 measured iced as tripping
-# `unmaintained` twice before this repository existed, and these are the two.
+# (docs/DECISIONS.md D32, item 9), and the fork's commit 4f609cd1b, which the
+# wallet pins now; the two paths below run the same way through both commits.
+# FORK.md R2-2 measured iced as tripping `unmaintained` twice before this
+# repository existed, and these are the two.
 # Each is re-examined when the iced pin moves, and each reason below names the
 # path that reaches its crate at the current pin.
 ignore = [
     # `paste` 1.0.15: archived by its author. It is a procedural macro, so it
     # runs inside the compiler while building and contributes no code to any
-    # executable. At d4ab3a0 it reaches this graph only as `metal` 0.32.0 ->
-    # `wgpu-hal` 27.0.4 -> `wgpu` 27.0.1 -> `iced_wgpu` -> `iced_renderer` ->
-    # `iced`, on Apple targets. `wgpu-hal` 27.0.4 requires `metal` 0.32, and
-    # the 0.32 line's only release, 0.32.0, depends on `paste`, so no
-    # compatible upgrade drops it.
+    # executable. At 4f609cd1b, as at d4ab3a0, it reaches this graph only as
+    # `metal` 0.32.0 -> `wgpu-hal` 27.0.4 -> `wgpu` 27.0.1 -> `iced_wgpu` ->
+    # `iced_renderer` -> `iced`, on Apple targets. `wgpu-hal` 27.0.4 requires
+    # `metal` 0.32, and the 0.32 line's only release, 0.32.0, depends on
+    # `paste`, so no compatible upgrade drops it.
     { id = "RUSTSEC-2024-0436", reason = "paste is a compile-time proc macro reached only through metal 0.32.0 -> wgpu-hal 27.0.4 -> wgpu 27.0.1 under iced 0.14.1's renderer; it puts no code in the executable and no compatible upgrade exists" },
     # `ttf-parser` 0.25.1: its author has stated it will receive no further
-    # fixes. It reads font files, and at d4ab3a0 it arrives two ways: through
-    # `fontdb`, which `cosmic-text` uses for iced's font database, and on Linux
-    # through `owned_ttf_parser` -> `ab_glyph` -> `sctk-adwaita` -> the fork's
-    # `winit`, which draws Wayland window decorations with a system font. What
-    # it parses is the fonts this application bundles (docs/PLAN.md section 5)
+    # fixes. It reads font files, and at 4f609cd1b, as at d4ab3a0, it arrives
+    # two ways: through `fontdb`, which `cosmic-text` uses for iced's font
+    # database, and on Linux through `owned_ttf_parser` -> `ab_glyph` ->
+    # `sctk-adwaita` -> the fork's `winit`, which draws Wayland window
+    # decorations with a system font. What it parses is the fonts this
+    # application bundles (docs/PLAN.md section 5)
     # and the fonts installed on the user's own system, both already trusted;
     # it never sees data from the node. `cosmic-text` also depends on `skrifa`,
     # a maintained parser, but `fontdb` and `owned_ttf_parser` call this crate

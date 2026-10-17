@@ -50,9 +50,12 @@ mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-wi
 # THE TOOLKIT (docs/PLAN.md D2): iced 0.14, FROM THE OWNER'S FORK, PINNED BY
 # FULL COMMIT HASH (docs/DECISIONS.md D6, D32 items 1 and 9).
 #
-# `patricksmithlaravel/iced_mobile` at d4ab3a0, the fork's release tag
-# `v0.14.1-mobile.2`, on its main line. The fork starts from iced's own `0.14`
-# branch at 38237dd, whose sources are, crate for crate, the crates.io releases
+# `patricksmithlaravel/iced_mobile` at 4f609cd1b, the head of the fork's branch
+# `work/ios-safe-area-reread` (the fork's pull request #8). That branch is on
+# the fork's main line above the release tag `v0.14.1-mobile.2` (d4ab3a0), and
+# its last commit reads the iOS safe area again for 600 ms after a change
+# (D32 item 10 (f)). The fork starts from iced's own `0.14` branch at 38237dd,
+# whose sources are, crate for crate, the crates.io releases
 # this workspace was built on until now (iced 0.14.0, iced_widget 0.14.2,
 # iced_winit and iced_tiny_skia 0.14.1, the rest 0.14.0; the lockfile names the
 # fork's crates by the fork's own versions, 0.14.1 and iced_widget 0.14.2, as
@@ -62,19 +65,24 @@ mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-wi
 # (0b02176; D17, D32); and iOS windows put in UIKit's window scene, which an
 # app linked with the iOS 27 SDK needs (71f00e8; D32 item 8).
 #
-# The owner chose this release on 2026-10-12, in place of 71f00e8 (D32 item 9).
-# A tag does not move, the fork's framework code had settled by it, and it
-# carries the system clipboard and the safe-area and keyboard insets on phones,
-# which phase 4 (b) builds on. Its winit and dpi are the fork's vendored copies
-# in `vendor/winit`, on every target, in place of crates.io's: winit is
-# 0.30.13, and dpi is 0.1.1, back from crates.io's 0.1.2. Every iced crate
-# comes from that one commit, the desktop's included, so the build holds one
-# copy of each. The mobile shells live in `patricksmithlaravel/Tawara-mobile`
+# This rev is a branch head, not a release tag, and D32 item 9 (a) allows only
+# tags. It is pinned so that the fork's fix can be checked in this repository
+# before the tag exists. It moves to the tag `v0.14.1-mobile.3` once the fork's
+# pull request #8 merges, and it is not to reach `main` before that move. The
+# owner chose the release `v0.14.1-mobile.2` on 2026-10-12, in place of 71f00e8
+# (D32 item 9). A tag does not move, the fork's framework code had settled by
+# it, and it carries the system clipboard and the safe-area and keyboard insets
+# on phones, which phase 4 (b) builds on. Its winit and dpi are the fork's
+# vendored copies in `vendor/winit`, on every target, in place of crates.io's:
+# winit is 0.30.13, and dpi is 0.1.1, back from crates.io's 0.1.2. Every iced
+# crate comes from that one commit, the desktop's included, so the build holds
+# one copy of each. The mobile shells live in `patricksmithlaravel/Tawara-mobile`
 # (D33), which must take `tawara-app` from this repository and iced from the
 # same commit (D33, items 2 and 3). Moving iced is a change to `rev` here, on
-# both lines below, and to nothing else, and only to a release tag of the fork
-# (`v*-mobile.*`), by its full hash; these lines no longer return to crates.io
-# when an iced release carries the change (D32 item 9 (a)).
+# both lines below, and to nothing else. Apart from the stage described above,
+# it goes only to a release tag of the fork (`v*-mobile.*`), by its full hash;
+# these lines no longer return to crates.io when an iced release carries the
+# change (D32 item 9 (a)).
 # `crates/wallet-core/tests/policy.rs` holds them to it, and deny.toml admits
 # this one git source beside the library's.
 #
@@ -93,7 +101,7 @@ mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-wi
 # Receive (docs/DECISIONS.md D41), approved by the owner on 2026-10-13: it adds
 # the `qrcode` crate alone, which the fork declares with its default features
 # off (MIT OR Apache-2.0), and deny.toml was run against the result.
-iced = { git = "https://github.com/patricksmithlaravel/iced_mobile", rev = "d4ab3a057db96162b087a27dd0752a3b15abfa6b", default-features = false, features = [
+iced = { git = "https://github.com/patricksmithlaravel/iced_mobile", rev = "4f609cd1bcfd30b4690f531817c1cfce03857cd2", default-features = false, features = [
     "wgpu",
     "tiny-skia",
     "canvas",
@@ -120,7 +128,7 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 # already in every build of the interface (D32 item 9); it gives the example
 # `UserInterface`, which iced does not re-export. `png` writes and reads the
 # images.
-iced_runtime = { git = "https://github.com/patricksmithlaravel/iced_mobile", rev = "d4ab3a057db96162b087a27dd0752a3b15abfa6b" }
+iced_runtime = { git = "https://github.com/patricksmithlaravel/iced_mobile", rev = "4f609cd1bcfd30b4690f531817c1cfce03857cd2" }
 png = "0.18"
 
 tawara-wallet-core = { path = "crates/wallet-core" }
