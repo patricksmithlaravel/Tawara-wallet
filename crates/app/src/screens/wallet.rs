@@ -368,6 +368,34 @@ fn frame<'a>(
     actions: Vec<Element<'a, Message>>,
     body: Vec<Element<'a, Message>>,
 ) -> Element<'a, Message> {
+    framed(model, page, title, subtitle, actions, body, true)
+}
+
+/// [`frame`] for a page whose buttons draw what their own command met, beside
+/// them, with [`beside`]: the busy card and the refusal are not drawn at the
+/// top of it (docs/DECISIONS.md D40 item 4).
+fn frame_beside<'a>(
+    model: &'a Model,
+    page: &'a WalletPage,
+    title: &str,
+    subtitle: impl iced::widget::text::IntoFragment<'a>,
+    actions: Vec<Element<'a, Message>>,
+    body: Vec<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    framed(model, page, title, subtitle, actions, body, false)
+}
+
+/// [`frame`], or [`frame_beside`] when `top` is false: whether the busy card
+/// and the refusal are drawn under the title.
+fn framed<'a>(
+    model: &'a Model,
+    page: &'a WalletPage,
+    title: &str,
+    subtitle: impl iced::widget::text::IntoFragment<'a>,
+    actions: Vec<Element<'a, Message>>,
+    body: Vec<Element<'a, Message>>,
+    top: bool,
+) -> Element<'a, Message> {
     let compact = model.compact();
     // The title takes what the controls leave, its subtitle wrapping, so the
     // controls keep their size at the smallest window. On a phone the title
@@ -394,7 +422,7 @@ fn frame<'a>(
         header.into()
     };
     let mut stack = column![header].spacing(if compact { sp::S16 } else { sp::S24 });
-    if let Some(busy) = &model.busy {
+    if let Some(busy) = model.busy.as_ref().filter(|_| top) {
         stack = stack.push(working(compact, busy));
     }
     // The offer of the device unlock stands until it is answered or the store
@@ -409,11 +437,8 @@ fn frame<'a>(
     for kept in model.unsaved_signed() {
         stack = stack.push(unsaved(model, kept));
     }
-    if let Some(e) = &page.error {
-        stack = stack.push(match report::refused(e) {
-            Some(r) => report::show_in(compact, page, ReportKey::Refused, r),
-            None => ui::refusal(e),
-        });
+    if let Some(e) = page.error.as_deref().filter(|_| top) {
+        stack = stack.push(refusal_of(compact, page, e));
     }
     for part in body {
         stack = stack.push(part);
@@ -453,6 +478,30 @@ fn device_offer<'a>(check: DeviceCheck) -> Element<'a, Message> {
         ]
         .spacing(sp::S10),
     )
+}
+
+/// What a page draws beside the button whose command it is for: the busy card
+/// while the worker answers, then the refusal that command met, each when
+/// there is one (docs/DECISIONS.md D40 item 4). Empty when neither holds.
+fn beside<'a>(model: &'a Model, page: &'a WalletPage) -> Vec<Element<'a, Message>> {
+    let compact = model.compact();
+    let mut out = Vec::new();
+    if let Some(busy) = &model.busy {
+        out.push(working(compact, busy));
+    }
+    if let Some(e) = page.error.as_deref() {
+        out.push(refusal_of(compact, page, e));
+    }
+    out
+}
+
+/// A refusal in the library's words as a report when it is long, or as a
+/// refusal card when it reads as a line.
+fn refusal_of<'a>(compact: bool, page: &'a WalletPage, e: &'a str) -> Element<'a, Message> {
+    match report::refused(e) {
+        Some(r) => report::show_in(compact, page, ReportKey::Refused, r),
+        None => ui::refusal(e),
+    }
 }
 
 /// A spend signed this run whose page was left before its bytes were saved

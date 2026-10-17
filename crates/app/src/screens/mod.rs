@@ -39,6 +39,14 @@ pub fn page_top() -> Task<Message> {
     snap_to(page_id(), RelativeOffset::START)
 }
 
+/// Scrolls the page to its end, where a phone's page 2 of Send opens when a
+/// signing is refused: the refusal is drawn beside "Review spend" at the foot
+/// of that page, and at its top it would be a screen or more below the first
+/// view (docs/DECISIONS.md D40 item 7 (a)).
+pub fn page_end() -> Task<Message> {
+    snap_to(page_id(), RelativeOffset::END)
+}
+
 /// Whether this build is the iPhone's: the one whose shell can report no safe
 /// area at all (docs/DECISIONS.md D32 item 10 (b)). An expression rather than
 /// a `cfg` attribute, so that both branches are compiled on every target.
@@ -81,10 +89,25 @@ pub fn reveal_focused() -> impl Operation + 'static {
     Reveal::default()
 }
 
-/// [`reveal_focused`]: the page's scrollable as it was laid out, then the
-/// offset the focused field asks for, which a scroll of the page applies.
+/// [`reveal_focused`] for the field `target`, focused or not: the page is
+/// scrolled, by no more than [`reveal_focused`] would, so that the field lies
+/// in view. "Continue", and "Review spend" when it sends the person back to
+/// page 1, bring the first field refused into view this way, since the refusal
+/// is drawn beneath that field and the page does not move on its own
+/// (docs/DECISIONS.md D40 item 4).
+pub fn reveal_field(target: Id) -> impl Operation + 'static {
+    Reveal {
+        target: Some(target),
+        ..Reveal::default()
+    }
+}
+
+/// [`reveal_focused`] and [`reveal_field`]: the page's scrollable as it was laid
+/// out, then the offset the field asks for, which a scroll of the page applies.
+/// `target` is the field to reveal, or none for the focused one.
 #[derive(Default)]
 struct Reveal {
+    target: Option<Id>,
     page: Option<(Rectangle, Rectangle, Vector)>,
     to: Option<f32>,
 }
@@ -107,11 +130,15 @@ impl Operation for Reveal {
         }
     }
 
-    fn focusable(&mut self, _id: Option<&Id>, field: Rectangle, state: &mut dyn Focusable) {
+    fn focusable(&mut self, id: Option<&Id>, field: Rectangle, state: &mut dyn Focusable) {
         let Some((bounds, content, translation)) = self.page else {
             return;
         };
-        if !state.is_focused() {
+        let wanted = match &self.target {
+            Some(target) => id == Some(target),
+            None => state.is_focused(),
+        };
+        if !wanted {
             return;
         }
         // The field's top and bottom within the page, and the part of the page
@@ -158,6 +185,13 @@ pub fn phrase_id() -> iced::widget::Id {
 /// up.
 pub fn destination_id(n: usize) -> iced::widget::Id {
     iced::widget::Id::from(format!("destination-{n}"))
+}
+
+/// The reference field of the spend form's row `n` on page 1 of a phone's Send,
+/// which "Continue" brings into view when it refuses the reference
+/// (docs/DECISIONS.md D40 item 4).
+pub fn reference_id(n: usize) -> iced::widget::Id {
+    iced::widget::Id::from(format!("reference-{n}"))
 }
 
 /// The height of the page `model` draws in, in logical pixels: the window's,
