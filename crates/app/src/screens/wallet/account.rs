@@ -216,6 +216,7 @@ fn panel<'a>(
             kind,
             report: text,
             advance_to,
+            ..
         } => {
             let parts = column![report::show_in(
                 model.compact(),
@@ -526,6 +527,7 @@ mod tests {
             kind: DivergenceKind::Behind { gap: 1 },
             report: "This store recorded a SETTLE at index 4".to_owned(),
             advance_to: None,
+            reverted_settle: true,
         };
         assert_eq!(crate::app::remedy(&wallet.accounts[2].state), None);
         let model = phone(wallet, id, None);

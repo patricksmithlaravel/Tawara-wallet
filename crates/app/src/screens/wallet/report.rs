@@ -857,6 +857,7 @@ mod tests {
                 kind: DivergenceKind::NotFound,
                 report: "account not found".to_owned(),
                 advance_to: None,
+                reverted_settle: false,
             };
         }
         let r = notice(&wallet).unwrap();

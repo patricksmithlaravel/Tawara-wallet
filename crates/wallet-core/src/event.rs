@@ -170,6 +170,15 @@ pub enum Reply {
     Settled { text: String, view: WalletView },
     /// What the submitted artifact did.
     Submitted { accepted: bool, text: String },
+    /// A saved copy was written to the node, as [`crate::Command::ResubmitSaved`]
+    /// asks: `tx_id` is the transaction id the node echoed, and `text` says
+    /// what that write establishes. `view` is the wallet with the account read
+    /// again.
+    Resubmitted {
+        tx_id: String,
+        text: String,
+        view: WalletView,
+    },
     /// One account, reconciled now. `spendable` is whether a spend may be
     /// planned from it now, as [`crate::view::AccountRow::spendable`] says:
     /// it reconciled, and the wallet held it when it opened (an account set

@@ -5944,6 +5944,7 @@ mod tests {
             kind: DivergenceKind::Unreachable,
             report: "no answer".to_owned(),
             advance_to: None,
+            reverted_settle: false,
         };
         assert!(!checked(&mut app, 0, unreachable, false).spendable);
         assert!(checked(&mut app, 0, AccountState::InSync { balance: 9 }, true).spendable);
@@ -6832,6 +6833,7 @@ mod tests {
             kind,
             report: "the library's report".to_owned(),
             advance_to: None,
+            reverted_settle: false,
         };
         let silent = diverged(DivergenceKind::Unreachable);
         let not_found = diverged(DivergenceKind::NotFound);
@@ -7103,6 +7105,7 @@ mod tests {
                     kind: DivergenceKind::Unreachable,
                     report: "no answer".to_owned(),
                     advance_to: None,
+                    reverted_settle: false,
                 },
                 vec![],
             ),
@@ -7159,6 +7162,7 @@ mod tests {
             kind: DivergenceKind::Unreachable,
             report: "no answer".to_owned(),
             advance_to: None,
+            reverted_settle: false,
         };
         // The worker's answer to a poll of the account, taken as the app takes it.
         let answer = |app: &mut App, state: AccountState, settled: Option<SettledAccount>| {
@@ -7213,6 +7217,7 @@ mod tests {
                 kind: DivergenceKind::ReservationUnexplained,
                 report: "unexplained".to_owned(),
                 advance_to: None,
+                reverted_settle: false,
             },
             None,
         );
@@ -7272,6 +7277,7 @@ mod tests {
             kind,
             report: "the library's report".to_owned(),
             advance_to: None,
+            reverted_settle: false,
         };
         let silent = diverged(DivergenceKind::Unreachable);
         let not_found = diverged(DivergenceKind::NotFound);
@@ -7416,6 +7422,7 @@ mod tests {
             kind: DivergenceKind::Unreachable,
             report: "no answer".to_owned(),
             advance_to: None,
+            reverted_settle: false,
         };
         answer(&mut app, silent, None);
         assert!(polls(&mut app), "a transient failure keeps the polls going");
@@ -7456,6 +7463,7 @@ mod tests {
             kind: DivergenceKind::NotFound,
             report: "account not found".to_owned(),
             advance_to: None,
+            reverted_settle: false,
         };
         let answer = |app: &mut App, state: AccountState| {
             let _ = app.on_reply(
