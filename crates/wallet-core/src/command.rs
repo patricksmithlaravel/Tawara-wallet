@@ -135,8 +135,9 @@ pub enum Command {
     /// to the retained digest, their signature recovers to the source key, the
     /// balance at the source is the one the settle was built against, and a
     /// non-zero block-to-live has not been reached. Nothing is signed and no
-    /// key index moves. The account is read again afterwards, so its row moves
-    /// when the copy lands.
+    /// key index moves. The account is read again after the write, so its row
+    /// moves when the copy lands. After a refusal the caller reads the account,
+    /// as it does after a sign the library refused.
     ResubmitSaved {
         account: AccountId,
         artifact_hex: String,

@@ -2425,6 +2425,23 @@ impl App {
                     s.result = Some((true, text));
                 }
             }
+            // A saved copy the library refused. Its write may have reached the
+            // node before the refusal, so the account is read again, quietly, as
+            // after a sign the library refused (ConfirmSend above; docs/DECISIONS.md
+            // D38 items 2 and 5 (b)). The read is a poll: what it finds, and any
+            // settlement, is shown as a poll's is.
+            (Purpose::Resubmit(account), Reply::Refused(r)) => {
+                if r.kind == RefusalKind::Library {
+                    self.send(
+                        Command::Status {
+                            account,
+                            scan_to: None,
+                        },
+                        Purpose::Poll,
+                    );
+                }
+                self.refused(r);
+            }
             (_, Reply::Refused(r)) => self.refused(r),
             _ => {}
         }

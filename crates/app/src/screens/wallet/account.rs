@@ -220,6 +220,9 @@ fn panel<'a>(
             advance_to,
             reverted_settle,
         } => {
+            // A store that did not open refuses the saved copy's command, so the
+            // button waits for an open wallet (docs/DECISIONS.md D38 item 5 (b)).
+            let opened = model.wallet.as_ref().is_some_and(|w| w.opened);
             let parts = column![report::show_in(
                 model.compact(),
                 page,
@@ -242,13 +245,15 @@ fn panel<'a>(
                 match kind {
                     // A settle the chain reverted leaves the account one key
                     // behind with its settle retained: the saved copy may be
-                    // sent again, from W9, and nothing else here moves the
-                    // account (docs/DECISIONS.md D38 item 5 (b)).
-                    DivergenceKind::Behind { gap: 1 } if *reverted_settle => vec![button(
-                        "Submit saved artifact",
-                        theme::Button::Secondary,
-                        WalletMsg::Open(To::Resubmit(id)),
-                    )],
+                    // sent again, from W9 in an open wallet, and nothing else
+                    // here moves the account (docs/DECISIONS.md D38 item 5 (b)).
+                    DivergenceKind::Behind { gap: 1 } if *reverted_settle && opened => {
+                        vec![button(
+                            "Submit saved artifact",
+                            theme::Button::Secondary,
+                            WalletMsg::Open(To::Resubmit(id)),
+                        )]
+                    }
                     DivergenceKind::NotFound => vec![button(
                         "Receive to it again",
                         theme::Button::Secondary,
@@ -616,5 +621,27 @@ mod tests {
                 "{kind:?}, with its settle retained: {reverted_settle}"
             );
         }
+    }
+
+    #[test]
+    fn a_store_that_did_not_open_offers_no_saved_copy() {
+        // A store whose only account diverged this way does not open, and the
+        // command is refused in that session, so no button is drawn there. The
+        // same account draws it once the wallet is open (docs/DECISIONS.md D38
+        // item 5 (b)).
+        let mut wallet = sample::wallet_view();
+        let id = wallet.accounts[2].id;
+        wallet.accounts[2].state = reverted_settle();
+        assert!(
+            drawn(&phone(wallet.clone(), id, None)).contains(&"Submit saved artifact".to_owned()),
+            "an open wallet offers it"
+        );
+        wallet.opened = false;
+        let model = phone(wallet, id, None);
+        assert!(
+            !drawn(&model).contains(&"Submit saved artifact".to_owned()),
+            "{:?}",
+            drawn(&model)
+        );
     }
 }

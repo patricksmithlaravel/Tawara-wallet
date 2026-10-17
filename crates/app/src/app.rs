@@ -5501,6 +5501,48 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_copy_the_library_refuses_is_read_again_quietly() {
+        // A write that failed after the node received the copy leaves it there,
+        // so the account is read again, quietly, as a sign the library refused
+        // is (docs/DECISIONS.md D38 items 2 and 5 (b)). A refusal the wallet makes
+        // itself, for a locked store, reads nothing.
+        use tawara_wallet_core::{Refusal, RefusalKind};
+        let scratch = Scratch::new("resubmit-refused");
+        let (mut app, _events) = app(&scratch);
+        let view = tawara_wallet_core::sample::wallet_view();
+        let account = view.accounts[2].id;
+        app.model.wallet = Some(view);
+        app.model.screen = Screen::Wallet(WalletPage {
+            page: Page::Submit(SubmitPage {
+                hex: "4f2a00ab11cd".to_owned(),
+                mode: SubmitMode::Resubmit(account),
+                result: None,
+            }),
+            ..WalletPage::default()
+        });
+        let _ = app.on_reply(
+            Purpose::Resubmit(account),
+            Reply::Refused(Refusal {
+                kind: RefusalKind::NotUnlocked,
+                text: "the wallet is locked".to_owned(),
+            }),
+        );
+        assert!(!app.waiting_on(|p| matches!(p, Purpose::Poll)));
+        let _ = app.on_reply(
+            Purpose::Resubmit(account),
+            Reply::Refused(Refusal {
+                kind: RefusalKind::Library,
+                text: "the library refused".to_owned(),
+            }),
+        );
+        assert!(app.waiting_on(|p| matches!(p, Purpose::Poll)), "read again");
+        assert_eq!(
+            wallet_page(&app).error.as_deref(),
+            Some("the library refused")
+        );
+    }
+
+    #[test]
     fn a_saved_copy_the_library_refuses_shows_its_words_on_w9() {
         // The refusal is the library's own text, as W9's error. The page keeps
         // no result, since nothing was written (docs/DECISIONS.md D38 item 5 (b)).
