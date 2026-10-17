@@ -3598,27 +3598,28 @@ No library change. OS libraries: none added.
 
 ### D44. The recovery phrase on one screen
 
-**proposed; the order decided by the owner on 2026-10-13; the details
-recommended.** Item 8 asks for the whole phrase in one frame, with no
-scrolling. On a 360 × 640 phone that fits only if the library's warning
-moves off the frame or is shortened, and the warning is the library's text
-(PLAN section 3, D25). The exception is the page after a screenshot (item
-3), whose warning takes room the frame lacks. That page scrolls on a phone of
-390 × 844 and on one of 360 × 640, and fits on one of 360 × 800. Item 1 names
-the exception, and the owner's choice among the three options is open (As
-built).
+**proposed; the order decided by the owner on 2026-10-13, and the page after
+a screenshot on 2026-10-16; the details recommended.** Item 8 asks for the
+whole phrase in one frame, with no scrolling. On a 360 × 640 phone that fits
+only if the library's warning moves off the frame or is shortened, and the
+warning is the library's text (PLAN section 3, D25). The exception is the page
+after a screenshot (item 3), whose warning took room the frame lacks. The
+owner chose on 2026-10-16 that the warning takes the words' place, so that
+page is one frame too, and the words come back when "Show the phrase" is
+pressed (item 1; As built).
 
 1. **Warning first, then the phrase (owner, 2026-10-13).** On short
    phones the library's warning comes first, on a frame of its own, whole
    and unchanged. Then all 24 words appear in a grid of three columns and
    eight rows on one frame, with the checkbox and Continue. Larger phones
    and the desktop show everything on one frame. The phrase itself is never
-   split across frames. *Exception, open for the owner (2026-10-16):* after
-   a screenshot, item 3's warning sits above the words, and then the page
-   scrolls on a phone of 390 × 844 and on one of 360 × 640, so the warned
-   page is not one frame there. The owner has not chosen how to meet that:
-   keep the scroll, hide the words again after a screenshot until "Show the
-   phrase" is pressed, or show a one-line notice (As built).
+   split across frames. *Exception (owner, 2026-10-16):* after a screenshot
+   taken while the words are drawn, item 3's warning takes their place, in
+   the grid's space, with "Show the phrase" under it. The words come back when
+   the button is pressed, and the warning goes with them. So the warned page
+   is one frame, with no scroll, on a phone of 360 × 640, 360 × 800 and
+   390 × 844, and the checkbox and Continue keep their rules. The owner chose
+   this over keeping the scroll and over a one-line notice (As built).
 2. **The grid (recommended).** Three columns by eight rows on every size,
    read down the columns as the desktop's already is, at 14-pixel words.
    A phone counts as short below about 720 usable pixels. The tests measure
@@ -3632,10 +3633,11 @@ built).
    written.
 3. **iOS (recommended).** A warning follows a screenshot taken while the
    phrase is shown (`UIApplicationUserDidTakeScreenshotNotification`, which
-   arrives after the capture and cannot block it), and the grid is blanked
-   while the screen is reported as recorded or mirrored, as far as iOS
-   reports it. Reports from developers say the capture state can read
-   inactive while a recording runs, so the blanking is a best effort and
+   arrives after the capture and cannot block it), and on a phone the words
+   then wait behind the warning until "Show the phrase" is pressed (item 1).
+   The grid is blanked while the screen is reported as recorded or mirrored,
+   as far as iOS reports it. Reports from developers say the capture state can
+   read inactive while a recording runs, so the blanking is a best effort and
    the copy must not promise it.
 4. **Android and the desktop (recommended).** Android keeps `FLAG_SECURE`
    (D32 item 4). Android's guide to securing sensitive activities says that
@@ -3664,15 +3666,21 @@ the desktop, which keep S4 as it was), and the crate exports
 observers that call them are in Tawara-mobile; until that pull request is in
 a pin, no phone warns or blanks. The wording of item 5 awaits the owner's
 approval. On review (2026-10-16), the placeholder's copy was reworded to say
-that iOS does not report every recording or mirror. The warned page scrolls
-on a phone at 390 by 844 and at 360 by 640, and fits at 360 by 800. The owner
-decides whether it keeps the scroll, hides the words again after a screenshot
-until "Show the phrase" is pressed, or shows a one-line notice; only the scroll
-is built, and the owner's choice is recorded here before this pull request
-merges. A window 600 pixels or wider draws the desktop's frame, and the warned
-page is not measured at that width. The phone images are
-`phone-s4-phrase-photographed.png` with its end, and
-`phone-s4-phrase-captured.png`.
+that iOS does not report every recording or mirror. The owner chose that
+after a screenshot the words are hidden again behind the warning until "Show
+the phrase" is pressed (owner, 2026-10-16; item 1). It is built: a screenshot
+taken while the words are drawn clears `shown` and sets
+`photographed`, and a phone then draws the warning and the button in a box as
+tall as the grid, with the checkbox and Continue below, so the warned page is
+one frame at 360 by 640, 360 by 800 and 390 by 844. The tests hold it to that
+(`the_warned_page_fits_one_frame_at_360_by_640_360_by_800_and_390_by_844`). A
+screenshot while the words wait changes nothing, and "Show the phrase" brings
+the words back. A window 600 pixels or wider draws the desktop's frame, which
+keeps its warning above the words as before; no shell reports a screenshot
+there. The phone image of the warned page is `phone-s4-phrase-photographed.png`,
+and its scrolled end, which the page no longer needs, is removed.
+`phone-s4-phrase-captured.png` is the placeholder while the screen is recorded
+or mirrored.
 
 ### D45. Unlock with Face ID, Touch ID or the passcode, on iOS
 

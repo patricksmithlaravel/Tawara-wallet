@@ -57,7 +57,11 @@ fn view_of<'a>(model: &'a Model, words: Vec<&'a str>) -> Element<'a, Message> {
             &words,
             p.written,
             PhraseFrame::Whole,
-            p.photographed,
+            if p.photographed {
+                Shot::Above
+            } else {
+                Shot::Clear
+            },
             model.captured,
         ),
         (None, Screen::Confirm(p)) => confirm(p, model.drawn()),
@@ -654,8 +658,9 @@ const PHRASE_BODY: &str = "It is the ONLY backup of this wallet. It cannot be re
                            forget it and these words are the only way back in.";
 
 /// The warning after a screenshot taken while the words were drawn, in the
-/// style of the library's warning (docs/DECISIONS.md D44 item 3). The wording
-/// is new, and awaits the owner's approval (D44 item 5).
+/// style of the library's warning (docs/DECISIONS.md D44 items 1 and 3). On a
+/// phone it takes the words' place until "Show the phrase" is pressed. The
+/// wording is new, and awaits the owner's approval (D44 item 5).
 const PHRASE_SHOT_TITLE: &str = "A screenshot was taken";
 const PHRASE_SHOT_BODY: &str = "Delete it. It holds the words.";
 
@@ -669,8 +674,9 @@ const PHRASE_HIDDEN: &str = "While iOS reports this screen as recorded or mirror
 
 /// The height of the words' grid at its 14-pixel words: eight rows of cells,
 /// with [`PHRASE_GAP`] between the rows. The placeholder that replaces the grid
-/// while the screen is captured is as tall, so the page does not move
-/// (docs/DECISIONS.md D44 item 3). `the_placeholder_is_as_tall_as_the_grid`
+/// while the screen is captured, and the warning that takes its place after a
+/// screenshot on a phone, are as tall, so the page does not move (docs/DECISIONS.md
+/// D44 items 1 and 3). `the_placeholder_is_as_tall_as_the_grid_it_replaces`
 /// holds this to the layout.
 const PHRASE_GRID_HEIGHT: f32 = 251.6;
 
@@ -699,30 +705,59 @@ enum PhraseFrame {
     /// A phone shorter than [`PHRASE_ONE_FRAME`], before "Show the phrase": the
     /// library's warning, on its own.
     Warning,
-    /// A phone shorter than [`PHRASE_ONE_FRAME`], after "Show the phrase": the
-    /// words, their checkbox and Continue, and the link.
+    /// A phone shorter than [`PHRASE_ONE_FRAME`], after "Show the phrase" or a
+    /// screenshot: the words, or the warning in their place, with their
+    /// checkbox, Continue and the link.
     Phrase,
 }
 
+/// What S4 draws of a screenshot taken while its words were drawn (docs/DECISIONS.md
+/// D44 items 1 and 3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shot {
+    /// No warning: no screenshot was taken, or the words are drawn after one.
+    Clear,
+    /// The desktop, which no shell reports a screenshot for: the warning comes
+    /// above the words, as it did before the phone's layout.
+    Above,
+    /// A phone: the words are hidden, and the warning takes their place, with
+    /// "Show the phrase", until the person presses it.
+    InPlace,
+}
+
 /// The frame a phone whose page is `height` pixels tall draws for a phrase,
-/// given whether the person has pressed "Show the phrase" (`shown`).
-fn phrase_frame(height: f32, shown: bool) -> PhraseFrame {
+/// given whether the person has pressed "Show the phrase" (`shown`) and whether
+/// a screenshot was taken while the words were drawn (`photographed`). A
+/// screenshot hides the words, not the frame: a short phone keeps the frame it
+/// had after "Show the phrase" (docs/DECISIONS.md D44 items 1 and 3).
+fn phrase_frame(height: f32, shown: bool, photographed: bool) -> PhraseFrame {
     if height >= PHRASE_ONE_FRAME {
         PhraseFrame::Whole
-    } else if shown {
+    } else if shown || photographed {
         PhraseFrame::Phrase
     } else {
         PhraseFrame::Warning
     }
 }
 
+/// Whether a phone hides the words of its phrase behind the warning after a
+/// screenshot taken while they were drawn, until "Show the phrase" is pressed
+/// again (docs/DECISIONS.md D44 items 1 and 3).
+fn words_hidden_by_shot(p: &PhraseState) -> bool {
+    p.photographed && !p.shown
+}
+
 /// Whether S4 draws its words now (docs/DECISIONS.md D44 items 1 and 3): on the
-/// desktop, and on a phone whose page holds one frame, always; on a shorter
-/// phone, only once "Show the phrase" is pressed. It is the frame
-/// [`phone_phrase`] draws, decided by the window's height as the model holds
-/// it, so that a screenshot is warned of only when the words were on screen.
+/// desktop, always; on a phone, when it is too short for the warning and the
+/// words on one frame, only once "Show the phrase" is pressed; and on a taller
+/// phone, unless a screenshot has hidden them. It is the frame [`phone_phrase`]
+/// draws, decided by the window's height as the model holds it, so that a
+/// screenshot is noted only when the words were on screen.
 pub(crate) fn phrase_words_drawn(model: &Model, p: &PhraseState) -> bool {
-    !model.compact() || phrase_frame(super::page_height(model), p.shown) != PhraseFrame::Warning
+    !model.compact()
+        || (!words_hidden_by_shot(p)
+            && phrase_frame(super::page_height(model), p.shown, p.photographed)
+                != PhraseFrame::Warning)
 }
 
 /// S4 on a phone, for the `words` of `p`: the frame its page of `height`
@@ -735,12 +770,17 @@ fn phone_phrase<'a>(
     height: f32,
     captured: bool,
 ) -> Element<'a, Message> {
+    let shot = if words_hidden_by_shot(p) {
+        Shot::InPlace
+    } else {
+        Shot::Clear
+    };
     let page = phone_block(
         phrase_content(
             words,
             p.written,
-            phrase_frame(height, p.shown),
-            p.photographed,
+            phrase_frame(height, p.shown, p.photographed),
+            shot,
             captured,
         ),
         sp::S24,
@@ -761,15 +801,17 @@ fn phone_phrase<'a>(
 /// S4 (docs/SCREENS.md S4; docs/DECISIONS.md D44): a heading, the library's
 /// warning, and the 24 words in a grid with the checkbox, Continue and a link.
 /// The warning comes before the words. `frame` decides what is drawn: both
-/// together, or the warning with "Show the phrase", or the words alone. The
-/// warning about a screenshot (`photographed`) comes before the words, and
-/// while the screen is recorded or mirrored (`captured`) the grid is a
-/// placeholder of its height (docs/DECISIONS.md D44 item 3).
+/// together, or the warning with "Show the phrase", or the words alone. A
+/// screenshot taken while the words were drawn is drawn as `shot` says: above
+/// the words on the desktop, or in their place on a phone until "Show the
+/// phrase" is pressed. While the screen is recorded or mirrored (`captured`)
+/// the grid is a placeholder of its height, whatever `shot` says (docs/DECISIONS.md
+/// D44 items 1 and 3).
 fn phrase_content<'a>(
     words: &[&'a str],
     written: bool,
     frame: PhraseFrame,
-    photographed: bool,
+    shot: Shot,
     captured: bool,
 ) -> Element<'a, Message> {
     let mut body = column![t(
@@ -781,22 +823,16 @@ fn phrase_content<'a>(
     if frame != PhraseFrame::Phrase {
         body = body.push(ui::warning_callout(PHRASE_TITLE, PHRASE_BODY));
     }
-    if photographed {
+    if shot == Shot::Above {
         body = body.push(ui::warning_callout(PHRASE_SHOT_TITLE, PHRASE_SHOT_BODY));
     }
     if frame == PhraseFrame::Warning {
-        return body
-            .push(ui::button_with(
-                "Show the phrase",
-                theme::Button::Primary,
-                Size::Xl,
-                None,
-                Some(Message::ShowPhrase),
-            ))
-            .into();
+        return body.push(show_the_phrase()).into();
     }
     let grid = if captured {
         phrase_hidden()
+    } else if shot == Shot::InPlace {
+        phrase_shot()
     } else {
         words_grid(words)
     };
@@ -856,6 +892,38 @@ fn phrase_hidden<'a>() -> Element<'a, Message> {
     .width(Length::Fill)
     .center_y(Length::Fixed(PHRASE_GRID_HEIGHT))
     .style(theme::field_box)
+    .into()
+}
+
+/// What stands where the words are after a screenshot taken while they were
+/// drawn, on a phone: the warning, and "Show the phrase" under it, in a box as
+/// tall as the grid, so that the page does not move (docs/DECISIONS.md D44 items
+/// 1 and 3).
+fn phrase_shot<'a>() -> Element<'a, Message> {
+    container(
+        column![
+            ui::warning_callout(PHRASE_SHOT_TITLE, PHRASE_SHOT_BODY),
+            show_the_phrase(),
+        ]
+        .spacing(sp::S16)
+        .width(Length::Fill),
+    )
+    .width(Length::Fill)
+    .center_y(Length::Fixed(PHRASE_GRID_HEIGHT))
+    .into()
+}
+
+/// "Show the phrase": on a short phone, the words come back after the library's
+/// warning; on any phone, they come back after a screenshot (docs/DECISIONS.md
+/// D44 items 1 and 3).
+fn show_the_phrase<'a>() -> Element<'a, Message> {
+    ui::button_with(
+        "Show the phrase",
+        theme::Button::Primary,
+        Size::Xl,
+        None,
+        Some(Message::ShowPhrase),
+    )
     .into()
 }
 
@@ -1664,11 +1732,19 @@ mod tests {
 
     #[test]
     fn a_phone_takes_one_frame_only_when_its_page_is_tall_enough() {
-        assert_eq!(phrase_frame(PHRASE_ONE_FRAME, false), PhraseFrame::Whole);
-        assert_eq!(phrase_frame(PHRASE_ONE_FRAME, true), PhraseFrame::Whole);
+        assert_eq!(
+            phrase_frame(PHRASE_ONE_FRAME, false, false),
+            PhraseFrame::Whole
+        );
+        assert_eq!(
+            phrase_frame(PHRASE_ONE_FRAME, true, false),
+            PhraseFrame::Whole
+        );
         let short = PHRASE_ONE_FRAME - 0.5;
-        assert_eq!(phrase_frame(short, false), PhraseFrame::Warning);
-        assert_eq!(phrase_frame(short, true), PhraseFrame::Phrase);
+        assert_eq!(phrase_frame(short, false, false), PhraseFrame::Warning);
+        assert_eq!(phrase_frame(short, true, false), PhraseFrame::Phrase);
+        // A screenshot hides the words, and the short phone keeps its frame.
+        assert_eq!(phrase_frame(short, false, true), PhraseFrame::Phrase);
     }
 
     /// S4 for `model`, its phrase 24 words of "abstract", in the root that
@@ -1886,29 +1962,126 @@ mod tests {
         );
     }
 
+    /// S4 on a phone `width` wide after a screenshot taken while its words were
+    /// drawn: the words are hidden until "Show the phrase" is pressed.
+    fn shot_phrase_model(width: f32) -> Model {
+        let mut model = phone_phrase_model(width, true);
+        if let Screen::Phrase(p) = &mut model.screen {
+            p.photographed = true;
+            p.shown = false;
+        }
+        model
+    }
+
+    /// The box `text` is drawn in, in a window of `size` with `model` on it.
+    fn drawn_at(model: &Model, size: (f32, f32), text: &str) -> Rectangle {
+        texts(crate::screens::view(model), size)
+            .into_iter()
+            .find(|(drawn, _)| drawn == text)
+            .map(|(_, at)| at)
+            .unwrap_or_else(|| panic!("{text} is not drawn"))
+    }
+
+    /// The window sizes the warned page is held to: the two short phones and
+    /// the one-frame phone (docs/DECISIONS.md D44).
+    const WARNED_SIZES: [(f32, (f32, f32)); 3] = [
+        (360.0, (360.0, 640.0)),
+        (360.0, (360.0, 800.0)),
+        (390.0, (390.0, 844.0)),
+    ];
+
     #[test]
-    fn a_screenshot_warning_comes_before_the_words_and_only_after_a_screenshot() {
-        // docs/DECISIONS.md D44 item 3: once a screenshot was taken while the
-        // words were drawn, the warning about it is drawn before them.
-        let mut model = phone_phrase_model(360.0, true);
-        let size = (360.0, 800.0);
-        assert!(
-            !words_drawn(&model, size)
-                .iter()
-                .any(|t| t == PHRASE_SHOT_TITLE),
-            "no warning before a screenshot"
-        );
+    fn a_screenshot_takes_the_words_place_until_show_is_pressed() {
+        // docs/DECISIONS.md D44 items 1 and 3: after a screenshot taken while the
+        // words are drawn, the warning takes their place, with "Show the phrase",
+        // and the checkbox and Continue stay. The words come back when the button
+        // is pressed, and the warning goes with them.
+        for (width, size) in WARNED_SIZES {
+            let before = words_drawn(&phone_phrase_model(width, true), size);
+            assert!(
+                !before.iter().any(|t| t == PHRASE_SHOT_TITLE),
+                "{size:?}: no warning before a screenshot: {before:?}"
+            );
+            let mut model = shot_phrase_model(width);
+            let hidden = words_drawn(&model, size);
+            for text in [
+                PHRASE_SHOT_TITLE,
+                PHRASE_SHOT_BODY,
+                "Show the phrase",
+                "Continue",
+                "Start over with a new phrase",
+            ] {
+                assert!(
+                    hidden.iter().any(|t| t == text),
+                    "{size:?}: {text} is drawn: {hidden:?}"
+                );
+            }
+            assert!(
+                !hidden.iter().any(|t| t == "abandon" || t == "art"),
+                "{size:?}: no word is drawn: {hidden:?}"
+            );
+            if let Screen::Phrase(p) = &mut model.screen {
+                p.shown = true;
+            }
+            let back = words_drawn(&model, size);
+            assert!(
+                back.iter().any(|t| t == "abandon"),
+                "{size:?}: the words are back: {back:?}"
+            );
+            assert!(
+                !back
+                    .iter()
+                    .any(|t| t == PHRASE_SHOT_TITLE || t == "Show the phrase"),
+                "{size:?}: the warning goes with them: {back:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_warning_takes_the_grids_place_and_the_page_does_not_move() {
+        // docs/DECISIONS.md D44 items 1 and 3: the checkbox, Continue and the link
+        // stand where they stand with the words, so the page does not move.
+        for (width, size) in WARNED_SIZES {
+            let shown = phone_phrase_model(width, true);
+            let hidden = shot_phrase_model(width);
+            for text in [
+                "I have written down every word, in order.",
+                "Continue",
+                "Start over with a new phrase",
+            ] {
+                let with_words = drawn_at(&shown, size, text);
+                let with_warning = drawn_at(&hidden, size, text);
+                assert!(
+                    (with_words.y - with_warning.y).abs() < 0.5,
+                    "{size:?}: {text} is at {} with the words, {} with the warning",
+                    with_words.y,
+                    with_warning.y
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_desktop_keeps_its_warning_above_the_words_after_a_screenshot() {
+        // docs/DECISIONS.md D44 item 3: no shell reports a screenshot on the
+        // desktop. Where one is noted, the desktop's warning comes above the
+        // words on its one frame, as it did before the phone's layout, and there
+        // is no "Show the phrase" button.
+        let mut model = desktop_phrase_model(1024.0);
         if let Screen::Phrase(p) = &mut model.screen {
             p.photographed = true;
         }
-        let drawn = texts(crate::screens::view(&model), size);
+        let drawn = texts(crate::screens::view(&model), (1024.0, 700.0));
         let at = |text: &str| drawn.iter().find(|(t, _)| t == text).map(|(_, r)| *r);
         let warning = at(PHRASE_SHOT_TITLE).expect("the warning is drawn");
-        let body = at(PHRASE_SHOT_BODY).expect("its body is drawn");
         let first = at("abandon").expect("the first word is drawn");
         assert!(
-            warning.y < body.y && body.y < first.y,
-            "the warning, then the words: {warning:?} {body:?} {first:?}"
+            warning.y < first.y,
+            "the warning, then the words: {warning:?} {first:?}"
+        );
+        assert!(
+            !drawn.iter().any(|(t, _)| t == "Show the phrase"),
+            "the desktop has one frame"
         );
     }
 
@@ -1960,12 +2133,14 @@ mod tests {
 
     #[test]
     fn the_placeholder_is_as_tall_as_the_grid_it_replaces() {
-        // docs/DECISIONS.md D44 item 3: the page does not move when the words are
-        // hidden, so the placeholder is the grid's height.
+        // docs/DECISIONS.md D44 items 1 and 3: the page does not move when the
+        // words are hidden, so the placeholder, and the warning that takes the
+        // words' place after a screenshot, are the grid's height.
         let phrase = PhraseForDisplay::example();
         let words: Vec<&str> = phrase.words().collect();
         let grid = drawn_bounds(phone_block(words_grid(&words), 0.0, 0.0), 360.0, 800.0)[0];
         let hidden = drawn_bounds(phone_block(phrase_hidden(), 0.0, 0.0), 360.0, 800.0)[0];
+        let shot = drawn_bounds(phone_block(phrase_shot(), 0.0, 0.0), 360.0, 800.0)[0];
         assert!(
             (grid.height - PHRASE_GRID_HEIGHT).abs() < 0.5,
             "the grid is {} tall",
@@ -1975,6 +2150,12 @@ mod tests {
             (hidden.height - grid.height).abs() < 0.5,
             "the placeholder is {} tall, the grid {}",
             hidden.height,
+            grid.height
+        );
+        assert!(
+            (shot.height - grid.height).abs() < 0.5,
+            "the warning is {} tall, the grid {}",
+            shot.height,
             grid.height
         );
     }
@@ -2017,18 +2198,16 @@ mod tests {
     }
 
     #[test]
-    fn a_warning_after_a_screenshot_fits_a_phone_of_360_by_800() {
-        // docs/DECISIONS.md D44 item 3: a 360 by 800 phone has room for the
-        // warning above the words. On a 360 by 640 phone and on a 390 by 844 one
-        // it has not: the page scrolls, and "Start over with a new phrase" lies
-        // below the bottom inset until it does (docs/SCREENS.md S4).
-        let mut model = phone_phrase_model(360.0, true);
-        if let Screen::Phrase(p) = &mut model.screen {
-            p.photographed = true;
+    fn the_warned_page_fits_one_frame_at_360_by_640_360_by_800_and_390_by_844() {
+        // docs/DECISIONS.md D44 items 1 and 3: with the warning in the words'
+        // place, the page after a screenshot is one frame, with no scroll and no
+        // word or button past the part of the window a person sees, at each size
+        // the plan names (docs/SCREENS.md S4).
+        for (width, size) in WARNED_SIZES {
+            let model = shot_phrase_model(width);
+            let problems = fits_the_viewport(crate::screens::view(&model), size, PHONE_INSETS);
+            assert!(problems.is_empty(), "{size:?}: {problems:#?}");
         }
-        let problems =
-            fits_the_viewport(crate::screens::view(&model), (360.0, 800.0), PHONE_INSETS);
-        assert!(problems.is_empty(), "{problems:#?}");
     }
 
     #[test]
@@ -2067,6 +2246,22 @@ mod tests {
             p.shown = true;
         }
         assert!(phrase_words_drawn(&short, s4(&short)));
+
+        // A screenshot hides the words again on either frame, until "Show the
+        // phrase" is pressed (docs/DECISIONS.md D44 items 1 and 3).
+        let mut tall_shot = phone_phrase_model(360.0, false);
+        tall_shot.height = window_of(PHRASE_ONE_FRAME);
+        if let Screen::Phrase(p) = &mut tall_shot.screen {
+            p.photographed = true;
+        }
+        assert!(!phrase_words_drawn(&tall_shot, s4(&tall_shot)));
+        let mut short_shot = phone_phrase_model(360.0, true);
+        short_shot.height = window_of(PHRASE_ONE_FRAME - 1.0);
+        if let Screen::Phrase(p) = &mut short_shot.screen {
+            p.photographed = true;
+            p.shown = false;
+        }
+        assert!(!phrase_words_drawn(&short_shot, s4(&short_shot)));
     }
 
     #[test]

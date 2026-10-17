@@ -433,10 +433,13 @@ pub struct PhraseState {
     pub written: bool,
     /// The person pressed "Show the phrase" (docs/DECISIONS.md D44). On a phone
     /// too short for the library's warning and the phrase on one frame, the
-    /// warning comes first, on its own, and the words only after this.
+    /// warning comes first, on its own, and the words only after this. A
+    /// screenshot clears it, so that the words wait for the button again.
     pub shown: bool,
     /// A screenshot was taken while the words were drawn (docs/DECISIONS.md D44
-    /// item 3). The warning about it stays with this screen, and goes with it.
+    /// items 1 and 3). On a phone the warning then takes the words' place until
+    /// "Show the phrase" is pressed; on the desktop it comes above them. The mark
+    /// stays with this screen, and goes with it.
     pub photographed: bool,
     pub words: [String; 3],
     pub error: Option<String>,
@@ -1131,8 +1134,9 @@ impl Model {
     /// A screenshot was taken, as the shell reported it. The recovery phrase on
     /// S4 is marked for its warning if its words are drawn at that moment
     /// (docs/DECISIONS.md D44 item 3): on a phone that waits for "Show the
-    /// phrase", they are not, and nothing is marked. Any other screen has no
-    /// phrase to mark.
+    /// phrase", they are not, and nothing is marked. A marked phrase hides its
+    /// words again, behind the warning, until "Show the phrase" is pressed
+    /// (items 1 and 3). Any other screen has no phrase to mark.
     fn photographed(&mut self) {
         let drawn = match &self.screen {
             Screen::Phrase(p) => phrase_words_drawn(self, p),
@@ -1140,6 +1144,7 @@ impl Model {
         };
         if let (true, Screen::Phrase(p)) = (drawn, &mut self.screen) {
             p.photographed = true;
+            p.shown = false;
         }
     }
 
@@ -4221,26 +4226,81 @@ mod tests {
         };
         let noted = |app: &App| matches!(&app.model.screen, Screen::Phrase(p) if p.photographed);
 
+        // A phone of `height` logical pixels, with the phone's insets.
+        let phone_at = |height: f32| {
+            let mut app = alone();
+            app.model.width = NARROWEST;
+            app.model.confine(PathBuf::from("/a/private"));
+            app.model.safe_area = iced::mobile::SafeArea::new(iced::Padding {
+                top: 47.0,
+                right: 0.0,
+                bottom: 34.0,
+                left: 0.0,
+            });
+            app.model.height = height;
+            app
+        };
+
         // A short phone: 800 pixels less the insets is 719, under one frame.
-        let mut app = alone();
-        app.model.width = NARROWEST;
-        app.model.confine(PathBuf::from("/a/private"));
-        app.model.safe_area = iced::mobile::SafeArea::new(iced::Padding {
-            top: 47.0,
-            right: 0.0,
-            bottom: 34.0,
-            left: 0.0,
-        });
-        app.model.height = 800.0;
+        let mut app = phone_at(800.0);
         app.model.screen = phrase(false);
         app.model.capture.shot();
         let _ = app.update(Message::Tick(0));
         assert!(!noted(&app), "the words were not drawn");
+        assert!(
+            matches!(&app.model.screen, Screen::Phrase(p) if !p.shown && !p.photographed),
+            "nothing else changed: {:?}",
+            app.model.screen
+        );
         let _ = app.update(Message::ShowPhrase);
         assert!(!noted(&app), "a screenshot before Show is not the words'");
         app.model.capture.shot();
         let _ = app.update(Message::Tick(0));
         assert!(noted(&app), "the words were drawn");
+        // The warning takes the words' place, so they wait for Show again, and a
+        // screenshot while they wait changes nothing (docs/DECISIONS.md D44 items
+        // 1 and 3).
+        assert!(
+            matches!(&app.model.screen, Screen::Phrase(p) if !p.shown),
+            "{:?}",
+            app.model.screen
+        );
+        app.model.capture.shot();
+        let _ = app.update(Message::Tick(0));
+        assert!(
+            matches!(&app.model.screen, Screen::Phrase(p) if p.photographed && !p.shown),
+            "{:?}",
+            app.model.screen
+        );
+        let _ = app.update(Message::ShowPhrase);
+        assert!(
+            matches!(&app.model.screen, Screen::Phrase(p) if p.photographed && p.shown),
+            "{:?}",
+            app.model.screen
+        );
+        app.model.capture.shot();
+        let _ = app.update(Message::Tick(0));
+        assert!(
+            matches!(&app.model.screen, Screen::Phrase(p) if p.photographed && !p.shown),
+            "a screenshot of the words hides them again: {:?}",
+            app.model.screen
+        );
+
+        // A phone of 844 has its words on one frame, and a screenshot hides them
+        // until Show is pressed as well.
+        let mut app = phone_at(844.0);
+        app.model.screen = phrase(false);
+        app.model.capture.shot();
+        let _ = app.update(Message::Tick(0));
+        assert!(
+            noted(&app),
+            "the words are drawn on one frame, without Show"
+        );
+        assert!(
+            matches!(&app.model.screen, Screen::Phrase(p) if !p.shown),
+            "{:?}",
+            app.model.screen
+        );
 
         // The desktop draws the words from the start.
         let mut app = alone();
