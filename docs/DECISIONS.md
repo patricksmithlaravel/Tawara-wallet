@@ -3648,6 +3648,19 @@ best-effort blanking of item 3, and on Android the recording caveat of item
 4. OS libraries: none added; the iOS observers use UIKit, which the shell
 already links.
 
+**As built (2026-10-16).** Item 3's application side is built. `Host` gains
+`captured: Option<fn() -> bool>`, read once at start (`None` on Android and
+the desktop, which keep S4 as it was), and the crate exports
+`screenshot_taken()` and `capture_changed(captured: bool)`. The shell's
+observers that call them are in Tawara-mobile; until that pull request is in
+a pin, no phone warns or blanks. The wording of item 5 awaits the owner's
+approval. The warned page scrolls on a phone at 390 by 844 and at 360 by 640,
+and fits at 360 by 800. The owner decides whether it keeps the scroll, hides
+the words again after a screenshot until "Show the phrase" is pressed, or
+shows a one-line notice; only the scroll is built. The phone images are
+`phone-s4-phrase-photographed.png` with its end, and
+`phone-s4-phrase-captured.png`.
+
 ### D45. Unlock with Face ID, Touch ID or the passcode, on iOS
 
 **proposed; items 1 to 3 decided by the owner on 2026-10-13; the details

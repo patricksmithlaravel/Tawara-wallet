@@ -213,8 +213,10 @@ pub struct Model {
     shots_seen: u64,
     /// Whether the screen is being recorded or mirrored, as the shell last said.
     /// While it is, the recovery phrase's words are drawn as a placeholder
-    /// (docs/DECISIONS.md D44 item 3).
-    pub(crate) captured: bool,
+    /// (docs/DECISIONS.md D44 item 3). A shell says so through
+    /// [`capture_changed`](crate::capture_changed); the screenshots example
+    /// sets it to draw that placeholder.
+    pub captured: bool,
     /// The window's height in logical pixels, as the window last reported it.
     /// With the safe area it decides a phone's frame for the recovery phrase
     /// (docs/DECISIONS.md D44 items 1 and 2).

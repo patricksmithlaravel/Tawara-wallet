@@ -20,9 +20,14 @@
 //! it, and two frames of the recovery phrase on a short phone, 640 tall
 //! (`phone-s4-phrase-warning.png` and `phone-s4-phrase-shown.png`). The
 //! phone's welcome screen, S0, has no desktop image: it is drawn only as
-//! `phone-s0-welcome.png` (docs/DECISIONS.md D37), so the phone's images are
-//! 69 in all. Every piece of text names a bundled face (`tawara_app::fonts`),
-//! so the pixels do not depend on the fonts a machine has installed.
+//! `phone-s0-welcome.png` (docs/DECISIONS.md D37). The recovery phrase with
+//! the warning after a screenshot is drawn at 390 by 844, at its top and at
+//! its end (`phone-s4-phrase-photographed.png` and
+//! `phone-s4-phrase-photographed-end.png`), and while the screen is captured
+//! (`phone-s4-phrase-captured.png`) (docs/DECISIONS.md D44 item 3). So the
+//! phone's images are 72 in all. Every piece of text names a bundled face
+//! (`tawara_app::fonts`), so the pixels do not depend on the fonts a machine
+//! has installed.
 //!
 //! Flags:
 //!
@@ -901,8 +906,9 @@ fn sample_named(name: &str) -> Model {
 
 /// The phone images at `width` logical pixels across: every desktop sample
 /// but the narrow ones, the phone's welcome screen, which the desktop does not
-/// have, the long pages scrolled to their end, and two drawn with the keyboard
-/// up (docs/DECISIONS.md D32 item 10 (c), D37).
+/// have, the long pages scrolled to their end, two drawn with the keyboard
+/// up, and the recovery phrase after a screenshot and while captured
+/// (docs/DECISIONS.md D32 item 10 (c), D37, D44 item 3).
 fn phones(width: u32) -> Vec<Image> {
     let size = (width, PHONE.1);
     let mut out: Vec<Image> = samples()
@@ -949,6 +955,36 @@ fn phones(width: u32) -> Vec<Image> {
             focus: None,
         });
     }
+    // The recovery phrase after a screenshot taken while its words are drawn:
+    // on a phone that holds one frame, the warning comes above the words. The
+    // page is longer than the frame, so it is drawn at its top and at its end.
+    for (name, to_end) in [
+        ("s4-phrase-photographed", false),
+        ("s4-phrase-photographed-end", true),
+    ] {
+        let mut model = sample_named("s4-phrase");
+        if let Screen::Phrase(p) = &mut model.screen {
+            p.photographed = true;
+        }
+        out.push(Image {
+            name: format!("phone-{name}"),
+            size,
+            model: phone(model, 0.0),
+            to_end,
+            focus: None,
+        });
+    }
+    // The recovery phrase while the screen is recorded or mirrored: the words
+    // are a placeholder as tall as their grid (docs/DECISIONS.md D44 item 3).
+    let mut model = sample_named("s4-phrase");
+    model.captured = true;
+    out.push(Image {
+        name: "phone-s4-phrase-captured".to_owned(),
+        size,
+        model: phone(model, 0.0),
+        to_end: false,
+        focus: None,
+    });
     // The field the keyboard came up for: the recovery phrase, and the first
     // destination.
     for (name, field) in [
@@ -1145,14 +1181,18 @@ fn overflow_lines(
 }
 
 /// The phone images of the screens that show all of their words at once: S0,
-/// and S4 in each of its frames. `--fit` holds them to the part of the window a
-/// person sees between the safe area's insets, with no page that scrolls and
-/// no word wider than its box, as their tests do (docs/DECISIONS.md D37, D44).
-const WHOLE: [&str; 4] = [
+/// S4 in each of its frames, and S4 while it is captured, with the placeholder
+/// for its words. `--fit` holds them to the part of the window a person sees
+/// between the safe area's insets, with no page that scrolls and no word wider
+/// than its box, as their tests do (docs/DECISIONS.md D37, D44). The page with
+/// the warning after a screenshot is not among them: on a phone it scrolls, and
+/// its layout awaits the owner (docs/DECISIONS.md D44).
+const WHOLE: [&str; 5] = [
     "phone-s0-welcome",
     "phone-s4-phrase",
     "phone-s4-phrase-warning",
     "phone-s4-phrase-shown",
+    "phone-s4-phrase-captured",
 ];
 
 /// What `model`'s window at `width` by `height` logical pixels draws outside
