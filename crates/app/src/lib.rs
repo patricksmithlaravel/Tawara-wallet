@@ -10,8 +10,9 @@
 //! each case.
 //!
 //! - [`app`]: the model, the messages, the worker bridge and `update`.
-//! - [`host`]: what a mobile shell supplies, and its word when the
-//!   application leaves the foreground.
+//! - [`host`]: what a mobile shell supplies, its word when the application
+//!   leaves the foreground, and its word on the screen's capture
+//!   (docs/DECISIONS.md D44 item 3).
 //! - [`screens`]: every screen, a function of the model alone, so that the
 //!   screenshot example draws any screen from sample data.
 //! - [`paste`]: the Paste button of the compact layout, and a pasted
@@ -51,7 +52,7 @@ pub const DISPLAY_NAME: &str = "Tawara";
 pub const WINDOW: (f32, f32) = (1440.0, 900.0);
 pub const WINDOW_MIN: (f32, f32) = (1024.0, 700.0);
 
-pub use host::{Host, Leaving, left_foreground};
+pub use host::{Host, Leaving, capture_changed, left_foreground, screenshot_taken};
 
 /// Run the application in a mobile shell (`crates/mobile`): Android or iOS,
 /// in the window the system gives it, with what `host` supplies
