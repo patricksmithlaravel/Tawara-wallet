@@ -19,7 +19,9 @@
 //!   restore, an acknowledged advance and a discovery sweep can each be
 //!   stopped, and the long ones report how far they have got.
 //! - **Store location, entropy and secret input** ([`location`],
-//!   [`entropy`], [`SecretText`]; docs/PLAN.md section 4).
+//!   [`entropy`], [`SecretText`]; docs/PLAN.md section 4), and the store
+//!   identifier that ties a password kept on a device to its store
+//!   ([`store_identifier`]; docs/DECISIONS.md D45).
 //! - **Lifecycle.** An idle timer, an explicit Lock, and a move to the
 //!   background on mobile each drop the `Keystore`, which drops the secret
 //!   and releases the store's lock in one move.
@@ -48,6 +50,7 @@ pub mod preferences;
 pub mod sample;
 mod secret;
 pub mod spend;
+pub mod store_identifier;
 mod text;
 pub mod view;
 pub mod worker;

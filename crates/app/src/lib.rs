@@ -11,8 +11,9 @@
 //!
 //! - [`app`]: the model, the messages, the worker bridge and `update`.
 //! - [`host`]: what a mobile shell supplies, its word when the application
-//!   leaves the foreground, and its word on the screen's capture
-//!   (docs/DECISIONS.md D44 item 3).
+//!   leaves the foreground, its word on the screen's capture
+//!   (docs/DECISIONS.md D44 item 3), and the unlock with the device's own
+//!   check, where it offers one (docs/DECISIONS.md D45).
 //! - [`screens`]: every screen, a function of the model alone, so that the
 //!   screenshot example draws any screen from sample data.
 //! - [`paste`]: the Paste button of the compact layout, and a pasted

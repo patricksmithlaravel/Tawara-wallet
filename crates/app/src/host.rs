@@ -9,12 +9,17 @@
 //! docs/DECISIONS.md D32 item 9 (d) puts in the shell's write. It calls
 //! [`left_foreground`] when the system takes the application off the screen.
 //! On iOS it also calls [`screenshot_taken`] and [`capture_changed`], which
-//! the recovery phrase's screen reads (docs/DECISIONS.md D44 item 3).
+//! the recovery phrase's screen reads (docs/DECISIONS.md D44 item 3). Its
+//! device fields offer the unlock with the device's own check, and keep the
+//! store's password for it in the system's storage (docs/DECISIONS.md D45).
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
+
+use iced::futures::channel::mpsc::UnboundedSender;
+use tawara_wallet_core::SecretText;
 
 /// What a mobile shell supplies.
 #[derive(Clone, Debug)]
@@ -54,6 +59,162 @@ pub struct Host {
     /// shell supplies none, as Android does, and keeps FLAG_SECURE
     /// (docs/DECISIONS.md D32 item 4, D44 items 3 and 4).
     pub captured: Option<fn() -> bool>,
+    /// What the device offers for unlocking the store with its own check, and
+    /// what that check is called (docs/DECISIONS.md D45 items 1 and 2). `None`
+    /// where a shell offers no device unlock, as Android does, and where the
+    /// device can offer no check at all, such as one with no passcode set. The
+    /// four device fields are used together: the application offers the unlock
+    /// only when all four are given and the check is answered (see [`Device`]).
+    pub device_check: Option<fn() -> Option<DeviceCheck>>,
+    /// Keeps `password` in the system's secure storage, labelled with
+    /// `identifier`, the store's 32 bytes (`store_identifier::LEN`; docs/DECISIONS.md
+    /// D45 item 4). The shell reads `password` for this call only and keeps no
+    /// copy of it, and it never logs it. `Err` says why it was not kept, in the
+    /// platform's words.
+    pub keep_password: Option<KeepPassword>,
+    /// Asks the device's check, showing `reason` (docs/DECISIONS.md D45 item 6),
+    /// and reads the kept password back once the check passes. The call returns
+    /// at once. `answer` is called once, later, from a thread of the shell's own
+    /// and never the interface's (docs/DECISIONS.md D45 item 4). A password is
+    /// released only from an item labelled with `identifier`; an item labelled
+    /// with another is deleted, and the answer is [`Released::Missing`].
+    pub release_password: Option<ReleasePassword>,
+    /// Deletes the kept password, whatever its label (docs/DECISIONS.md D45
+    /// item 4). `Ok` also when none is kept. `Err` says why it was not deleted,
+    /// in the platform's words.
+    pub forget_password: Option<ForgetPassword>,
+}
+
+/// What [`Host::keep_password`] is.
+pub type KeepPassword = fn(identifier: &[u8; 32], password: &str) -> Result<(), String>;
+
+/// What [`Host::release_password`] is.
+pub type ReleasePassword = fn(identifier: &[u8; 32], reason: &str, answer: Deliver);
+
+/// What [`Host::forget_password`] is.
+pub type ForgetPassword = fn() -> Result<(), String>;
+
+/// The way a release's answer goes back to the interface: called once, from the
+/// shell's thread (see [`ReleasePassword`]).
+pub type Deliver = Box<dyn FnOnce(Released) + Send>;
+
+/// What the device's own check is called, as the offer names it (docs/DECISIONS.md
+/// D45 items 1, 2 and 6). Face ID or Touch ID where the device has one, and
+/// otherwise the passcode, which the check accepts on every device that has one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceCheck {
+    /// Face ID.
+    FaceId,
+    /// Touch ID.
+    TouchId,
+    /// The device passcode.
+    Passcode,
+}
+
+/// What the device's check and the system's storage answered, for
+/// [`Host::release_password`] (docs/DECISIONS.md D45 item 4).
+#[derive(Debug)]
+pub enum Released {
+    /// The check passed and the password was read back. It is moved into a
+    /// [`SecretText`] at once (docs/PLAN.md section 4.2).
+    Password(SecretText),
+    /// The check did not pass, or the person cancelled it. Nothing changed.
+    Declined,
+    /// No password is kept under the identifier: none was kept, or the one kept
+    /// was labelled with another identifier, and the shell has deleted it.
+    Missing,
+    /// The password could not be read, for the platform's reason. Nothing
+    /// changed.
+    Failed(String),
+}
+
+/// A [`Released`] on its way from the shell's thread into the interface, with
+/// the number of the ask it answers (see [`Device`]). It is `Clone` only because
+/// the interface's messages are, so it is taken out once, as a worker's event
+/// is. Its `Debug` prints nothing of a password.
+#[derive(Clone)]
+pub struct Answer(Arc<Mutex<Option<(u64, Released)>>>);
+
+impl Answer {
+    /// The answer to ask number `ask`.
+    pub(crate) fn new(ask: u64, released: Released) -> Answer {
+        Answer(Arc::new(Mutex::new(Some((ask, released)))))
+    }
+
+    /// The ask this answers, and the answer: once, then `None`.
+    pub(crate) fn take(&self) -> Option<(u64, Released)> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).take()
+    }
+}
+
+impl core::fmt::Debug for Answer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Answer(..)")
+    }
+}
+
+/// What a shell's device unlock gives the application: the device's check, the
+/// three functions of [`Host`], and the channel the answers come back on
+/// (docs/DECISIONS.md D45 item 4). It is made only where the shell gives all
+/// four device fields and the device can offer its check, so that the
+/// application never has to ask whether a function is there.
+#[derive(Clone, Debug)]
+pub struct Device {
+    check: DeviceCheck,
+    keep: KeepPassword,
+    release: ReleasePassword,
+    forget: ForgetPassword,
+    answers: UnboundedSender<Answer>,
+}
+
+impl Device {
+    /// The device unlock `host` offers, with its answers sent to `answers`, or
+    /// `None` where it offers none.
+    pub(crate) fn of(host: &Host, answers: UnboundedSender<Answer>) -> Option<Device> {
+        let (Some(check), Some(keep), Some(release), Some(forget)) = (
+            host.device_check,
+            host.keep_password,
+            host.release_password,
+            host.forget_password,
+        ) else {
+            return None;
+        };
+        Some(Device {
+            check: check()?,
+            keep,
+            release,
+            forget,
+            answers,
+        })
+    }
+
+    /// What the device's check is called.
+    #[must_use]
+    pub fn check(&self) -> DeviceCheck {
+        self.check
+    }
+
+    /// Keeps `password` under `identifier` (see [`Host::keep_password`]).
+    pub(crate) fn keep(&self, identifier: &[u8; 32], password: &str) -> Result<(), String> {
+        (self.keep)(identifier, password)
+    }
+
+    /// Asks the shell for the kept password, as ask number `ask`. Its answer
+    /// comes into the interface as an [`Answer`] for that number, so an answer
+    /// to an ask the interface has since dropped is recognised and ignored.
+    pub(crate) fn ask(&self, identifier: &[u8; 32], reason: &str, ask: u64) {
+        let answers = self.answers.clone();
+        let deliver: Deliver = Box::new(move |released| {
+            // The interface may have closed by now, with nothing left to answer.
+            let _ = answers.unbounded_send(Answer::new(ask, released));
+        });
+        (self.release)(identifier, reason, deliver);
+    }
+
+    /// Deletes the kept password (see [`Host::forget_password`]).
+    pub(crate) fn forget(&self) -> Result<(), String> {
+        (self.forget)()
+    }
 }
 
 /// What a shell's share sheet is: [`Host::share`].
@@ -327,5 +488,146 @@ mod tests {
         screenshot_taken();
         capture_changed(false);
         assert_eq!(capture.read(), (1, false));
+    }
+
+    fn copy_nothing(_: &str) {}
+    fn share_nothing(_: &str, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn back_nothing() {}
+    fn check_face() -> Option<DeviceCheck> {
+        Some(DeviceCheck::FaceId)
+    }
+    fn check_none() -> Option<DeviceCheck> {
+        None
+    }
+    fn keep_nothing(_: &[u8; 32], _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn forget_nothing() -> Result<(), String> {
+        Ok(())
+    }
+    fn release_missing(_: &[u8; 32], _: &str, answer: Box<dyn FnOnce(Released) + Send>) {
+        answer(Released::Missing);
+    }
+    /// Answers from a thread of its own, as a shell's prompt does.
+    fn release_from_another_thread(
+        _: &[u8; 32],
+        _: &str,
+        answer: Box<dyn FnOnce(Released) + Send>,
+    ) {
+        std::thread::spawn(move || answer(Released::Declined));
+    }
+
+    /// A shell with no device unlock, as Android has it.
+    fn bare() -> Host {
+        Host {
+            private_dir: PathBuf::from("/nonexistent"),
+            copy: copy_nothing,
+            share: share_nothing,
+            back: back_nothing,
+            captured: None,
+            device_check: None,
+            keep_password: None,
+            release_password: None,
+            forget_password: None,
+        }
+    }
+
+    /// A shell that gives all four device fields, with `check` as its check.
+    fn offering(check: fn() -> Option<DeviceCheck>) -> Host {
+        Host {
+            device_check: Some(check),
+            keep_password: Some(keep_nothing),
+            release_password: Some(release_missing),
+            forget_password: Some(forget_nothing),
+            ..bare()
+        }
+    }
+
+    /// The next answer on `rx`, once it has come, from whichever thread sent it.
+    fn next_answer(rx: &mut iced::futures::channel::mpsc::UnboundedReceiver<Answer>) -> Answer {
+        use iced::futures::channel::mpsc::TryRecvError;
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match rx.try_recv() {
+                Ok(answer) => return answer,
+                Err(TryRecvError::Closed) => panic!("the answers were closed"),
+                Err(TryRecvError::Empty) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(TryRecvError::Empty) => panic!("no answer came"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_shell_with_no_device_fields_offers_no_device_unlock() {
+        let (answers, _received) = iced::futures::channel::mpsc::unbounded();
+        assert!(Device::of(&bare(), answers).is_none());
+    }
+
+    #[test]
+    fn a_device_that_can_offer_no_check_offers_no_device_unlock() {
+        let (answers, _received) = iced::futures::channel::mpsc::unbounded();
+        assert!(Device::of(&offering(check_none), answers).is_none());
+    }
+
+    #[test]
+    fn a_missing_device_field_offers_no_device_unlock() {
+        let (answers, _received) = iced::futures::channel::mpsc::unbounded();
+        let host = Host {
+            keep_password: None,
+            ..offering(check_face)
+        };
+        assert!(Device::of(&host, answers).is_none());
+    }
+
+    #[test]
+    fn all_four_device_fields_and_a_check_offer_the_device_unlock() {
+        let (answers, _received) = iced::futures::channel::mpsc::unbounded();
+        let device = Device::of(&offering(check_face), answers).expect("offered");
+        assert_eq!(device.check(), DeviceCheck::FaceId);
+    }
+
+    #[test]
+    fn an_answer_reaches_the_interface_with_the_ask_it_answers() {
+        let (answers, mut received) = iced::futures::channel::mpsc::unbounded();
+        let device = Device::of(&offering(check_face), answers).expect("offered");
+        device.ask(&[1; 32], "unlock", 7);
+        let answer = next_answer(&mut received);
+        assert!(
+            matches!(answer.take(), Some((7, Released::Missing))),
+            "the answer of ask 7"
+        );
+        assert!(answer.take().is_none(), "an answer is taken once");
+    }
+
+    #[test]
+    fn an_answer_sent_from_another_thread_reaches_the_interface() {
+        let (answers, mut received) = iced::futures::channel::mpsc::unbounded();
+        let host = Host {
+            release_password: Some(release_from_another_thread),
+            ..offering(check_face)
+        };
+        let device = Device::of(&host, answers).expect("offered");
+        device.ask(&[2; 32], "unlock", 1);
+        let answer = next_answer(&mut received);
+        assert!(matches!(answer.take(), Some((1, Released::Declined))));
+    }
+
+    #[test]
+    fn a_released_password_and_an_answer_print_no_text() {
+        let mut text = String::from("correct horse battery");
+        let released = Released::Password(SecretText::take(&mut text));
+        assert_eq!(format!("{released:?}"), "Password(SecretText(..))");
+        let answer = Answer::new(3, Released::Failed("not kept".to_owned()));
+        assert_eq!(format!("{answer:?}"), "Answer(..)");
+        let (answers, _received) = iced::futures::channel::mpsc::unbounded();
+        let device = Device::of(&offering(check_face), answers).expect("offered");
+        assert!(
+            !format!("{device:?}").contains("correct horse"),
+            "the device prints no text"
+        );
     }
 }

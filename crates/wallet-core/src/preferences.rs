@@ -49,6 +49,24 @@ pub enum AmountUnit {
     NanoMcm,
 }
 
+/// Whether the store is unlocked with the device's own check, and whether the
+/// person has been offered it (docs/DECISIONS.md D45 items 3 and 4). It is off
+/// until the person accepts an offer, which comes once, after a password
+/// unlock. The offer's being made is kept here too, so that it is not made
+/// again. The password the device keeps is in the system's secure storage and
+/// never in this file.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DeviceUnlock {
+    /// Not offered yet. Nothing is written for it, so an absent line reads as
+    /// this.
+    #[default]
+    Unoffered,
+    /// Offered, and not taken, or turned off. No password is kept.
+    Off,
+    /// The store's password is kept, and released only by the device's check.
+    On,
+}
+
 /// What is remembered.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Preferences {
@@ -65,6 +83,9 @@ pub struct Preferences {
     pub unit: AmountUnit,
     /// One of [`IDLE_LOCK_MINUTES`].
     pub idle_lock: Duration,
+    /// Whether the store is unlocked with the device's own check, and whether
+    /// that was offered (see [`DeviceUnlock`]).
+    pub device_unlock: DeviceUnlock,
 }
 
 impl Default for Preferences {
@@ -74,6 +95,7 @@ impl Default for Preferences {
             store: None,
             unit: AmountUnit::Mcm,
             idle_lock: crate::DEFAULT_IDLE_LOCK,
+            device_unlock: DeviceUnlock::Unoffered,
         }
     }
 }
@@ -123,6 +145,13 @@ pub fn parse(text: &str) -> Preferences {
                     out.idle_lock = Duration::from_secs(m * 60);
                 }
             }
+            // Only the two words are written; any other value is not understood,
+            // and the offer stands as it was (see `DeviceUnlock`).
+            "device-unlock" => match value {
+                "off" => out.device_unlock = DeviceUnlock::Off,
+                "on" => out.device_unlock = DeviceUnlock::On,
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -160,6 +189,14 @@ pub fn render(prefs: &Preferences) -> String {
         "auto-lock-minutes = {}\n",
         prefs.idle_lock.as_secs() / 60
     ));
+    // Unoffered is written as nothing, so a device that never offers the
+    // unlock (the desktop, Android) keeps the file it had (docs/DECISIONS.md
+    // D45 item 4).
+    match prefs.device_unlock {
+        DeviceUnlock::Unoffered => {}
+        DeviceUnlock::Off => out.push_str("device-unlock = off\n"),
+        DeviceUnlock::On => out.push_str("device-unlock = on\n"),
+    }
     out
 }
 
@@ -246,12 +283,47 @@ mod tests {
             store: Some("/home/p/wallets/savings".into()),
             unit: AmountUnit::NanoMcm,
             idle_lock: Duration::from_secs(10 * 60),
+            device_unlock: DeviceUnlock::On,
         };
         assert_eq!(parse(&render(&prefs)), prefs);
         assert_eq!(
             parse(&render(&Preferences::default())),
             Preferences::default()
         );
+    }
+
+    #[test]
+    fn the_device_unlock_is_written_only_once_it_is_offered() {
+        // Unoffered writes nothing, so a shell that never offers the unlock keeps
+        // the file it had (docs/DECISIONS.md D45 item 4).
+        assert!(!render(&Preferences::default()).contains("device-unlock"));
+        for (state, line) in [
+            (DeviceUnlock::Off, "device-unlock = off\n"),
+            (DeviceUnlock::On, "device-unlock = on\n"),
+        ] {
+            let prefs = Preferences {
+                device_unlock: state,
+                ..Preferences::default()
+            };
+            assert!(render(&prefs).contains(line), "{state:?}");
+            assert_eq!(parse(&render(&prefs)).device_unlock, state);
+        }
+    }
+
+    #[test]
+    fn an_absent_or_unknown_device_unlock_line_is_not_offered() {
+        assert_eq!(parse("").device_unlock, DeviceUnlock::Unoffered);
+        for text in [
+            "device-unlock = yes\n",
+            "device-unlock = \n",
+            "device-unlock = ON\n",
+        ] {
+            assert_eq!(
+                parse(text).device_unlock,
+                DeviceUnlock::Unoffered,
+                "{text:?} is not understood"
+            );
+        }
     }
 
     #[test]
