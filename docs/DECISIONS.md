@@ -3390,6 +3390,27 @@ approving the phone W1 images (D32 item 10 (c)), which for the first time
 draw the Accounts card. docs/SCREENS.md's W1 rows (lines 59 and 131) and
 E1's compact row change with the work. OS libraries: none added.
 
+**As built (proposed, for the owner's confirmation).**
+- The code is the phone's branch of `view`, with `phone_accounts`,
+  `account_card` and the three-row cut in `recent`, all in
+  `crates/app/src/screens/wallet/dashboard.rs`; `WalletPage::expanded` in
+  `crates/app/src/app.rs`; and `WalletMsg::Expand` in
+  `crates/app/src/app/wallet.rs`. The desktop and a narrow window that is not a
+  phone keep their layouts, and `stacked` serves that window (item 5).
+- The images are the six `design/screenshots/phone-w1-wallet*.png` that change,
+  and `phone-w1-wallet-account-open.png`, which is new and drawn by
+  `crates/app/examples/screenshots.rs`. No desktop image changes. They await the
+  owner's approval (D32 item 10 (c)), which approves this decision.
+- "TAG" is read as the short name: `name()` in
+  `crates/app/src/screens/wallet.rs` gives the destination's first and last six
+  characters, or those of its hex form where no destination is known. The row
+  shows no hex tag. The owner confirms this reading (item 3).
+- Two points the text leaves open: "View activity" sits in Recent's header,
+  where "View all" sits on the desktop; and a row opens while the wallet is
+  busy, since that only changes the view, with the card's buttons disabled then,
+  as on W7.
+- The W1 rows of docs/SCREENS.md are now at lines 61 and 135, not 59 and 131.
+
 ### D40. Send on phones as a series of pages
 
 **proposed; asked by the owner (item 5); recommended.** On a phone, Send is
