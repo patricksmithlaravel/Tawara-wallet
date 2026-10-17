@@ -1,7 +1,9 @@
 //! W1, the wallet (rendering 02): the balance, the one-time keys, the
 //! accounts, the store's notice above them, and below them the newest
 //! transactions from the node's index and the network card
-//! (docs/SCREENS.md W1, W10).
+//! (docs/SCREENS.md W1, W10). A phone's W1 is shorter: the balance, the
+//! notice, the accounts, each of which opens in place into a card, and three
+//! of the newest transactions (docs/DECISIONS.md D39).
 
 use iced::widget::text::{Shaping, Text, Wrapping};
 use iced::widget::{Id, column, container, row, space};
@@ -10,7 +12,7 @@ use tawara_wallet_core::explorer::BlockKind;
 use tawara_wallet_core::preferences::AmountUnit;
 use tawara_wallet_core::view::{AccountRow, AccountState, Total, WalletView};
 
-use super::{action, activity, copy, destination, frame, kind, name, pair, report, status};
+use super::{action, activity, copy, destination, figure, frame, kind, name, pair, report, status};
 use crate::app::{Message, Model, ReportKey, To, WalletMsg, WalletPage, minutes};
 use crate::history::{self, Kind};
 use crate::icon::Icon;
@@ -25,18 +27,29 @@ pub fn view<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> 
     );
     let mut body = Vec::new();
     if let Some(wallet) = &model.wallet {
-        if let Some(r) = report::notice(wallet) {
-            body.push(report::show_in(model.compact(), page, ReportKey::Notice, r));
+        let notice = report::notice(wallet)
+            .map(|r| report::show_in(model.compact(), page, ReportKey::Notice, r));
+        // A phone's W1 is its own (docs/DECISIONS.md D39, items 1, 2 and 5): the
+        // balance, the notice, the accounts and Recent, and no one-time keys or
+        // network card. It follows phone(), not the width, so a phone held
+        // sideways shows the same sections.
+        if model.phone() {
+            body.push(balance(model, wallet));
+            body.extend(notice);
+            body.push(accounts(model, page, &wallet.accounts));
+            body.push(recent(model, page));
+        } else {
+            body.extend(notice);
+            body.push(pair(
+                model,
+                balance(model, wallet),
+                keys(model, &wallet.accounts),
+                7,
+                4,
+            ));
+            body.push(accounts(model, page, &wallet.accounts));
+            body.push(pair(model, recent(model, page), network(model), 7, 4));
         }
-        body.push(pair(
-            model,
-            balance(model, wallet),
-            keys(model, &wallet.accounts),
-            7,
-            4,
-        ));
-        body.push(accounts(model, page, &wallet.accounts));
-        body.push(pair(model, recent(model, page), network(model), 7, 4));
     }
     frame(model, page, "Wallet", subtitle, header_actions(model), body)
 }
@@ -352,12 +365,17 @@ fn keys<'a>(model: &'a Model, rows: &'a [AccountRow]) -> Element<'a, Message> {
 /// Its columns share the card's width in proportion, so it fits from the
 /// rendering's 1440 px down to the smallest window, 1024 px (D27, item 9);
 /// a destination or a balance too long for its column breaks between
-/// characters rather than being cut off.
+/// characters rather than being cut off. A phone's accounts are
+/// [`phone_accounts`] (D39), and a compact window that is not a phone keeps
+/// [`stacked`].
 fn accounts<'a>(
     model: &'a Model,
     page: &'a WalletPage,
     rows: &'a [AccountRow],
 ) -> Element<'a, Message> {
+    if model.phone() {
+        return phone_accounts(model, page, rows);
+    }
     if model.compact() {
         return stacked(model, page, rows);
     }
@@ -503,13 +521,175 @@ fn accounts<'a>(
     .into()
 }
 
-/// The accounts on a phone (docs/SCREENS.md, "Compact layout"): one item per
-/// account, separated by dividers. An item's name and state are on its first
-/// line, its destination under them, and its balance, next key and action on
-/// the last. An item opens its account when the wallet is idle and it is
-/// tapped. It acts on release, so a drag that starts on it scrolls the page
-/// (docs/DECISIONS.md D32 item 10 (d)), and the item's own Copy or Review
-/// button takes its own click.
+/// The accounts on a phone (docs/DECISIONS.md D39, items 3 and 4): one line
+/// each, the account's short name and its balance, with its state under them
+/// when it is not reconciled, so that a paused or outstanding account is never
+/// hidden. A tap opens the row in place into a card, which holds the rest of
+/// the account (see [`account_card`]), and a tap on the open row closes it. The
+/// page keeps one row open at a time (`WalletPage::expanded`). Rows act on
+/// release (docs/DECISIONS.md D32 item 10 (d)), and each button in a card takes
+/// its own press.
+fn phone_accounts<'a>(
+    model: &'a Model,
+    page: &'a WalletPage,
+    rows: &'a [AccountRow],
+) -> Element<'a, Message> {
+    let unit = model.prefs.unit;
+    let mut list = column![].width(Length::Fill);
+    for (n, account) in rows.iter().enumerate() {
+        let open = page.expanded == Some(account.id);
+        let (word, ink) = status(&account.state);
+        let balance = account.state.balance().map_or_else(
+            || "—".to_owned(),
+            |b| format!("{} {}", ui::amount(b, unit), ui::unit_name(unit)),
+        );
+        let mut head = column![
+            row![
+                t(name(account.id), ty::TABLE_NAME, color::TEXT_PRIMARY).width(Length::Fill),
+                t(balance, ty::TABLE_AMOUNT, color::TEXT_PRIMARY).wrapping(Wrapping::WordOrGlyph),
+            ]
+            .spacing(sp::S12)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(sp::S6);
+        // An open card states the account in its own line, so the head does
+        // not repeat it.
+        if !open && !matches!(account.state, AccountState::InSync { .. }) {
+            head = head.push(
+                row![ui::dot(ink, 6.0), t(word, ty::TABLE_BODY, ink)]
+                    .spacing(sp::S6)
+                    .align_y(Alignment::Center),
+            );
+        }
+        // The head keeps its 12 of padding open or shut, so that its tap target
+        // is the same size in both; an open card adds none above it.
+        let toggle = tap(container(head)
+            .padding(Padding::from([sp::S12, 0.0]))
+            .width(Length::Fill)
+            .id(row_id(n)))
+        .on_tap(WalletMsg::Expand((!open).then_some(account.id)).into());
+        let item: Element<'a, Message> = if open {
+            container(column![toggle, account_card(model, page, account, n)])
+                .padding(Padding {
+                    top: 0.0,
+                    ..Padding::from(sp::S16)
+                })
+                .width(Length::Fill)
+                .style(theme::radio_card(true))
+                .into()
+        } else {
+            toggle.into()
+        };
+        list = list.push(item);
+        if n + 1 < rows.len() {
+            list = list.push(ui::divider());
+        }
+    }
+    ui::card_for(
+        true,
+        column![
+            row![
+                ui::section_label("Accounts"),
+                space().width(Length::Fill),
+                action(
+                    model,
+                    "Add account",
+                    theme::Button::Tonal,
+                    Size::Small,
+                    Some(Icon::Plus),
+                    WalletMsg::Open(To::AddAccount),
+                ),
+            ]
+            .align_y(Alignment::Center),
+            list,
+        ]
+        .spacing(sp::S8),
+    )
+    .into()
+}
+
+/// What an open account's card holds beyond its head (docs/DECISIONS.md D39,
+/// item 4): the full destination with Copy, the next key and its kind, the
+/// state, and "Send from it" (only for an account that can spend, as W7 offers
+/// it), "Receive" and "Open account". Settle, Re-sign, Submit and account
+/// recovery stay on W7 (D19).
+fn account_card<'a>(
+    model: &'a Model,
+    page: &'a WalletPage,
+    account: &'a AccountRow,
+    n: usize,
+) -> Element<'a, Message> {
+    let shown = destination(account.id);
+    let (word, ink) = status(&account.state);
+    let mut actions = row![].spacing(sp::S8);
+    if matches!(account.state, AccountState::InSync { .. }) && account.spendable {
+        actions = actions.push(
+            container(action(
+                model,
+                "Send from it",
+                theme::Button::Primary,
+                Size::Small,
+                None,
+                WalletMsg::Open(To::Send(Some(account.id))),
+            ))
+            .id(card_id(n, "send")),
+        );
+    }
+    actions = actions
+        .push(
+            container(action(
+                model,
+                "Receive",
+                theme::Button::Secondary,
+                Size::Small,
+                None,
+                WalletMsg::Open(To::Receive(Some(account.id))),
+            ))
+            .id(card_id(n, "receive")),
+        )
+        .push(
+            container(action(
+                model,
+                "Open account",
+                theme::Button::Secondary,
+                Size::Small,
+                None,
+                WalletMsg::Open(To::Account(account.id)),
+            ))
+            .id(card_id(n, "open")),
+        );
+    column![
+        row![
+            ui::section_label("Destination"),
+            space().width(Length::Fill),
+            container(copy(page, &shown, "Copy")).id(card_id(n, "copy")),
+        ]
+        .align_y(Alignment::Center),
+        t(shown, ty::MONO_WORD, color::TEXT_PRIMARY).wrapping(Wrapping::WordOrGlyph),
+        ui::divider(),
+        figure("Next key", format!("#{}", account.index)),
+        figure("Kind", kind(account)),
+        row![
+            t("State", ty::BODY_SMALL, color::TEXT_SECONDARY).width(Length::Fill),
+            ui::dot(ink, 6.0),
+            t(word, ty::TABLE_BODY, ink),
+        ]
+        .spacing(sp::S6)
+        .align_y(Alignment::Center),
+        actions.wrap().vertical_spacing(sp::S8),
+    ]
+    .spacing(sp::S12)
+    .into()
+}
+
+/// The accounts on a compact window that is not a phone (docs/SCREENS.md,
+/// "Compact layout"; docs/DECISIONS.md D39, item 5): one item per account,
+/// separated by dividers. An item's name and state are on its first line, its
+/// destination under them, and its balance, next key and action on the last.
+/// An item opens its account when the wallet is idle and it is tapped. It acts
+/// on release, so a drag that starts on it scrolls the page (docs/DECISIONS.md
+/// D32 item 10 (d)), and the item's own Copy or Review button takes its own
+/// click.
 fn stacked<'a>(
     model: &'a Model,
     page: &'a WalletPage,
@@ -619,18 +799,31 @@ fn action_id(n: usize) -> Id {
     Id::from(format!("account-action-{n}"))
 }
 
+/// The id of the `part` of account `n`'s card on a phone: `copy`, `send`,
+/// `receive` or `open`. It draws nothing either.
+fn card_id(n: usize, part: &str) -> Id {
+    Id::from(format!("account-{part}-{n}"))
+}
+
 /// How many of the newest transactions the dashboard lists.
 const RECENT: usize = 4;
 
+/// How many of the newest transactions a phone's dashboard lists, the spends
+/// still settling counted among them (docs/DECISIONS.md D39, item 1).
+const PHONE_RECENT: usize = 3;
+
 /// Recent activity (02): the newest transactions of every account from the
 /// node's index, and the spends the store has reserved and not settled,
-/// with no amount, since it keeps none.
+/// with no amount, since it keeps none. On a phone it is cut to
+/// [`PHONE_RECENT`] rows, and its link reads "View activity".
 fn recent<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> {
     let unit = model.prefs.unit;
+    let phone = model.phone();
+    let most = if phone { PHONE_RECENT } else { RECENT };
     let mut list = column![].spacing(sp::S4);
     let mut shown = 0;
     if let Some(w) = &model.wallet {
-        for account in history::pending(&w.accounts) {
+        for account in history::pending(&w.accounts).take(if phone { most } else { usize::MAX }) {
             shown += 1;
             list = list.push(line(
                 model.compact(),
@@ -647,7 +840,7 @@ fn recent<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> {
         Some(Ok(histories)) => {
             for r in history::rows(histories)
                 .iter()
-                .take(RECENT.saturating_sub(shown))
+                .take(most.saturating_sub(shown))
             {
                 shown += 1;
                 let (title, detail) = activity::describe(r);
@@ -712,7 +905,7 @@ fn recent<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> {
                 ui::section_label("Recent activity"),
                 space().width(Length::Fill),
                 ui::link(
-                    "View all",
+                    if phone { "View activity" } else { "View all" },
                     ty::LINK_SMALL,
                     Message::from(WalletMsg::Open(To::Activity))
                 ),
@@ -885,28 +1078,44 @@ fn network(model: &Model) -> Element<'_, Message> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use iced::Rectangle;
     use iced::advanced::widget::Operation;
     use iced_runtime::user_interface::{Cache, UserInterface};
     use tawara_wallet_core::preferences::{AmountUnit, Preferences};
+    use tawara_wallet_core::view::AccountId;
     use tawara_wallet_core::{Activity, Progress, RequestId, sample};
 
     use super::*;
     use crate::app::{Busy, Explored, Level, NARROWEST, Page, Screen};
     use crate::harness::{
         Driver, finger_lift, finger_move, finger_press, fits, mouse_move, mouse_press,
-        mouse_release,
+        mouse_release, texts,
     };
 
-    /// A phone's window tall enough for the first account row to be drawn
-    /// above the foot of the page.
-    const TALL: (u32, u32) = (360, 1200);
+    /// A phone's window tall enough for an account's row, and an open row's
+    /// card with its actions, to be drawn above the foot of the window.
+    const TALL: (u32, u32) = (360, 1600);
 
-    /// The sample store on the wallet page, in a phone 360 logical pixels
-    /// wide: what the screenshot example puts in its model for W1.
+    /// A phone's window, 360 by 844, as the text of its page is read in.
+    const PHONE: (f32, f32) = (360.0, 844.0);
+
+    /// The sample store on the wallet page of a phone 360 logical pixels wide,
+    /// as the screenshot example puts it in its model for W1. A phone is a
+    /// model confined to its own folder, so its layout follows `phone()`, not
+    /// the width (docs/DECISIONS.md D39, item 5).
     fn phone() -> Model {
+        let mut model = window(NARROWEST);
+        model.confine(PathBuf::from("/private"));
+        model
+    }
+
+    /// The sample store on the wallet page in a window `width` logical pixels
+    /// wide that is not a phone: the desktop's, or a narrow window's.
+    fn window(width: f32) -> Model {
         let mut model = Model::new(Preferences::default(), None);
-        model.width = NARROWEST;
+        model.width = width;
         model.screen = Screen::Wallet(WalletPage {
             page: Page::Dashboard,
             ..WalletPage::default()
@@ -916,6 +1125,56 @@ mod tests {
         model.blocks = read(sample::blocks());
         model.mempool = read(sample::mempool());
         model
+    }
+
+    /// `model` with account `n` open in place, as a tap on its row leaves it
+    /// (docs/DECISIONS.md D39, item 4).
+    fn open_row(mut model: Model, n: usize) -> Model {
+        let id = account_id(&model, n);
+        if let Screen::Wallet(page) = &mut model.screen {
+            page.expanded = Some(id);
+        }
+        model
+    }
+
+    /// The id of account `n` of the sample store.
+    fn account_id(model: &Model, n: usize) -> AccountId {
+        model.wallet.as_ref().expect("the sample store").accounts[n].id
+    }
+
+    /// The wallet page `model` shows.
+    fn page_of(model: &Model) -> &WalletPage {
+        match &model.screen {
+            Screen::Wallet(page) => page,
+            other => panic!("the wallet is not shown: {other:?}"),
+        }
+    }
+
+    /// The text the page draws in a window of `size`, as it is drawn: a
+    /// section's label in capitals. The page is drawn alone, without the bars
+    /// and the tabs around it.
+    fn drawn(model: &Model, size: (f32, f32)) -> Vec<String> {
+        texts(view(model, page_of(model)), size)
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect()
+    }
+
+    /// Whether the page draws `text` in a window of `size`.
+    fn shows(model: &Model, size: (f32, f32), text: &str) -> bool {
+        drawn(model, size).iter().any(|line| line == text)
+    }
+
+    /// What the screen of `model` draws past the right edge of a window
+    /// `width` by `height`: the check `fits` makes at 844 tall, at the height
+    /// given (docs/DECISIONS.md D32 item 10 (b)).
+    fn past_the_edge(model: &Model, width: f32, height: f32) -> Vec<crate::overflow::Past> {
+        crate::overflow::past_the_edge(
+            crate::screens::view(model),
+            &crate::harness::renderer(),
+            width,
+            height,
+        )
     }
 
     /// A read that has answered with `value`.
@@ -954,14 +1213,37 @@ mod tests {
         find.found
     }
 
-    /// Where account row `n` is drawn on a phone in `TALL`.
-    fn row_at(model: &Model, n: usize) -> Rectangle {
-        bounds_of(crate::screens::view(model), TALL, &row_id(n))
+    /// Where account row `n` is drawn on a phone in a window of `size`.
+    fn row_in(model: &Model, size: (u32, u32), n: usize) -> Rectangle {
+        bounds_of(crate::screens::view(model), size, &row_id(n))
             .expect("on a phone each account is a row that can be tapped")
     }
 
+    /// Where account row `n` is drawn on a phone in `TALL`.
+    fn row_at(model: &Model, n: usize) -> Rectangle {
+        row_in(model, TALL, n)
+    }
+
+    /// The messages a press and release at the centre of `at` make, in the
+    /// screen of `model` drawn at `size`.
+    fn press_at(model: &Model, size: (u32, u32), at: Rectangle) -> Vec<Message> {
+        let mut driver = Driver::new(crate::screens::view(model), size);
+        let (messages, _, _) = driver.send(&[
+            mouse_move(at.x + at.width / 2.0, at.y + at.height / 2.0),
+            mouse_press(),
+            mouse_release(),
+        ]);
+        messages
+    }
+
+    /// The messages a press and release on the element `id` make, in `TALL`.
+    fn press_on(model: &Model, id: &Id) -> Vec<Message> {
+        let at = bounds_of(crate::screens::view(model), TALL, id).expect("the element is drawn");
+        press_at(model, TALL, at)
+    }
+
     #[test]
-    fn the_phone_wallet_fits_at_360_in_each_state_the_example_draws() {
+    fn the_phone_wallet_fits_at_360_in_each_state() {
         let mut unreconciled = phone();
         unreconciled.wallet = Some(sample::unreconciled_view());
         unreconciled.node.tip = None;
@@ -986,6 +1268,8 @@ mod tests {
             ("unreconciled", unreconciled),
             ("refreshing", refreshing),
             ("notice open", noticed),
+            ("an account open", open_row(phone(), 0)),
+            ("an account that cannot spend open", open_row(phone(), 1)),
         ] {
             assert_eq!(
                 fits(crate::screens::view(&model), NARROWEST),
@@ -1043,9 +1327,87 @@ mod tests {
         // Receive and Send are the phone's tabs, so the header keeps one
         // button; the desktop keeps all three.
         assert_eq!(header_actions(&phone()).len(), 1);
-        let mut desktop = phone();
-        desktop.width = 1440.0;
-        assert_eq!(header_actions(&desktop).len(), 3);
+        assert_eq!(header_actions(&window(1440.0)).len(), 3);
+    }
+
+    #[test]
+    fn a_phone_wallet_has_no_one_time_keys_and_no_network_card() {
+        // The keys are each account's, in its card, and in Settings; the
+        // network card is Explorer's and Settings'. A section's label is drawn
+        // in capitals (docs/DECISIONS.md D39, item 2).
+        let model = phone();
+        for gone in [
+            "ONE-TIME KEYS",
+            "WOTS+",
+            "NETWORK",
+            "Block height",
+            "Difficulty",
+            "Mempool",
+            "Last block",
+        ] {
+            assert!(!shows(&model, PHONE, gone), "{gone} is drawn on a phone");
+        }
+        for kept in ["ACCOUNTS", "RECENT ACTIVITY", "View activity"] {
+            assert!(shows(&model, PHONE, kept), "{kept} is not drawn on a phone");
+        }
+        assert!(!shows(&model, PHONE, "View all"));
+    }
+
+    #[test]
+    fn a_phone_held_sideways_draws_the_same_sections() {
+        // The layout follows phone(), not the width (docs/DECISIONS.md D39, item
+        // 5): a phone 640 wide has the sections of one 360 wide.
+        let mut sideways = phone();
+        sideways.width = 640.0;
+        let size = (640.0, 844.0);
+        assert!(!shows(&sideways, size, "ONE-TIME KEYS"));
+        assert!(!shows(&sideways, size, "NETWORK"));
+        assert!(shows(&sideways, size, "ACCOUNTS"));
+        assert!(shows(&sideways, size, "RECENT ACTIVITY"));
+        assert!(shows(&sideways, size, "View activity"));
+    }
+
+    #[test]
+    fn the_desktop_and_a_narrow_window_that_is_not_a_phone_keep_their_keys_and_network() {
+        // A window that is not a phone keeps the one-time keys, the network card
+        // and Recent's own link, as it drew them before D39 (docs/DECISIONS.md
+        // D39, item 5).
+        for (model, size) in [
+            (window(1440.0), (1440.0, 900.0)),
+            (window(NARROWEST), PHONE),
+        ] {
+            for kept in ["ONE-TIME KEYS", "NETWORK", "View all"] {
+                assert!(shows(&model, size, kept), "{kept} at {}", model.width);
+            }
+            assert!(!shows(&model, size, "View activity"));
+        }
+        assert!(shows(&window(1440.0), (1440.0, 900.0), "Next key"));
+    }
+
+    #[test]
+    fn on_a_phone_recent_is_three_rows_and_a_link_to_the_activity_page() {
+        // The sample's spend still settling is one row, so a phone draws it and
+        // the two newest transactions after it, and a third is cut; a desktop
+        // draws it (docs/DECISIONS.md D39, item 1).
+        let histories = sample::activity();
+        let blocks: Vec<String> = history::rows(&histories)
+            .iter()
+            .filter_map(|r| {
+                r.tx.block
+                    .map(|b| format!("block {}", ui::group(&b.to_string())))
+            })
+            .collect();
+        assert!(blocks.len() >= 3, "the sample holds three: {blocks:?}");
+        assert_ne!(blocks[2], blocks[0]);
+        assert_ne!(blocks[2], blocks[1]);
+        let model = phone();
+        assert!(shows(&model, PHONE, &blocks[0]));
+        assert!(shows(&model, PHONE, &blocks[1]));
+        assert!(
+            !shows(&model, PHONE, &blocks[2]),
+            "a third transaction is drawn on a phone"
+        );
+        assert!(shows(&window(1440.0), (1440.0, 900.0), &blocks[2]));
     }
 
     #[test]
@@ -1072,20 +1434,40 @@ mod tests {
     }
 
     #[test]
-    fn an_account_row_opens_its_account_when_it_is_tapped() {
+    fn on_a_phone_an_account_is_one_line_and_shows_its_state_under_it_unless_reconciled() {
+        // The reconciled account is one line, its name and its balance. The
+        // others say their state under their names, so that a paused or an
+        // outstanding account is never hidden (docs/DECISIONS.md D39, item 3).
         let model = phone();
-        let id = sample::wallet_view().accounts[0].id;
-        let at = row_at(&model, 0);
-        let mut driver = Driver::new(crate::screens::view(&model), TALL);
-        let (messages, _, _) = driver.send(&[
-            mouse_move(at.x + 20.0, at.y + at.height / 2.0),
-            mouse_press(),
-            mouse_release(),
-        ]);
+        assert!(shows(&model, PHONE, &name(account_id(&model, 0))));
+        assert!(
+            !shows(&model, PHONE, "Reconciled"),
+            "a reconciled account draws its state only once it is open"
+        );
+        assert!(shows(&model, PHONE, "Spend outstanding"));
+        assert!(shows(&model, PHONE, "Spending paused"));
+    }
+
+    #[test]
+    fn a_tap_on_an_account_row_opens_it_in_place_and_a_tap_on_the_open_row_closes_it() {
+        // Rows expand in place, one at a time, and close on a tap on the open
+        // row (docs/DECISIONS.md D39, item 4).
+        let model = phone();
+        let id = account_id(&model, 0);
+        let messages = press_at(&model, TALL, row_at(&model, 0));
         assert!(
             matches!(
                 messages.as_slice(),
-                [Message::Wallet(WalletMsg::Open(To::Account(opened)))] if *opened == id
+                [Message::Wallet(WalletMsg::Expand(Some(opened)))] if *opened == id
+            ),
+            "{messages:?}"
+        );
+        let model = open_row(phone(), 0);
+        let messages = press_at(&model, TALL, row_at(&model, 0));
+        assert!(
+            matches!(
+                messages.as_slice(),
+                [Message::Wallet(WalletMsg::Expand(None))]
             ),
             "{messages:?}"
         );
@@ -1094,9 +1476,10 @@ mod tests {
     #[test]
     fn a_drag_that_starts_on_an_account_row_scrolls_and_opens_nothing() {
         let model = phone();
-        let at = row_at(&model, 0);
+        let size = (360, 844);
+        let at = row_in(&model, size, 0);
         let (x, y) = (at.x + 20.0, at.y + at.height / 2.0);
-        let mut driver = Driver::new(crate::screens::view(&model), TALL);
+        let mut driver = Driver::new(crate::screens::view(&model), size);
         let (messages, statuses, _) = driver.send(&[
             finger_press(1, x, y),
             finger_move(1, x, y - 60.0),
@@ -1113,17 +1496,159 @@ mod tests {
     }
 
     #[test]
-    fn the_copy_on_an_account_row_copies_and_opens_nothing() {
-        let model = phone();
-        let id = sample::wallet_view().accounts[0].id;
+    fn an_open_card_holds_the_destination_the_next_key_the_state_and_its_actions() {
+        // The card holds the full destination with Copy, the next key and its
+        // kind, the state, and the actions (docs/DECISIONS.md D39, item 4).
+        let model = open_row(phone(), 0);
+        let id = account_id(&model, 0);
+        let index = model.wallet.as_ref().expect("the sample store").accounts[0].index;
+        let line = drawn(&model, PHONE);
+        assert!(line.contains(&destination(id)), "the full destination");
+        assert!(line.contains(&format!("#{index}")), "the next key");
+        for label in [
+            "Next key",
+            "State",
+            "Reconciled",
+            "Copy",
+            "Send from it",
+            "Receive",
+            "Open account",
+        ] {
+            assert!(line.iter().any(|l| l == label), "{label} is not drawn");
+        }
+    }
+
+    #[test]
+    fn send_from_it_opens_send_with_that_account_as_from() {
+        let model = open_row(phone(), 0);
+        let id = account_id(&model, 0);
+        let messages = press_on(&model, &card_id(0, "send"));
+        assert!(
+            matches!(
+                messages.as_slice(),
+                [Message::Wallet(WalletMsg::Open(To::Send(Some(from))))] if *from == id
+            ),
+            "{messages:?}"
+        );
+    }
+
+    #[test]
+    fn an_account_that_cannot_spend_has_no_send_from_it_and_keeps_receive_and_open() {
+        // Only an account that can spend offers Send from it, as W7 does
+        // (docs/DECISIONS.md D39, item 4).
+        let model = open_row(phone(), 1);
+        assert!(bounds_of(crate::screens::view(&model), TALL, &card_id(1, "send")).is_none());
+        assert!(!shows(&model, PHONE, "Send from it"));
+        assert!(shows(&model, PHONE, "Receive"));
+        assert!(shows(&model, PHONE, "Open account"));
+    }
+
+    #[test]
+    fn receive_and_open_account_open_their_pages_for_that_account() {
+        let model = open_row(phone(), 0);
+        let id = account_id(&model, 0);
+        let messages = press_on(&model, &card_id(0, "receive"));
+        assert!(
+            matches!(
+                messages.as_slice(),
+                [Message::Wallet(WalletMsg::Open(To::Receive(Some(opened))))] if *opened == id
+            ),
+            "{messages:?}"
+        );
+        let messages = press_on(&model, &card_id(0, "open"));
+        assert!(
+            matches!(
+                messages.as_slice(),
+                [Message::Wallet(WalletMsg::Open(To::Account(opened)))] if *opened == id
+            ),
+            "{messages:?}"
+        );
+    }
+
+    #[test]
+    fn the_copy_in_an_open_card_copies_the_destination_and_opens_nothing() {
+        let model = open_row(phone(), 0);
+        let id = account_id(&model, 0);
+        let messages = press_on(&model, &card_id(0, "copy"));
+        assert!(
+            matches!(
+                messages.as_slice(),
+                [Message::Wallet(WalletMsg::Copy(text))] if *text == destination(id)
+            ),
+            "{messages:?}"
+        );
+    }
+
+    #[test]
+    fn the_phone_wallet_with_an_account_open_fits_at_360_by_640_and_390_by_844() {
+        // An open card is the widest part of the page: its destination and its
+        // buttons wrap rather than pass the edge. The page scrolls below the
+        // window's foot, which is not what is checked here (docs/DECISIONS.md
+        // D39, item 4).
+        for (width, height) in [(NARROWEST, 640.0), (390.0, 844.0)] {
+            for n in 0..3 {
+                let mut model = open_row(phone(), n);
+                model.width = width;
+                assert!(
+                    past_the_edge(&model, width, height).is_empty(),
+                    "account {n} open at {width} by {height}"
+                );
+            }
+        }
+        let mut model = open_row(phone(), 0);
+        model.width = 390.0;
+        assert_eq!(fits(crate::screens::view(&model), 390.0), Ok(()));
+    }
+
+    #[test]
+    fn the_longest_account_balance_in_nanomcm_fits_a_phone_row() {
+        // An account holds at most u64::MAX, which is 26 characters in
+        // nanoMCM: its row wraps the balance rather than passing the edge, shut
+        // or open (docs/DECISIONS.md D32 item 10 (b)).
+        let longest = |open: bool| {
+            let mut model = if open { open_row(phone(), 0) } else { phone() };
+            model.prefs.unit = AmountUnit::NanoMcm;
+            if let Some(wallet) = &mut model.wallet {
+                wallet.accounts[0].state = AccountState::InSync { balance: u64::MAX };
+            }
+            model
+        };
+        for open in [false, true] {
+            for (width, height) in [(NARROWEST, 640.0), (390.0, 844.0)] {
+                let mut model = longest(open);
+                model.width = width;
+                assert!(
+                    past_the_edge(&model, width, height).is_empty(),
+                    "open {open} at {width} by {height}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn on_a_narrow_window_that_is_not_a_phone_a_tap_opens_the_account() {
+        // The stacked accounts of a window narrower than the desktop's, which is
+        // not a phone, open their account on a tap as they did before D39
+        // (docs/DECISIONS.md D39, item 5).
+        let model = window(NARROWEST);
+        let id = account_id(&model, 0);
+        let messages = press_at(&model, TALL, row_at(&model, 0));
+        assert!(
+            matches!(
+                messages.as_slice(),
+                [Message::Wallet(WalletMsg::Open(To::Account(opened)))] if *opened == id
+            ),
+            "{messages:?}"
+        );
+    }
+
+    #[test]
+    fn on_a_narrow_window_that_is_not_a_phone_the_copy_on_a_row_copies_and_opens_nothing() {
+        let model = window(NARROWEST);
+        let id = account_id(&model, 0);
         let at = bounds_of(crate::screens::view(&model), TALL, &action_id(0))
-            .expect("on a phone the first account's action is drawn");
-        let mut driver = Driver::new(crate::screens::view(&model), TALL);
-        let (messages, _, _) = driver.send(&[
-            mouse_move(at.x + at.width / 2.0, at.y + at.height / 2.0),
-            mouse_press(),
-            mouse_release(),
-        ]);
+            .expect("on a narrow window the first account's action is drawn");
+        let messages = press_at(&model, TALL, at);
         assert!(
             matches!(
                 messages.as_slice(),

@@ -575,6 +575,9 @@ pub enum WalletMsg {
     Submit,
     /// Open or close a report on the page.
     Report(ReportKey, Level),
+    /// W1 on a phone: the account whose row is open in place into a card, or
+    /// none (docs/DECISIONS.md D39 item 4).
+    Expand(Option<AccountId>),
     /// W10.
     Filter(Filter),
     Search(String),
@@ -1591,6 +1594,11 @@ impl App {
                     {
                         r.read.insert(a.account);
                     }
+                }
+            }
+            WalletMsg::Expand(row) => {
+                if let Some(p) = self.wallet_page() {
+                    p.expanded = row;
                 }
             }
             WalletMsg::ArtifactHex(hex) => {
