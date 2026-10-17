@@ -617,6 +617,14 @@ pub enum Message {
     /// Turns the device unlock off, and deletes the password kept for it
     /// (docs/DECISIONS.md D45 item 4).
     TurnOffDeviceUnlock,
+    /// Offers the device unlock again, at the next unlock with the password,
+    /// once it has been declined or turned off (docs/DECISIONS.md D45 item 4;
+    /// provisional, for the owner's approval).
+    OfferDeviceUnlockAgain,
+    /// The application's life changed (`iced::mobile::lifecycle`). S7 asks the
+    /// device's check once, when the application comes to the foreground
+    /// (docs/DECISIONS.md D45 item 4).
+    Lifecycle(iced::mobile::LifecycleEvent),
     /// Stop what the worker is doing (`WorkerHandle::cancel`).
     Cancel,
     Lock,
@@ -1560,9 +1568,17 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
+        // The lifecycle is listened to only where a shell offers the device
+        // unlock, so the desktop's subscriptions are what they were.
+        let lifecycle = if self.model.device.is_some() {
+            iced::mobile::lifecycle().map(Message::Lifecycle)
+        } else {
+            Subscription::none()
+        };
         Subscription::batch([
             event::listen_with(person_input),
             iced::mobile::safe_area().map(Message::SafeArea),
+            lifecycle,
         ])
     }
 
@@ -1978,6 +1994,9 @@ impl App {
                 } else if let Screen::Unlock(u) = &mut m.screen {
                     u.error = None;
                     u.note = None;
+                    // A password unlock is a new attempt, so what the device
+                    // unlock last found is no longer what the screen says.
+                    m.device_note = None;
                     let kept =
                         (offerable && !u.password.is_empty()).then(|| Kept::copy_of(&u.password));
                     let command = Command::Unlock {
@@ -1993,6 +2012,15 @@ impl App {
             Message::Released(answer) => return self.released(answer),
             Message::DeviceOffer(keep) => self.answer_offer(keep),
             Message::TurnOffDeviceUnlock => self.turn_off_device_unlock(),
+            Message::OfferDeviceUnlockAgain => self.offer_device_unlock_again(),
+            // Only a return to the foreground asks: a Face ID prompt makes the
+            // application inactive, and an ask on `Active` would loop
+            // (docs/DECISIONS.md D45 item 4).
+            Message::Lifecycle(event) => {
+                if matches!(event, iced::mobile::LifecycleEvent::Foreground) {
+                    self.unlock_with_device();
+                }
+            }
             Message::Cancel => {
                 if let Some(w) = &self.worker {
                     w.handle.cancel();
@@ -2927,6 +2955,23 @@ impl App {
         if self.delete_kept() {
             self.set_device_unlock(DeviceUnlock::Off);
         }
+    }
+
+    /// Offers the device unlock again, after it was declined or turned off: the
+    /// setting goes back to not offered, which writes nothing, so the offer comes
+    /// after the next password unlock that opens the store, as the first one did
+    /// (docs/DECISIONS.md D45 item 4). Nothing is kept until that unlock and the
+    /// offer's answer. With an offer on the screen already, there is nothing to
+    /// offer again.
+    fn offer_device_unlock_again(&mut self) {
+        if self.model.device.is_none()
+            || self.model.prefs.device_unlock != DeviceUnlock::Off
+            || self.model.device_offer
+        {
+            return;
+        }
+        self.model.device_note = None;
+        self.set_device_unlock(DeviceUnlock::Unoffered);
     }
 }
 
@@ -9535,6 +9580,149 @@ mod tests {
         assert_eq!(
             format!("{:?}", Message::Released(answer)),
             "Released(Answer(..))"
+        );
+    }
+
+    // The device unlock's screens and their messages (docs/DECISIONS.md D45
+    // item 4). The check is asked on a return to the foreground, once.
+
+    #[test]
+    fn a_return_to_the_foreground_asks_the_check_once_and_an_activation_asks_nothing() {
+        reset_shell();
+        let scratch = Scratch::new("device-foreground");
+        let (mut app, events, mut answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+        kept_and_locked(&mut app, &events);
+
+        NEXT.with(|n| *n.borrow_mut() = Some(Next::Declined));
+        let _ = app.update(Message::Lifecycle(iced::mobile::LifecycleEvent::Foreground));
+        assert_eq!(asked().len(), 1, "the check is asked on the return");
+        deliver(&mut app, &mut answers);
+        // A Face ID prompt makes the application inactive, and it is active again
+        // after it: neither asks.
+        let _ = app.update(Message::Lifecycle(iced::mobile::LifecycleEvent::Inactive));
+        let _ = app.update(Message::Lifecycle(iced::mobile::LifecycleEvent::Active));
+        assert_eq!(asked().len(), 1, "an activation asks nothing");
+        assert!(
+            app.model.device_unlock_on(),
+            "a declined check keeps the unlock"
+        );
+        assert!(matches!(&app.model.screen, Screen::Unlock(_)));
+    }
+
+    #[test]
+    fn a_return_to_the_foreground_asks_nothing_on_a_wallet_page_or_without_the_unlock() {
+        reset_shell();
+        let scratch = Scratch::new("device-foreground-quiet");
+        let (mut app, events, mut answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+        // The unlock is off: nothing is asked on a return to S7.
+        let _ = app.update(Message::Lifecycle(iced::mobile::LifecycleEvent::Foreground));
+        assert!(asked().is_empty(), "the unlock is not on");
+
+        kept_and_locked(&mut app, &events);
+        NEXT.with(|n| *n.borrow_mut() = Some(Next::Password(PASSWORD)));
+        let _ = app.update(Message::Lifecycle(iced::mobile::LifecycleEvent::Foreground));
+        deliver(&mut app, &mut answers);
+        pump(&mut app, &events, |a| {
+            matches!(a.model.screen, Screen::Wallet(_))
+        });
+        // Unlocked, a return to the foreground asks nothing.
+        let _ = app.update(Message::Lifecycle(iced::mobile::LifecycleEvent::Foreground));
+        assert_eq!(asked().len(), 1, "a wallet page asks nothing");
+    }
+
+    #[test]
+    fn a_device_check_is_not_asked_by_a_desktop_return_to_the_foreground() {
+        reset_shell();
+        let scratch = Scratch::new("device-desktop-foreground");
+        let (mut app, events) = app(&scratch);
+        restored_and_locked(&mut app, &events);
+        let _ = app.update(Message::Lifecycle(iced::mobile::LifecycleEvent::Foreground));
+        let _ = app.update(Message::UnlockWithDevice);
+        assert!(asked().is_empty(), "the desktop offers no device unlock");
+        assert!(matches!(&app.model.screen, Screen::Unlock(_)));
+    }
+
+    #[test]
+    fn offering_again_after_a_decline_offers_the_unlock_at_the_next_password_unlock() {
+        reset_shell();
+        let scratch = Scratch::new("device-again");
+        let (mut app, events, _answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+        unlock_typed(&mut app, &events, PASSWORD);
+        let _ = app.update(Message::DeviceOffer(false));
+        assert_eq!(app.model.prefs.device_unlock, DeviceUnlock::Off);
+        let _ = app.update(Message::Lock);
+        pump(&mut app, &events, |a| {
+            matches!(a.model.screen, Screen::Unlock(_))
+        });
+
+        let _ = app.update(Message::OfferDeviceUnlockAgain);
+        let path = scratch.0.join(preferences::FILE_NAME);
+        assert_eq!(app.model.prefs.device_unlock, DeviceUnlock::Unoffered);
+        assert_eq!(
+            preferences::load(&path).device_unlock,
+            DeviceUnlock::Unoffered
+        );
+        assert!(kept().is_empty(), "nothing is kept by asking again");
+
+        unlock_typed(&mut app, &events, PASSWORD);
+        assert!(app.model.device_offer, "the offer comes again");
+        let _ = app.update(Message::DeviceOffer(true));
+        assert!(app.model.device_unlock_on(), "and it is taken");
+        assert_eq!(kept().len(), 1, "the password is kept once it is");
+    }
+
+    #[test]
+    fn offering_again_does_nothing_unless_the_unlock_is_off_and_no_offer_is_shown() {
+        reset_shell();
+        let scratch = Scratch::new("device-again-guard");
+        let (mut app, events, _answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+
+        let _ = app.update(Message::OfferDeviceUnlockAgain);
+        assert_eq!(app.model.prefs.device_unlock, DeviceUnlock::Unoffered);
+
+        turned_on(&mut app, &scratch);
+        let _ = app.update(Message::OfferDeviceUnlockAgain);
+        assert_eq!(
+            app.model.prefs.device_unlock,
+            DeviceUnlock::On,
+            "already on"
+        );
+
+        let _ = app.update(Message::TurnOffDeviceUnlock);
+        assert_eq!(app.model.prefs.device_unlock, DeviceUnlock::Off);
+        let _ = app.update(Message::OfferDeviceUnlockAgain);
+        assert_eq!(app.model.prefs.device_unlock, DeviceUnlock::Unoffered);
+        unlock_typed(&mut app, &events, PASSWORD);
+        assert!(app.model.device_offer, "the offer is on the wallet page");
+        let _ = app.update(Message::OfferDeviceUnlockAgain);
+        assert_eq!(
+            app.model.prefs.device_unlock,
+            DeviceUnlock::Off,
+            "an offer on the screen is answered, not replaced"
+        );
+    }
+
+    #[test]
+    fn a_password_unlock_clears_what_the_device_unlock_last_found() {
+        reset_shell();
+        let scratch = Scratch::new("device-note-clears");
+        let (mut app, events, mut answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+        kept_and_locked(&mut app, &events);
+
+        NEXT.with(|n| *n.borrow_mut() = Some(Next::Missing));
+        let _ = app.update(Message::UnlockWithDevice);
+        deliver(&mut app, &mut answers);
+        assert_eq!(app.model.device_note.as_deref(), Some(DEVICE_MISSING_NOTE));
+
+        unlock_typed(&mut app, &events, PASSWORD);
+        assert!(
+            app.model.device_note.is_none(),
+            "a password unlock starts afresh"
         );
     }
 }

@@ -19,11 +19,12 @@
 use iced::widget::text::Wrapping;
 use iced::widget::{Row, column, container, row, space, text_input};
 use iced::{Alignment, Element, Length, Padding};
-use tawara_wallet_core::preferences::{AmountUnit, DEFAULT_NODE, IDLE_LOCK_MINUTES};
+use tawara_wallet_core::preferences::{AmountUnit, DEFAULT_NODE, DeviceUnlock, IDLE_LOCK_MINUTES};
 use tawara_wallet_core::view::{AccountRow, AccountState, DivergenceKind};
 
 use super::{action, frame, kind, name, pair, status};
 use crate::app::{HELD_BODY, HELD_TITLE, Message, Model, SettingsPage, To, WalletMsg, WalletPage};
+use crate::host::Device;
 use crate::icon::{self, Icon};
 use crate::theme::{self, color, radius, space as sp};
 use crate::ui::{self, Size, t, ty};
@@ -292,7 +293,7 @@ fn card_head<'a>(lead: Icon, title: &'a str, subtitle: String) -> Element<'a, Me
 /// only its label and note.
 fn setting<'a>(
     compact: bool,
-    label: &'a str,
+    label: impl iced::widget::text::IntoFragment<'a>,
     note: Option<String>,
     control: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
@@ -346,7 +347,8 @@ fn auto_lock(model: &Model) -> Element<'_, Message> {
     periods.into()
 }
 
-/// The keystore (05): where it is, how its key is made, and the auto-lock.
+/// The keystore (05): where it is, how its key is made, the auto-lock, and on a
+/// phone whose shell offers it, the device unlock.
 fn keystore(model: &Model) -> Element<'_, Message> {
     let compact = model.compact();
     let kdf = tawara_wallet_core::NEW_STORE_KDF;
@@ -354,44 +356,95 @@ fn keystore(model: &Model) -> Element<'_, Message> {
         .wallet
         .as_ref()
         .map_or_else(String::new, |w| w.dir.display().to_string());
-    ui::card_for(
-        compact,
-        column![
-            card_head(
-                Icon::Lock,
-                "Keystore",
-                "Argon2id and ChaCha20-Poly1305 · on this device only".to_owned()
+    let mut parts = column![
+        card_head(
+            Icon::Lock,
+            "Keystore",
+            "Argon2id and ChaCha20-Poly1305 · on this device only".to_owned()
+        ),
+        setting(compact, "Folder", Some(dir), None),
+        ui::divider(),
+        setting(
+            compact,
+            "Key derivation",
+            Some(format!(
+                "Argon2id at {} MiB over {} passes and {} lane, for a new store; a store \
+                 made elsewhere keeps its own.",
+                kdf.memory_kib / 1024,
+                kdf.passes,
+                kdf.lanes
+            )),
+            None,
+        ),
+        ui::divider(),
+        setting(
+            compact,
+            "Auto-lock",
+            Some("After this long with nothing done".to_owned()),
+            Some(auto_lock(model)),
+        ),
+    ]
+    .spacing(sp::S14);
+    if let Some(device) = &model.device {
+        parts = parts.push(ui::divider()).push(device_unlock(model, device));
+    }
+    parts = parts.push(ui::divider()).push(ui::helper(
+        "The recovery phrase is shown once, when the store is made, and the store is \
+         never exported: a copy of it is the rollback that signs with a key twice.",
+    ));
+    ui::card_for(compact, parts).into()
+}
+
+/// The device unlock, on a phone whose shell offers it (docs/DECISIONS.md D45
+/// item 4): on, the password is kept on this phone and the device's check
+/// releases it, and it is turned off here. Off, it can be offered again, which
+/// the next unlock with the password then makes. Provisional wording, for the
+/// owner's approval (D45 item 6).
+fn device_unlock<'a>(model: &'a Model, device: &'a Device) -> Element<'a, Message> {
+    let name = device.check().name();
+    let (note, control) = match model.prefs.device_unlock {
+        DeviceUnlock::On => (
+            format!(
+                "On. The password is kept on this phone, and {name} releases it to unlock the \
+                 wallet. Turning it off deletes the password."
             ),
-            setting(compact, "Folder", Some(dir), None),
-            ui::divider(),
-            setting(
-                compact,
-                "Key derivation",
-                Some(format!(
-                    "Argon2id at {} MiB over {} passes and {} lane, for a new store; a store \
-                     made elsewhere keeps its own.",
-                    kdf.memory_kib / 1024,
-                    kdf.passes,
-                    kdf.lanes
-                )),
+            Some(action(
+                model,
+                "Turn off",
+                theme::Button::Secondary,
+                Size::Small,
                 None,
-            ),
-            ui::divider(),
-            setting(
-                compact,
-                "Auto-lock",
-                Some("After this long with nothing done".to_owned()),
-                Some(auto_lock(model)),
-            ),
-            ui::divider(),
-            ui::helper(
-                "The recovery phrase is shown once, when the store is made, and the store is \
-                 never exported: a copy of it is the rollback that signs with a key twice.",
-            ),
-        ]
-        .spacing(sp::S14),
+                Message::TurnOffDeviceUnlock,
+            )),
+        ),
+        DeviceUnlock::Off => (
+            "Off. Turn it on, and the next unlock with the password offers to keep the password \
+             on this phone."
+                .to_owned(),
+            // The offer on the wallet's page, if one is on it, is the way on.
+            (!model.device_offer).then(|| {
+                action(
+                    model,
+                    "Turn on",
+                    theme::Button::Secondary,
+                    Size::Small,
+                    None,
+                    Message::OfferDeviceUnlockAgain,
+                )
+            }),
+        ),
+        DeviceUnlock::Unoffered => (
+            "Off. The next unlock with the password offers to keep the password on this phone."
+                .to_owned(),
+            None,
+        ),
+    };
+    setting(
+        model.compact(),
+        format!("Unlock with {name}"),
+        Some(note),
+        control,
     )
-    .into()
 }
 
 /// What the node card says of the default node and of what a node learns
@@ -664,7 +717,7 @@ mod tests {
 
     use super::*;
     use crate::app::{NARROWEST, NodeState, Page, Screen, WalletPage};
-    use crate::harness::{Driver, fits};
+    use crate::harness::{Driver, fits, fits_at};
     use crate::screens;
     use crate::ui::Zone;
 
@@ -870,6 +923,108 @@ mod tests {
             none.iter()
                 .any(|t| t.contains("No node is set") && t.contains(DEFAULT_NODE)),
             "{none:?}"
+        );
+    }
+
+    /// The sample store's settings page on a phone whose shell offers Face ID,
+    /// with the device unlock in `state`, and an offer on the page or not
+    /// (docs/DECISIONS.md D45 item 4).
+    fn phone_settings(state: DeviceUnlock, offer: bool) -> Model {
+        let mut model = sample_model(NARROWEST);
+        model.device = Some(crate::harness::face_id_device());
+        model.prefs.device_unlock = state;
+        model.device_offer = offer;
+        model
+    }
+
+    /// The texts the phone's settings page draws, in a window of `height`.
+    fn phone_texts(model: &Model, height: f32) -> Vec<String> {
+        crate::harness::texts(screens::view(model), (NARROWEST, height))
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect()
+    }
+
+    #[test]
+    fn the_device_row_is_drawn_only_where_a_shell_offers_the_device_unlock() {
+        let plain = phone_texts(&sample_model(NARROWEST), 844.0);
+        assert!(
+            !plain.iter().any(|t| t.starts_with("Unlock with")),
+            "{plain:?}"
+        );
+        let offered = phone_texts(&phone_settings(DeviceUnlock::On, false), 844.0);
+        assert!(
+            offered.iter().any(|t| t == "Unlock with Face ID"),
+            "{offered:?}"
+        );
+        assert!(
+            offered
+                .iter()
+                .any(|t| t.starts_with("On. The password is kept on this phone")),
+            "{offered:?}"
+        );
+    }
+
+    #[test]
+    fn the_device_row_turns_the_unlock_off_when_on_and_on_again_when_off() {
+        let on = phone_texts(&phone_settings(DeviceUnlock::On, false), 844.0);
+        assert!(on.iter().any(|t| t == "Turn off"), "{on:?}");
+        assert!(!on.iter().any(|t| t == "Turn on"), "{on:?}");
+
+        let off = phone_texts(&phone_settings(DeviceUnlock::Off, false), 844.0);
+        assert!(off.iter().any(|t| t == "Turn on"), "{off:?}");
+        assert!(!off.iter().any(|t| t == "Turn off"), "{off:?}");
+
+        // Not yet offered: the next unlock with the password offers it, and there
+        // is nothing for the row to switch.
+        let unoffered = phone_texts(&phone_settings(DeviceUnlock::Unoffered, false), 844.0);
+        assert!(!unoffered.iter().any(|t| t == "Turn on"), "{unoffered:?}");
+        assert!(!unoffered.iter().any(|t| t == "Turn off"), "{unoffered:?}");
+        assert!(
+            unoffered
+                .iter()
+                .any(|t| t.starts_with("Off. The next unlock with the password")),
+            "{unoffered:?}"
+        );
+    }
+
+    #[test]
+    fn the_device_row_fits_a_phone_of_360_by_640_and_390_by_844() {
+        for (width, height) in [(NARROWEST, 640.0), (390.0, 844.0)] {
+            let mut model = phone_settings(DeviceUnlock::On, false);
+            model.width = width;
+            assert_eq!(
+                fits_at(screens::view(&model), width, height),
+                Ok(()),
+                "the settings with the device row, at {width} by {height}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tap_on_turn_off_turns_the_device_unlock_off() {
+        // The page is drawn tall, so that the row's button is in the window.
+        let model = phone_settings(DeviceUnlock::On, false);
+        let size = (NARROWEST, 4000.0);
+        let (_, bounds) = crate::harness::texts(screens::view(&model), size)
+            .into_iter()
+            .find(|(text, _)| text == "Turn off")
+            .expect("the button");
+        let (x, y) = (
+            bounds.x + bounds.width / 2.0,
+            bounds.y + bounds.height / 2.0,
+        );
+        let mut driver = Driver::new(screens::view(&model), (360, 4000));
+        let (messages, _, _) = driver.send(&[
+            crate::harness::mouse_move(x, y),
+            crate::harness::mouse_press(),
+            crate::harness::mouse_release(),
+        ]);
+        assert!(
+            messages
+                .iter()
+                .any(|m| matches!(m, Message::TurnOffDeviceUnlock)),
+            "{messages:?}"
         );
     }
 }

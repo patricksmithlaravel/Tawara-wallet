@@ -24,6 +24,7 @@ use tawara_wallet_core::view::{
 use crate::app::{
     Back, Busy, Go, Message, Model, Page, ReportKey, SentPage, Signed, To, WalletMsg, WalletPage,
 };
+use crate::host::DeviceCheck;
 use crate::icon::{self, Icon};
 use crate::tap::tap;
 use crate::theme::{self, color, space as sp};
@@ -396,6 +397,15 @@ fn frame<'a>(
     if let Some(busy) = &model.busy {
         stack = stack.push(working(compact, busy));
     }
+    // The offer of the device unlock stands until it is answered or the store
+    // locks, and what the device unlock last found stands under it (docs/DECISIONS.md
+    // D45 item 4).
+    if let (true, Some(device)) = (model.device_offer, &model.device) {
+        stack = stack.push(device_offer(device.check()));
+    }
+    if let Some(note) = &model.device_note {
+        stack = stack.push(ui::refusal(note.as_str()));
+    }
     for kept in model.unsaved_signed() {
         stack = stack.push(unsaved(model, kept));
     }
@@ -409,6 +419,40 @@ fn frame<'a>(
         stack = stack.push(part);
     }
     stack.into()
+}
+
+/// The offer of the device unlock, made once after a password unlock opened the
+/// store (docs/DECISIONS.md D45 item 4): "Turn on" keeps the password on this
+/// phone, and "Not now" keeps nothing. Provisional wording, for the owner's
+/// approval (D45 item 6).
+fn device_offer<'a>(check: DeviceCheck) -> Element<'a, Message> {
+    let name = check.name();
+    ui::accent_callout_with_actions(
+        Icon::Lock,
+        format!("Unlock with {name} next time?"),
+        format!(
+            "Keep this wallet's password on this phone, to unlock the wallet with {name} \
+             instead of typing it. Anyone who knows this phone's passcode can open the \
+             wallet then. Turning the unlock off in Settings deletes the password."
+        ),
+        row![
+            ui::button_with(
+                "Turn on",
+                theme::Button::Primary,
+                Size::Medium,
+                None,
+                Some(Message::DeviceOffer(true)),
+            ),
+            ui::button_with(
+                "Not now",
+                theme::Button::Secondary,
+                Size::Medium,
+                None,
+                Some(Message::DeviceOffer(false)),
+            ),
+        ]
+        .spacing(sp::S10),
+    )
 }
 
 /// A spend signed this run whose page was left before its bytes were saved
@@ -807,6 +851,9 @@ fn figure<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::{NARROWEST, Screen};
+    use crate::harness::Driver;
+    use tawara_wallet_core::sample;
 
     #[test]
     fn destinations_shorten_to_their_ends() {
@@ -871,6 +918,127 @@ mod tests {
         assert!(
             draw(&page(NOT_SHOWN)) == refused,
             "a failed save is a refusal"
+        );
+    }
+
+    /// The dashboard of a phone, as the wallet shows it once a password unlock
+    /// opened the store: with the device unlock offered by its shell or not, and
+    /// with the offer on the page or not (docs/DECISIONS.md D45 item 4).
+    fn phone_wallet(device: bool, offer: bool, width: f32) -> Model {
+        use tawara_wallet_core::preferences::Preferences;
+        let mut model = Model::new(Preferences::default(), None);
+        model.width = width;
+        model.wallet = Some(sample::wallet_view());
+        model.screen = Screen::Wallet(WalletPage {
+            page: Page::Dashboard,
+            ..WalletPage::default()
+        });
+        if device {
+            model.device = Some(crate::harness::face_id_device());
+        }
+        model.device_offer = offer;
+        model
+    }
+
+    /// The texts the wallet page draws on a phone of `width` by 844.
+    fn wallet_texts(model: &Model, width: f32) -> Vec<String> {
+        let page = match &model.screen {
+            Screen::Wallet(page) => page,
+            _ => panic!("the wallet's page"),
+        };
+        crate::harness::texts(view(model, page), (width, 844.0))
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect()
+    }
+
+    #[test]
+    fn the_offer_stands_on_the_wallet_only_while_the_device_unlock_is_offered_and_being_made() {
+        // The offer comes once a password unlock opened the store, and stays until
+        // it is answered or the store locks (docs/DECISIONS.md D45 item 4).
+        let offer = "Unlock with Face ID next time?";
+        let on = wallet_texts(&phone_wallet(true, true, NARROWEST), NARROWEST);
+        assert!(on.iter().any(|t| t == offer), "{on:?}");
+        assert!(on.iter().any(|t| t == "Turn on"));
+        assert!(on.iter().any(|t| t == "Not now"));
+        let none = wallet_texts(&phone_wallet(true, false, NARROWEST), NARROWEST);
+        assert!(!none.iter().any(|t| t == offer), "no offer is being made");
+        let unshown = wallet_texts(&phone_wallet(false, true, NARROWEST), NARROWEST);
+        assert!(!unshown.iter().any(|t| t == offer), "no shell offers it");
+    }
+
+    #[test]
+    fn the_offer_fits_a_phone_of_360_by_640_and_390_by_844() {
+        for (width, height) in [(NARROWEST, 640.0), (390.0, 844.0)] {
+            let model = phone_wallet(true, true, width);
+            let page = match &model.screen {
+                Screen::Wallet(page) => page,
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                crate::harness::fits_at(view(&model, page), width, height),
+                Ok(()),
+                "the wallet with the offer, at {width} by {height}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tap_on_the_offers_buttons_answers_it_yes_and_no() {
+        let model = phone_wallet(true, true, NARROWEST);
+        let size = (NARROWEST, 844.0);
+        let answer = |text: &str| {
+            let page = match &model.screen {
+                Screen::Wallet(page) => page,
+                _ => unreachable!(),
+            };
+            let (_, bounds) = crate::harness::texts(view(&model, page), size)
+                .into_iter()
+                .find(|(drawn, _)| drawn == text)
+                .unwrap_or_else(|| panic!("no {text:?}"));
+            let page = match &model.screen {
+                Screen::Wallet(page) => page,
+                _ => unreachable!(),
+            };
+            let mut driver = Driver::new(view(&model, page), (360, 844));
+            let (x, y) = (
+                bounds.x + bounds.width / 2.0,
+                bounds.y + bounds.height / 2.0,
+            );
+            let (messages, _, _) = driver.send(&[
+                crate::harness::mouse_move(x, y),
+                crate::harness::mouse_press(),
+                crate::harness::mouse_release(),
+            ]);
+            messages
+        };
+        assert!(
+            answer("Turn on")
+                .iter()
+                .any(|m| matches!(m, Message::DeviceOffer(true))),
+            "Turn on keeps the password"
+        );
+        assert!(
+            answer("Not now")
+                .iter()
+                .any(|m| matches!(m, Message::DeviceOffer(false))),
+            "Not now keeps nothing"
+        );
+    }
+
+    #[test]
+    fn what_the_device_unlock_last_found_stands_on_the_wallet_page() {
+        let mut model = phone_wallet(true, false, NARROWEST);
+        model.device_note = Some(
+            "The password could not be kept on this device (the keychain refused).".to_owned(),
+        );
+        let texts = wallet_texts(&model, NARROWEST);
+        assert!(
+            texts
+                .iter()
+                .any(|t| t
+                    == "The password could not be kept on this device (the keychain refused)."),
+            "{texts:?}"
         );
     }
 }

@@ -1155,6 +1155,21 @@ fn unlock<'a>(model: &'a Model, form: &'a UnlockForm) -> Element<'a, Message> {
             None,
         ));
     }
+    // Where the device unlock is on, its button stands above the password field,
+    // which stays as it is (docs/DECISIONS.md D45 item 4). What the device unlock
+    // last found stands under the button.
+    if let Some(device) = model.device.as_ref().filter(|_| model.device_unlock_on()) {
+        body = body.push(ui::button_with(
+            format!("Unlock with {}", device.check().name()),
+            theme::Button::Secondary,
+            Size::Xl,
+            Some(crate::icon::Icon::Lock),
+            Some(Message::UnlockWithDevice),
+        ));
+        if let Some(note) = &model.device_note {
+            body = body.push(ui::refusal(note.as_str()));
+        }
+    }
     body = body.push(ui::field(
         "Password",
         "",
@@ -1214,14 +1229,14 @@ mod tests {
     use iced::advanced::widget::operation::focusable;
     use iced::mobile::SafeArea;
     use iced::{Point, Rectangle, Size};
-    use tawara_wallet_core::preferences::Preferences;
+    use tawara_wallet_core::preferences::{DeviceUnlock, Preferences};
     use tawara_wallet_core::{Activity, CONFIRM_POSITIONS, PhraseForDisplay, Progress, RequestId};
 
     use super::*;
     use crate::app::NARROWEST;
     use crate::harness::{
-        Driver, finger_lift, finger_move, finger_press, fits, fits_the_viewport, mouse_move,
-        mouse_press, mouse_release, texts,
+        Driver, finger_lift, finger_move, finger_press, fits, fits_at, fits_the_viewport,
+        mouse_move, mouse_press, mouse_release, texts,
     };
     use crate::paste::support::{Holding, paste_keys};
 
@@ -1616,6 +1631,101 @@ mod tests {
             (1440.0, 900.0),
             "Create or restore a different wallet"
         ));
+    }
+
+    /// S7 on a phone whose shell offers Face ID, with the device unlock in
+    /// `state` and `note` under its button (docs/DECISIONS.md D45 item 4).
+    fn s7_with_device(state: DeviceUnlock, note: Option<&str>) -> Model {
+        let mut model = named("S7");
+        model.device = Some(crate::harness::face_id_device());
+        model.prefs.device_unlock = state;
+        model.device_note = note.map(str::to_owned);
+        model
+    }
+
+    #[test]
+    fn s7_draws_the_device_button_only_while_the_device_unlock_is_on() {
+        // Off, not yet offered, or a shell with no device unlock: no button, and
+        // the password form is what it was (docs/DECISIONS.md D45 item 4).
+        let size = (NARROWEST, 844.0);
+        let button = "Unlock with Face ID";
+        assert!(shows(&s7_with_device(DeviceUnlock::On, None), size, button));
+        assert!(!shows(
+            &s7_with_device(DeviceUnlock::Off, None),
+            size,
+            button
+        ));
+        assert!(!shows(
+            &s7_with_device(DeviceUnlock::Unoffered, None),
+            size,
+            button
+        ));
+        assert!(!shows(&named("S7"), size, button), "no shell offers it");
+        let mut desktop = Model::new(Preferences::default(), None);
+        desktop.screen = Screen::Unlock(UnlockForm::default());
+        assert!(!shows(&desktop, (1440.0, 900.0), button), "the desktop");
+        assert!(
+            shows(&named("S7"), size, "Unlock"),
+            "the password form stays"
+        );
+    }
+
+    #[test]
+    fn s7_draws_the_device_button_above_the_password_field_and_its_note_under_it() {
+        let note = "The device could not release the password (the keychain is locked).";
+        let model = s7_with_device(DeviceUnlock::On, Some(note));
+        let drawn = texts(view(&model), (NARROWEST, 844.0));
+        let top = |text: &str| {
+            drawn
+                .iter()
+                .find(|(drawn, _)| drawn == text)
+                .map(|(_, bounds)| bounds.y)
+                .unwrap_or_else(|| panic!("no text {text:?}"))
+        };
+        let button = top("Unlock with Face ID");
+        assert!(button < top(note), "the note is under the button");
+        assert!(top(note) < top("Password"), "the field is under the note");
+    }
+
+    #[test]
+    fn a_tap_on_the_device_button_asks_for_the_device_unlock() {
+        let model = s7_with_device(DeviceUnlock::On, None);
+        let size = (NARROWEST, 844.0);
+        let (_, bounds) = texts(view(&model), size)
+            .into_iter()
+            .find(|(drawn, _)| drawn == "Unlock with Face ID")
+            .expect("the button");
+        let (x, y) = (
+            bounds.x + bounds.width / 2.0,
+            bounds.y + bounds.height / 2.0,
+        );
+        let mut driver = Driver::new(view(&model), (360, 844));
+        let (messages, _, _) = driver.send(&[mouse_move(x, y), mouse_press(), mouse_release()]);
+        assert!(
+            messages
+                .iter()
+                .any(|message| matches!(message, Message::UnlockWithDevice)),
+            "{messages:?}"
+        );
+    }
+
+    #[test]
+    fn the_device_button_and_its_note_fit_a_phone_of_360_by_640_and_390_by_844() {
+        // The page scrolls, so nothing is held to the foot of the window, but
+        // nothing reaches past the width at either size, with the button and what
+        // the device unlock last found drawn (docs/DECISIONS.md D32 item 10 (b)).
+        let note = "The password kept on this device no longer opens this store, so it has \
+                    been deleted and the unlock with the device is off. Type the password to \
+                    unlock.";
+        for (width, height) in [(NARROWEST, 640.0), (390.0, 844.0)] {
+            let mut model = s7_with_device(DeviceUnlock::On, Some(note));
+            model.width = width;
+            assert_eq!(
+                fits_at(view(&model), width, height),
+                Ok(()),
+                "S7 with the device button, at {width} by {height}"
+            );
+        }
     }
 
     /// The insets of a phone: 47 pixels at the top, where the status bar is,

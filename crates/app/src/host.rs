@@ -111,6 +111,20 @@ pub enum DeviceCheck {
     Passcode,
 }
 
+impl DeviceCheck {
+    /// What the check is called on the screens: "Face ID", "Touch ID", or
+    /// "passcode" (provisional wording, for the owner's approval; docs/DECISIONS.md
+    /// D45 item 6).
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            DeviceCheck::FaceId => "Face ID",
+            DeviceCheck::TouchId => "Touch ID",
+            DeviceCheck::Passcode => "passcode",
+        }
+    }
+}
+
 /// What the device's check and the system's storage answered, for
 /// [`Host::release_password`] (docs/DECISIONS.md D45 item 4).
 #[derive(Debug)]
@@ -169,8 +183,11 @@ pub struct Device {
 
 impl Device {
     /// The device unlock `host` offers, with its answers sent to `answers`, or
-    /// `None` where it offers none.
-    pub(crate) fn of(host: &Host, answers: UnboundedSender<Answer>) -> Option<Device> {
+    /// `None` where it offers none. [`App::boot_in`](crate::app::App::boot_in)
+    /// makes the one a phone uses; the screenshots make one from a fake `host`
+    /// to draw the screens that show it.
+    #[must_use]
+    pub fn of(host: &Host, answers: UnboundedSender<Answer>) -> Option<Device> {
         let (Some(check), Some(keep), Some(release), Some(forget)) = (
             host.device_check,
             host.keep_password,
