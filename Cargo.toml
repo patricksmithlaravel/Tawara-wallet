@@ -53,42 +53,53 @@ mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-wi
 # THE TOOLKIT (docs/PLAN.md D2): iced 0.14, FROM THE OWNER'S FORK, PINNED BY
 # FULL COMMIT HASH (docs/DECISIONS.md D6, D32 items 1 and 9).
 #
-# `patricksmithlaravel/iced_mobile` at d4ab3a0, the fork's release tag
-# `v0.14.1-mobile.2`, on its main line. The fork starts from iced's own `0.14`
-# branch at 38237dd, whose sources are, crate for crate, the crates.io releases
-# this workspace was built on until now (iced 0.14.0, iced_widget 0.14.2,
-# iced_winit and iced_tiny_skia 0.14.1, the rest 0.14.0; the lockfile names the
-# fork's crates by the fork's own versions, 0.14.1 and iced_widget 0.14.2, as
-# it did at 71f00e8), and carries the fork's commits on top. Two of those are the two commits that 71f00e8, the
-# previous pin, adds to 38237dd: iced_winit compiling and running on Android
-# and iOS, with `on_lifecycle`, the hook the mobile shells lock the wallet from
-# (0b02176; D17, D32); and iOS windows put in UIKit's window scene, which an
-# app linked with the iOS 27 SDK needs (71f00e8; D32 item 8).
+# `patricksmithlaravel/iced_mobile` at 7325ccd5823a118d46f023e91010d27f07b6dd90,
+# the fork's release tag `v0.14.1-mobile.4`, on its main line. The fork starts
+# from iced's own `0.14` branch at 38237dd, whose sources are, crate for crate,
+# the crates.io releases this workspace was built on until now (iced 0.14.0,
+# iced_widget 0.14.2, iced_winit and iced_tiny_skia 0.14.1, the rest 0.14.0; the
+# lockfile names the fork's crates by the fork's own versions, 0.14.1 and
+# iced_widget 0.14.2, as it did at 71f00e8), and carries the fork's commits on
+# top. Two of those are the two commits that 71f00e8, an earlier pin, adds to
+# 38237dd: iced_winit compiling and running on Android and iOS, with
+# `on_lifecycle`, the hook the mobile shells lock the wallet from (0b02176; D17,
+# D32); and iOS windows put in UIKit's window scene, which an app linked with the
+# iOS 27 SDK needs (71f00e8; D32 item 8).
 #
-# The owner chose this release on 2026-10-12, in place of 71f00e8 (D32 item 9).
-# A tag does not move, the fork's framework code had settled by it, and it
-# carries the system clipboard and the safe-area and keyboard insets on phones,
-# which phase 4 (b) builds on. Its winit and dpi are the fork's vendored copies
-# in `vendor/winit`, on every target, in place of crates.io's: winit is
-# 0.30.13, and dpi is 0.1.1, back from crates.io's 0.1.2. Every iced crate
-# comes from that one commit, the desktop's included, so the build holds one
-# copy of each. The mobile shells live in `patricksmithlaravel/Tawara-mobile`
-# (D33), which must take `tawara-app` from this repository and iced from the
-# same commit (D33, items 2 and 3). Moving iced is a change to `rev` here, on
-# both lines below, and to nothing else, and only to a release tag of the fork
-# (`v*-mobile.*`), by its full hash; these lines no longer return to crates.io
-# when an iced release carries the change (D32 item 9 (a)).
-# `crates/wallet-core/tests/policy.rs` holds them to it, and deny.toml admits
+# The owner chose `v0.14.1-mobile.2`, d4ab3a0, on 2026-10-12, in place of 71f00e8
+# (D32 item 9). A tag does not move, and the fork's framework code had settled by
+# it. It carries the system clipboard and the safe-area and keyboard insets on
+# phones, which phase 4 (b) builds on. Two releases follow it on the fork's main
+# line, both approved by the owner: `v0.14.1-mobile.3` (2026-10-16) reads the iOS
+# safe area again for 600 ms after a change, the change approved for the zero
+# insets an iPhone SE reported (D32 item 10 (f)), which has not yet run on one;
+# and `v0.14.1-mobile.4` (2026-10-17) is that release with mundy removed, so
+# Linux reports no system light or dark mode and the feature
+# `linux-theme-detection` is gone (D32 item 9 (a)). Its winit and dpi are the
+# fork's vendored copies in `vendor/winit`, on every target, in place of
+# crates.io's: winit is 0.30.13, and dpi is 0.1.1, back from crates.io's 0.1.2.
+# Every iced crate comes from that one commit, the desktop's included, so the
+# build holds one copy of each. The mobile shells live in
+# `patricksmithlaravel/Tawara-mobile` (D33), which must take `tawara-app` from
+# this repository and iced from the same commit (D33, items 2 and 3). Moving iced
+# is a change to `rev` here, on both lines below, and to nothing else, and only to
+# a release tag of the fork (`v*-mobile.*`), by its full hash; these lines no
+# longer return to crates.io when an iced release carries the change (D32 item 9
+# (a)). `crates/wallet-core/tests/policy.rs` holds them to it, and deny.toml admits
 # this one git source beside the library's.
 #
 # The features are iced 0.14.0's own defaults, written out so that what
 # ships is a list in this file rather than whatever iced's default becomes:
 # `wgpu` and `tiny-skia` (the pure-Rust software renderer, D2), `crisp`,
-# `web-colors`, `thread-pool`, and on Linux `x11`, `wayland` and
-# `linux-theme-detection`. The release's own defaults add four for phones
-# (`android-native-activity`, `mobile-logger`, `mobile-fira-sans` and
-# `mobile-system-fonts`), which `default-features = false` leaves off here
-# (D6, D32 item 9). Two are added for phase 3 (docs/DECISIONS.md
+# `web-colors`, `thread-pool`, and on Linux `x11` and `wayland`.
+# `linux-theme-detection`, which iced 0.14.0 and the earlier pins listed, left
+# with mundy at `v0.14.1-mobile.4`: Linux no longer reports the system's light or
+# dark mode, and nothing this workspace draws changes, because it sets its own
+# theme on every platform (`theme()` in `crates/app/src/lib.rs`, D27 item 8). The
+# release's own defaults add four for phones (`android-native-activity`,
+# `mobile-logger`, `mobile-fira-sans` and `mobile-system-fonts`), which
+# `default-features = false` leaves off here (D6, D32 item 9). Two are added for
+# phase 3 (docs/DECISIONS.md
 # D27): `canvas`, which draws the line icons from the renderings' path data
 # (six crates, `lyon` and its parts, where `svg` would add 35), and
 # `advanced`, which adds no crate and opens the renderer's headless
@@ -96,7 +107,7 @@ mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-wi
 # Receive (docs/DECISIONS.md D41), approved by the owner on 2026-10-13: it adds
 # the `qrcode` crate alone, which the fork declares with its default features
 # off (MIT OR Apache-2.0), and deny.toml was run against the result.
-iced = { git = "https://github.com/patricksmithlaravel/iced_mobile", rev = "d4ab3a057db96162b087a27dd0752a3b15abfa6b", default-features = false, features = [
+iced = { git = "https://github.com/patricksmithlaravel/iced_mobile", rev = "7325ccd5823a118d46f023e91010d27f07b6dd90", default-features = false, features = [
     "wgpu",
     "tiny-skia",
     "canvas",
@@ -105,7 +116,6 @@ iced = { git = "https://github.com/patricksmithlaravel/iced_mobile", rev = "d4ab
     "crisp",
     "web-colors",
     "thread-pool",
-    "linux-theme-detection",
     "x11",
     "wayland",
 ] }
@@ -123,7 +133,7 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 # already in every build of the interface (D32 item 9); it gives the example
 # `UserInterface`, which iced does not re-export. `png` writes and reads the
 # images.
-iced_runtime = { git = "https://github.com/patricksmithlaravel/iced_mobile", rev = "d4ab3a057db96162b087a27dd0752a3b15abfa6b" }
+iced_runtime = { git = "https://github.com/patricksmithlaravel/iced_mobile", rev = "7325ccd5823a118d46f023e91010d27f07b6dd90" }
 png = "0.18"
 
 tawara-wallet-core = { path = "crates/wallet-core" }

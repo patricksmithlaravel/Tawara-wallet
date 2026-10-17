@@ -93,6 +93,16 @@ now pins, `v0.14.1-mobile.2`. Its defaults add `android-native-activity`,
 `mobile-logger`, `mobile-fira-sans` and `mobile-system-fonts`, which
 `default-features = false` leaves off. See D32 item 9.*
 
+*Amended 2026-10-17: `linux-theme-detection` is no longer in the list above.
+The fork's release `v0.14.1-mobile.4` removes the feature with mundy, the
+owner's decision of 2026-10-17 (D32 item 9 (a)), so Linux no longer reports
+the system's light or dark mode to iced. Nothing Tawara draws changes: the
+application sets its own theme on every platform, `theme::theme()` in
+`crates/app/src/theme.rs`, set by `crates/app/src/lib.rs` (D27 item 8), whatever
+the system reports. The list is now `wgpu`, `tiny-skia`, `canvas`, `advanced`,
+`qr_code`, `crisp`, `web-colors`, `thread-pool`, `x11` and `wayland`, and
+`crates/wallet-core/tests/policy.rs` holds the iced line to it.*
+
 ### D7. The library pin: Rep-1 at `613e8bd`
 
 **owner, 2026-10-03.** The owner's instructions for phase 0 named Rep-1's
@@ -269,6 +279,12 @@ entry in `ignore` carries a written reason").
   Both still arrive, now with iced 0.14.1, and both are still needed:
   removing either makes `cargo deny` fail. deny.toml names the path that
   reaches each at the pin (D32 item 9 (e)).*
+  *Amended 2026-10-17: re-examined at the release `v0.14.1-mobile.4`, `7325ccd`.
+  Both still arrive, through the paths deny.toml names, and both are still
+  needed. The advisories on `zvariant`, `zbus_names` and `zvariant_derive`
+  (RUSTSEC-2026-0370, -0371 and -0372), which mundy 0.2.3 brought in, no
+  longer arrive: mundy left the lock with the owner's decision to drop it
+  rather than ignore them (D32 item 9 (a)).*
 - **Kept from Rep-1:** `unmaintained = "all"`, `yanked = "deny"`, the
   `digest` 0.11 ban, and the denied features of `ureq`, `argon2` and
   `serde_json`. Feature unification means a crate in the interface's graph
@@ -1791,6 +1807,35 @@ on the three conditions D18 left open.
    entry points Tawara uses (`set_android_app`, `on_lifecycle` and the
    two-variant `Lifecycle`) as they are.
 
+   *Moved (owner, 2026-10-17): the pin is the fork's release
+   `v0.14.1-mobile.4`, `7325ccd5823a118d46f023e91010d27f07b6dd90`, on every
+   iced line of this repository. `cargo update -p iced -p iced_runtime` took
+   the lock to it. The release is `v0.14.1-mobile.2` plus two releases on the
+   fork's main line. `v0.14.1-mobile.3` (`4a71b29`) carries the iOS safe-area
+   change of 2026-10-16, which reads the inset again for 600 ms after launch
+   and after each change (item 10 (f)), and the icm and CI fixes ported from
+   the fork's main line, which the owner approved on 2026-10-17.
+   `v0.14.1-mobile.4` (`7325ccd`) is `v0.14.1-mobile.3` with mundy removed,
+   the owner's decision of 2026-10-17. The owner chose to drop mundy rather
+   than ignore RUSTSEC-2026-0370, -0371 and -0372 in `deny.toml`: the
+   advisories on `zvariant`, `zbus_names` and `zvariant_derive`, which
+   mundy 0.2.3 brought into the lock. Linux no longer reads the system's
+   light or dark mode, so `system::theme()` answers none there, and the
+   `linux-theme-detection` feature is gone (D6, amended 2026-10-17). Nothing
+   Tawara draws changes, because the application sets its own theme on every
+   platform. The lock loses 48 registry packages, mundy and zbus among them,
+   and gains none; `cargo tree -i zbus` finds nothing. winit is 0.30.13 and
+   dpi 0.1.1, both from the fork at the pin. Re-examined at this pin, with
+   `deny.toml`'s ignores unchanged: `paste` still arrives through `metal`,
+   `wgpu-hal` and `wgpu` under `iced_wgpu`, and `ttf-parser` through `fontdb`
+   and, on Linux, through `owned_ttf_parser`, `ab_glyph` and `sctk-adwaita`
+   under the fork's winit (D12, amended 2026-10-17).
+   `THIRD-PARTY-NOTICES.txt` is brought up to date by `ci/notices.sh` (D35).
+   `about.toml` drops the five clarifications for crates that left the lock,
+   and `policy.rs` drops the seven standard-MIT entries that left it. The
+   hand-run desktop check on macOS, Windows and Linux, which every move
+   needs, is run by no job (T39) and is still to be run.*
+
    **(b) One winit, the fork's: owner, 2026-10-12.** Tawara-mobile takes
    `winit` only from the fork, through `iced_winit` with the
    `android-native-activity` feature. The crates.io `winit` lines in the
@@ -2288,6 +2333,19 @@ on the three conditions D18 left open.
    build: the first gesture after launch, the footer link by touch, a drag
    that starts on a row, Paste, and the keyboard shown again are still to
    be checked by hand.
+
+   *Amended (owner, 2026-10-16; the pin moved on 2026-10-17): the owner
+   approved the fork's change for the zero insets an iPhone SE reported,
+   which this item says needs the owner's say-so. The fork's
+   `v0.14.1-mobile.3` reads the iOS safe area again for 600 ms after launch
+   and after each change (fork commit `204066c0`; its hedge is `750fb8f8`),
+   and the wallet pins it through `v0.14.1-mobile.4` (item 9 (a)). The fork's
+   own text says the cause of the zero insets is not isolated and that the
+   change has not run on a device, so nothing recorded here shows that an
+   iPhone SE now reports its inset. The fallback in
+   `crates/app/src/screens/mod.rs` (`UNREPORTED`, 64 above and 48 below) stays
+   until the SE device check, V16 in docs/THREAT_MODEL.md, has been run on an
+   iPhone SE and its result recorded here.*
 
    **(g) Paste buttons (decided under the owner's delegation, 2026-10-12).** In
    the compact layout a Paste button stands beside each destination field (W4,

@@ -52,9 +52,10 @@ for renderer in wgpu tiny-skia; do
   # to tiny-skia without a word (renderer/src/fallback.rs), so a wgpu launch
   # could pass on tiny-skia. Named, a wgpu that cannot start ends the app
   # instead, because the tiny-skia compositor refuses any name but its own
-  # (tiny_skia/src/window/compositor.rs). Both are iced_mobile at d4ab3a0, the
-  # release v0.14.1-mobile.2 that docs/DECISIONS.md D32 item 9 pins, and are
-  # unchanged from 71f00e8, the pin before it.
+  # (tiny_skia/src/window/compositor.rs). Both are iced_mobile at 7325ccd, the
+  # release v0.14.1-mobile.4 that docs/DECISIONS.md D32 item 9 (a) pins, and
+  # are unchanged from v0.14.1-mobile.2 (d4ab3a0) and from 71f00e8, the pins
+  # before it.
   env_set=(HOME="$home" XDG_DATA_HOME="$home/data" XDG_CONFIG_HOME="$home/config"
     XDG_CACHE_HOME="$home/cache" XDG_STATE_HOME="$home/state" ICED_BACKEND="$renderer")
   # On Linux the wgpu launch takes Vulkan only, so on a runner with no graphics
