@@ -164,7 +164,8 @@ for hours, and on mobile it is suspended and resumed. The following hold:
    the person turns it on. The store's password is then kept in the iOS
    Keychain and released only after the system's check of Face ID, Touch
    ID or the device passcode; the Tawara password always remains the way
-   in. See `docs/DECISIONS.md` D45.*
+   in. See `docs/DECISIONS.md` D45, and its As built note for what is built
+   and what awaits approval.*
 3. **Showing the phrase.** It is shown once, at creation, behind a
    confirmation, and is never copied to the clipboard.
    - Android: `FLAG_SECURE` on every screen that shows a secret.

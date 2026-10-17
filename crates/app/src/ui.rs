@@ -422,6 +422,41 @@ pub fn accent_callout<'a, M: 'a>(
     .into()
 }
 
+/// [`accent_callout`], with `actions` (a row of buttons) beneath its text and
+/// inside the callout, 14 pixels below the body (docs/DECISIONS.md D45 item 4:
+/// the offer of the device unlock).
+pub fn accent_callout_with_actions<'a, M: 'a>(
+    lead: Icon,
+    title: impl text::IntoFragment<'a>,
+    body: impl text::IntoFragment<'a>,
+    actions: impl Into<Element<'a, M>>,
+) -> Element<'a, M> {
+    container(
+        row![
+            container(icon::icon(lead, 20.0, 2.2, color::TEXT_ON_ACCENT))
+                .center(Length::Fixed(40.0))
+                .style(theme::icon_tile(color::ACCENT, color::TEXT_ON_ACCENT)),
+            column![
+                column![
+                    t(title, ty::CALLOUT_TITLE, color::TEXT_PRIMARY),
+                    t(body, ty::CALLOUT_BODY, color::TEXT_ON_ACCENT_SOFT)
+                        .line_height(LineHeight::Relative(1.5)),
+                ]
+                .spacing(sp::S4),
+                actions.into(),
+            ]
+            .spacing(sp::S14)
+            .width(Length::Fill),
+        ]
+        .spacing(sp::S14)
+        .align_y(Alignment::Start),
+    )
+    .padding(sp::S18)
+    .width(Length::Fill)
+    .style(theme::callout_accent)
+    .into()
+}
+
 /// The command-line verbs a library page can name, and the control in
 /// this application that does the same (docs/DECISIONS.md D25, D27 item
 /// 13). Each is found by the verb as the page quotes it, in backticks.

@@ -25,18 +25,21 @@ use tawara_wallet_core::explorer::{
     AccountHistory, BlockAt, BlocksView, ChainView, ExplorerRefusal, MempoolView, PendingView,
 };
 use tawara_wallet_core::location::{self, Environment, Platform};
-use tawara_wallet_core::preferences::{self, Preferences};
+use tawara_wallet_core::preferences::{self, DeviceUnlock, Preferences};
+use tawara_wallet_core::store_identifier;
 use tawara_wallet_core::view::{AccountId, Reads, SettledAccount, WalletView, Watch};
 use tawara_wallet_core::{
     Activity, Command, Config, Event, HttpsNode, LockReason, NetworkName, PhraseForDisplay,
     Progress, Refusal, RefusalKind, Reply, RequestId, SecretText, SyncState, WorkerHandle,
 };
+use zeroize::Zeroizing;
 
 pub use wallet::{
     AccountPage, ActivityPage, AddAccountPage, BLOCK_ROWS, BlockPage, DestinationRow, Done,
-    ExplorerPage, FormOf, Level, Missed, Page, QueuePage, ReceivePage, RecoveryPage, Remedy,
-    ReportKey, ResignPage, SHARED, SendPage, SendStage, SentPage, SettingsPage, Signed, SpendForm,
-    SubmitMode, SubmitPage, TagPage, To, TransactionPage, WalletMsg, remedy, spend_request,
+    ExplorerPage, FormOf, Level, Missed, Page, QueuePage, ReceivePage, RecoveryPage, RefusedField,
+    Remedy, ReportKey, ResignPage, SHARED, SendPage, SendStage, SentPage, SettingsPage, Signed,
+    SpendForm, SubmitMode, SubmitPage, TagPage, To, TransactionPage, WalletMsg, remedy,
+    spend_request,
 };
 
 /// How often a poll asks the node about an account [`Watch::asks`] names: one
@@ -229,6 +232,50 @@ pub struct Model {
     /// inside: the one the system keeps out of backups and away from other
     /// apps, and on iOS protects (docs/DECISIONS.md D32 items 3 and 7).
     pub(crate) confined: Option<PathBuf>,
+    /// The unlock with the device's own check, where the shell offers one
+    /// (docs/DECISIONS.md D45). `None` on the desktop and on Android, where
+    /// nothing is offered and nothing changes.
+    pub device: Option<host::Device>,
+    /// The offer of the device unlock is waiting for the person's answer. It
+    /// comes once, after a password unlock opened the store, and the password
+    /// it would keep is held in `pending_keep` until it is answered
+    /// (docs/DECISIONS.md D45 item 4).
+    pub device_offer: bool,
+    /// The password of the password unlock under way, copied only while the
+    /// offer may still be made (docs/DECISIONS.md D45 item 4). It is dropped
+    /// when the unlock is refused, when the offer is answered, and when the
+    /// store locks or the application leaves the foreground.
+    pending_keep: Option<Kept>,
+    /// How many asks of the device's check there have been. Each is numbered,
+    /// so an answer to one that has since been dropped is recognised and
+    /// ignored (docs/DECISIONS.md D45 item 4).
+    device_asks: u64,
+    /// The ask whose answer is awaited, if one is.
+    device_asked: Option<u64>,
+    /// What the device unlock last found, for the screens to say (provisional
+    /// wording, for the owner's approval; docs/DECISIONS.md D45 item 6).
+    pub device_note: Option<String>,
+}
+
+/// A password copied for the device unlock's offer. Its `Debug` prints nothing
+/// of it, as [`Typed`]'s does, and the copy is wiped when it is dropped.
+struct Kept(Zeroizing<String>);
+
+impl Kept {
+    /// A copy of `typed`, as the field holds it.
+    fn copy_of(typed: &str) -> Kept {
+        Kept(Zeroizing::new(typed.to_owned()))
+    }
+
+    fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl core::fmt::Debug for Kept {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Kept(..)")
+    }
 }
 
 /// What an explorer read last answered, and whether another is on its way.
@@ -482,6 +529,10 @@ pub struct WalletPage {
     /// one is (docs/DECISIONS.md D39 item 4). A page is replaced when it is
     /// left, so the card closes then.
     pub expanded: Option<AccountId>,
+    /// Page 1 of a phone's send flow: whether the account list is open under
+    /// the From line, by "Change" (docs/DECISIONS.md D40 item 1). A page is
+    /// replaced when it is left, so the list closes then.
+    pub choosing: bool,
 }
 
 /// Text typed into a secret field, on its way into the model. Its `Debug`
@@ -563,6 +614,26 @@ pub enum Message {
     ConfirmWords,
     RestoreWallet,
     UnlockWallet,
+    /// S7's unlock with the device's own check, once the person has turned it
+    /// on (docs/DECISIONS.md D45 item 4).
+    UnlockWithDevice,
+    /// The shell's answer to an ask of the device's check, from its own thread
+    /// (docs/DECISIONS.md D45 item 4).
+    Released(host::Answer),
+    /// The answer to the offer of the device unlock: `true` keeps the password
+    /// on the device, `false` declines (docs/DECISIONS.md D45 item 4).
+    DeviceOffer(bool),
+    /// Turns the device unlock off, and deletes the password kept for it
+    /// (docs/DECISIONS.md D45 item 4).
+    TurnOffDeviceUnlock,
+    /// Offers the device unlock again, at the next unlock with the password,
+    /// once it has been declined or turned off (docs/DECISIONS.md D45 item 4;
+    /// provisional, for the owner's approval).
+    OfferDeviceUnlockAgain,
+    /// The application's life changed (`iced::mobile::lifecycle`). S7 asks the
+    /// device's check once, when the application comes to the foreground
+    /// (docs/DECISIONS.md D45 item 4).
+    Lifecycle(iced::mobile::LifecycleEvent),
     /// Stop what the worker is doing (`WorkerHandle::cancel`).
     Cancel,
     Lock,
@@ -701,6 +772,9 @@ enum Purpose {
     CreateConfirm,
     CreateFromPhrase,
     Unlock,
+    /// The unlock with the password the device released (docs/DECISIONS.md D45
+    /// item 4): as `Unlock`, but a refusal of the password forgets it.
+    KeptUnlock,
     Refresh,
     Lock,
     Abandon,
@@ -764,6 +838,7 @@ impl Purpose {
                 | Purpose::CreateConfirm
                 | Purpose::CreateFromPhrase
                 | Purpose::Unlock
+                | Purpose::KeptUnlock
                 | Purpose::Refresh
                 | Purpose::Discover
                 | Purpose::Restore
@@ -982,6 +1057,55 @@ const WIPED_NOTE: &str = "Signed bytes that were not saved were wiped when the w
                           takes the same destinations, amounts, references, fee and \
                           block-to-live typed again.";
 
+/// The reason the system's check gives for asking for the kept password.
+/// Provisional wording, for the owner's approval (docs/DECISIONS.md D45 item 6).
+const UNLOCK_REASON: &str = "unlock Tawara";
+
+/// What the device unlock says when the kept password is not there for this
+/// store, and the unlock with the device is turned off. Provisional wording, for
+/// the owner's approval (docs/DECISIONS.md D45 item 6).
+pub(crate) const DEVICE_MISSING_NOTE: &str = "No password is kept on this device for this store, so \
+     the unlock with the device is off. Type the password to unlock.";
+
+/// What the device unlock says when the kept password no longer opens the store:
+/// it is deleted, and the unlock with the device is turned off. Provisional
+/// wording, for the owner's approval (docs/DECISIONS.md D45 item 6).
+pub(crate) const DEVICE_WRONG_NOTE: &str = "The password kept on this device no longer opens this \
+     store, so it has been deleted and the unlock with the device is off. Type the \
+     password to unlock.";
+
+/// What the device unlock says when the kept password could not be deleted: the
+/// unlock stays on, so that deleting can be tried again. Provisional wording, for
+/// the owner's approval (docs/DECISIONS.md D45 item 6).
+fn device_forget_failed_note(why: &str) -> String {
+    format!(
+        "The password kept on this device could not be deleted ({why}). The unlock with \
+         the device stays on until it is, so that it can be tried again."
+    )
+}
+
+/// What the device unlock says when the password could not be kept on this
+/// device. Provisional wording, for the owner's approval (docs/DECISIONS.md D45
+/// item 6).
+fn device_keep_failed_note(why: &str) -> String {
+    format!("The password could not be kept on this device ({why}). Nothing else has changed.")
+}
+
+/// What the device unlock says when the store's identifier could not be read, so
+/// the check is not asked. Provisional wording, for the owner's approval
+/// (docs/DECISIONS.md D45 item 6).
+fn device_identifier_failed_note(why: &str) -> String {
+    format!(
+        "The store's identifier could not be read ({why}), so the unlock with the device is not used."
+    )
+}
+
+/// What the device unlock says when the check could not release the password.
+/// Provisional wording, for the owner's approval (docs/DECISIONS.md D45 item 6).
+fn device_release_failed_note(why: &str) -> String {
+    format!("The device could not release the password ({why}).")
+}
+
 impl Model {
     /// The model at start-up: the first screen, before the worker has said
     /// anything. When a store is there to open (the one last opened,
@@ -1019,6 +1143,12 @@ impl Model {
             shots_seen: 0,
             captured: false,
             confined: None,
+            device: None,
+            device_offer: false,
+            pending_keep: None,
+            device_asks: 0,
+            device_asked: None,
+            device_note: None,
             width: crate::WINDOW.0,
             height: crate::WINDOW.1,
             safe_area: iced::mobile::SafeArea::ZERO,
@@ -1041,6 +1171,23 @@ impl Model {
             });
         }
         model
+    }
+
+    /// Whether the store is unlocked with the device's own check: the shell
+    /// offers it and the person has turned it on (docs/DECISIONS.md D45).
+    #[must_use]
+    pub fn device_unlock_on(&self) -> bool {
+        self.device.is_some() && self.prefs.device_unlock == DeviceUnlock::On
+    }
+
+    /// Drops what the device unlock holds for the screen that is going: the
+    /// password waiting for the offer, the offer itself, and an ask whose
+    /// answer is not yet in, which an answer after this ignores (docs/DECISIONS.md
+    /// D45 item 4). A lock, a move to the background and a stopped worker do it.
+    fn release_device(&mut self) {
+        self.pending_keep = None;
+        self.device_offer = false;
+        self.device_asked = None;
     }
 
     fn default_dir_text(&self) -> String {
@@ -1136,6 +1283,9 @@ impl Model {
     /// it is the interface's to drop, and the shell does not let the
     /// process be suspended before it has (Tawara-mobile#1's second review).
     fn backgrounded(&mut self) {
+        // The password kept for the device's offer, and an ask the check has not
+        // answered, go with the foreground (docs/DECISIONS.md D45 item 4).
+        self.release_device();
         if matches!(self.screen, Screen::Phrase(_) | Screen::Confirm(_)) {
             self.back_to_new_wallet(Some(phrase_discarded(
                 "when the application left the screen",
@@ -1271,10 +1421,19 @@ impl App {
     /// word on the screen's capture (docs/DECISIONS.md D32, D44 item 3).
     pub fn boot_in(host: &Host) -> (App, Task<Message>) {
         host::set(host);
-        let (app, task) = App::hosted(&host.private_dir);
+        let (mut app, task) = App::hosted(&host.private_dir);
         host::on_leaving(app.leaving_hook());
         host::on_capture(Arc::clone(&app.model.capture), host.captured);
-        (app, task)
+        // The shell answers an ask of the device's check from its own thread, and
+        // the answer comes into the interface on this channel as a message
+        // (docs/DECISIONS.md D45 item 4). Where the shell offers no device unlock,
+        // the sender is dropped here and the channel ends at once.
+        let (answers, received) = mpsc::unbounded();
+        app.model.device = host::Device::of(host, answers);
+        (
+            app,
+            Task::batch([task, Task::run(received, Message::Released)]),
+        )
     }
 
     /// The application as a mobile shell runs it, in `private_dir`, before
@@ -1423,9 +1582,17 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
+        // The lifecycle is listened to only where a shell offers the device
+        // unlock, so the desktop's subscriptions are what they were.
+        let lifecycle = if self.model.device.is_some() {
+            iced::mobile::lifecycle().map(Message::Lifecycle)
+        } else {
+            Subscription::none()
+        };
         Subscription::batch([
             event::listen_with(person_input),
             iced::mobile::safe_area().map(Message::SafeArea),
+            lifecycle,
         ])
     }
 
@@ -1645,7 +1812,16 @@ impl App {
                 }
             }
             Message::Input => self.touch(),
-            Message::SystemBack => host::back(),
+            // On a phone's pages 2 to 4, the system's Back steps back one page
+            // of the send flow, and does not leave the application
+            // (docs/DECISIONS.md D40 item 3). Everywhere else, and on page 1,
+            // it is the shell's.
+            Message::SystemBack => {
+                if self.model.send_steps_back() {
+                    return self.on_wallet(WalletMsg::Back);
+                }
+                host::back();
+            }
             // iced's fields leave Tab to the application.
             Message::FocusNext => {
                 self.touch();
@@ -1831,16 +2007,41 @@ impl App {
             }
             Message::UnlockWallet => {
                 let outside = m.outside();
+                // The password is copied for the device's offer only while the
+                // offer may still be made: the device offers its check, and the
+                // unlock has not been offered yet (docs/DECISIONS.md D45 item 4).
+                let offerable =
+                    m.device.is_some() && m.prefs.device_unlock == DeviceUnlock::Unoffered;
                 if let (Screen::Unlock(u), Some(why)) = (&mut m.screen, outside) {
                     u.error = Some(why);
                 } else if let Screen::Unlock(u) = &mut m.screen {
                     u.error = None;
                     u.note = None;
+                    // A password unlock is a new attempt, so what the device
+                    // unlock last found is no longer what the screen says.
+                    m.device_note = None;
+                    let kept =
+                        (offerable && !u.password.is_empty()).then(|| Kept::copy_of(&u.password));
                     let command = Command::Unlock {
                         dir: store_dir(&u.dir),
                         password: SecretText::take(&mut u.password),
                     };
-                    self.send(command, Purpose::Unlock);
+                    if self.send(command, Purpose::Unlock).is_some() {
+                        self.model.pending_keep = kept;
+                    }
+                }
+            }
+            Message::UnlockWithDevice => self.unlock_with_device(),
+            Message::Released(answer) => return self.released(answer),
+            Message::DeviceOffer(keep) => self.answer_offer(keep),
+            Message::TurnOffDeviceUnlock => self.turn_off_device_unlock(),
+            Message::OfferDeviceUnlockAgain => self.offer_device_unlock_again(),
+            // Only a return to the foreground asks: a Face ID prompt makes the
+            // application inactive, and an ask on `Active` would loop
+            // (docs/DECISIONS.md D45 item 4).
+            Message::Lifecycle(event) => {
+                if matches!(event, iced::mobile::LifecycleEvent::Foreground) {
+                    self.unlock_with_device();
                 }
             }
             Message::Cancel => {
@@ -2060,6 +2261,10 @@ impl App {
                 }
             }
             Event::Locked { reason } => {
+                // The store is closed, so the password kept for the device's offer
+                // goes with it, and an ask the check has not answered is dropped
+                // (docs/DECISIONS.md D45 item 4).
+                self.model.release_device();
                 let dir = self
                     .model
                     .wallet
@@ -2229,6 +2434,7 @@ impl App {
     fn stop(&mut self, panicked: bool) {
         let m = &mut self.model;
         m.stopped = Some(panicked || m.stopped == Some(true));
+        m.release_device();
         drop(m.leave());
         // A graceful shutdown ends the run, so the unsaved bytes go, as its lock
         // would take them, even when no `Locked` came (docs/SCREENS.md W6). A
@@ -2498,6 +2704,29 @@ impl App {
             (Purpose::Unlock, Reply::Unlocked(view)) => {
                 self.opened(view);
                 self.model.bring_back_signed();
+                self.make_offer();
+            }
+            // A password that did not open the store is not copied for the offer.
+            (Purpose::Unlock, Reply::Refused(r)) => {
+                self.model.pending_keep = None;
+                self.refused(r);
+            }
+            (Purpose::Unlock, _) => self.model.pending_keep = None,
+            // The password the device released opened the store: as a typed one
+            // does, and nothing is offered, since the device unlock is on.
+            (Purpose::KeptUnlock, Reply::Unlocked(view)) => {
+                self.opened(view);
+                self.model.bring_back_signed();
+            }
+            // The kept password is forgotten only when it is the password that
+            // was refused: another refusal, such as a store in use, leaves it
+            // (docs/DECISIONS.md D45 item 4).
+            (Purpose::KeptUnlock, Reply::Refused(r)) => {
+                if r.kind == RefusalKind::WrongPassword && self.delete_kept() {
+                    self.set_device_unlock(DeviceUnlock::Off);
+                    self.model.device_note = Some(DEVICE_WRONG_NOTE.to_owned());
+                }
+                self.refused(r);
             }
             (Purpose::Refresh, Reply::Wallet(view)) => self.opened(view),
             // The tip, once, after the refresh, however it went.
@@ -2580,6 +2809,192 @@ impl App {
             Screen::Wallet(p) => p.error = text,
             Screen::Welcome | Screen::Start { .. } | Screen::Phrase(_) => {}
         }
+    }
+
+    /// Stores the device unlock's setting, and writes the preferences.
+    fn set_device_unlock(&mut self, state: DeviceUnlock) {
+        self.model.prefs.device_unlock = state;
+        self.save_prefs();
+    }
+
+    /// Deletes the kept password, and `true` once none is kept. Where the
+    /// deletion fails, the note says why, and the caller leaves the unlock on, so
+    /// that it can be tried again (docs/DECISIONS.md D45 item 4). With no device
+    /// there is nothing that could be kept, so there is nothing to delete.
+    fn delete_kept(&mut self) -> bool {
+        let Some(device) = self.model.device.clone() else {
+            return true;
+        };
+        match device.forget() {
+            Ok(()) => true,
+            Err(why) => {
+                self.model.device_note = Some(device_forget_failed_note(&why));
+                false
+            }
+        }
+    }
+
+    /// No password is kept for this store, or the one kept belongs to another
+    /// store: whatever is kept is deleted, and the unlock with the device is
+    /// turned off (docs/DECISIONS.md D45 item 4). The form is then what is left.
+    fn device_missing(&mut self) {
+        if self.delete_kept() {
+            self.set_device_unlock(DeviceUnlock::Off);
+            self.model.device_note = Some(DEVICE_MISSING_NOTE.to_owned());
+        }
+    }
+
+    /// The unlock with the device, from S7 (docs/DECISIONS.md D45 item 4). The
+    /// store's identifier is read, and the device's check is asked for the kept
+    /// password, with [`UNLOCK_REASON`]. Nothing is asked unless the unlock is
+    /// on, the form is shown, and no other ask or command is awaited.
+    fn unlock_with_device(&mut self) {
+        let m = &mut self.model;
+        if !m.device_unlock_on()
+            || m.device_asked.is_some()
+            || m.busy.is_some()
+            || !matches!(m.screen, Screen::Unlock(_))
+        {
+            return;
+        }
+        let (Some(device), Some(private)) = (m.device.clone(), m.confined.clone()) else {
+            return;
+        };
+        m.device_note = None;
+        let identifier = match store_identifier::read(&private) {
+            Ok(Some(identifier)) => identifier,
+            // Nothing can be kept under an identifier this folder does not have,
+            // so the check is not asked.
+            Ok(None) => return self.device_missing(),
+            Err(why) => {
+                m.device_note = Some(device_identifier_failed_note(&format!("{why}")));
+                return;
+            }
+        };
+        m.device_asks += 1;
+        let ask = m.device_asks;
+        m.device_asked = Some(ask);
+        device.ask(&identifier, UNLOCK_REASON, ask);
+    }
+
+    /// The shell's answer to an ask of the device's check (docs/DECISIONS.md D45
+    /// item 4). An answer whose ask has been dropped, by a lock or a move to the
+    /// background, is ignored, and so is the password it carries, which is wiped
+    /// as it is dropped here. A released password unlocks the store as a typed
+    /// one does (`UnlockWallet`).
+    fn released(&mut self, answer: host::Answer) -> Task<Message> {
+        let Some((ask, released)) = answer.take() else {
+            return Task::none();
+        };
+        if self.model.device_asked != Some(ask) {
+            return Task::none();
+        }
+        self.model.device_asked = None;
+        match released {
+            host::Released::Password(secret) => {
+                let dir = match &self.model.screen {
+                    Screen::Unlock(u) => store_dir(&u.dir),
+                    // The person has left the form: the password goes unused.
+                    _ => return Task::none(),
+                };
+                self.send(
+                    Command::Unlock {
+                        dir,
+                        password: secret,
+                    },
+                    Purpose::KeptUnlock,
+                );
+            }
+            host::Released::Declined => {}
+            host::Released::Missing => self.device_missing(),
+            host::Released::Failed(why) => {
+                self.model.device_note = Some(device_release_failed_note(&why));
+            }
+        }
+        Task::none()
+    }
+
+    /// After a password unlock opened the store, the offer of the device unlock is
+    /// made, once (docs/DECISIONS.md D45 item 4). The copy of the password taken
+    /// when the unlock was sent is what the offer would keep, and the offer is
+    /// recorded as made as it is shown, so it is not made again even if the
+    /// application stops before the person answers. Otherwise the copy goes.
+    fn make_offer(&mut self) {
+        let m = &mut self.model;
+        let offer = m.pending_keep.is_some()
+            && m.device.is_some()
+            && m.prefs.device_unlock == DeviceUnlock::Unoffered;
+        if !offer {
+            m.pending_keep = None;
+            return;
+        }
+        m.device_offer = true;
+        self.set_device_unlock(DeviceUnlock::Off);
+    }
+
+    /// The person's answer to the offer (docs/DECISIONS.md D45 item 4). Kept, the
+    /// password is kept on this device under the store's identifier, which is
+    /// drawn and written the first time, and the unlock with the device is on.
+    /// Declined, nothing is kept.
+    fn answer_offer(&mut self, keep: bool) {
+        // Only an offer that is shown is answered. The copy of a password waits
+        // for an unlock that has opened the store, and nothing else may take it
+        // (docs/DECISIONS.md D45 item 4).
+        if !self.model.device_offer {
+            return;
+        }
+        self.model.device_offer = false;
+        let Some(kept) = self.model.pending_keep.take() else {
+            return;
+        };
+        // Declined, the copy is wiped as it is dropped here.
+        if !keep {
+            return;
+        }
+        self.model.device_note = None;
+        let (Some(device), Some(private)) =
+            (self.model.device.clone(), self.model.confined.clone())
+        else {
+            return;
+        };
+        let outcome = store_identifier::make(&private)
+            .map_err(|why| format!("{why}"))
+            .and_then(|identifier| device.keep(&identifier, kept.as_str()));
+        match outcome {
+            Ok(()) => self.set_device_unlock(DeviceUnlock::On),
+            // The unlock stays off: the offer was made, and nothing is kept.
+            Err(why) => self.model.device_note = Some(device_keep_failed_note(&why)),
+        }
+    }
+
+    /// Turns the device unlock off. The kept password is deleted first, and the
+    /// setting is off only once it is; where the deletion fails, the unlock stays
+    /// on and the note says why (docs/DECISIONS.md D45 item 4).
+    fn turn_off_device_unlock(&mut self) {
+        if self.model.prefs.device_unlock != DeviceUnlock::On {
+            return;
+        }
+        self.model.device_note = None;
+        if self.delete_kept() {
+            self.set_device_unlock(DeviceUnlock::Off);
+        }
+    }
+
+    /// Offers the device unlock again, after it was declined or turned off: the
+    /// setting goes back to not offered, which writes nothing, so the offer comes
+    /// after the next password unlock that opens the store, as the first one did
+    /// (docs/DECISIONS.md D45 item 4). Nothing is kept until that unlock and the
+    /// offer's answer. With an offer on the screen already, there is nothing to
+    /// offer again.
+    fn offer_device_unlock_again(&mut self) {
+        if self.model.device.is_none()
+            || self.model.prefs.device_unlock != DeviceUnlock::Off
+            || self.model.device_offer
+        {
+            return;
+        }
+        self.model.device_note = None;
+        self.set_device_unlock(DeviceUnlock::Unoffered);
     }
 }
 
@@ -5918,6 +6333,1052 @@ mod tests {
         );
     }
 
+    /// A destination that is one: the library's own rendering of a tag.
+    fn a_destination() -> String {
+        AccountId::from_tag([9; 20])
+            .destination()
+            .expect("a tag renders")
+    }
+
+    /// The sample's account that can spend, as a send page names it.
+    fn sample_from() -> AccountId {
+        tawara_wallet_core::sample::wallet_view()
+            .accounts
+            .first()
+            .expect("the sample has an account")
+            .id
+    }
+
+    /// A spend form of one destination, `to`, for `amount` MCM.
+    fn spend_to(to: &str, amount: &str) -> SpendForm {
+        SpendForm {
+            rows: vec![DestinationRow {
+                to: to.to_owned(),
+                amount: amount.to_owned(),
+                reference: String::new(),
+            }],
+            ..SpendForm::default()
+        }
+    }
+
+    /// A destination row with only its address typed.
+    fn to_row(to: &str) -> DestinationRow {
+        DestinationRow {
+            to: to.to_owned(),
+            amount: String::new(),
+            reference: String::new(),
+        }
+    }
+
+    /// A send page in `stage`, with `form` typed and the sample's account.
+    fn send_page(stage: SendStage, form: SpendForm) -> Page {
+        Page::Send(SendPage {
+            from: Some(sample_from()),
+            form,
+            stage,
+        })
+    }
+
+    /// Refusals by row and field, as Continue leaves them on the destinations
+    /// page.
+    fn refusals_at(
+        at: &[((usize, RefusedField), &str)],
+    ) -> std::collections::BTreeMap<(usize, RefusedField), String> {
+        at.iter()
+            .map(|(key, why)| (*key, (*why).to_owned()))
+            .collect()
+    }
+
+    /// The refusals the destinations page shown holds.
+    fn refusals_of(app: &App) -> std::collections::BTreeMap<(usize, RefusedField), String> {
+        match &wallet_page(app).page {
+            Page::Send(SendPage {
+                stage: SendStage::To(refused),
+                ..
+            }) => refused.clone(),
+            other => panic!("the destinations page is not shown: {other:?}"),
+        }
+    }
+
+    /// The sample store on a send page, on a phone: its folder is confined,
+    /// and there is no worker.
+    fn on_phone(page: Page) -> App {
+        let mut app = on_wallet(page);
+        app.model
+            .confine(std::env::temp_dir().join("tawara-phone-folder"));
+        app
+    }
+
+    /// The sample store on a send page, on a phone, over a real worker whose
+    /// stores are in `scratch`: what it is sent is waiting for its answer.
+    fn on_phone_with_worker(scratch: &Scratch, page: Page) -> (App, Receiver<Event>) {
+        let (mut app, events) = app(scratch);
+        app.model.confine(scratch.0.clone());
+        app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        app.model.screen = Screen::Wallet(WalletPage {
+            page,
+            ..WalletPage::default()
+        });
+        (app, events)
+    }
+
+    /// How many commands the worker was sent, and has not answered, for
+    /// which `is` holds.
+    fn waiting_for(app: &App, is: fn(&Purpose) -> bool) -> usize {
+        app.worker
+            .as_ref()
+            .map_or(0, |w| w.waiting.iter().filter(|(_, p)| is(p)).count())
+    }
+
+    /// Shows `text` as the page's refusal, as a command it sent would.
+    fn set_error(app: &mut App, text: &str) {
+        match &mut app.model.screen {
+            Screen::Wallet(p) => p.error = Some(text.to_owned()),
+            other => panic!("the wallet is not shown: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_phone_opens_its_send_flow_on_page_one_and_a_desktop_on_its_form() {
+        let mut phone = on_phone(Page::Dashboard);
+        wallet(&mut phone, WalletMsg::Open(To::Send(None)));
+        assert!(
+            matches!(
+                &wallet_page(&phone).page,
+                Page::Send(SendPage {
+                    stage: SendStage::To(refused),
+                    form,
+                    ..
+                }) if refused.is_empty() && *form == SpendForm::default()
+            ),
+            "{:?}",
+            wallet_page(&phone).page
+        );
+
+        let mut desktop = on_wallet(Page::Dashboard);
+        wallet(&mut desktop, WalletMsg::Open(To::Send(None)));
+        assert!(matches!(
+            &wallet_page(&desktop).page,
+            Page::Send(SendPage {
+                stage: SendStage::Compose,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn continue_with_destinations_that_are_right_shows_the_amounts_at_their_top() {
+        let mut app = on_phone(send_page(
+            SendStage::To(Default::default()),
+            spend_to(&a_destination(), ""),
+        ));
+        let task = app.update(WalletMsg::Continue.into());
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Amount,
+                ..
+            })
+        ));
+        assert_eq!(operations(task).len(), 1, "the amounts start at their top");
+    }
+
+    #[test]
+    fn continue_with_a_destination_that_is_not_one_shows_why_under_it_and_stays() {
+        let bad = "not-a-destination";
+        let form = SpendForm {
+            rows: vec![to_row(&a_destination()), to_row(bad)],
+            ..SpendForm::default()
+        };
+        let mut app = on_phone(send_page(SendStage::To(Default::default()), form));
+        let task = app.update(WalletMsg::Continue.into());
+        let why = tawara_wallet_core::spend::parse_destination(bad, 2)
+            .expect_err("it is not a destination")
+            .to_string();
+        assert_eq!(
+            refusals_of(&app),
+            refusals_at(&[((1, RefusedField::Address), why.as_str())]),
+            "under its field"
+        );
+        assert!(wallet_page(&app).error.is_none());
+        assert_eq!(
+            operations(task).len(),
+            1,
+            "the first refusal is brought into view"
+        );
+
+        // Typed again, it is checked again, and Continue then shows the amounts.
+        wallet(&mut app, WalletMsg::DestinationTo(1, a_destination()));
+        assert!(refusals_of(&app).is_empty());
+        let _ = app.update(WalletMsg::Continue.into());
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Amount,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn continue_with_no_destination_says_so_beside_it() {
+        let mut app = on_phone(send_page(
+            SendStage::To(Default::default()),
+            SpendForm::default(),
+        ));
+        let task = app.update(WalletMsg::Continue.into());
+        assert_eq!(
+            wallet_page(&app).error.as_deref(),
+            Some("Give at least one destination.")
+        );
+        assert!(refusals_of(&app).is_empty());
+        assert!(operations(task).is_empty());
+    }
+
+    #[test]
+    fn continue_pressed_at_the_foot_brings_the_first_refusal_into_view() {
+        // Three destinations, the first refused, and the page scrolled to its
+        // foot, where Continue is pressed. The refusal under the first field is
+        // brought into view, not left above it (docs/DECISIONS.md D40 item 4).
+        // A reference the node refuses is brought into view the same way.
+        let not = "not-a-destination";
+        let why_not = tawara_wallet_core::spend::parse_destination(not, 1)
+            .expect_err("it is not a destination")
+            .to_string();
+        let why_reference = tawara_wallet_core::spend::parse_reference("abc", 1)
+            .expect_err("the node refuses it")
+            .to_string();
+        let reference = DestinationRow {
+            to: a_destination(),
+            amount: String::new(),
+            reference: "abc".to_owned(),
+        };
+        let cases = [
+            (
+                vec![
+                    to_row(not),
+                    to_row(&a_destination()),
+                    to_row(&a_destination()),
+                ],
+                why_not,
+            ),
+            (
+                vec![
+                    reference,
+                    to_row(&a_destination()),
+                    to_row(&a_destination()),
+                ],
+                why_reference,
+            ),
+        ];
+        for (rows, why) in cases {
+            let form = SpendForm {
+                rows,
+                ..SpendForm::default()
+            };
+            let mut app = on_phone(send_page(SendStage::To(Default::default()), form));
+            app.model.width = 390.0;
+            let mut at_foot = Driver::new(crate::screens::view(&app.model), (390, 844));
+            at_foot.operate(Box::new(snap_to(
+                crate::screens::page_id(),
+                RelativeOffset::END.into(),
+            )));
+            let cache = at_foot.into_cache();
+
+            let task = app.update(WalletMsg::Continue.into());
+            let mut drawn = Driver::with_cache(crate::screens::view(&app.model), (390, 844), cache);
+            assert!(
+                !shown_on_page(&mut drawn, &why),
+                "the refusal is above the foot's view: {why}"
+            );
+            for operation in operations(task) {
+                drawn.operate(operation);
+            }
+            assert!(
+                shown_on_page(&mut drawn, &why),
+                "the refusal is in view once Continue is pressed: {why}"
+            );
+        }
+    }
+
+    #[test]
+    fn change_opens_the_account_list_on_page_one_only_and_a_choice_or_continue_shuts_it() {
+        // "Change" opens the list under the From line on a phone's page 1, and
+        // only while the wallet is idle. Choosing an account, or Continue, shuts
+        // it (docs/DECISIONS.md D40 item 1).
+        let mut app = on_phone(send_page(
+            SendStage::To(Default::default()),
+            spend_to(&a_destination(), ""),
+        ));
+        let second = tawara_wallet_core::sample::wallet_view().accounts[1].id;
+        app.model
+            .wallet
+            .as_mut()
+            .expect("the sample wallet")
+            .accounts[1]
+            .spendable = true;
+        let from = |app: &App| match &wallet_page(app).page {
+            Page::Send(s) => s.from,
+            other => panic!("expected the send page, got {other:?}"),
+        };
+        let choosing = |app: &App| wallet_page(app).choosing;
+
+        wallet(&mut app, WalletMsg::ChooseAccount(true));
+        assert!(choosing(&app));
+        wallet(&mut app, WalletMsg::From(second));
+        assert_eq!(from(&app), Some(second));
+        assert!(!choosing(&app), "a choice shuts the list");
+
+        wallet(&mut app, WalletMsg::ChooseAccount(true));
+        wallet(&mut app, WalletMsg::Continue);
+        assert!(!choosing(&app), "page 2 has no list");
+        assert_eq!(from(&app), Some(second));
+
+        // Page 2 has no list to open, and a busy wallet opens none.
+        wallet(&mut app, WalletMsg::ChooseAccount(true));
+        assert!(!choosing(&app));
+        wallet(&mut app, WalletMsg::Back);
+        app.model.busy = Some(Busy {
+            id: RequestId::example(),
+            activity: None,
+            progress: None,
+        });
+        wallet(&mut app, WalletMsg::ChooseAccount(true));
+        assert!(!choosing(&app), "not while the worker answers");
+        assert_eq!(from(&app), Some(second));
+    }
+
+    #[test]
+    fn an_amount_with_no_address_asks_for_the_address_under_it() {
+        let form = SpendForm {
+            rows: vec![DestinationRow {
+                to: " ".to_owned(),
+                amount: "5".to_owned(),
+                reference: String::new(),
+            }],
+            ..SpendForm::default()
+        };
+        let mut app = on_phone(send_page(SendStage::To(Default::default()), form));
+        let _ = app.update(WalletMsg::Continue.into());
+        assert_eq!(
+            refusals_of(&app),
+            refusals_at(&[(
+                (0, RefusedField::Address),
+                "Give this destination's address."
+            )])
+        );
+    }
+
+    #[test]
+    fn a_reference_the_node_refuses_is_shown_under_its_own_field() {
+        let form = SpendForm {
+            rows: vec![DestinationRow {
+                to: a_destination(),
+                amount: String::new(),
+                reference: "abc".to_owned(),
+            }],
+            ..SpendForm::default()
+        };
+        let mut app = on_phone(send_page(SendStage::To(Default::default()), form));
+        let task = app.update(WalletMsg::Continue.into());
+        assert_eq!(
+            refusals_of(&app).keys().copied().collect::<Vec<_>>(),
+            [(0, RefusedField::Reference)],
+            "the address is right, so only the reference is refused"
+        );
+        assert_eq!(
+            operations(task).len(),
+            1,
+            "the refusal is brought into view"
+        );
+
+        // Typed again, it is checked again, and Continue then shows the amounts.
+        wallet(&mut app, WalletMsg::Reference(0, "AB-00-EF".to_owned()));
+        assert!(refusals_of(&app).is_empty());
+        let _ = app.update(WalletMsg::Continue.into());
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Amount,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_changed_field_forgets_its_refusal_and_a_removed_row_forgets_them_all() {
+        let mut app = on_phone(send_page(
+            SendStage::To(refusals_at(&[
+                ((0, RefusedField::Address), "first"),
+                ((0, RefusedField::Reference), "second"),
+                ((1, RefusedField::Address), "third"),
+            ])),
+            SpendForm {
+                rows: vec![to_row("x"), to_row("y")],
+                ..SpendForm::default()
+            },
+        ));
+        wallet(&mut app, WalletMsg::DestinationTo(0, a_destination()));
+        assert_eq!(
+            refusals_of(&app),
+            refusals_at(&[
+                ((0, RefusedField::Reference), "second"),
+                ((1, RefusedField::Address), "third"),
+            ]),
+            "the address is checked again, and only it"
+        );
+        wallet(&mut app, WalletMsg::Reference(0, "AB-00-EF".to_owned()));
+        assert_eq!(
+            refusals_of(&app),
+            refusals_at(&[((1, RefusedField::Address), "third")]),
+            "and so is the reference, when it is typed again"
+        );
+        wallet(&mut app, WalletMsg::AddDestination);
+        assert_eq!(
+            refusals_of(&app),
+            refusals_at(&[((1, RefusedField::Address), "third")]),
+            "adding moves none"
+        );
+        wallet(&mut app, WalletMsg::RemoveDestination(2));
+        assert!(
+            refusals_of(&app).is_empty(),
+            "removing one moves those after it"
+        );
+    }
+
+    #[test]
+    fn back_from_the_amounts_keeps_what_was_typed_and_drops_the_review_spend_refusal() {
+        let form = spend_to(&a_destination(), "1.5");
+        let mut app = on_phone(send_page(SendStage::Amount, form.clone()));
+        set_error(&mut app, "Destination 1: the amount is not a number.");
+        let task = app.update(WalletMsg::Back.into());
+        assert!(
+            matches!(
+                &wallet_page(&app).page,
+                Page::Send(SendPage {
+                    stage: SendStage::To(refused),
+                    form: kept,
+                    ..
+                }) if refused.is_empty() && *kept == form
+            ),
+            "{:?}",
+            wallet_page(&app).page
+        );
+        assert!(wallet_page(&app).error.is_none());
+        assert_eq!(
+            operations(task).len(),
+            1,
+            "the destinations start at their top"
+        );
+    }
+
+    #[test]
+    fn back_from_the_review_gives_the_plan_up_and_keeps_what_was_typed() {
+        let scratch = Scratch::new("back-review");
+        let plan = tawara_wallet_core::sample::plan_view();
+        let form = typed_as_planned(&plan);
+        let (mut app, _events) = on_phone_with_worker(
+            &scratch,
+            send_page(SendStage::Review(Box::new(plan)), form.clone()),
+        );
+        let task = app.update(WalletMsg::Back.into());
+        assert!(
+            matches!(
+                &wallet_page(&app).page,
+                Page::Send(SendPage {
+                    stage: SendStage::Amount,
+                    form: kept,
+                    ..
+                }) if *kept == form
+            ),
+            "{:?}",
+            wallet_page(&app).page
+        );
+        assert_eq!(operations(task).len(), 1, "the amounts start at their top");
+        assert_eq!(
+            waiting_for(&app, |p| matches!(p, Purpose::DiscardPlan)),
+            1,
+            "the worker is asked to forget the plan"
+        );
+    }
+
+    #[test]
+    fn back_from_the_signing_page_keeps_the_plan_for_the_review() {
+        let scratch = Scratch::new("back-sign");
+        let plan = tawara_wallet_core::sample::plan_view();
+        let id = plan.plan;
+        let (mut app, _events) = on_phone_with_worker(
+            &scratch,
+            send_page(
+                SendStage::Sign(Box::new(plan)),
+                spend_to(&a_destination(), "1"),
+            ),
+        );
+        let _ = app.update(WalletMsg::Back.into());
+        assert!(
+            matches!(
+                &wallet_page(&app).page,
+                Page::Send(SendPage {
+                    stage: SendStage::Review(p),
+                    ..
+                }) if p.plan == id
+            ),
+            "{:?}",
+            wallet_page(&app).page
+        );
+        assert_eq!(
+            waiting_for(&app, |p| matches!(p, Purpose::DiscardPlan)),
+            0,
+            "the plan is kept"
+        );
+    }
+
+    #[test]
+    fn back_changes_nothing_on_the_destinations_page_or_while_the_worker_answers() {
+        let mut app = on_phone(send_page(
+            SendStage::To(Default::default()),
+            spend_to(&a_destination(), ""),
+        ));
+        let _ = app.update(WalletMsg::Back.into());
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::To(_),
+                ..
+            })
+        ));
+
+        let mut app = on_phone(send_page(
+            SendStage::Amount,
+            spend_to(&a_destination(), "1"),
+        ));
+        app.model.busy = Some(Busy {
+            id: RequestId::example(),
+            activity: None,
+            progress: None,
+        });
+        let _ = app.update(WalletMsg::Back.into());
+        let _ = app.update(Message::SystemBack);
+        assert!(
+            matches!(
+                &wallet_page(&app).page,
+                Page::Send(SendPage {
+                    stage: SendStage::Amount,
+                    ..
+                })
+            ),
+            "{:?}",
+            wallet_page(&app).page
+        );
+    }
+
+    #[test]
+    fn leaving_the_signing_page_any_other_way_gives_the_plan_up() {
+        let scratch = Scratch::new("leave-sign");
+        let plan = tawara_wallet_core::sample::plan_view();
+        let form = typed_as_planned(&plan);
+        let (mut app, _events) =
+            on_phone_with_worker(&scratch, send_page(SendStage::Sign(Box::new(plan)), form));
+        wallet(&mut app, WalletMsg::Open(To::Dashboard));
+        assert!(matches!(wallet_page(&app).page, Page::Dashboard));
+        assert_eq!(
+            waiting_for(&app, |p| matches!(p, Purpose::DiscardPlan)),
+            1,
+            "the worker is asked to forget the plan"
+        );
+    }
+
+    #[test]
+    fn the_send_tab_tapped_mid_flow_keeps_the_form_and_the_page_on_a_phone() {
+        let scratch = Scratch::new("send-tab-flow");
+        let plan = tawara_wallet_core::sample::plan_view();
+        let form = typed_as_planned(&plan);
+        let (mut app, _events) = on_phone_with_worker(
+            &scratch,
+            send_page(SendStage::Review(Box::new(plan)), form.clone()),
+        );
+        wallet(&mut app, WalletMsg::Open(To::Send(None)));
+        assert!(
+            matches!(
+                &wallet_page(&app).page,
+                Page::Send(SendPage {
+                    stage: SendStage::Review(_),
+                    form: kept,
+                    ..
+                }) if *kept == form
+            ),
+            "{:?}",
+            wallet_page(&app).page
+        );
+        assert_eq!(
+            waiting_for(&app, |p| matches!(p, Purpose::DiscardPlan)),
+            0,
+            "the plan is kept"
+        );
+
+        let mut app = on_phone(send_page(SendStage::Amount, form.clone()));
+        wallet(&mut app, WalletMsg::Open(To::Send(None)));
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Amount,
+                form: kept,
+                ..
+            }) if *kept == form
+        ));
+
+        let mut app = on_phone(send_page(
+            SendStage::To(refusals_at(&[((0, RefusedField::Address), "why")])),
+            form.clone(),
+        ));
+        wallet(&mut app, WalletMsg::Open(To::Send(None)));
+        assert_eq!(
+            refusals_of(&app),
+            refusals_at(&[((0, RefusedField::Address), "why")])
+        );
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage { form: kept, .. }) if *kept == form
+        ));
+    }
+
+    #[test]
+    fn the_send_tab_after_a_sent_spend_starts_an_empty_form_on_a_phone() {
+        let sent = SentPage {
+            sent: tawara_wallet_core::sample::sent_view(),
+            order: 0,
+            resigned: false,
+            saved: None,
+            dismissing: false,
+        };
+        let mut app = on_phone(send_page(
+            SendStage::Sent(Box::new(sent)),
+            spend_to(&a_destination(), "1"),
+        ));
+        wallet(&mut app, WalletMsg::Open(To::Send(None)));
+        assert!(
+            matches!(
+                &wallet_page(&app).page,
+                Page::Send(SendPage {
+                    stage: SendStage::To(refused),
+                    form,
+                    ..
+                }) if refused.is_empty() && *form == SpendForm::default()
+            ),
+            "{:?}",
+            wallet_page(&app).page
+        );
+    }
+
+    #[test]
+    fn system_back_steps_back_pages_two_to_four_and_page_one_is_the_shells() {
+        let scratch = Scratch::new("system-back");
+        let plan = tawara_wallet_core::sample::plan_view();
+        let form = typed_as_planned(&plan);
+        let (mut app, _events) = on_phone_with_worker(
+            &scratch,
+            send_page(SendStage::Sign(Box::new(plan)), form.clone()),
+        );
+        // Page 4 to page 3: the plan is kept.
+        let _ = app.update(Message::SystemBack);
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Review(_),
+                ..
+            })
+        ));
+        assert_eq!(waiting_for(&app, |p| matches!(p, Purpose::DiscardPlan)), 0);
+
+        // Page 3 to page 2: the plan is given up.
+        let _ = app.update(Message::SystemBack);
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Amount,
+                form: kept,
+                ..
+            }) if *kept == form
+        ));
+        assert_eq!(waiting_for(&app, |p| matches!(p, Purpose::DiscardPlan)), 1);
+
+        // Page 2 to page 1, with what was typed.
+        let _ = app.update(Message::SystemBack);
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::To(refused),
+                form: kept,
+                ..
+            }) if refused.is_empty() && *kept == form
+        ));
+
+        // Page 1 is the shell's Back, which the flow does not take, so the
+        // page is left as it is.
+        assert!(!app.model.send_steps_back(), "page one is the shell's");
+        let _ = app.update(Message::SystemBack);
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::To(_),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn on_the_desktop_system_back_is_the_shells_on_every_page() {
+        let plan = tawara_wallet_core::sample::plan_view();
+        let form = typed_as_planned(&plan);
+        let mut app = on_wallet(send_page(SendStage::Review(Box::new(plan)), form));
+        let _ = app.update(Message::SystemBack);
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Review(_),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn review_spend_on_the_amounts_page_says_why_beside_it_and_stays_there() {
+        let mut app = on_phone(send_page(
+            SendStage::Amount,
+            spend_to(&a_destination(), "a lot"),
+        ));
+        let _ = app.update(WalletMsg::Review.into());
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Amount,
+                ..
+            })
+        ));
+        assert!(
+            wallet_page(&app).error.is_some(),
+            "why is beside Review spend"
+        );
+    }
+
+    #[test]
+    fn review_spend_on_the_amounts_page_asks_the_worker_to_plan_and_the_plan_is_the_review() {
+        let scratch = Scratch::new("review-spend");
+        let plan = tawara_wallet_core::sample::plan_view();
+        let form = typed_as_planned(&plan);
+        let (mut app, _events) = on_phone_with_worker(&scratch, send_page(SendStage::Amount, form));
+        wallet(&mut app, WalletMsg::Review);
+        assert_eq!(
+            waiting_for(&app, |p| matches!(p, Purpose::PlanSend)),
+            1,
+            "the worker is asked to plan"
+        );
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Amount,
+                ..
+            })
+        ));
+        let task = app.on_reply(Purpose::PlanSend, Reply::Planned(plan));
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Review(_),
+                ..
+            })
+        ));
+        assert_eq!(operations(task).len(), 1, "the review starts at its top");
+    }
+
+    #[test]
+    fn a_plan_is_the_review_from_the_amounts_and_is_forgotten_on_the_destinations() {
+        let plan = tawara_wallet_core::sample::plan_view();
+        let form = typed_as_planned(&plan);
+        let scratch = Scratch::new("plan-amounts");
+        let (mut app, _events) =
+            on_phone_with_worker(&scratch, send_page(SendStage::Amount, form.clone()));
+        let task = app.on_reply(Purpose::PlanSend, Reply::Planned(plan.clone()));
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Review(_),
+                ..
+            })
+        ));
+        assert_eq!(operations(task).len(), 1);
+
+        // A plan that comes back once the destinations page is shown is
+        // forgotten as it comes.
+        let scratch = Scratch::new("plan-destinations");
+        let (mut app, _events) =
+            on_phone_with_worker(&scratch, send_page(SendStage::To(Default::default()), form));
+        let _ = app.on_reply(Purpose::PlanSend, Reply::Planned(plan));
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::To(_),
+                ..
+            })
+        ));
+        assert_eq!(waiting_for(&app, |p| matches!(p, Purpose::DiscardPlan)), 1);
+    }
+
+    #[test]
+    fn continue_to_signing_shows_the_plan_on_page_four_on_a_phone_only() {
+        let plan = tawara_wallet_core::sample::plan_view();
+        let form = typed_as_planned(&plan);
+        let id = plan.plan;
+        let mut app = on_phone(send_page(
+            SendStage::Review(Box::new(plan.clone())),
+            form.clone(),
+        ));
+        let task = app.update(WalletMsg::ToSigning.into());
+        assert!(
+            matches!(
+                &wallet_page(&app).page,
+                Page::Send(SendPage {
+                    stage: SendStage::Sign(p),
+                    ..
+                }) if p.plan == id
+            ),
+            "{:?}",
+            wallet_page(&app).page
+        );
+        assert_eq!(operations(task).len(), 1, "page four starts at its top");
+
+        let mut desktop = on_wallet(send_page(SendStage::Review(Box::new(plan)), form));
+        let _ = desktop.update(WalletMsg::ToSigning.into());
+        assert!(matches!(
+            &wallet_page(&desktop).page,
+            Page::Send(SendPage {
+                stage: SendStage::Review(_),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn sign_is_pressed_on_page_four_on_a_phone_and_not_on_the_review_above_it() {
+        let scratch = Scratch::new("sign-page-four");
+        let plan = tawara_wallet_core::sample::plan_view();
+        let form = typed_as_planned(&plan);
+        let (mut app, _events) =
+            on_phone_with_worker(&scratch, send_page(SendStage::Review(Box::new(plan)), form));
+        wallet(&mut app, WalletMsg::Sign);
+        assert_eq!(
+            waiting_for(&app, |p| matches!(p, Purpose::ConfirmSend)),
+            0,
+            "the review does not sign"
+        );
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Review(_),
+                ..
+            })
+        ));
+
+        wallet(&mut app, WalletMsg::ToSigning);
+        wallet(&mut app, WalletMsg::Sign);
+        assert_eq!(
+            waiting_for(&app, |p| matches!(p, Purpose::ConfirmSend)),
+            1,
+            "page four signs"
+        );
+        assert!(app.model.busy.is_some(), "and waits on the worker");
+    }
+
+    #[test]
+    fn a_refused_signing_on_a_phone_goes_back_to_the_amounts_with_why() {
+        let scratch = Scratch::new("refused-phone");
+        let plan = tawara_wallet_core::sample::plan_view();
+        let form = typed_as_planned(&plan);
+        let (mut app, _events) =
+            on_phone_with_worker(&scratch, send_page(SendStage::Sign(Box::new(plan)), form));
+        let task = app.on_reply(
+            Purpose::ConfirmSend,
+            Reply::Refused(Refusal {
+                kind: RefusalKind::Library,
+                text: "the balance moved".to_owned(),
+            }),
+        );
+        assert!(
+            matches!(
+                &wallet_page(&app).page,
+                Page::Send(SendPage {
+                    stage: SendStage::Amount,
+                    ..
+                })
+            ),
+            "{:?}",
+            wallet_page(&app).page
+        );
+        assert_eq!(
+            wallet_page(&app).error.as_deref(),
+            Some("the balance moved"),
+            "beside Review spend"
+        );
+        // The page opens at its end, where the refusal is drawn beside "Review
+        // spend": at its top the refusal is a screen or more below the view.
+        app.model.width = 390.0;
+        {
+            let mut drawn = Driver::new(crate::screens::view(&app.model), (390, 844));
+            assert!(
+                !shown_on_page(&mut drawn, "the balance moved"),
+                "at its top, the refusal is out of view"
+            );
+            for operation in operations(task) {
+                drawn.operate(operation);
+            }
+            assert!(
+                shown_on_page(&mut drawn, "the balance moved"),
+                "at its end, the refusal is in view"
+            );
+        }
+
+        // The worker dropped the plan, so leaving the amounts gives up nothing.
+        wallet(&mut app, WalletMsg::Open(To::Dashboard));
+        assert_eq!(
+            waiting_for(&app, |p| matches!(p, Purpose::DiscardPlan)),
+            0,
+            "no plan is left to forget"
+        );
+    }
+
+    #[test]
+    fn review_spend_with_an_amount_and_no_address_goes_back_to_that_destination() {
+        // Page 2 takes an amount for a destination that page 1 passed, as it had
+        // nothing typed in it then. "Review spend" asks for its address under
+        // its own field on page 1, and asks the worker for no plan
+        // (docs/DECISIONS.md D40 item 7 (b)).
+        let scratch = Scratch::new("review-no-address");
+        let form = SpendForm {
+            rows: vec![
+                DestinationRow {
+                    to: a_destination(),
+                    amount: "1".to_owned(),
+                    reference: String::new(),
+                },
+                DestinationRow {
+                    to: String::new(),
+                    amount: "5".to_owned(),
+                    reference: String::new(),
+                },
+            ],
+            ..SpendForm::default()
+        };
+        let (mut app, _events) = on_phone_with_worker(&scratch, send_page(SendStage::Amount, form));
+        wallet(&mut app, WalletMsg::Review);
+        assert_eq!(
+            waiting_for(&app, |p| matches!(p, Purpose::PlanSend)),
+            0,
+            "no plan is asked for"
+        );
+        assert_eq!(
+            refusals_of(&app),
+            refusals_at(&[(
+                (1, RefusedField::Address),
+                "Give this destination's address."
+            )])
+        );
+        assert!(wallet_page(&app).error.is_none());
+
+        // Given its address, the spend is planned from page 2 as before.
+        wallet(&mut app, WalletMsg::DestinationTo(1, a_destination()));
+        wallet(&mut app, WalletMsg::Continue);
+        wallet(&mut app, WalletMsg::Review);
+        assert_eq!(
+            waiting_for(&app, |p| matches!(p, Purpose::PlanSend)),
+            1,
+            "the worker is asked to plan"
+        );
+    }
+
+    #[test]
+    fn a_destination_is_pasted_on_page_one_and_a_read_that_comes_back_on_page_two_is_dropped() {
+        let app = on_phone(send_page(
+            SendStage::To(Default::default()),
+            spend_to("", ""),
+        ));
+        let (form, rows) = app
+            .model
+            .form_of()
+            .expect("the destinations page takes a paste");
+        assert!(takes(
+            &app.model,
+            PasteInto::Destination { form, row: 0, rows }
+        ));
+
+        let app = on_phone(send_page(
+            SendStage::Amount,
+            spend_to(&a_destination(), "1"),
+        ));
+        assert!(
+            app.model.form_of().is_none(),
+            "the amounts page has no destination to paste into"
+        );
+        assert!(!takes(
+            &app.model,
+            PasteInto::Destination {
+                form: FormOf::Send(Some(sample_from())),
+                row: 0,
+                rows: 1,
+            }
+        ));
+    }
+
+    #[test]
+    fn the_amounts_page_takes_each_amount_the_fee_and_the_block_to_live() {
+        let mut app = on_phone(send_page(SendStage::Amount, spend_to(&a_destination(), "")));
+        wallet(&mut app, WalletMsg::Amount(0, "2.5".to_owned()));
+        wallet(&mut app, WalletMsg::Fee("1000".to_owned()));
+        wallet(&mut app, WalletMsg::BlockToLive("42".to_owned()));
+        assert!(
+            matches!(
+                &wallet_page(&app).page,
+                Page::Send(SendPage { form, .. })
+                    if form.rows[0].amount == "2.5"
+                        && form.fee == "1000"
+                        && form.blk_to_live == "42"
+            ),
+            "{:?}",
+            wallet_page(&app).page
+        );
+    }
+
+    #[test]
+    fn on_the_desktop_the_phone_steps_change_nothing_and_the_send_tab_empties_the_form() {
+        let plan = tawara_wallet_core::sample::plan_view();
+        let form = typed_as_planned(&plan);
+        let mut app = on_wallet(send_page(SendStage::Compose, form.clone()));
+        for msg in [WalletMsg::Continue, WalletMsg::Back, WalletMsg::ToSigning] {
+            let _ = app.update(msg.into());
+        }
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Compose,
+                form: kept,
+                ..
+            }) if *kept == form
+        ));
+
+        wallet(&mut app, WalletMsg::Open(To::Send(None)));
+        assert!(
+            matches!(
+                &wallet_page(&app).page,
+                Page::Send(SendPage {
+                    stage: SendStage::Compose,
+                    form: kept,
+                    ..
+                }) if *kept == SpendForm::default()
+            ),
+            "the Send tab builds an empty form on a desktop: {:?}",
+            wallet_page(&app).page
+        );
+    }
+
     /// The sample's spend as a person types it: the payees the sample plan
     /// lays out, with their figures.
     fn typed_as_planned(plan: &tawara_wallet_core::PlanView) -> SpendForm {
@@ -5938,18 +7399,35 @@ mod tests {
         }
     }
 
-    /// The window operations `task` asks the runtime to run, in order.
+    /// The window operations `task` asks the runtime to run, in order. A task
+    /// that `operate` built keeps its stream open for the output of the
+    /// operation, which a test never runs, so the stream is read only as far as
+    /// it is ready: a task that ends on its own gives all of its operations.
     fn operations(task: Task<Message>) -> Vec<Box<dyn Operation>> {
-        let Some(stream) = iced_runtime::task::into_stream(task) else {
+        let Some(mut stream) = iced_runtime::task::into_stream(task) else {
             return Vec::new();
         };
-        iced::futures::executor::block_on(stream.collect::<Vec<_>>())
-            .into_iter()
-            .filter_map(|action| match action {
-                Action::Widget(operation) => Some(operation),
-                _ => None,
-            })
-            .collect()
+        let mut found = Vec::new();
+        while let Some(Some(action)) = iced::futures::future::FutureExt::now_or_never(stream.next())
+        {
+            if let Action::Widget(operation) = action {
+                found.push(operation);
+            }
+        }
+        found
+    }
+
+    /// Whether the text `what` is drawn within the window of the page as
+    /// `drawn` scrolls it: its top and its bottom both between the window's.
+    fn shown_on_page(drawn: &mut Driver<'_, Message>, what: &str) -> bool {
+        let (window, scroll) = drawn
+            .scroll_of(&crate::screens::page_id())
+            .expect("the page is drawn");
+        let text = drawn
+            .text_bounds(what)
+            .unwrap_or_else(|| panic!("{what:?} is not drawn"));
+        let top = text.y - scroll.y;
+        top >= window.y && top + text.height <= window.y + window.height
     }
 
     #[test]
@@ -8688,5 +10166,768 @@ mod tests {
             "the node card is drawn"
         );
         assert!(!forget(&app), "Settings with a node set, and nothing held");
+    }
+
+    // The device unlock (docs/DECISIONS.md D45). A `Host` holds plain function
+    // pointers, so the fake shell's functions keep what they were asked, and
+    // what they are to answer, in thread-locals. Each test runs on a thread of
+    // its own, and the functions are called on the test's thread.
+
+    /// What the fake shell's check answers next, once it is asked. Without one
+    /// queued it declines, as a person who walks away from the prompt does.
+    #[derive(Clone, Copy)]
+    enum Next {
+        Password(&'static str),
+        Declined,
+        Missing,
+        Failed(&'static str),
+    }
+
+    thread_local! {
+        static NEXT: std::cell::RefCell<Option<Next>> = const { std::cell::RefCell::new(None) };
+        static ASKED: std::cell::RefCell<Vec<([u8; 32], String)>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+        static KEPT: std::cell::RefCell<Vec<([u8; 32], String)>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+        static FORGOTTEN: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+        static KEEP_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static FORGET_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    fn fake_check() -> Option<host::DeviceCheck> {
+        Some(host::DeviceCheck::FaceId)
+    }
+
+    fn fake_keep(identifier: &[u8; 32], password: &str) -> Result<(), String> {
+        if KEEP_FAILS.with(std::cell::Cell::get) {
+            return Err("the keychain refused".to_owned());
+        }
+        KEPT.with(|k| k.borrow_mut().push((*identifier, password.to_owned())));
+        Ok(())
+    }
+
+    fn fake_release(
+        identifier: &[u8; 32],
+        reason: &str,
+        answer: Box<dyn FnOnce(host::Released) + Send>,
+    ) {
+        ASKED.with(|a| a.borrow_mut().push((*identifier, reason.to_owned())));
+        let next = NEXT
+            .with(|n| n.borrow_mut().take())
+            .unwrap_or(Next::Declined);
+        let released = match next {
+            Next::Password(text) => {
+                let mut text = text.to_owned();
+                host::Released::Password(SecretText::take(&mut text))
+            }
+            Next::Declined => host::Released::Declined,
+            Next::Missing => host::Released::Missing,
+            Next::Failed(why) => host::Released::Failed(why.to_owned()),
+        };
+        // The shell answers from a thread of its own, as its prompt does.
+        std::thread::spawn(move || answer(released));
+    }
+
+    fn fake_forget() -> Result<(), String> {
+        FORGOTTEN.with(|f| f.set(f.get() + 1));
+        if FORGET_FAILS.with(std::cell::Cell::get) {
+            return Err("the keychain refused the delete".to_owned());
+        }
+        Ok(())
+    }
+
+    fn copy_nothing(_: &str) {}
+
+    fn share_nothing(_: &str, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn back_nothing() {}
+
+    /// A phone's Host, with every device field, as a shell that offers the
+    /// unlock gives it.
+    fn fake_host(private_dir: PathBuf) -> Host {
+        Host {
+            private_dir,
+            copy: copy_nothing,
+            share: share_nothing,
+            back: back_nothing,
+            captured: None,
+            device_check: Some(fake_check),
+            keep_password: Some(fake_keep),
+            release_password: Some(fake_release),
+            forget_password: Some(fake_forget),
+        }
+    }
+
+    /// A phone's application over a real worker, as a phone shell runs it: its
+    /// store and its preferences in `scratch`, and the fake shell's device
+    /// unlock. The answers the shell gives come on the returned receiver.
+    fn phone_with(
+        scratch: &Scratch,
+        prefs: Preferences,
+    ) -> (
+        App,
+        Receiver<Event>,
+        iced::futures::channel::mpsc::UnboundedReceiver<host::Answer>,
+    ) {
+        let mut model = Model::new(prefs, Some(scratch.0.join("keystore")));
+        model.confine(scratch.0.clone());
+        let (answers, received) = iced::futures::channel::mpsc::unbounded();
+        model.device = host::Device::of(&fake_host(scratch.0.clone()), answers);
+        let (app, events) = App::start(model, Some(scratch.0.join(preferences::FILE_NAME)));
+        (app, events.expect("the worker starts"), received)
+    }
+
+    /// A phone's application with no node, so that nothing is asked of one.
+    fn phone(
+        scratch: &Scratch,
+    ) -> (
+        App,
+        Receiver<Event>,
+        iced::futures::channel::mpsc::UnboundedReceiver<host::Answer>,
+    ) {
+        phone_with(
+            scratch,
+            Preferences {
+                node: None,
+                ..Preferences::default()
+            },
+        )
+    }
+
+    /// The store restored with `PASSWORD` in the folder the application
+    /// offers, and locked: S7 is then shown, with the store's password to type.
+    fn restored_and_locked(app: &mut App, events: &Receiver<Event>) {
+        let _ = app.update(Message::Choose(StartChoice::Restore));
+        let _ = app.update(Message::Continue);
+        let _ = app.update(Message::Password(typed(PASSWORD)));
+        let _ = app.update(Message::Again(typed(PASSWORD)));
+        let _ = app.update(Message::PhraseText(typed(PHRASE)));
+        let _ = app.update(Message::RestoreWallet);
+        pump(app, events, |a| matches!(a.model.screen, Screen::Wallet(_)));
+        let _ = app.update(Message::Lock);
+        pump(app, events, |a| matches!(a.model.screen, Screen::Unlock(_)));
+    }
+
+    /// `password` typed on S7 and submitted, until the store opens or the form
+    /// says why it did not.
+    fn unlock_typed(app: &mut App, events: &Receiver<Event>, password: &str) {
+        let _ = app.update(Message::Password(typed_now(app, password)));
+        let _ = app.update(Message::UnlockWallet);
+        pump(app, events, |a| {
+            matches!(a.model.screen, Screen::Wallet(_))
+                || matches!(&a.model.screen, Screen::Unlock(u) if u.error.is_some())
+        });
+    }
+
+    /// The offer after `PASSWORD` opened the store, accepted: the password is
+    /// kept, the unlock is on, and the store is locked again on S7.
+    fn kept_and_locked(app: &mut App, events: &Receiver<Event>) {
+        unlock_typed(app, events, PASSWORD);
+        assert!(app.model.device_offer, "the offer waits");
+        let _ = app.update(Message::DeviceOffer(true));
+        let _ = app.update(Message::Lock);
+        pump(app, events, |a| matches!(a.model.screen, Screen::Unlock(_)));
+    }
+
+    /// The answer the shell gave on its thread, once it has come.
+    fn next_answer(
+        answers: &mut iced::futures::channel::mpsc::UnboundedReceiver<host::Answer>,
+    ) -> host::Answer {
+        use iced::futures::channel::mpsc::TryRecvError;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match answers.try_recv() {
+                Ok(answer) => return answer,
+                Err(TryRecvError::Closed) => panic!("the answers were closed"),
+                Err(TryRecvError::Empty) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(TryRecvError::Empty) => panic!("no answer came"),
+            }
+        }
+    }
+
+    /// Delivers the shell's answer to the next ask, as the interface takes it.
+    fn deliver(
+        app: &mut App,
+        answers: &mut iced::futures::channel::mpsc::UnboundedReceiver<host::Answer>,
+    ) {
+        let answer = next_answer(answers);
+        let _ = app.update(Message::Released(answer));
+    }
+
+    fn asked() -> Vec<([u8; 32], String)> {
+        ASKED.with(|a| a.borrow().clone())
+    }
+
+    fn kept() -> Vec<([u8; 32], String)> {
+        KEPT.with(|k| k.borrow().clone())
+    }
+
+    fn forgotten() -> u32 {
+        FORGOTTEN.with(std::cell::Cell::get)
+    }
+
+    /// The unlock is on for the store in `scratch`, as an accepted offer leaves
+    /// it, with its identifier made. Written as the offer would write it.
+    fn turned_on(app: &mut App, scratch: &Scratch) -> [u8; 32] {
+        let identifier = store_identifier::make(&scratch.0).expect("an identifier");
+        app.set_device_unlock(DeviceUnlock::On);
+        identifier
+    }
+
+    /// The fake shell's state is the test's own: reset at the test's start.
+    fn reset_shell() {
+        NEXT.with(|n| *n.borrow_mut() = None);
+        ASKED.with(|a| a.borrow_mut().clear());
+        KEPT.with(|k| k.borrow_mut().clear());
+        FORGOTTEN.with(|f| f.set(0));
+        KEEP_FAILS.with(|f| f.set(false));
+        FORGET_FAILS.with(|f| f.set(false));
+    }
+
+    #[test]
+    fn the_device_unlock_is_offered_once_after_a_password_unlock() {
+        reset_shell();
+        let scratch = Scratch::new("device-offer");
+        let (mut app, events, _answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+        assert_eq!(app.model.prefs.device_unlock, DeviceUnlock::Unoffered);
+
+        unlock_typed(&mut app, &events, PASSWORD);
+        assert!(
+            app.model.device_offer,
+            "the offer waits once the store opened"
+        );
+        let path = scratch.0.join(preferences::FILE_NAME);
+        assert_eq!(
+            preferences::load(&path).device_unlock,
+            DeviceUnlock::Off,
+            "the offer is recorded as made, as it is shown"
+        );
+        assert!(
+            kept().is_empty(),
+            "nothing is kept until the person accepts"
+        );
+
+        // Accepting keeps the password under the store's identifier, which is
+        // drawn and written now, and turns the unlock on.
+        let _ = app.update(Message::DeviceOffer(true));
+        assert!(!app.model.device_offer);
+        assert!(app.model.device_unlock_on());
+        assert_eq!(preferences::load(&path).device_unlock, DeviceUnlock::On);
+        let identifier = store_identifier::read(&scratch.0)
+            .expect("readable")
+            .expect("drawn with the offer");
+        assert_eq!(kept(), vec![(identifier, PASSWORD.to_owned())]);
+        assert!(app.model.pending_keep.is_none(), "the copy is wiped");
+    }
+
+    #[test]
+    fn an_answer_with_no_offer_shown_does_not_keep_a_password_in_flight() {
+        reset_shell();
+        let scratch = Scratch::new("device-early");
+        let (mut app, events, _answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+        // The unlock is sent, and no answer has come: nothing is offered yet.
+        let _ = app.update(Message::Password(typed_now(&app, PASSWORD)));
+        let _ = app.update(Message::UnlockWallet);
+        assert!(
+            app.model.pending_keep.is_some(),
+            "the copy waits for the reply"
+        );
+        let _ = app.update(Message::DeviceOffer(true));
+        assert!(
+            kept().is_empty(),
+            "no password is kept before the store opens"
+        );
+        assert!(
+            app.model.pending_keep.is_some(),
+            "and the copy is not taken"
+        );
+        pump(&mut app, &events, |a| {
+            matches!(a.model.screen, Screen::Wallet(_))
+        });
+        assert!(
+            app.model.device_offer,
+            "the offer comes once the store opened"
+        );
+    }
+
+    #[test]
+    fn the_offer_is_not_made_again_after_a_restart() {
+        reset_shell();
+        let scratch = Scratch::new("device-restart");
+        let (mut app, events, _answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+        unlock_typed(&mut app, &events, PASSWORD);
+        let _ = app.update(Message::DeviceOffer(false));
+        let _ = app.update(Message::Lock);
+        pump(&mut app, &events, |a| {
+            matches!(a.model.screen, Screen::Unlock(_))
+        });
+        drop(app);
+
+        // The next start reads the preferences the offer left.
+        let path = scratch.0.join(preferences::FILE_NAME);
+        let prefs = Preferences {
+            node: None,
+            ..preferences::load(&path)
+        };
+        let (mut app, events, _answers) = phone_with(&scratch, prefs);
+        assert_eq!(app.model.prefs.device_unlock, DeviceUnlock::Off);
+        unlock_typed(&mut app, &events, PASSWORD);
+        assert!(!app.model.device_offer, "offered once, and not again");
+    }
+
+    #[test]
+    fn declining_the_offer_keeps_nothing() {
+        reset_shell();
+        let scratch = Scratch::new("device-decline");
+        let (mut app, events, _answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+        unlock_typed(&mut app, &events, PASSWORD);
+        let _ = app.update(Message::DeviceOffer(false));
+        assert!(!app.model.device_offer);
+        assert!(app.model.pending_keep.is_none(), "the copy is wiped");
+        assert_eq!(app.model.prefs.device_unlock, DeviceUnlock::Off);
+        assert!(kept().is_empty(), "no password is kept");
+        assert!(
+            !scratch.0.join(store_identifier::FILE_NAME).exists(),
+            "and no identifier is written for one"
+        );
+    }
+
+    #[test]
+    fn a_device_unlock_sends_unlock_with_the_password_it_released() {
+        reset_shell();
+        let scratch = Scratch::new("device-unlock");
+        let (mut app, events, mut answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+        unlock_typed(&mut app, &events, PASSWORD);
+        let _ = app.update(Message::DeviceOffer(true));
+        let _ = app.update(Message::Lock);
+        pump(&mut app, &events, |a| {
+            matches!(a.model.screen, Screen::Unlock(_))
+        });
+        let identifier = store_identifier::read(&scratch.0).unwrap().unwrap();
+
+        NEXT.with(|n| *n.borrow_mut() = Some(Next::Password(PASSWORD)));
+        let _ = app.update(Message::UnlockWithDevice);
+        assert_eq!(
+            asked(),
+            vec![(identifier, UNLOCK_REASON.to_owned())],
+            "the check is asked for the store's identifier, with the reason"
+        );
+        deliver(&mut app, &mut answers);
+        pump(&mut app, &events, |a| {
+            matches!(a.model.screen, Screen::Wallet(_))
+        });
+        assert!(
+            app.model.device_unlock_on(),
+            "a good unlock keeps the password"
+        );
+        assert_eq!(forgotten(), 0);
+    }
+
+    #[test]
+    fn a_wrong_kept_password_is_forgotten_and_the_form_is_shown() {
+        reset_shell();
+        let scratch = Scratch::new("device-wrong");
+        let (mut app, events, mut answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+        kept_and_locked(&mut app, &events);
+
+        NEXT.with(|n| *n.borrow_mut() = Some(Next::Password("not the password")));
+        let _ = app.update(Message::UnlockWithDevice);
+        deliver(&mut app, &mut answers);
+        pump(
+            &mut app,
+            &events,
+            |a| matches!(&a.model.screen, Screen::Unlock(u) if u.error.is_some()),
+        );
+        assert_eq!(forgotten(), 1, "the kept password is deleted");
+        assert_eq!(app.model.prefs.device_unlock, DeviceUnlock::Off);
+        assert_eq!(
+            preferences::load(&scratch.0.join(preferences::FILE_NAME)).device_unlock,
+            DeviceUnlock::Off,
+            "and the setting is written"
+        );
+        assert_eq!(app.model.device_note.as_deref(), Some(DEVICE_WRONG_NOTE));
+        assert!(app.model.busy.is_none());
+    }
+
+    #[test]
+    fn a_mismatched_identifier_forgets_the_password_and_shows_the_form() {
+        reset_shell();
+        let scratch = Scratch::new("device-mismatch");
+        let (mut app, events, mut answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+        kept_and_locked(&mut app, &events);
+
+        NEXT.with(|n| *n.borrow_mut() = Some(Next::Missing));
+        let _ = app.update(Message::UnlockWithDevice);
+        deliver(&mut app, &mut answers);
+        assert_eq!(forgotten(), 1, "what is kept is deleted");
+        assert_eq!(app.model.prefs.device_unlock, DeviceUnlock::Off);
+        assert_eq!(app.model.device_note.as_deref(), Some(DEVICE_MISSING_NOTE));
+        assert!(app.model.busy.is_none(), "no unlock was sent");
+        assert!(matches!(&app.model.screen, Screen::Unlock(u) if u.error.is_none()));
+    }
+
+    #[test]
+    fn without_a_store_identifier_the_check_is_not_asked() {
+        reset_shell();
+        let scratch = Scratch::new("device-no-identifier");
+        let (mut app, events, _answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+        app.set_device_unlock(DeviceUnlock::On);
+
+        let _ = app.update(Message::UnlockWithDevice);
+        assert!(
+            asked().is_empty(),
+            "nothing can be kept under no identifier"
+        );
+        assert_eq!(app.model.prefs.device_unlock, DeviceUnlock::Off);
+        assert_eq!(app.model.device_note.as_deref(), Some(DEVICE_MISSING_NOTE));
+    }
+
+    #[test]
+    fn a_declined_check_keeps_the_password() {
+        reset_shell();
+        let scratch = Scratch::new("device-declined");
+        let (mut app, events, mut answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+        kept_and_locked(&mut app, &events);
+
+        NEXT.with(|n| *n.borrow_mut() = Some(Next::Declined));
+        let _ = app.update(Message::UnlockWithDevice);
+        deliver(&mut app, &mut answers);
+        assert!(app.model.device_unlock_on(), "still on");
+        assert_eq!(forgotten(), 0, "nothing is deleted");
+        assert!(app.model.busy.is_none());
+        assert!(matches!(&app.model.screen, Screen::Unlock(u) if u.error.is_none()));
+    }
+
+    #[test]
+    fn a_failed_check_says_why_and_keeps_the_password() {
+        reset_shell();
+        let scratch = Scratch::new("device-failed");
+        let (mut app, events, mut answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+        kept_and_locked(&mut app, &events);
+
+        NEXT.with(|n| *n.borrow_mut() = Some(Next::Failed("the keychain is locked")));
+        let _ = app.update(Message::UnlockWithDevice);
+        deliver(&mut app, &mut answers);
+        assert!(
+            app.model
+                .device_note
+                .as_deref()
+                .is_some_and(|n| n.contains("the keychain is locked")),
+            "{:?}",
+            app.model.device_note
+        );
+        assert!(app.model.device_unlock_on());
+        assert_eq!(forgotten(), 0);
+    }
+
+    #[test]
+    fn turning_the_unlock_off_forgets_the_password() {
+        reset_shell();
+        let scratch = Scratch::new("device-off");
+        let (mut app, events, _answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+        turned_on(&mut app, &scratch);
+
+        let _ = app.update(Message::TurnOffDeviceUnlock);
+        assert_eq!(forgotten(), 1, "the password is deleted");
+        assert_eq!(app.model.prefs.device_unlock, DeviceUnlock::Off);
+        assert_eq!(
+            preferences::load(&scratch.0.join(preferences::FILE_NAME)).device_unlock,
+            DeviceUnlock::Off
+        );
+    }
+
+    #[test]
+    fn a_password_that_cannot_be_deleted_leaves_the_unlock_on() {
+        reset_shell();
+        let scratch = Scratch::new("device-undeleted");
+        let (mut app, events, _answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+        turned_on(&mut app, &scratch);
+
+        FORGET_FAILS.with(|f| f.set(true));
+        let _ = app.update(Message::TurnOffDeviceUnlock);
+        assert_eq!(
+            app.model.prefs.device_unlock,
+            DeviceUnlock::On,
+            "not off yet"
+        );
+        assert!(
+            app.model
+                .device_note
+                .as_deref()
+                .is_some_and(|n| n.contains("could not be deleted")),
+            "{:?}",
+            app.model.device_note
+        );
+
+        FORGET_FAILS.with(|f| f.set(false));
+        let _ = app.update(Message::TurnOffDeviceUnlock);
+        assert_eq!(
+            app.model.prefs.device_unlock,
+            DeviceUnlock::Off,
+            "tried again"
+        );
+        assert_eq!(forgotten(), 2);
+    }
+
+    #[test]
+    fn a_password_released_after_the_app_left_the_foreground_is_not_used() {
+        reset_shell();
+        let scratch = Scratch::new("device-stale");
+        let (mut app, events, mut answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+        kept_and_locked(&mut app, &events);
+
+        NEXT.with(|n| *n.borrow_mut() = Some(Next::Password(PASSWORD)));
+        let _ = app.update(Message::UnlockWithDevice);
+        // The application leaves the foreground while the check is asked.
+        app.model.left.fetch_add(1, Ordering::SeqCst);
+        let _ = app.update(Message::Input);
+        assert_eq!(app.model.device_asked, None, "the ask is dropped");
+        deliver(&mut app, &mut answers);
+        assert!(app.model.busy.is_none(), "the password was not sent");
+        assert!(matches!(&app.model.screen, Screen::Unlock(_)));
+    }
+
+    #[test]
+    fn a_second_ask_waits_for_the_first_answer() {
+        reset_shell();
+        let scratch = Scratch::new("device-twice");
+        let (mut app, events, mut answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+        kept_and_locked(&mut app, &events);
+
+        NEXT.with(|n| *n.borrow_mut() = Some(Next::Declined));
+        let _ = app.update(Message::UnlockWithDevice);
+        let _ = app.update(Message::UnlockWithDevice);
+        assert_eq!(asked().len(), 1, "one prompt at a time");
+        deliver(&mut app, &mut answers);
+        assert!(app.model.device_asked.is_none());
+    }
+
+    #[test]
+    fn the_desktop_is_unchanged() {
+        reset_shell();
+        let scratch = Scratch::new("desktop-unchanged");
+        // The desktop's application: no shell, so no device unlock.
+        let (mut app, events) = app(&scratch);
+        restored_and_locked(&mut app, &events);
+        assert!(app.model.device.is_none());
+        unlock_typed(&mut app, &events, PASSWORD);
+        assert!(matches!(app.model.screen, Screen::Wallet(_)));
+        assert!(!app.model.device_offer, "nothing is offered");
+        assert!(app.model.pending_keep.is_none(), "nothing is copied");
+        assert_eq!(app.model.prefs.device_unlock, DeviceUnlock::Unoffered);
+        let _ = app.update(Message::DeviceOffer(true));
+        let _ = app.update(Message::UnlockWithDevice);
+        let _ = app.update(Message::TurnOffDeviceUnlock);
+        assert!(asked().is_empty() && kept().is_empty() && forgotten() == 0);
+        assert!(!scratch.0.join(store_identifier::FILE_NAME).exists());
+    }
+
+    #[test]
+    fn the_offer_waits_on_the_wallet_and_a_lock_takes_it_away() {
+        reset_shell();
+        let scratch = Scratch::new("device-lock-offer");
+        let (mut app, events, _answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+        unlock_typed(&mut app, &events, PASSWORD);
+        assert!(app.model.device_offer);
+        assert!(
+            app.model.pending_keep.is_some(),
+            "the copy waits for the answer"
+        );
+
+        let _ = app.update(Message::Lock);
+        pump(&mut app, &events, |a| {
+            matches!(a.model.screen, Screen::Unlock(_))
+        });
+        assert!(!app.model.device_offer, "the offer ends with the lock");
+        assert!(app.model.pending_keep.is_none(), "and the copy is wiped");
+        assert_eq!(
+            app.model.prefs.device_unlock,
+            DeviceUnlock::Off,
+            "still offered"
+        );
+        assert!(kept().is_empty());
+    }
+
+    #[test]
+    fn no_secret_appears_in_debug_output() {
+        reset_shell();
+        let scratch = Scratch::new("device-debug");
+        let (mut app, events, _answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+        unlock_typed(&mut app, &events, PASSWORD);
+        assert!(app.model.pending_keep.is_some(), "the copy is held");
+        let shown = format!("{:?}", app.model);
+        assert!(!shown.contains(PASSWORD), "the model prints no password");
+        assert!(format!("{:?}", app.model.pending_keep).contains("Kept(..)"));
+        let answer = host::Answer::new(
+            1,
+            host::Released::Password(SecretText::take(&mut String::from(PASSWORD))),
+        );
+        assert_eq!(
+            format!("{:?}", Message::Released(answer)),
+            "Released(Answer(..))"
+        );
+    }
+
+    // The device unlock's screens and their messages (docs/DECISIONS.md D45
+    // item 4). The check is asked on a return to the foreground, once.
+
+    #[test]
+    fn a_return_to_the_foreground_asks_the_check_once_and_an_activation_asks_nothing() {
+        reset_shell();
+        let scratch = Scratch::new("device-foreground");
+        let (mut app, events, mut answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+        kept_and_locked(&mut app, &events);
+
+        NEXT.with(|n| *n.borrow_mut() = Some(Next::Declined));
+        let _ = app.update(Message::Lifecycle(iced::mobile::LifecycleEvent::Foreground));
+        assert_eq!(asked().len(), 1, "the check is asked on the return");
+        deliver(&mut app, &mut answers);
+        // A Face ID prompt makes the application inactive, and it is active again
+        // after it: neither asks.
+        let _ = app.update(Message::Lifecycle(iced::mobile::LifecycleEvent::Inactive));
+        let _ = app.update(Message::Lifecycle(iced::mobile::LifecycleEvent::Active));
+        assert_eq!(asked().len(), 1, "an activation asks nothing");
+        assert!(
+            app.model.device_unlock_on(),
+            "a declined check keeps the unlock"
+        );
+        assert!(matches!(&app.model.screen, Screen::Unlock(_)));
+    }
+
+    #[test]
+    fn a_return_to_the_foreground_asks_nothing_on_a_wallet_page_or_without_the_unlock() {
+        reset_shell();
+        let scratch = Scratch::new("device-foreground-quiet");
+        let (mut app, events, mut answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+        // The unlock is off: nothing is asked on a return to S7.
+        let _ = app.update(Message::Lifecycle(iced::mobile::LifecycleEvent::Foreground));
+        assert!(asked().is_empty(), "the unlock is not on");
+
+        kept_and_locked(&mut app, &events);
+        NEXT.with(|n| *n.borrow_mut() = Some(Next::Password(PASSWORD)));
+        let _ = app.update(Message::Lifecycle(iced::mobile::LifecycleEvent::Foreground));
+        deliver(&mut app, &mut answers);
+        pump(&mut app, &events, |a| {
+            matches!(a.model.screen, Screen::Wallet(_))
+        });
+        // Unlocked, a return to the foreground asks nothing.
+        let _ = app.update(Message::Lifecycle(iced::mobile::LifecycleEvent::Foreground));
+        assert_eq!(asked().len(), 1, "a wallet page asks nothing");
+    }
+
+    #[test]
+    fn a_device_check_is_not_asked_by_a_desktop_return_to_the_foreground() {
+        reset_shell();
+        let scratch = Scratch::new("device-desktop-foreground");
+        let (mut app, events) = app(&scratch);
+        restored_and_locked(&mut app, &events);
+        let _ = app.update(Message::Lifecycle(iced::mobile::LifecycleEvent::Foreground));
+        let _ = app.update(Message::UnlockWithDevice);
+        assert!(asked().is_empty(), "the desktop offers no device unlock");
+        assert!(matches!(&app.model.screen, Screen::Unlock(_)));
+    }
+
+    #[test]
+    fn offering_again_after_a_decline_offers_the_unlock_at_the_next_password_unlock() {
+        reset_shell();
+        let scratch = Scratch::new("device-again");
+        let (mut app, events, _answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+        unlock_typed(&mut app, &events, PASSWORD);
+        let _ = app.update(Message::DeviceOffer(false));
+        assert_eq!(app.model.prefs.device_unlock, DeviceUnlock::Off);
+        let _ = app.update(Message::Lock);
+        pump(&mut app, &events, |a| {
+            matches!(a.model.screen, Screen::Unlock(_))
+        });
+
+        let _ = app.update(Message::OfferDeviceUnlockAgain);
+        let path = scratch.0.join(preferences::FILE_NAME);
+        assert_eq!(app.model.prefs.device_unlock, DeviceUnlock::Unoffered);
+        assert_eq!(
+            preferences::load(&path).device_unlock,
+            DeviceUnlock::Unoffered
+        );
+        assert!(kept().is_empty(), "nothing is kept by asking again");
+
+        unlock_typed(&mut app, &events, PASSWORD);
+        assert!(app.model.device_offer, "the offer comes again");
+        let _ = app.update(Message::DeviceOffer(true));
+        assert!(app.model.device_unlock_on(), "and it is taken");
+        assert_eq!(kept().len(), 1, "the password is kept once it is");
+    }
+
+    #[test]
+    fn offering_again_does_nothing_unless_the_unlock_is_off_and_no_offer_is_shown() {
+        reset_shell();
+        let scratch = Scratch::new("device-again-guard");
+        let (mut app, events, _answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+
+        let _ = app.update(Message::OfferDeviceUnlockAgain);
+        assert_eq!(app.model.prefs.device_unlock, DeviceUnlock::Unoffered);
+
+        turned_on(&mut app, &scratch);
+        let _ = app.update(Message::OfferDeviceUnlockAgain);
+        assert_eq!(
+            app.model.prefs.device_unlock,
+            DeviceUnlock::On,
+            "already on"
+        );
+
+        let _ = app.update(Message::TurnOffDeviceUnlock);
+        assert_eq!(app.model.prefs.device_unlock, DeviceUnlock::Off);
+        let _ = app.update(Message::OfferDeviceUnlockAgain);
+        assert_eq!(app.model.prefs.device_unlock, DeviceUnlock::Unoffered);
+        unlock_typed(&mut app, &events, PASSWORD);
+        assert!(app.model.device_offer, "the offer is on the wallet page");
+        let _ = app.update(Message::OfferDeviceUnlockAgain);
+        assert_eq!(
+            app.model.prefs.device_unlock,
+            DeviceUnlock::Off,
+            "an offer on the screen is answered, not replaced"
+        );
+    }
+
+    #[test]
+    fn a_password_unlock_clears_what_the_device_unlock_last_found() {
+        reset_shell();
+        let scratch = Scratch::new("device-note-clears");
+        let (mut app, events, mut answers) = phone(&scratch);
+        restored_and_locked(&mut app, &events);
+        kept_and_locked(&mut app, &events);
+
+        NEXT.with(|n| *n.borrow_mut() = Some(Next::Missing));
+        let _ = app.update(Message::UnlockWithDevice);
+        deliver(&mut app, &mut answers);
+        assert_eq!(app.model.device_note.as_deref(), Some(DEVICE_MISSING_NOTE));
+
+        unlock_typed(&mut app, &events, PASSWORD);
+        assert!(
+            app.model.device_note.is_none(),
+            "a password unlock starts afresh"
+        );
     }
 }

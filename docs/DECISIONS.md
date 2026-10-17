@@ -93,6 +93,16 @@ now pins, `v0.14.1-mobile.2`. Its defaults add `android-native-activity`,
 `mobile-logger`, `mobile-fira-sans` and `mobile-system-fonts`, which
 `default-features = false` leaves off. See D32 item 9.*
 
+*Amended 2026-10-17: `linux-theme-detection` is no longer in the list above.
+The fork's release `v0.14.1-mobile.4` removes the feature with mundy, the
+owner's decision of 2026-10-17 (D32 item 9 (a)), so Linux no longer reports
+the system's light or dark mode to iced. Nothing Tawara draws changes: the
+application sets its own theme on every platform, `theme::theme()` in
+`crates/app/src/theme.rs`, set by `crates/app/src/lib.rs` (D27 item 8), whatever
+the system reports. The list is now `wgpu`, `tiny-skia`, `canvas`, `advanced`,
+`qr_code`, `crisp`, `web-colors`, `thread-pool`, `x11` and `wayland`, and
+`crates/wallet-core/tests/policy.rs` holds the iced line to it.*
+
 ### D7. The library pin: Rep-1 at `613e8bd`
 
 **owner, 2026-10-03.** The owner's instructions for phase 0 named Rep-1's
@@ -269,6 +279,12 @@ entry in `ignore` carries a written reason").
   Both still arrive, now with iced 0.14.1, and both are still needed:
   removing either makes `cargo deny` fail. deny.toml names the path that
   reaches each at the pin (D32 item 9 (e)).*
+  *Amended 2026-10-17: re-examined at the release `v0.14.1-mobile.4`, `7325ccd`.
+  Both still arrive, through the paths deny.toml names, and both are still
+  needed. The advisories on `zvariant`, `zbus_names` and `zvariant_derive`
+  (RUSTSEC-2026-0370, -0371 and -0372), which mundy 0.2.3 brought in, no
+  longer arrive: mundy left the lock with the owner's decision to drop it
+  rather than ignore them (D32 item 9 (a)).*
 - **Kept from Rep-1:** `unmaintained = "all"`, `yanked = "deny"`, the
   `digest` 0.11 ban, and the denied features of `ureq`, `argon2` and
   `serde_json`. Feature unification means a crate in the interface's graph
@@ -1791,6 +1807,35 @@ on the three conditions D18 left open.
    entry points Tawara uses (`set_android_app`, `on_lifecycle` and the
    two-variant `Lifecycle`) as they are.
 
+   *Moved (owner, 2026-10-17): the pin is the fork's release
+   `v0.14.1-mobile.4`, `7325ccd5823a118d46f023e91010d27f07b6dd90`, on every
+   iced line of this repository. `cargo update -p iced -p iced_runtime` took
+   the lock to it. The release is `v0.14.1-mobile.2` plus two releases on the
+   fork's main line. `v0.14.1-mobile.3` (`4a71b29`) carries the iOS safe-area
+   change of 2026-10-16, which reads the inset again for 600 ms after launch
+   and after each change (item 10 (f)), and the icm and CI fixes ported from
+   the fork's main line, which the owner approved on 2026-10-17.
+   `v0.14.1-mobile.4` (`7325ccd`) is `v0.14.1-mobile.3` with mundy removed,
+   the owner's decision of 2026-10-17. The owner chose to drop mundy rather
+   than ignore RUSTSEC-2026-0370, -0371 and -0372 in `deny.toml`: the
+   advisories on `zvariant`, `zbus_names` and `zvariant_derive`, which
+   mundy 0.2.3 brought into the lock. Linux no longer reads the system's
+   light or dark mode, so `system::theme()` answers none there, and the
+   `linux-theme-detection` feature is gone (D6, amended 2026-10-17). Nothing
+   Tawara draws changes, because the application sets its own theme on every
+   platform. The lock loses 48 registry packages, mundy and zbus among them,
+   and gains none; `cargo tree -i zbus` finds nothing. winit is 0.30.13 and
+   dpi 0.1.1, both from the fork at the pin. Re-examined at this pin, with
+   `deny.toml`'s ignores unchanged: `paste` still arrives through `metal`,
+   `wgpu-hal` and `wgpu` under `iced_wgpu`, and `ttf-parser` through `fontdb`
+   and, on Linux, through `owned_ttf_parser`, `ab_glyph` and `sctk-adwaita`
+   under the fork's winit (D12, amended 2026-10-17).
+   `THIRD-PARTY-NOTICES.txt` is brought up to date by `ci/notices.sh` (D35).
+   `about.toml` drops the five clarifications for crates that left the lock,
+   and `policy.rs` drops the seven standard-MIT entries that left it. The
+   hand-run desktop check on macOS, Windows and Linux, which every move
+   needs, is run by no job (T39) and is still to be run.*
+
    **(b) One winit, the fork's: owner, 2026-10-12.** Tawara-mobile takes
    `winit` only from the fork, through `iced_winit` with the
    `android-native-activity` feature. The crates.io `winit` lines in the
@@ -1899,9 +1944,9 @@ on the three conditions D18 left open.
    a panic on another thread, such as the worker's, does not end the
    process. Start-up was checked and needs no network: a fresh `HOME` names
    no node, because `Preferences` has no node by default
-   (`crates/wallet-core/src/preferences.rs:54`), and the application sends
+   (`crates/wallet-core/src/preferences.rs:72`), and the application sends
    `SetNode` at start-up only when a node is set
-   (`crates/app/src/app.rs:1415-1417`). Today no automated job starts the
+   (`crates/app/src/app.rs:1574-1576`). Today no automated job starts the
    desktop window, before or after the move, so a start-up panic, such as a
    shader or surface failure, would pass CI. Landing the step at the current
    pin gives a baseline, so the move shows whether the fork changes the
@@ -1914,7 +1959,7 @@ on the three conditions D18 left open.
    and the premise above no longer holds. Start-up still needs no network
    if D43 item 2's recommended safeguard is taken: no node is asked at
    launch until a wallet is opened or the person presses Check now. The
-   reference to `app.rs:898-900` is now lines 1415 to 1417.*
+   reference to `app.rs:973-975` is now lines 1415 to 1417.*
 
    **(i) Android: configChanges now, target 36 later: owner, 2026-10-12.**
    Two Tawara-mobile pull requests, kept apart from the move. PR A, now: add
@@ -2018,11 +2063,11 @@ on the three conditions D18 left open.
    `Destroy` arrived 123 ms after the app went to the background. A bounded
    wait after `run_in`, which (j) named, cannot help: `Leaving` completes only
    inside `App::update`, where `Wiped::wiped` is called
-   (`crates/app/src/app.rs:1609`) and `Wiped::taken` is called (lines 2182 and
+   (`crates/app/src/app.rs:1776`) and `Wiped::taken` is called (lines 2182 and
    2188) through `on_event` (line 2028), which `update` calls at line 1644. The
-   state they raise is `Wiped` (`crates/app/src/host.rs:112-148`). `run_in`
+   state they raise is `Wiped` (`crates/app/src/host.rs:290-326`). `run_in`
    hands `App::update` to `iced::application(...).run()`
-   (`crates/app/src/lib.rs:59-75`), so once winit's loop has ended on
+   (`crates/app/src/lib.rs:60-76`), so once winit's loop has ended on
    `Destroy`, no update runs.*
 
    *Decided (owner, 2026-10-13): `exit.lock` in Tawara-mobile's emulator check
@@ -2288,6 +2333,19 @@ on the three conditions D18 left open.
    build: the first gesture after launch, the footer link by touch, a drag
    that starts on a row, Paste, and the keyboard shown again are still to
    be checked by hand.
+
+   *Amended (owner, 2026-10-16; the pin moved on 2026-10-17): the owner
+   approved the fork's change for the zero insets an iPhone SE reported,
+   which this item says needs the owner's say-so. The fork's
+   `v0.14.1-mobile.3` reads the iOS safe area again for 600 ms after launch
+   and after each change (fork commit `204066c0`; its hedge is `750fb8f8`),
+   and the wallet pins it through `v0.14.1-mobile.4` (item 9 (a)). The fork's
+   own text says the cause of the zero insets is not isolated and that the
+   change has not run on a device, so nothing recorded here shows that an
+   iPhone SE now reports its inset. The fallback in
+   `crates/app/src/screens/mod.rs` (`UNREPORTED`, 64 above and 48 below) stays
+   until the SE device check, V16 in docs/THREAT_MODEL.md, has been run on an
+   iPhone SE and its result recorded here.*
 
    **(g) Paste buttons (decided under the owner's delegation, 2026-10-12).** In
    the compact layout a Paste button stands beside each destination field (W4,
@@ -3251,7 +3309,7 @@ item 6's.
    requires: the acknowledged advance names no index for a chain behind the
    store (library `recon.rs:867-875` and `:1153`, and
    `cli/reconcile.rs:273`), the recovery page offers no remedy for it
-   (`crates/app/src/app/wallet.rs:213-225`), and restore writes nothing for
+   (`crates/app/src/app/wallet.rs:215-227`), and restore writes nothing for
    an account the store already holds (library `cli/restore.rs:163-168`).
    D27 item 5's amendment holds only while the reservation is open. Tawara's
    side of this is pinned by
@@ -3314,7 +3372,7 @@ item 6's.
    the settled key's index, and the report names that index as the advance
    target (library `recon.rs:867-875`, `:943-953`). Tawara's account
    recovery offers that advance
-   (`crates/app/src/screens/wallet/account.rs:237`,
+   (`crates/app/src/screens/wallet/account.rs:243`,
    `crates/app/src/screens/wallet/recovery.rs:137`), and an account added
    there by restore is placed at that index (library
    `cli/restore.rs:173-176`). That store could then sign with the key the
@@ -3345,7 +3403,7 @@ item 6's.
    the only way the library names to move the balance before the spend
    lands. The library's full report, one step away in Tawara
    (`crates/app/src/screens/wallet/report.rs:318`,
-   `crates/app/src/app/wallet.rs:1608-1618`), says to keep any copy of the
+   `crates/app/src/app/wallet.rs:1946-1956`), says to keep any copy of the
    artifact (library `recon.rs:1004`). Keeping the bytes until the
    balance at the source has moved or a non-zero block-to-live has passed
    would have been another rule. Those are the library's conditions for
@@ -3366,7 +3424,7 @@ item 6's.
      asked for that close, and the bytes may not have been seen.
    - Saved bytes are not wiped by a lock. Their page is kept over it and
      shown again on unlock, as `keep_signed` and `bring_back_signed`
-     (`crates/app/src/app/wallet.rs:813` and `:895`) do today, and they are
+     (`crates/app/src/app/wallet.rs:979` and `:1061`) do today, and they are
      forgotten once the account is in sync.
    - Whenever a kept spend is dropped, its hex and the library's page,
      which repeats the hex, are wiped. Copies outside the model (a
@@ -3409,7 +3467,7 @@ item 6's.
    and a move to the background does not release them. This keeps the code as
    built. The app test
    `a_move_after_a_failed_send_with_no_notice_keeps_the_bytes_until_the_app_ends`
-   (`crates/app/src/app.rs:5439`) pins it. When the notice comes, its reason
+   (`crates/app/src/app.rs:5854`) pins it. When the notice comes, its reason
    decides, as the earlier rules say: a panic keeps the bytes until Tawara
    closes (confirmed 2026-10-14), and a graceful stop releases them, as the
    shutdown does.
@@ -3521,7 +3579,11 @@ E1's compact row change with the work. OS libraries: none added.
 
 ### D40. Send on phones as a series of pages
 
-**proposed; asked by the owner (item 5); recommended.** On a phone, Send is
+**proposed; asked by the owner (item 5); recommended. The page images, and
+with them the pages, are approved, and so are the readings of item 7 (a) and
+(c) and Back on page 1 as built (owner, 2026-10-17). Paste on a phone held
+sideways is decided and is to be built in a later pull request (owner,
+2026-10-17). Item 6 is open.** On a phone, Send is
 one long scroll from W4 to W6 today. The owner asked for a series of pages.
 
 1. **Five pages (recommended).** To (1 of 4): the From line, with
@@ -3563,12 +3625,132 @@ one long scroll from W4 to W6 today. The owner asked for a series of pages.
    as D32 item 10 (g) requires; otherwise its reads are dropped.
 6. **Open:** a note on S7 after a lock, that an unsigned spend was
    discarded, is new wording, for the owner's approval.
+7. **Readings, for the owner's approval; (a) and (c) approved (owner,
+   2026-10-17).** (a) A refused signing on a phone
+   goes back to page 2, not to page 1: the worker has dropped the plan, and
+   "Review spend" is on page 2, as the desktop's refused signing goes back to
+   the form that holds it. The page opens at its end, where the refusal is
+   drawn beside "Review spend"; the desktop's form opens at its top, as
+   before. Approved (owner, 2026-10-17). (b) "Give this destination's address." is new wording, for a
+   destination with an amount and no address. "Review spend" finds such a
+   destination too, since "Continue" passed it with nothing typed in it, and
+   page 2 has no field for an address: it goes back to page 1, with the
+   refusal under the field. Any other address or reference the library refuses
+   is shown under its field, in the library's words, with the destination's
+   number. (c) The key callout
+   and the three steps are on page 4, with "Sign & submit", and not on the
+   review. The review keeps the library's page, the destinations and the
+   figures, so the key the spend signs with is shown where the person presses
+   the button that signs. Approved (owner, 2026-10-17). The line under that button, "Submitting writes the
+   signed spend to the node's socket. That is not the node's verdict: settle
+   once the chain has moved.", is new wording in W6's words. (d) "Change" opens,
+   under the From line on page 1, the accounts that can spend, and choosing one
+   shuts the list. D40 names no way to choose an account, so the open list is a
+   page state (`WalletPage::choosing`). "Change" is drawn when an account other
+   than the one chosen can spend. Item 1's "more than one" gives the same answer
+   while the account chosen can spend. It differs when the account chosen
+   cannot spend now: the callout under the From line then asks for another
+   account, so "Change" is drawn for the other account that can, as
+   `phone-w4-send-cannot-spend` shows. (e) Page 1 draws one block for each
+   destination, with its Paste, its reference and its Remove, as the compact
+   W4 draws them, and not one destination at a time: a page with one destination on it would need a
+   shown row and a way to move between rows, which D40 does not give. (f) On
+   a phone a refusal and the busy card are drawn beneath the button that caused
+   them; the desktop keeps them at the top of the page. (g) Page 3 has no "Edit
+   the spend": the Back at the top of the page keeps what was typed and gives
+   the plan up, as Edit does. (h) The labels "1 of 4" to "4 of 4", "Amounts",
+   "Destinations", "Destination n", and the subtitles of pages 2 and 4 are new
+   wording. (i) When "Continue" refuses, or "Review spend" sends the person back
+   to page 1 for an address (b), page 1 scrolls to the first field refused, so
+   that the refusal under it is in view. Item 4 puts each refusal under its
+   field, but a page that stayed where it was could leave the first refusal
+   off the screen.
 
 The desktop's W4 to W6, `narrow-w4-send.png` included, are unchanged. The
 threat model's Locking row (PR #21) and docs/SCREENS.md's Back rule (lines
 108 to 110) and its W4 to W6 rows (lines 62 to 64 and 134 to 136) change
 with the work. The owner approves the pages by approving their images. OS
 libraries: none added.
+
+**As built (approved in part by the owner, 2026-10-17, as marked).**
+- The pages are drawn by `view` in `crates/app/src/screens/wallet/send.rs`,
+  through `to_page`, `amount_page`, `review_page` and `sign_page`. The stages
+  are `SendStage` in `crates/app/src/app/wallet.rs`: `To`, `Amount`, `Review`
+  and `Sign` are the four pages, `Compose` is the desktop's W4, and `Sent` is
+  W6. The transitions are the handlers for `Continue`, `Review`, `ToSigning`,
+  `Sign`, `Back` and `Edit`, with `send_steps_back` and `step_send_back`; the
+  return of a refused signing to page 2, in the handler for
+  `Purpose::ConfirmSend`; and `WalletPage::choosing` for "Change".
+- `crates/app/src/app.rs` sends the system's Back to `send_steps_back` before
+  `host::back`. `crates/app/src/screens/wallet.rs` draws a phone page's busy
+  card and refusal beneath the button that caused them (`frame_beside` and
+  `beside`). `crates/wallet-core/src/spend.rs` makes `parse_destination` and
+  `parse_reference` public, so that "Continue" checks each address and
+  reference under its own field. The desktop's W4 to W6 draw as before, and
+  their images are the same bytes as before.
+- The images are drawn by `crates/app/examples/screenshots.rs` into
+  `design/screenshots/`. New: `phone-w4-send-to`, `-to-end` and `-to-keyboard`,
+  `phone-w4-send-amount` and `-amount-end`, and `phone-w5-sign` and `-sign-end`.
+  Changed: `phone-w4-send-cannot-spend`, `phone-w5-review` and `-end`. Removed:
+  `phone-w4-send`, `-end` and `-keyboard`, replaced by the page 1 images. The
+  Sent (W6), re-sign (W8) and submit (W9) images are unchanged.
+- docs/SCREENS.md's W4 to W6 rows, their compact rows and the Back rule describe
+  the pages. docs/THREAT_MODEL.md's Android Locking row says that Back on pages
+  2 to 4 steps back a page and does not lock the application.
+- The page images are approved (owner, 2026-10-17) under D32 item 10 (c), and,
+  as D40 asks, that approval approves the pages. They are the committed Linux
+  renders, made in a Linux container. Untouched screens already differ by a few
+  pixels on macOS, so the images are not redrawn there.
+
+Readings approved (owner, 2026-10-17), with item 7:
+- Item 7 (a) and (c) are built as written: a refused signing returns to page 2,
+  where "Review spend" is, and the key callout and the three steps are on page
+  4, with "Sign & submit". Approved (owner, 2026-10-17).
+- Back on page 1 is unchanged. Item 2 gives a Back at the top of each page, but
+  page 1 is the first page and has none. Android's Back there keeps its meaning
+  (`Host::back`), which moves the application to the background and locks it,
+  as it does today. Item 3's "pages 1 to 4" is read as pages 2 to 4. Approved
+  (owner, 2026-10-17): page 1 has no Back in the application, and Android's
+  Back there still moves it to the background and locks it.
+- The approval names item 7 (a) and (c) and Back on page 1. Item 7's other
+  readings, (b) and (d) to (i), are recorded as built.
+
+Judgment calls that D40 does not settle, for the owner to note:
+- A tap on the Send tab during the flow keeps the whole page, not only the form.
+- Each page of the flow starts at its top when it is entered.
+- While the worker answers a command the page sent, Back does nothing, and
+  Android's Back on pages 2 to 4 is used up without reaching `host::back`.
+- Duplicates, amounts, the fee and the block-to-live are refused beside "Review
+  spend", when it is pressed. "Continue" checks the addresses and the
+  references, and "Review spend" checks the addresses of the destinations given
+  an amount (item 7 (b)).
+- A Paste read that comes back once the person is on page 2 is dropped, since
+  page 2 has no field to paste into (`form_of`).
+
+Not built:
+- Item 6, the note on S7 after a lock, is not built. It is new wording, and the
+  owner approves it first.
+- On a phone held sideways, 600 to 1023 wide, the pages draw without Paste
+  buttons, since Paste is drawn in the compact layout only. Decided (owner,
+  2026-10-17): Paste is to follow `phone()` (`Model::phone` in
+  `crates/app/src/app.rs`), as W1's sections follow the phone shell (D39 item
+  5), so that a phone held sideways draws it too. That is to be built in a later
+  pull request, not this one.
+
+Corrected line references:
+- Items 2, 3 and 5 gave lines that were stale at b67e90c, the base of this
+  work. The empty form for the Send tab is built in `open`
+  (`crates/app/src/app/wallet.rs:1198-1201`), not at 929-932; `host::back` is at
+  `crates/app/src/app.rs:1582`, not 1193; and `form_of` is at
+  `crates/app/src/app/wallet.rs:773` and `form` at 1301, not 691 and 1029.
+  Item 4's references were right at b67e90c: `parse_destination` is at
+  `crates/wallet-core/src/spend.rs:151`, and the page's top, where the refusals
+  are drawn, at `crates/app/src/screens/wallet.rs:395-408`. As built,
+  `parse_destination` is at `crates/wallet-core/src/spend.rs:153` and
+  `parse_reference` at 200.
+- The paragraph above gave docs/SCREENS.md's Back rule at lines 108 to 110, its
+  W4 to W6 rows at 62 to 64 and its compact rows at 134 to 136. At b67e90c they
+  are at 112 to 114, 64 to 66 and 139 to 141.
 
 ### D41. A QR code on Receive
 
@@ -3673,7 +3855,7 @@ and the threat model's acceptance open.**
    the default is a node, an absent or empty `node` line means the default.
    No node is asked at launch until a wallet is opened or the person
    presses Check now, which keeps true D32 item 9 (h)'s note that start-up
-   needs no network (its reference to `app.rs:898-900` is now lines 1415
+   needs no network (its reference to `app.rs:973-975` is now lines 1415
    to 1417). Asking the person to confirm a suggested node was considered
    and not taken: it would still ask someone who does not know what a node
    is to act.
@@ -3694,7 +3876,7 @@ and the threat model's acceptance open.**
    say there is no default (`crates/wallet-core/src/node.rs:3-5`,
    `crates/wallet-core/src/command.rs:50-51`); the S2 text
    (`crates/app/src/screens/first_run.rs:384-388`) and the W11 text
-   (`crates/app/src/screens/wallet/settings.rs:487-489`), which say "There
+   (`crates/app/src/screens/wallet/settings.rs:540-542`), which say "There
    is no default node"; and the release privacy answers and review notes
    in PR #22's docs/RELEASE.md, which say the app talks only to the node
    the person chooses. The certificate's renewal, due by 2026-11-23, is
@@ -3820,7 +4002,9 @@ or mirrored.
 ### D45. Unlock with Face ID, Touch ID or the passcode, on iOS
 
 **proposed; items 1 to 3 decided by the owner on 2026-10-13; the details
-recommended.** Item 9 asks that the keystore can be opened with the
+recommended. The application side's six choices that the owner was asked to
+confirm are approved (owner, 2026-10-17), as marked under its As built note;
+the wording stays provisional (item 6).** Item 9 asks that the keystore can be opened with the
 system's credentials or biometrics. Today the store opens only with its
 password, typed on S7, and on a phone every move to the background locks
 it (PLAN 4.1, D32 item 6).
@@ -3876,3 +4060,123 @@ it (PLAN 4.1, D32 item 6).
 docs/SCREENS.md's S7 row changes with the work. OS libraries:
 Security.framework and LocalAuthentication, on iOS, linked by
 Tawara-mobile.
+
+**As built (2026-10-17).** The application side is built in this
+repository, and its tests drive it with a fake shell. The Keychain side is
+not in this change: it will be in a Tawara-mobile pull request, not yet
+opened; its number goes here when it is. Until that pull request is merged
+and its pin moves, no phone keeps a password or offers the check.
+Tawara-mobile's `Host` literals do not build against this change until that
+pull request sets the four fields.
+
+The `Host` (`crates/app/src/host.rs`) gains four optional fields, each
+`None` where a shell has none: `device_check`, which gives the check a shell
+offers (`DeviceCheck`: `FaceId`, `TouchId` or `Passcode`); `keep_password`,
+which takes the store identifier and the password as text and keeps them;
+`release_password`, which takes the identifier and the reason, "unlock
+Tawara", and answers once with a `Released` (`Password`, `Declined`,
+`Missing` or `Failed`); and `forget_password`, which deletes what is kept.
+A `Device` is built only where all four are set and a check is offered. The
+answer and `Released` print no text under `Debug`.
+
+The identifier (`crates/wallet-core/src/store_identifier.rs`) is 32 random
+bytes in `store-id`, in the application's folder beside `preferences`. It is
+drawn from the operating system's generator the first time a password is
+kept, and written through `store-id.new` and renamed over the file. On Unix
+the file is mode `0600`. A file that is not 32 bytes long is no identifier.
+The identifier is not secret: it names no password and opens nothing. The
+Keychain item is labelled with it (D45 item 4).
+
+The setting is `device-unlock = off` or `on` in `preferences`. `Unoffered`,
+the default, is not written, so a shell that never offers the check leaves
+the file as it was. The setting is saved when it changes, so the offer is
+made once, across restarts.
+
+The offer (`crates/app/src/app.rs`, `make_offer` and `answer_offer`;
+`crates/app/src/screens/wallet.rs`, `device_offer`) is made once, after a
+password unlock has opened the store, and only where the setting is
+`Unoffered` and a shell offers the check. The setting becomes `Off` as the
+offer is shown, so the offer is not made again even if the application stops
+before an answer. "Turn on" keeps the password under the identifier and turns
+the unlock on; "Not now" keeps nothing. The offer stands under the header of
+every wallet page until it is answered or the store locks, and what the
+device unlock last found stands under it. The copy of the password that the
+offer would keep is taken when the unlock is sent, and only where an offer is
+possible. It is dropped at the answer, when the unlock is refused, and by
+`release_device` on a lock, a move to the background or a stop.
+
+The Settings row (`crates/app/src/screens/wallet/settings.rs`,
+`device_unlock`) is in the keystore card, after Auto-lock, and only where a
+shell offers the check. On: the note, and "Turn off", which deletes the
+password first and sets the unlock to `Off` only once the deletion has
+worked. If the deletion fails, the unlock stays on, and the page says why.
+Off: "Turn on", which is left off while the offer is on the wallet's page.
+It sets the setting back to `Unoffered`, so that the next unlock with the
+password offers again, and keeps nothing. Unoffered: a note only.
+
+On S7 (`crates/app/src/screens/first_run.rs`) the button sits above the
+password field where the unlock is on. What the device unlock last found stands
+under the button, or in its place while the unlock is off. The check is asked
+on `LifecycleEvent::Foreground`, which iced reports at a cold launch as well as
+on each return. An `Active` event asks nothing, since a Face ID prompt makes
+the application inactive. The button asks each time it is pressed. A
+password the check releases unlocks the store as a typed one does, and the
+form stays. A check that finds no password for this store, or no identifier
+to look for, deletes what is kept and turns the unlock off, and the form says
+why. A password the store refuses as wrong is deleted in the same way. Any
+other refusal, such as a store in use, keeps the password. A declined check
+changes nothing. A check that fails says why and keeps the unlock on. An
+answer for an ask that a lock, a move to the background or a stop has dropped
+is ignored, and the password it carries is wiped.
+
+The wording awaits the owner's approval (item 6), and the approval of
+2026-10-17 does not cover it. All of it is provisional:
+the S7 button, "Unlock with Face ID", "Unlock with Touch ID" or "Unlock with
+passcode"; the system's reason, "unlock Tawara"; the offer's title, "Unlock
+with Face ID next time?", its body, which begins "Keep this wallet's password
+on this phone" and says that anyone who knows the phone's passcode can open
+the wallet, and its buttons "Turn on" and "Not now"; the Settings row's
+label, "Unlock with Face ID", its three notes, and its buttons "Turn off" and
+"Turn on"; the six notes beside `DEVICE_MISSING_NOTE` in
+`crates/app/src/app.rs`; and the usage string `NSFaceIDUsageDescription`,
+which a Tawara-mobile pull request, not yet opened, will set. The full texts
+are in docs/SCREENS.md.
+
+Choices outside D45's text. Choices 1, 2, 3, 4, 6 and 7 are approved
+(owner, 2026-10-17); choices 5 and 8 are recorded as built:
+
+1. "Turn on" in Settings sets the setting back to `Unoffered` and keeps no
+   password. The offer then comes at the next unlock with the password, and
+   nothing is kept until that unlock and its answer. Keeping the password at
+   once would need the password typed in Settings, and the worker has no
+   command that only checks a password. Approved (owner, 2026-10-17): "Turn
+   on" re-arms the offer, and the password is kept after the next password
+   unlock.
+2. The check is asked at a cold launch as well as on a return to the
+   foreground. Approved (owner, 2026-10-17).
+3. The offer and the note stand on every wallet page, not on one, until the
+   offer is answered or the store locks. Approved (owner, 2026-10-17).
+4. The S7 button is secondary, so the password's Unlock stays the primary
+   action. Approved (owner, 2026-10-17).
+5. The setting is kept in `preferences`, so that the offer is made once
+   across restarts.
+6. A failed deletion keeps the unlock on, so that it can be tried again.
+   Approved (owner, 2026-10-17).
+7. `zeroize` is a new dependency of `tawara-app`: one line in `Cargo.lock`
+   and no new package. Approved (owner, 2026-10-17).
+8. `keep_password` takes a `&str`, borrowed from a `Zeroizing` copy for the
+   call only. The shell receives text, which Tawara cannot zero on its side.
+
+Not verified: no device has run any of it. The Face ID, Touch ID and
+passcode prompts, the timing of `Foreground`, and whether a Keychain item
+survives an uninstall are checks V19 (D45 items 5 and 6). After an uninstall
+the setting and `store-id` go with the folder, so a reinstalled application
+asks nothing, and only a keep reaches an item left by an earlier install
+(G28). Two things are open. A failed write of the
+preferences is not reported for this setting, since `save_prefs` ignores the
+error, so the file keeps the old value until the next write. And
+`PasswordForm` and `UnlockForm` derive `Debug` over plain `String`s, which
+G5 in docs/THREAT_MODEL.md already records with the other forms.
+
+The records are docs/THREAT_MODEL.md T43, G28, V19 and 5.4 item 16, and
+docs/SCREENS.md S7, W11, the wallet's offer and the texts table.

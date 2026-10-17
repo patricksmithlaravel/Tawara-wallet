@@ -15,6 +15,9 @@ repository.workspace = true
 chrono.workspace = true
 iced.workspace = true
 tawara-wallet-core.workspace = true
+# The copy of a password the device unlock may keep (docs/DECISIONS.md D45 item
+# 4) is wiped when dropped, as wallet-core's own secrets are.
+zeroize.workspace = true
 
 [dev-dependencies]
 iced_runtime.workspace = true
