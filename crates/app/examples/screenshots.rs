@@ -20,9 +20,11 @@
 //! it, and two frames of the recovery phrase on a short phone, 640 tall
 //! (`phone-s4-phrase-warning.png` and `phone-s4-phrase-shown.png`). The
 //! phone's welcome screen, S0, has no desktop image: it is drawn only as
-//! `phone-s0-welcome.png` (docs/DECISIONS.md D37), so the phone's images are
-//! 69 in all. Every piece of text names a bundled face (`tawara_app::fonts`),
-//! so the pixels do not depend on the fonts a machine has installed.
+//! `phone-s0-welcome.png` (docs/DECISIONS.md D37), and W1 with an account's
+//! row opened has none either: it is drawn only as
+//! `phone-w1-wallet-account-open.png` (D39), so the phone's images are 70 in
+//! all. Every piece of text names a bundled face (`tawara_app::fonts`), so the
+//! pixels do not depend on the fonts a machine has installed.
 //!
 //! Flags:
 //!
@@ -65,7 +67,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use iced::advanced::renderer::{self, Headless};
-use iced::advanced::widget::operation::scrollable::{self, RelativeOffset};
+use iced::advanced::widget::operation::scrollable::{self, AbsoluteOffset, RelativeOffset};
 use iced::advanced::widget::operation::{Outcome, focusable};
 use iced::advanced::widget::{Id, Operation};
 use iced::advanced::{clipboard, graphics};
@@ -818,6 +820,11 @@ const PHONE_ENDS: [&str; 11] = [
 /// with one.
 const KEYBOARD: f32 = 336.0;
 
+/// How far the phone's wallet page is scrolled down for the image of an open
+/// account's card, in logical pixels: the accounts start under the bar, and
+/// the card under the open row is drawn whole.
+const ACCOUNTS_SCROLL: f32 = 555.0;
+
 /// `model` as a phone draws it: the phone's safe area, with the keyboard up
 /// when `keyboard` is above zero, every store in the phone's own folder, and
 /// Save artifact's share sheet where the desktop wrote a file
@@ -865,14 +872,16 @@ fn phone(mut model: Model, keyboard: f32) -> Model {
 }
 
 /// One image to draw: its name (its file's), the window it is drawn in, the
-/// model it draws, whether it is drawn scrolled to the end of its page, and
-/// the field given the focus, if any.
+/// model it draws, whether it is drawn scrolled to the end of its page, the
+/// field given the focus, if any, and the offset, in logical pixels from the
+/// top, the page is scrolled to, if any.
 struct Image {
     name: String,
     size: (u32, u32),
     model: Model,
     to_end: bool,
     focus: Option<Id>,
+    scroll: Option<f32>,
 }
 
 /// Every desktop image, as the screens are drawn in their windows.
@@ -885,6 +894,7 @@ fn desktop() -> Vec<Image> {
             model,
             to_end: false,
             focus: None,
+            scroll: None,
         })
         .collect()
 }
@@ -899,9 +909,10 @@ fn sample_named(name: &str) -> Model {
 }
 
 /// The phone images at `width` logical pixels across: every desktop sample
-/// but the narrow ones, the phone's welcome screen, which the desktop does not
-/// have, the long pages scrolled to their end, and two drawn with the keyboard
-/// up (docs/DECISIONS.md D32 item 10 (c), D37).
+/// but the narrow ones, the phone's welcome screen and W1 with an account's
+/// row open, which the desktop does not have, the long pages scrolled to their
+/// end, and two drawn with the keyboard up (docs/DECISIONS.md D32 item 10 (c),
+/// D37, D39).
 fn phones(width: u32) -> Vec<Image> {
     let size = (width, PHONE.1);
     let mut out: Vec<Image> = samples()
@@ -913,6 +924,7 @@ fn phones(width: u32) -> Vec<Image> {
             model: phone(model, 0.0),
             to_end: false,
             focus: None,
+            scroll: None,
         })
         .collect();
     // S0 is a phone's screen alone (docs/DECISIONS.md D37), so it has no
@@ -923,6 +935,23 @@ fn phones(width: u32) -> Vec<Image> {
         model: phone(with(Screen::Welcome), 0.0),
         to_end: false,
         focus: None,
+        scroll: None,
+    });
+    // W1 with its first account's row opened into its card (docs/DECISIONS.md
+    // D39, item 4). The desktop lists its accounts in a table, which opens
+    // nothing, so this image is the phone's alone. The page is scrolled so that
+    // the accounts, and the card under the row, are in the frame.
+    let mut open = sample_named("w1-wallet");
+    if let (Screen::Wallet(page), Some(wallet)) = (&mut open.screen, &open.wallet) {
+        page.expanded = Some(wallet.accounts[0].id);
+    }
+    out.push(Image {
+        name: "phone-w1-wallet-account-open".to_owned(),
+        size,
+        model: phone(open, 0.0),
+        to_end: false,
+        focus: None,
+        scroll: Some(ACCOUNTS_SCROLL),
     });
     for name in PHONE_ENDS {
         out.push(Image {
@@ -931,6 +960,7 @@ fn phones(width: u32) -> Vec<Image> {
             model: phone(sample_named(name), 0.0),
             to_end: true,
             focus: None,
+            scroll: None,
         });
     }
     // A short phone draws the recovery phrase in two frames: the library's
@@ -946,6 +976,7 @@ fn phones(width: u32) -> Vec<Image> {
             model: phone(model, 0.0),
             to_end: false,
             focus: None,
+            scroll: None,
         });
     }
     // The field the keyboard came up for: the recovery phrase, and the first
@@ -960,6 +991,7 @@ fn phones(width: u32) -> Vec<Image> {
             model: phone(sample_named(name), KEYBOARD),
             to_end: false,
             focus: Some(field),
+            scroll: None,
         });
     }
     out
@@ -979,6 +1011,7 @@ fn nanomcm_samples(width: u32) -> Vec<Image> {
         model: phone(model, 0.0),
         to_end: false,
         focus: None,
+        scroll: None,
     }]
 }
 
@@ -993,14 +1026,16 @@ fn selected(name: &str, only: &[String], except: &[String]) -> bool {
 /// The pixels of `model`'s window at `size`, as RGBA. `to_end` scrolls the
 /// page to its end first, as a person scrolls it; `focus` gives that field the
 /// focus, and the page is scrolled to it as the application scrolls it when
-/// the keyboard comes up (`screens::reveal_focused`). The frame's instant is
-/// taken before the focus, so the caret is drawn on every run.
+/// the keyboard comes up (`screens::reveal_focused`); `scroll` puts the page at
+/// that offset from its top. The frame's instant is taken before the focus, so
+/// the caret is drawn on every run.
 fn draw(
     renderer: &mut iced::Renderer,
     model: &Model,
     size: (u32, u32),
     to_end: bool,
     focus: Option<Id>,
+    scroll: Option<f32>,
 ) -> Vec<u8> {
     let theme = theme::theme();
     #[allow(clippy::cast_precision_loss)]
@@ -1027,6 +1062,23 @@ fn draw(
                 _ => break,
             }
         }
+        let _ = ui.update(
+            &frame,
+            Cursor::Unavailable,
+            renderer,
+            &mut clipboard::Null,
+            &mut messages,
+        );
+    }
+    if let Some(y) = scroll {
+        let mut to = scrollable::scroll_to(
+            screens::page_id(),
+            AbsoluteOffset {
+                x: None,
+                y: Some(y),
+            },
+        );
+        ui.operate(renderer, &mut to);
         let _ = ui.update(
             &frame,
             Cursor::Unavailable,
@@ -1309,13 +1361,14 @@ fn main() -> ExitCode {
             mut model,
             to_end,
             focus,
+            scroll,
         } = image;
         // The window the screen is drawn in is this wide (D27, item 9).
         #[allow(clippy::cast_precision_loss)]
         {
             model.width = size.0 as f32;
         }
-        let rgba = draw(&mut renderer, &model, size, to_end, focus);
+        let rgba = draw(&mut renderer, &model, size, to_end, focus, scroll);
         let path = dir.join(format!("{name}.png"));
         if options.check {
             match decode(&path) {
