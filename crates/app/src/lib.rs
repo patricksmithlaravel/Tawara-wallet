@@ -16,7 +16,7 @@
 //!   check, where it offers one (docs/DECISIONS.md D45).
 //! - [`screens`]: every screen, a function of the model alone, so that the
 //!   screenshot example draws any screen from sample data.
-//! - [`paste`]: the Paste button of the compact layout, and a pasted
+//! - [`paste`]: the Paste button of a phone, and a pasted
 //!   recovery phrase's cleaning (docs/DECISIONS.md D32 item 10 (g), (h)).
 //! - [`scan`]: the QR scanner's side of the phones: the scanner a shell
 //!   gives, and what a scanned text must be before a destination row takes

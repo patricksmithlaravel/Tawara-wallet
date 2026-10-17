@@ -3,9 +3,10 @@
 //! (h)).
 //!
 //! On a phone iced's fields have no edit menu, so a paste reaches them only
-//! from a hardware keyboard (D32 item 9 (g)). In the compact layout a Paste
+//! from a hardware keyboard (D32 item 9 (g)). On a phone, at any width, a Paste
 //! button stands beside each destination field (W4, W8), the signed-bytes
-//! field (W9) and the recovery-phrase field (S6). It reads the platform's
+//! field (W9) and the recovery-phrase field (S6), and a Scan button beside
+//! each destination (D42 item 1). It reads the platform's
 //! clipboard through iced, only on that tap, and what it read replaces what
 //! the field held; an empty or refused read changes nothing. Nothing a paste
 //! brings is ever submitted. The desktop keeps keyboard paste and shows no
@@ -85,9 +86,9 @@ pub fn hex(text: &str) -> String {
     out
 }
 
-/// The Paste button beside a field in the compact layout (docs/DECISIONS.md
-/// D32 item 10 (g)): disabled when `on_press` is `None`, as the field beside
-/// it is while the page waits.
+/// The Paste button beside a field on a phone (docs/DECISIONS.md D32 item 10
+/// (g), and D40 item 5 as built): disabled when `on_press` is `None`, as the
+/// field beside it is while the page waits.
 pub fn button<'a, M: Clone + 'a>(on_press: Option<M>) -> Element<'a, M> {
     ui::button_with(
         "Paste",

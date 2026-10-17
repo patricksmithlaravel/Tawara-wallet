@@ -37,8 +37,8 @@ use zeroize::Zeroizing;
 pub use wallet::{
     AccountPage, ActivityPage, AddAccountPage, BLOCK_ROWS, BlockPage, DestinationRow, Done,
     ExplorerPage, FormOf, Level, Missed, Page, QueuePage, ReceivePage, RecoveryPage, RefusedField,
-    Remedy, ReportKey, ResignPage, SHARED, SendPage, SendStage, SentPage, SettingsPage, Signed,
-    SpendForm, SubmitMode, SubmitPage, TagPage, To, TransactionPage, WalletMsg, remedy,
+    Remedy, ReportKey, ResignPage, SHARED, Scanning, SendPage, SendStage, SentPage, SettingsPage,
+    Signed, SpendForm, SubmitMode, SubmitPage, TagPage, To, TransactionPage, WalletMsg, remedy,
     spend_request,
 };
 

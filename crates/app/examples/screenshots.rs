@@ -24,17 +24,22 @@
 //! row opened has none either: it is drawn only as
 //! `phone-w1-wallet-account-open.png` (D39). The Send pages 1, 2 and 4 have
 //! none either: they are drawn only as `phone-w4-send-to.png`,
-//! `phone-w4-send-amount.png` and `phone-w5-sign.png` (D40). The recovery
-//! phrase after a screenshot is drawn at 390 by 844, with the warning in the
-//! words' place (`phone-s4-phrase-photographed.png`), and while the screen is
-//! captured (`phone-s4-phrase-captured.png`) (docs/DECISIONS.md D44 items 1
-//! and 3). The unlock with the device's own check has three images of its own,
-//! drawn with a shell that offers Face ID: S7 with its button
+//! `phone-w4-send-amount.png` and `phone-w5-sign.png` (D40). Page 1 with a
+//! shell's scanner has three images of its own: the page with its Scan
+//! buttons (`phone-w4-send-to-scan.png`), the same page held sideways, 844 by
+//! 390 (`phone-w4-send-to-sideways.png`), and the scanner's own page, drawn by
+//! the application with a stand-in frame (`phone-w4-send-scan-preview.png`)
+//! (docs/DECISIONS.md D42). The recovery phrase after a screenshot is drawn at
+//! 390 by 844, with the warning in the words' place
+//! (`phone-s4-phrase-photographed.png`), and while the screen is captured
+//! (`phone-s4-phrase-captured.png`) (docs/DECISIONS.md D44 items 1 and 3). The
+//! unlock with the device's own check has three images of its own, drawn with
+//! a shell that offers Face ID: S7 with its button
 //! (`phone-s7-unlock-device.png`), the offer on the wallet's page
 //! (`phone-w1-wallet-offer.png`), and Settings with the unlock's row
 //! (`phone-w11-settings-device.png`) (docs/DECISIONS.md D45 item 4). The
 //! desktop offers no device unlock, so they are the phone's alone. So the
-//! phone's images are 81 in all. Every piece of text names a bundled face
+//! phone's images are 84 in all. Every piece of text names a bundled face
 //! (`tawara_app::fonts`), so the pixels do not depend on the fonts a machine
 //! has installed.
 //!
@@ -90,13 +95,14 @@ use iced::{Event, Size, window};
 use iced_runtime::user_interface::{Cache, UserInterface};
 use tawara_app::app::{
     AccountPage, ActivityPage, AddAccountPage, Back, BlockPage, Busy, DestinationRow, Explored,
-    ExplorerPage, Level, Missed, Model, NodeForm, NodeState, Page, PasswordForm, PhraseState,
-    QueuePage, ReceivePage, RecoveryPage, ReportKey, ResignPage, RestoreForm, SHARED, Screen,
-    SendPage, SendStage, SentPage, SettingsPage, Signed, SpendForm, StartChoice, SubmitMode,
-    SubmitPage, TagPage, TransactionPage, UnlockForm, WalletPage,
+    ExplorerPage, FormOf, Level, Missed, Model, NodeForm, NodeState, Page, PasswordForm,
+    PhraseState, QueuePage, ReceivePage, RecoveryPage, ReportKey, ResignPage, RestoreForm, SHARED,
+    Scanning, Screen, SendPage, SendStage, SentPage, SettingsPage, Signed, SpendForm, StartChoice,
+    SubmitMode, SubmitPage, TagPage, TransactionPage, UnlockForm, WalletPage,
 };
 use tawara_app::history::Filter;
-use tawara_app::host::{Device, DeviceCheck, Host, Released};
+use tawara_app::host::{Device, DeviceCheck, Host, Released, ScanDone, ScanPreview, ScanStart};
+use tawara_app::scan::Scanner;
 use tawara_app::{fonts, overflow, screens, theme};
 use tawara_wallet_core::explorer::{BlockAt, IndexState, LedgerRead, Party, TagView};
 use tawara_wallet_core::location::SyncWarning;
@@ -844,6 +850,12 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
 const PHONE: (u32, u32) = (390, 844);
 const PHONE_DIR: &str =
     "/private/var/mobile/Containers/Data/Application/0A1B2C3D/Library/Application Support/Tawara";
+/// A phone held sideways (docs/SCREENS.md, "Compact layout"): 844 by 390 logical
+/// pixels, as an iPhone 14 is held.
+const SIDEWAYS: (u32, u32) = (844, 390);
+/// How far the sideways To page is scrolled down, in logical pixels, so that its
+/// first destination's row, with its Paste and its Scan, is in the window.
+const SIDEWAYS_SCROLL: f32 = 90.0;
 /// A short phone's height (docs/DECISIONS.md D44 item 2): under 733 pixels
 /// between its insets, so the recovery phrase is drawn in two frames on it.
 /// D44 item 2 gives the 733, held as `PHRASE_ONE_FRAME` in
@@ -1054,6 +1066,42 @@ fn phones(width: u32) -> Vec<Image> {
             scroll: None,
         });
     }
+    // The scanner's scenes (docs/DECISIONS.md D42): page 1 with a shell's scanner,
+    // held sideways as well, and the application's own scanner page, with a
+    // stand-in frame for the camera's.
+    out.push(Image {
+        name: "phone-w4-send-to-scan".to_owned(),
+        size,
+        model: phone(
+            with_scanner(phone_named("w4-send-to"), ScanPreview::Shell),
+            0.0,
+        ),
+        to_end: false,
+        focus: None,
+        scroll: None,
+    });
+    out.push(Image {
+        name: "phone-w4-send-to-sideways".to_owned(),
+        size: SIDEWAYS,
+        model: phone_sideways(with_scanner(phone_named("w4-send-to"), ScanPreview::Shell)),
+        to_end: false,
+        focus: None,
+        scroll: Some(SIDEWAYS_SCROLL),
+    });
+    out.push(Image {
+        name: "phone-w4-send-scan-preview".to_owned(),
+        size,
+        model: phone(
+            scanning_first(with_scanner(
+                phone_named("w4-send-to"),
+                ScanPreview::Application,
+            )),
+            0.0,
+        ),
+        to_end: false,
+        focus: None,
+        scroll: None,
+    });
     for name in PHONE_ENDS {
         out.push(Image {
             name: format!("phone-{name}-end"),
@@ -1166,6 +1214,106 @@ fn phones(width: u32) -> Vec<Image> {
 fn with_device(mut model: Model, state: DeviceUnlock) -> Model {
     model.device = Some(face_id_device());
     model.prefs.device_unlock = state;
+    model
+}
+
+/// `model` on a phone whose shell gives a scanner, which draws the camera's
+/// preview as `preview` says (docs/DECISIONS.md D42 item 1).
+fn with_scanner(mut model: Model, preview: ScanPreview) -> Model {
+    model.scanner = Some(scanner(preview));
+    model
+}
+
+/// The QR scanner of a shell that gives all three scan fields (docs/DECISIONS.md
+/// D42). A drawing starts no camera, so its functions do nothing.
+fn scanner(preview: ScanPreview) -> Scanner {
+    fn copy(_: &str) {}
+    fn share(_: &str, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn back() {}
+    fn start(_: ScanDone) -> Result<(), String> {
+        Ok(())
+    }
+    fn cancel() {}
+    let host = Host {
+        private_dir: PathBuf::from(PHONE_DIR),
+        copy,
+        share,
+        back,
+        captured: None,
+        device_check: None,
+        keep_password: None,
+        release_password: None,
+        forget_password: None,
+        scan: Some(start as ScanStart),
+        cancel_scan: Some(cancel as fn()),
+        scan_preview: Some(preview),
+    };
+    let (replies, _received) = iced::futures::channel::mpsc::unbounded();
+    Scanner::of(&host, replies).expect("a shell that gives every scan field offers a scanner")
+}
+
+/// `model` with the scan of its first destination under way, its camera's
+/// latest frame the stand-in (docs/DECISIONS.md D42 item 3).
+fn scanning_first(mut model: Model) -> Model {
+    let scanning = match &model.screen {
+        Screen::Wallet(WalletPage {
+            page: Page::Send(send),
+            ..
+        }) => Some(Scanning {
+            ask: 1,
+            row: 0,
+            form: FormOf::Send(send.from),
+            rows: send.form.rows.len(),
+            typed: send.form.rows[0].clone(),
+        }),
+        _ => None,
+    };
+    model.scanning = scanning;
+    model.scan_preview = Some(stand_in_frame());
+    model
+}
+
+/// A stand-in for the frame a camera gives the scanner's page: a dark room, a
+/// light card, and a code of dark modules on it with its three corner marks,
+/// in 320 by 240 pixels, a 4 by 3 frame (docs/DECISIONS.md D42 item 3). It is
+/// drawn, not read from a camera.
+fn stand_in_frame() -> iced::widget::image::Handle {
+    const W: u32 = 320;
+    const H: u32 = 240;
+    let mut rgba = Vec::with_capacity((W * H * 4) as usize);
+    for y in 0..H {
+        for x in 0..W {
+            let room = 20 + y / 12;
+            let mut pixel = [room as u8, (room + 6) as u8, (room + 10) as u8, 255];
+            if (50..270).contains(&x) && (14..226).contains(&y) {
+                pixel = [226, 230, 224, 255];
+            }
+            if (100..220).contains(&x) && (50..170).contains(&y) {
+                let (cx, cy) = ((x - 100) / 6, (y - 50) / 6);
+                let corner = (cx < 3 && cy < 3) || (cx >= 17 && cy < 3) || (cx < 3 && cy >= 17);
+                if corner || (cx * 5 + cy * 3 + cx * cy) % 4 < 2 {
+                    pixel = [20, 24, 26, 255];
+                }
+            }
+            rgba.extend_from_slice(&pixel);
+        }
+    }
+    iced::widget::image::Handle::from_rgba(W, H, rgba)
+}
+
+/// `model` as a phone held sideways draws it: 844 by 390, with the insets of a
+/// notch at the sides and the home indicator at the foot (docs/SCREENS.md,
+/// "Compact layout").
+fn phone_sideways(model: Model) -> Model {
+    let mut model = phone(model, 0.0);
+    model.safe_area = iced::mobile::SafeArea::new(iced::Padding {
+        top: 0.0,
+        right: 47.0,
+        bottom: 21.0,
+        left: 47.0,
+    });
     model
 }
 
@@ -1412,13 +1560,14 @@ fn overflow_lines(
 /// `--fit` holds them to the part of the window a person sees between the safe
 /// area's insets, with no page that scrolls and no word wider than its box, as
 /// their tests do (docs/DECISIONS.md D37, D44).
-const WHOLE: [&str; 6] = [
+const WHOLE: [&str; 7] = [
     "phone-s0-welcome",
     "phone-s4-phrase",
     "phone-s4-phrase-warning",
     "phone-s4-phrase-shown",
     "phone-s4-phrase-captured",
     "phone-s4-phrase-photographed",
+    "phone-w4-send-scan-preview",
 ];
 
 /// What `model`'s window at `width` by `height` logical pixels draws outside
@@ -1451,7 +1600,9 @@ fn fit(renderer: &iced::Renderer, only: &[String], except: &[String], width: u32
     #[allow(clippy::cast_precision_loss)]
     let logical = width as f32;
     for image in phones(width).into_iter().chain(nanomcm_samples(width)) {
-        if !selected(&image.name, only, except) {
+        // A phone held sideways is wider than it is tall, and is not held to
+        // the phone's width (docs/SCREENS.md, "Compact layout").
+        if image.size == SIDEWAYS || !selected(&image.name, only, except) {
             continue;
         }
         let mut model = image.model;

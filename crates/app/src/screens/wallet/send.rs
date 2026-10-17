@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 
 use iced::widget::text::Wrapping;
 use iced::widget::{Row, checkbox, column, container, row, space, text_input};
-use iced::{Alignment, Element, Length, Padding};
+use iced::{Alignment, ContentFit, Element, Length, Padding};
 use tawara_wallet_core::preferences::AmountUnit;
 use tawara_wallet_core::view::{AccountId, AccountState};
 use tawara_wallet_core::{MAX_DESTINATIONS, PlanView, PlannedDestination, REFERENCE_RULE};
@@ -69,6 +69,75 @@ pub fn view<'a>(model: &'a Model, page: &'a WalletPage, s: &'a SendPage) -> Elem
         SendStage::Sign(plan) => sign_page(model, page, plan),
         SendStage::Sent(sent) => sent_page(model, page, sent),
     }
+}
+
+/// The scanner's page on a phone whose shell draws the camera's preview in the
+/// application (docs/DECISIONS.md D42 item 3): the camera's latest frame, a
+/// line on what to point at, and Cancel. It is drawn in place of the page the
+/// scan began on, which it returns to when the scan ends. The text a code holds
+/// is not drawn here, since it is untrusted until it is checked (D42 item 4).
+/// The line and the title are new wording, for the owner's approval.
+pub fn scanner<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> {
+    // The frame is drawn whole, letterboxed in the box, so that the code can be
+    // seen in it; until the first frame comes, the box is empty.
+    let shown: Element<'a, Message> = match &model.scan_preview {
+        Some(frame) => iced::widget::image(frame.clone())
+            .content_fit(ContentFit::Contain)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into(),
+        None => space().width(Length::Fill).height(Length::Fill).into(),
+    };
+    let viewfinder = container(shown)
+        .width(Length::Fill)
+        .height(Length::Fixed(VIEWFINDER))
+        .clip(true)
+        .style(theme::field_box);
+    let cancel = ui::button_with(
+        "Cancel",
+        theme::Button::Secondary,
+        Size::Medium,
+        None,
+        Some(Message::CancelScan),
+    )
+    .width(Length::Fill);
+    frame(
+        model,
+        page,
+        "Scan a destination",
+        "Point the camera at a QR code with a destination in it.",
+        Vec::new(),
+        vec![
+            ui::card_for(
+                model.compact(),
+                column![viewfinder, cancel].spacing(sp::S16),
+            )
+            .into(),
+        ],
+    )
+}
+
+/// The height of the scanner's viewfinder, in logical pixels: the most the
+/// page holds at 360 by 640 without scrolling, with its title, its line and
+/// Cancel (docs/DECISIONS.md D42 item 3).
+const VIEWFINDER: f32 = 200.0;
+
+/// The Scan button beside destination row `row` on a phone whose shell gives a
+/// scanner (docs/DECISIONS.md D42 item 1): drawn with the Scan glyph, and enabled
+/// while nothing is being done for the page and no scan is under way. `None`
+/// where no scanner is offered, which is every desktop.
+fn scan_button<'a>(model: &Model, row: usize) -> Option<Element<'a, Message>> {
+    model.scan_offered().then(|| {
+        let idle = model.busy.is_none() && model.scanning.is_none();
+        ui::button_with(
+            "Scan",
+            theme::Button::Secondary,
+            Size::Small,
+            Some(Icon::Scan),
+            idle.then_some(Message::Scan(row)),
+        )
+        .into()
+    })
 }
 
 /// No refusals, for a page drawn without any. A static, since the page
@@ -202,10 +271,10 @@ fn back<'a>(model: &Model) -> Element<'a, Message> {
 
 /// Page 1 of 4 on a phone (docs/DECISIONS.md D40 item 1): the account the spend
 /// comes from, with "Change" beside it when another account can spend too, and
-/// the destinations, each with its Paste, its reference and its Remove; then
-/// "Add another destination" and "Continue". What "Continue" found wrong with
-/// an address or a reference is shown under that field, and what it refused
-/// beside it (docs/DECISIONS.md D40 item 4).
+/// the destinations, each with its Paste and its Scan, its reference and its
+/// Remove; then "Add another destination" and "Continue". What "Continue" found
+/// wrong with an address or a reference is shown under that field, and what it
+/// refused beside it (docs/DECISIONS.md D40 item 4).
 fn to_page<'a>(
     model: &'a Model,
     page: &'a WalletPage,
@@ -213,7 +282,6 @@ fn to_page<'a>(
     refused: &'a BTreeMap<(usize, RefusedField), String>,
 ) -> Element<'a, Message> {
     let idle = model.busy.is_none();
-    let compact = model.compact();
     let spendable = spendable_of(model);
     let blocked = s.from.filter(|f| !spendable.contains(f));
     let mut from = column![ui::section_label("From account")].spacing(sp::S12);
@@ -273,13 +341,18 @@ fn to_page<'a>(
             Some(Icon::Trash),
             (idle && several).then(|| Message::Wallet(WalletMsg::RemoveDestination(i))),
         );
-        // The Paste button beside the field, in the compact layout only, as
-        // [`destinations`] has it (docs/DECISIONS.md D32 item 10 (g)).
+        // The Paste button beside the field, on a phone at any width, and the
+        // Scan button beside that where a shell gives a scanner, as
+        // [`destinations`] has them (docs/DECISIONS.md D32 item 10 (g), D42
+        // item 1).
         let mut address = row![to.width(Length::Fill)];
-        if compact {
+        if model.phone() {
             address = address.push(paste::button(shown.map(|(form, rows)| {
                 Message::Paste(PasteInto::Destination { form, row: i, rows })
             })));
+            if let Some(scan) = scan_button(model, i) {
+                address = address.push(scan);
+            }
         }
         let mut block = column![
             row![
@@ -499,11 +572,11 @@ fn amount_page<'a>(
 
 /// The destinations as typed, the "everything" choice, and the fee and
 /// block-to-live: W4's form and W8's. On a phone each destination is a block
-/// of its own, with no table header (docs/SCREENS.md, "Compact layout";
-/// docs/DECISIONS.md D32 item 10 (b)).
+/// of its own, with no table header, whatever the phone's width (docs/SCREENS.md,
+/// "Compact layout"; docs/DECISIONS.md D32 item 10 (b), D39 item 5).
 fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> {
     let idle = model.busy.is_none();
-    let compact = model.compact();
+    let phone = model.phone();
     let field = |value: &'a str, placeholder: &'a str, mono: bool| {
         let face = if mono { ty::MONO } else { ty::FIELD };
         text_input(placeholder, value)
@@ -512,7 +585,7 @@ fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> 
             .padding(Padding::from([sp::S12, sp::S14]))
             .style(theme::field(radius::R12))
     };
-    let mut list = if compact {
+    let mut list = if phone {
         column![].spacing(sp::S16)
     } else {
         column![
@@ -562,7 +635,7 @@ fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> 
                 .on_press_maybe(
                     (idle && several).then_some(WalletMsg::RemoveDestination(i).into()),
                 );
-        if compact {
+        if phone {
             // The blocks are divided, with none above the first.
             if i > 0 {
                 list = list.push(ui::divider());
@@ -570,6 +643,16 @@ fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> 
             // The destination takes the width, and the amount and the
             // reference sit side by side beneath it, so that a long
             // destination is not cut short on a phone (D32 item 10 (b)).
+            // Beside the destination stand its Paste button (docs/DECISIONS.md
+            // D32 item 10 (g)) and, where a shell gives a scanner, its Scan
+            // button (D42 item 1).
+            let mut address = row![to.width(Length::Fill)];
+            address = address.push(paste::button(shown.map(|(form, rows)| {
+                Message::Paste(PasteInto::Destination { form, row: i, rows })
+            })));
+            if let Some(scan) = scan_button(model, i) {
+                address = address.push(scan);
+            }
             list = list.push(
                 column![
                     row![
@@ -583,17 +666,10 @@ fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> 
                     ]
                     .width(Length::Fill)
                     .align_y(Alignment::Center),
-                    // A Paste button beside it (docs/DECISIONS.md D32 item
-                    // 10 (g)).
-                    row![
-                        to.width(Length::Fill),
-                        paste::button(shown.map(|(form, rows)| {
-                            Message::Paste(PasteInto::Destination { form, row: i, rows })
-                        })),
-                    ]
-                    .spacing(sp::S8)
-                    .align_y(Alignment::Center)
-                    .width(Length::Fill),
+                    address
+                        .spacing(sp::S8)
+                        .align_y(Alignment::Center)
+                        .width(Length::Fill),
                     row![
                         column![
                             t("Amount (MCM)", ty::FORM_LABEL, color::TEXT_SECONDARY),
@@ -684,7 +760,7 @@ fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> 
     // At 360 a half-width fee field cuts its placeholder, "the node's floor",
     // short, so on a phone the two fields stand one over the other
     // (docs/DECISIONS.md D32 item 10 (b)).
-    let fees: Element<'a, Message> = if compact {
+    let fees: Element<'a, Message> = if phone {
         column![fee, btl].spacing(sp::S12).into()
     } else {
         row![fee, btl].spacing(sp::S12).into()
@@ -1438,16 +1514,16 @@ fn submit_form<'a>(
              Nothing is signed, and no key index moves.",
         ),
     };
-    // On a phone the field has the width of its row, less the Paste button
-    // beside it (docs/DECISIONS.md D32 item 10 (g)), and Submit stands above
-    // its helper (docs/SCREENS.md, "Compact layout").
+    // On a phone, at any width, the field has the width of its row, less the
+    // Paste button beside it (docs/DECISIONS.md D32 item 10 (g)), and Submit
+    // stands above its helper (docs/SCREENS.md, "Compact layout").
     let paste = paste::button(
         model
             .busy
             .is_none()
             .then_some(Message::Paste(PasteInto::SignedBytes)),
     );
-    let entry: Element<'a, Message> = if compact {
+    let entry: Element<'a, Message> = if model.phone() {
         column![
             label,
             row![hex, paste]
@@ -1497,15 +1573,17 @@ mod tests {
     use iced::advanced::widget::{Operation, Tree};
     use iced::keyboard::key::{Named, NativeCode, Physical};
     use iced::keyboard::{Key, Location, Modifiers};
-    use iced::{Event, Rectangle, keyboard, mouse};
+    use iced::mobile::SafeArea;
+    use iced::{Event, Padding, Rectangle, keyboard, mouse};
     use iced_runtime::user_interface::{Cache, UserInterface};
     use tawara_wallet_core::preferences::Preferences;
     use tawara_wallet_core::sample;
     use tawara_wallet_core::view::AccountState;
 
     use super::*;
-    use crate::app::{Busy, DestinationRow, Level, NARROWEST, Page, Screen};
+    use crate::app::{Busy, DestinationRow, FormOf, Level, NARROWEST, Page, Scanning, Screen};
     use crate::harness::{Driver, fits, mouse_move, mouse_press, mouse_release, texts};
+    use crate::host::ScanPreview;
     use crate::screens;
 
     /// A key press as the keyboard sends it, with the text it types, if any.
@@ -1863,6 +1941,23 @@ mod tests {
             ),
             ("page 1 with the account set aside", set_aside_model),
             ("page 1 with the account list open", list),
+            (
+                "page 1 with a scanner, so Scan stands by each destination",
+                with_scanner(
+                    phone_at(stage_page(to(), typed()), width),
+                    ScanPreview::Shell,
+                ),
+            ),
+            (
+                "the scanner's page, drawn by the application",
+                scanning(
+                    with_scanner(
+                        phone_at(stage_page(to(), typed()), width),
+                        ScanPreview::Application,
+                    ),
+                    0,
+                ),
+            ),
             (
                 "page 1 with refusals under its fields",
                 phone_at(
@@ -2420,12 +2515,58 @@ mod tests {
     /// Where each Paste button's label lies in `model`'s window at the
     /// phone's narrowest width.
     fn pastes(model: &Model) -> Vec<Rectangle> {
-        texts(screens::view(model), (NARROWEST, 844.0))
+        pastes_at(model, NARROWEST)
+    }
+
+    /// Where each Paste button's label lies in `model`'s window `width` wide.
+    fn pastes_at(model: &Model, width: f32) -> Vec<Rectangle> {
+        labels_at(model, width, "Paste")
+    }
+
+    /// Where each Scan button's label lies in `model`'s window `width` wide.
+    fn scans_at(model: &Model, width: f32) -> Vec<Rectangle> {
+        labels_at(model, width, "Scan")
+    }
+
+    /// Where each button labelled `label` lies in `model`'s window `width` wide,
+    /// top to bottom.
+    fn labels_at(model: &Model, width: f32, label: &str) -> Vec<Rectangle> {
+        texts(screens::view(model), (width, 844.0))
             .into_iter()
-            .filter(|(text, _)| text == "Paste")
+            .filter(|(text, _)| text == label)
             .map(|(_, at)| at)
             .collect()
     }
+
+    /// `model` as a phone whose shell gives a scanner, which draws the camera's
+    /// preview in the application when `preview` says so.
+    fn with_scanner(mut model: Model, preview: ScanPreview) -> Model {
+        model.scanner = Some(crate::harness::scanner(preview));
+        model
+    }
+
+    /// `model` with a scan of destination `row` under way, begun from the
+    /// sample's form as the page shows it.
+    fn scanning(mut model: Model, row: usize) -> Model {
+        model.scanning = Some(Scanning {
+            ask: 1,
+            row,
+            form: FormOf::Send(Some(accounts()[0])),
+            rows: typed().rows.len(),
+            typed: typed().rows[row].clone(),
+        });
+        model
+    }
+
+    /// The phone's two sizes as the scanner's page is held to them: the phone's
+    /// insets, which are the status bar's above and the home indicator's below
+    /// (docs/DECISIONS.md D32 item 10 (b)).
+    const PHONE_INSETS: Padding = Padding {
+        top: 47.0,
+        right: 0.0,
+        bottom: 34.0,
+        left: 0.0,
+    };
 
     #[test]
     fn on_a_phone_a_destination_takes_the_width_of_its_card_beside_its_paste() {
@@ -2447,14 +2588,38 @@ mod tests {
     }
 
     #[test]
+    fn on_a_phone_a_destination_beside_its_paste_and_its_scan_keeps_the_rest_of_its_row() {
+        // With a scanner, the Scan button stands beside the Paste button, and the
+        // destination still takes what the two leave of its row, at 360 and at 390.
+        for width in [NARROWEST, 390.0] {
+            let model = with_scanner(
+                phone_at(stage_page(SendStage::To(BTreeMap::new()), typed()), width),
+                ScanPreview::Shell,
+            );
+            let fields = focusable_bounds(screens::view(&model));
+            let field = fields.first().copied().expect("the first destination");
+            let paste = pastes_at(&model, width)[0];
+            let scan = scans_at(&model, width)[0];
+            assert!(
+                field.width >= 120.0,
+                "at {width} wide the destination is {field:?}"
+            );
+            assert!(
+                field.x + field.width < paste.x && paste.x + paste.width < scan.x,
+                "the field, the Paste and the Scan run in that order: {field:?}, {paste:?}, {scan:?}"
+            );
+        }
+    }
+
+    #[test]
     fn on_a_phone_the_signed_bytes_field_takes_its_row_beside_its_paste() {
-        let model = phone(
+        let model = phone_at(
             Page::Submit(SubmitPage {
                 hex: sample::sent_view().artifact_hex,
                 result: None,
                 ..SubmitPage::default()
             }),
-            None,
+            NARROWEST,
         );
         let fields = focusable_bounds(screens::view(&model));
         let field = fields.first().copied().expect("the signed-bytes field");
@@ -2487,16 +2652,201 @@ mod tests {
                 (Page::Submit(SubmitPage::default()), 1),
             ]
         };
-        for (page, fields) in pages() {
-            assert_eq!(pastes(&phone_at(page, NARROWEST)).len(), fields);
+        // A phone held sideways, 600 to 1023 wide, pastes as a phone does
+        // (docs/DECISIONS.md D40 item 5, as built; D42 item 1).
+        for width in [NARROWEST, 390.0, 600.0, 844.0, 1023.0] {
+            for (page, fields) in pages() {
+                assert_eq!(
+                    pastes_at(&phone_at(page, width), width).len(),
+                    fields,
+                    "at {width} wide"
+                );
+            }
         }
-        for (page, _) in pages() {
-            let drawn = drawn_on(&desktop_at(page, 1440.0));
-            assert!(
-                !has(&drawn, "Paste"),
-                "the desktop pastes from the keyboard"
+        for width in [1024.0, 1440.0] {
+            for (page, _) in pages() {
+                let drawn = drawn_on(&desktop_at(page, width));
+                assert!(
+                    !has(&drawn, "Paste"),
+                    "the desktop pastes from the keyboard, at {width} wide"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn on_a_phone_a_scan_button_stands_beside_each_paste_at_every_width_and_none_without_a_scanner()
+    {
+        // A Scan button for each destination row, beside its Paste, on page 1
+        // and on the re-sign form, in portrait and sideways (docs/DECISIONS.md
+        // D42 item 1). A phone whose shell gives no scanner has none.
+        let pages = || {
+            [
+                stage_page(SendStage::To(BTreeMap::new()), typed()),
+                Page::Resign(ResignPage {
+                    account: accounts()[1],
+                    form: typed(),
+                }),
+            ]
+        };
+        for width in [NARROWEST, 390.0, 600.0, 844.0, 1023.0] {
+            for page in pages() {
+                let model = with_scanner(phone_at(page.clone(), width), ScanPreview::Shell);
+                let pastes = pastes_at(&model, width);
+                let scans = scans_at(&model, width);
+                assert_eq!(scans.len(), 2, "at {width} wide");
+                assert_eq!(pastes.len(), 2, "at {width} wide");
+                for (paste, scan) in pastes.iter().zip(&scans) {
+                    assert!(
+                        scan.x > paste.x + paste.width && (scan.y - paste.y).abs() < 1.0,
+                        "the Scan button stands to the Paste button's right: {scan:?}, {paste:?}"
+                    );
+                }
+                assert_eq!(
+                    fits(screens::view(&model), width),
+                    Ok(()),
+                    "at {width} wide"
+                );
+                let bare = phone_at(page, width);
+                assert!(scans_at(&bare, width).is_empty(), "no scanner, no Scan");
+                assert_eq!(pastes_at(&bare, width).len(), 2, "Paste stays without one");
+            }
+        }
+    }
+
+    #[test]
+    fn the_desktop_draws_neither_paste_nor_scan_even_where_a_scanner_is_given() {
+        // Only a phone's shell gives a scanner, and the desktop's pages draw
+        // neither button (docs/DECISIONS.md D32 item 10 (g), D42 item 1).
+        for width in [1024.0, 1440.0] {
+            for page in [
+                compose(typed()),
+                Page::Resign(ResignPage {
+                    account: accounts()[1],
+                    form: typed(),
+                }),
+            ] {
+                let model = with_scanner(desktop_at(page, width), ScanPreview::Shell);
+                let drawn = drawn_on(&model);
+                assert!(!has(&drawn, "Paste"), "{drawn:?}");
+                assert!(!has(&drawn, "Scan"), "{drawn:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_tap_on_a_scan_button_asks_for_its_own_row_and_none_is_asked_while_a_scan_is_under_way() {
+        let idle = with_scanner(
+            phone_at(
+                stage_page(SendStage::To(BTreeMap::new()), typed()),
+                NARROWEST,
+            ),
+            ScanPreview::Shell,
+        );
+        let second = scans_at(&idle, NARROWEST)[1];
+        let mut driver = Driver::new(screens::view(&idle), (360, 844));
+        let (messages, _, _) = driver.send(&[
+            mouse_move(second.center_x(), second.center_y()),
+            mouse_press(),
+            mouse_release(),
+        ]);
+        assert!(
+            matches!(messages.as_slice(), [Message::Scan(1)]),
+            "{messages:?}"
+        );
+
+        // A scan under way disables every Scan button: a second scan is not begun.
+        let under_way = scanning(
+            with_scanner(
+                phone_at(
+                    stage_page(SendStage::To(BTreeMap::new()), typed()),
+                    NARROWEST,
+                ),
+                ScanPreview::Shell,
+            ),
+            0,
+        );
+        let second = scans_at(&under_way, NARROWEST)[1];
+        let mut driver = Driver::new(screens::view(&under_way), (360, 844));
+        let (messages, _, _) = driver.send(&[
+            mouse_move(second.center_x(), second.center_y()),
+            mouse_press(),
+            mouse_release(),
+        ]);
+        assert!(messages.is_empty(), "{messages:?}");
+    }
+
+    #[test]
+    fn the_scan_page_draws_its_frame_a_line_and_cancel_and_fits_a_phone() {
+        // The camera's preview is drawn in the application: the page shows the
+        // latest frame, what to point at, and Cancel, whole at 360 by 640 and at
+        // 390 by 844 (docs/DECISIONS.md D42 item 3).
+        for (width, height) in PHONES {
+            let mut model = scanning(
+                with_scanner(
+                    phone_at(stage_page(SendStage::To(BTreeMap::new()), typed()), width),
+                    ScanPreview::Application,
+                ),
+                0,
             );
+            // The phone's status bar and home indicator cover the window's edges,
+            // so the page is drawn between them, as the phone draws it.
+            model.safe_area = SafeArea::new(PHONE_INSETS);
+            model.scan_preview = Some(iced::widget::image::Handle::from_rgba(
+                4,
+                3,
+                vec![0x40; 4 * 3 * 4],
+            ));
+            let problems = crate::harness::fits_the_viewport(
+                screens::view(&model),
+                (width, height),
+                PHONE_INSETS,
+            );
+            assert!(problems.is_empty(), "at {width} by {height}: {problems:?}");
+            assert!(
+                past_the_edge(screens::view(&model), width, height).is_empty(),
+                "at {width} by {height}"
+            );
+            let drawn = texts(screens::view(&model), (width, height));
+            assert!(has(&drawn, "Cancel"), "{drawn:?}");
+            assert!(
+                has(
+                    &drawn,
+                    "Point the camera at a QR code with a destination in it."
+                ),
+                "{drawn:?}"
+            );
+            assert!(!has(&drawn, "Paste") && !has(&drawn, "Scan"), "{drawn:?}");
         }
+    }
+
+    #[test]
+    fn a_tap_on_cancel_on_the_scan_page_asks_to_stop_the_scan() {
+        let model = scanning(
+            with_scanner(
+                phone_at(
+                    stage_page(SendStage::To(BTreeMap::new()), typed()),
+                    NARROWEST,
+                ),
+                ScanPreview::Application,
+            ),
+            0,
+        );
+        let cancel = texts(screens::view(&model), (NARROWEST, 640.0))
+            .into_iter()
+            .find(|(text, _)| text == "Cancel")
+            .map(|(_, at)| at)
+            .expect("Cancel is drawn");
+        let mut driver = Driver::new(screens::view(&model), (360, 640));
+        let (messages, _, _) = driver.send(&[
+            mouse_move(cancel.center_x(), cancel.center_y()),
+            mouse_press(),
+            mouse_release(),
+        ]);
+        assert!(
+            matches!(messages.as_slice(), [Message::CancelScan]),
+            "{messages:?}"
+        );
     }
 
     #[test]
@@ -2523,7 +2873,7 @@ mod tests {
             "{messages:?}"
         );
 
-        let model = phone(Page::Submit(SubmitPage::default()), None);
+        let model = phone_at(Page::Submit(SubmitPage::default()), NARROWEST);
         let at = pastes(&model)[0];
         let mut driver = Driver::new(screens::view(&model), (360, 844));
         let (messages, _, _) = driver.send(&[

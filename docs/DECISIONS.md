@@ -3734,8 +3734,11 @@ Not built:
   buttons, since Paste is drawn in the compact layout only. Decided (owner,
   2026-10-17): Paste is to follow `phone()` (`Model::phone` in
   `crates/app/src/app.rs`), as W1's sections follow the phone shell (D39 item
-  5), so that a phone held sideways draws it too. That is to be built in a later
-  pull request, not this one.
+  5), so that a phone held sideways draws it too. Built with D42's views: every
+  Paste button follows `phone()` (`Model::phone`), on page 1, the re-sign form,
+  the signed-bytes field and the recovery phrase; and a phone held sideways draws
+  the destinations as blocks and the fee and block-to-live one over the other, as
+  it does upright, since those rows hold its buttons.
 
 Corrected line references:
 - Items 2, 3 and 5 gave lines that were stale at b67e90c, the base of this
@@ -3861,9 +3864,24 @@ and by `Message::CancelScan`. On Android the shell hands each frame to
 `host::preview_frame`, and `Message::Preview` takes the latest while a scan
 draws its preview in the application. A refusal shows under the row's address:
 the library's words, or one of three new ones, `EMPTY`, `OVERLONG` and
-`NOT_TEXT`, which await the owner's approval with the page's text. Not built
-yet: the Scan button and the scanner page, which are views, and the shells'
-scanners, which are Tawara-mobile's.
+`NOT_TEXT`, which await the owner's approval with the page's text.
+
+**As built, the views.** On a phone whose shell gives a scanner
+(`Model::scan_offered`), each destination row of page 1 and of the re-sign form
+(W8) has a Scan button beside its Paste, drawn with `Icon::Scan` and enabled
+while nothing is being done for the page and no scan is under way. While a scan
+draws its preview in the application (`Model::previewing`, Android), the
+scanner's page stands in place of the page the scan began on: the latest frame,
+a line on what to point at, and Cancel, with no text a code holds. Its frame is
+200 logical pixels tall, so the page fits 360 by 640 and 390 by 844 without
+scrolling (`the_scan_page_draws_its_frame_a_line_and_cancel_and_fits_a_phone`,
+`screens/wallet/send.rs`). iOS's page is the shell's own, so the application
+keeps the page as it was, with Scan disabled while the scan is under way. The
+re-sign form's Scan is as the application builds it; whether W8 keeps it is for
+the owner to confirm. The scanner's title and line, and the Scan label, are new
+wording, for the owner's approval with the rest of item 5. Not built yet: the
+shells' scanners, which are Tawara-mobile's (G29), and the checks on a
+device (V20).
 
 ### D43. A default node: `https://api.mochimo.org`
 
