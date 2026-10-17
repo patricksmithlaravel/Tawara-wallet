@@ -528,8 +528,23 @@ pub struct ResignPage {
 #[derive(Clone, Debug, Default)]
 pub struct SubmitPage {
     pub hex: String,
+    /// What the bytes are sent as, and so what the page says of them.
+    pub mode: SubmitMode,
     /// Whether the library counts it as written, and its page.
     pub result: Option<(bool, String)>,
+}
+
+/// What W9 sends its bytes as.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SubmitMode {
+    /// The signed bytes of an open reservation, as the sent page saved them,
+    /// sent with `SubmitArtifact`, which opens no store.
+    #[default]
+    Artifact,
+    /// A saved copy of a settle the chain reverted, for this account, sent
+    /// with `ResubmitSaved` (docs/DECISIONS.md D38 item 5 (b)). Reached from
+    /// the account's page only.
+    Resubmit(AccountId),
 }
 
 /// Where a wallet message goes.
@@ -544,6 +559,9 @@ pub enum To {
     Account(AccountId),
     Resign(AccountId),
     Submit,
+    /// W9 in resubmit mode, for this account's saved copy of a settle the
+    /// chain reverted (docs/DECISIONS.md D38 item 5 (b)).
+    Resubmit(AccountId),
     Activity,
     Settings,
     /// W12, with this account to act on.
@@ -1387,6 +1405,10 @@ impl App {
                 form: self.model.kept_form(account).unwrap_or_default(),
             }),
             To::Submit => Page::Submit(SubmitPage::default()),
+            To::Resubmit(account) => Page::Submit(SubmitPage {
+                mode: SubmitMode::Resubmit(account),
+                ..SubmitPage::default()
+            }),
             To::Activity => Page::Activity(ActivityPage::default()),
             To::Settings => Page::Settings(SettingsPage {
                 node: self.model.node.url.clone().unwrap_or_default(),
@@ -1962,11 +1984,9 @@ impl App {
                     self.page_error(Some("Paste the signed bytes, as hex.".to_owned()));
                 } else {
                     s.result = None;
+                    let (command, purpose) = submit_command(s.mode, artifact_hex);
                     self.page_error(None);
-                    self.send(
-                        Command::SubmitArtifact { artifact_hex },
-                        Purpose::SubmitArtifact,
-                    );
+                    self.send(command, purpose);
                 }
             }
             WalletMsg::Filter(filter) => {
@@ -2742,10 +2762,61 @@ impl App {
                     s.result = Some((accepted, text));
                 }
             }
+            // A saved copy written to the node. The read the worker made after
+            // the write is the view it carries, so the account's row is the
+            // store as it stands now (docs/DECISIONS.md D38 item 5 (b)). A
+            // refusal is the page's error, as any other.
+            (Purpose::Resubmit(_), Reply::Resubmitted { text, view, .. }) => {
+                self.model.wallet = Some(view);
+                if let Some(WalletPage {
+                    page: Page::Submit(s),
+                    ..
+                }) = self.wallet_page()
+                {
+                    s.result = Some((true, text));
+                }
+            }
+            // A saved copy the library refused. Its write may have reached the
+            // node before the refusal, so the account is read again, quietly, as
+            // after a sign the library refused (ConfirmSend above; docs/DECISIONS.md
+            // D38 items 2 and 5 (b)). The read is a poll: what it finds, and any
+            // settlement, is shown as a poll's is.
+            (Purpose::Resubmit(account), Reply::Refused(r)) => {
+                if r.kind == RefusalKind::Library {
+                    self.send(
+                        Command::Status {
+                            account,
+                            scan_to: None,
+                        },
+                        Purpose::Poll,
+                    );
+                }
+                self.refused(r);
+            }
             (_, Reply::Refused(r)) => self.refused(r),
             _ => {}
         }
         Task::none()
+    }
+}
+
+/// What W9 sends for `artifact_hex` in `mode`: the bytes of an open
+/// reservation go as `SubmitArtifact` sends them, and a saved copy of a
+/// reverted settle as `ResubmitSaved` sends it, for its account
+/// (docs/DECISIONS.md D38 item 5 (b)).
+fn submit_command(mode: SubmitMode, artifact_hex: String) -> (Command, Purpose) {
+    match mode {
+        SubmitMode::Artifact => (
+            Command::SubmitArtifact { artifact_hex },
+            Purpose::SubmitArtifact,
+        ),
+        SubmitMode::Resubmit(account) => (
+            Command::ResubmitSaved {
+                account,
+                artifact_hex,
+            },
+            Purpose::Resubmit(account),
+        ),
     }
 }
 
@@ -2755,6 +2826,30 @@ mod tests {
 
     fn account() -> AccountId {
         AccountId::from_tag([7; 20])
+    }
+
+    #[test]
+    fn w9_sends_a_saved_copy_of_a_reverted_settle_as_resubmit_and_the_rest_as_before() {
+        // The mode decides the command: an open reservation's bytes still go
+        // as SubmitArtifact, and only a saved copy goes as ResubmitSaved, for
+        // its account (docs/DECISIONS.md D38 item 5 (b)).
+        let account = account();
+        let (command, purpose) = submit_command(SubmitMode::Artifact, "4f2a".to_owned());
+        assert!(
+            matches!(&command, Command::SubmitArtifact { artifact_hex } if artifact_hex == "4f2a"),
+            "{command:?}"
+        );
+        assert!(matches!(purpose, Purpose::SubmitArtifact));
+        let (command, purpose) = submit_command(SubmitMode::Resubmit(account), "4f2a".to_owned());
+        assert!(
+            matches!(
+                &command,
+                Command::ResubmitSaved { account: a, artifact_hex }
+                    if *a == account && artifact_hex == "4f2a"
+            ),
+            "{command:?}"
+        );
+        assert!(matches!(purpose, Purpose::Resubmit(p) if p == account));
     }
 
     fn row(to: &str, amount: &str, reference: &str) -> DestinationRow {

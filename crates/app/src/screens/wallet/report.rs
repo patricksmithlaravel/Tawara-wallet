@@ -563,6 +563,22 @@ pub fn submitted(accepted: bool, text: &str) -> Report<'_> {
     }
 }
 
+/// A saved copy of a reverted settle, written to the node (W9, docs/DECISIONS.md
+/// D38 item 5 (b)). The write establishes that the bytes reached the node and no
+/// more, as a submission does. A refusal is the page's error, not this report.
+pub fn resubmitted(text: &str) -> Report<'_> {
+    Report::new(
+        Tone::Warning,
+        "Written to the node's socket: not yet accepted by the network",
+    )
+    .says(
+        "Only the write is confirmed here. The node checks the copy after Tawara has gone, and \
+         if it refuses, nothing says so here.",
+    )
+    .says("The account was read again after the write, and its row shows what that read found.")
+    .full(text)
+}
+
 /// What a check or a settlement found (W7), read from the account's state
 /// afterwards.
 pub fn done<'a>(done: Done, account: &AccountRow, text: &'a str) -> Report<'a> {
@@ -857,6 +873,7 @@ mod tests {
                 kind: DivergenceKind::NotFound,
                 report: "account not found".to_owned(),
                 advance_to: None,
+                reverted_settle: false,
             };
         }
         let r = notice(&wallet).unwrap();

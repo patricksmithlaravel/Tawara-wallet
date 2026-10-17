@@ -1468,6 +1468,10 @@ impl<C: Connect> Worker<C> {
             Command::Settle { account } => self.settle(id, account),
             Command::Resign { spend } => self.resign(id, &spend),
             Command::SubmitArtifact { artifact_hex } => self.submit_artifact(id, &artifact_hex),
+            Command::ResubmitSaved {
+                account,
+                artifact_hex,
+            } => self.resubmit_saved(id, account, &artifact_hex),
             Command::Status { account, scan_to } => self.status(id, account, scan_to),
             Command::Reconcile {
                 account,
@@ -2409,6 +2413,58 @@ impl<C: Connect> Worker<C> {
             accepted: report.code == Code::Ok,
             text: report.text,
         }
+    }
+
+    /// Send again a saved copy of a settle the chain reverted (docs/DECISIONS.md
+    /// D38 item 5, (b)). The checks and the one write are the library's,
+    /// `recon::resubmit_reverted_settle`, given the key access `settle` takes.
+    /// This decodes the hex, and reads the account again once the copy is
+    /// written, so that its row moves when the copy lands. It signs nothing
+    /// and moves no key index.
+    fn resubmit_saved(&mut self, id: RequestId, account: AccountId, artifact_hex: &str) -> Reply {
+        if let Some(reply) = self.needs_wallet() {
+            return reply;
+        }
+        let saved = match mochimo_crypto::mesh::hex::decode(artifact_hex.trim(), "artifact") {
+            Ok(bytes) => bytes,
+            Err(e) => return Reply::Refused(library(e)),
+        };
+        self.busy(id, Activity::AskingNode);
+        let Session::Wallet(w) = &mut self.session else {
+            return Self::not_open();
+        };
+        let tag = account.tag();
+        let written = match cli::key_access(w.wallet.store(), &tag, w.master.as_ref()) {
+            Ok(access) => recon::resubmit_reverted_settle(
+                w.wallet.store(),
+                w.wallet.client(),
+                &tag,
+                &access,
+                &saved,
+            ),
+            Err(e) => Err(e),
+        };
+        let tx_id = match written {
+            Ok(echoed) => hex(&echoed.0),
+            // The library's own words. A check it makes before the write
+            // refuses with nothing sent; a write that fails is reported as the
+            // library reports it.
+            Err(e) => return Reply::Refused(library(e)),
+        };
+        // The read after the copy is written, as the read after a send is: it
+        // shows whether the copy has landed, and settles the account if it
+        // has (D38 item 1).
+        self.refresh_one(id, &tag);
+        let Some(view) = self.view() else {
+            return Self::not_unlocked();
+        };
+        let text = format!(
+            "The saved copy was written to the node's socket, and the node echoed its \
+             transaction id, {tx_id}. That establishes that the bytes were written and no more: \
+             it does not establish that the node accepted, validated or included the \
+             transaction. No key index moved and nothing was signed. The account was read again."
+        );
+        Reply::Resubmitted { tx_id, text, view }
     }
 
     // ------------------------------------------------------------- pre-gate

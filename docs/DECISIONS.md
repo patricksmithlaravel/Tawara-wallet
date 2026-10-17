@@ -93,7 +93,7 @@ now pins, `v0.14.1-mobile.2`. Its defaults add `android-native-activity`,
 `mobile-logger`, `mobile-fira-sans` and `mobile-system-fonts`, which
 `default-features = false` leaves off. See D32 item 9.*
 
-### D7. The library pin: Rep-1 at `7cdc2e9`
+### D7. The library pin: Rep-1 at `613e8bd`
 
 **owner, 2026-10-03.** The owner's instructions for phase 0 named Rep-1's
 `02239c1`, or a later commit the owner named; by the time the work began, Rep-1's `main` was at
@@ -149,6 +149,27 @@ Phase 0 first added `version = "2.0.0"` to it, on the belief that
 cargo-deny would otherwise deny the line as a wildcard. That was wrong:
 `allow-wildcard-paths` admits a version-less git dependency of an
 unpublished crate. The key was removed, so the line is the plan's again.
+
+**Moved again, 2026-10-16, when the owner waived the Rep-0-first rule for one
+change.** The pin is now `613e8bd7d3379a3d1cb88803319931f817a48255`, Rep-1's
+`main` after its pull requests #9 and #10, which add these to `7cdc2e9`.
+Rep-1's `7f83140` corrects the keystore module's comment on the Windows lock
+range: `File::try_lock` covers the whole range there, and the comment had said
+the lock covered a range no file reaches. It is a comment change only. Rep-1's
+`23c89fa` adds `recon::resubmit_reverted_settle`, which sends a saved copy of a
+reverted settle. The function reads the store and never writes it: no index
+moves, no reservation opens and no key signs. It sends the copy only when the
+account retains a settle and holds no open reservation, the copy's signed part
+hashes to the retained digest, its signature recovers to the source key, the
+chain shows that settle reverted, the balance at the source is the one reserved
+and a non-zero block-to-live has not passed. Otherwise it refuses and sends
+nothing. The library's `Error` gained eight variants, all raised by that
+function, and the reverted-settle report names it in place of its statement
+that this build had no command for the retained block. Nothing in the range
+changes a manifest or the lockfile, so the wallet's `Cargo.lock` changes in the
+library's own line and nowhere else. From 2026-10-17 the wallet calls the
+function, from W9's resubmit mode, for a diverged account one key behind with
+its settle retained (D38 item 5 (b)).
 
 ### D8. Names and identifiers
 
@@ -843,7 +864,14 @@ changed in one place:
   documentation gives (`cli::args`, `index_flag`), and of a discovery bound
   outside 1 to 1,024, whose two reasons are the command line's; reworded
   because its text names its flags and verbs (`--scan-to`, `--advance-to`,
-  `--to`, `address`, `balance`).
+  `--to`, `address`, `balance`);
+- the answer to a saved copy of a reverted settle that was written
+  (`resubmit_saved`, D38 item 5 (b)), which says that the copy was written to
+  the node's socket with the transaction id the node echoed; that this
+  establishes that the bytes were written and no more; that no key index moved
+  and nothing was signed; and that the account was read again. It is new
+  wording, for the owner's approval (2026-10-17). A refusal is the library's
+  own text and is not listed here.
 
 The rendered pages also name command-line verbs (`settle`,
 `reconcile ... --advance-to N`, `submit`).
@@ -1873,7 +1901,7 @@ on the three conditions D18 left open.
    no node, because `Preferences` has no node by default
    (`crates/wallet-core/src/preferences.rs:54`), and the application sends
    `SetNode` at start-up only when a node is set
-   (`crates/app/src/app.rs:898-900`). Today no automated job starts the
+   (`crates/app/src/app.rs:1420-1422`). Today no automated job starts the
    desktop window, before or after the move, so a start-up panic, such as a
    shader or surface failure, would pass CI. Landing the step at the current
    pin gives a baseline, so the move shows whether the fork changes the
@@ -1886,7 +1914,7 @@ on the three conditions D18 left open.
    and the premise above no longer holds. Start-up still needs no network
    if D43 item 2's recommended safeguard is taken: no node is asked at
    launch until a wallet is opened or the person presses Check now. The
-   reference to `app.rs:898-900` is now lines 1087 and 1088.*
+   reference to `app.rs:903-905` is now lines 1415 to 1417.*
 
    **(i) Android: configChanges now, target 36 later: owner, 2026-10-12.**
    Two Tawara-mobile pull requests, kept apart from the move. PR A, now: add
@@ -1990,9 +2018,9 @@ on the three conditions D18 left open.
    `Destroy` arrived 123 ms after the app went to the background. A bounded
    wait after `run_in`, which (j) named, cannot help: `Leaving` completes only
    inside `App::update`, where `Wiped::wiped` is called
-   (`crates/app/src/app.rs:1164`) and `Wiped::taken` is called (lines 1666 and
-   1672) through `on_event` (line 1555), which `update` calls at line 1189. The
-   state they raise is `Wiped` (`crates/app/src/host.rs:103-139`). `run_in`
+   (`crates/app/src/app.rs:1614`) and `Wiped::taken` is called (lines 2182 and
+   2188) through `on_event` (line 2028), which `update` calls at line 1644. The
+   state they raise is `Wiped` (`crates/app/src/host.rs:112-148`). `run_in`
    hands `App::update` to `iced::application(...).run()`
    (`crates/app/src/lib.rs:59-75`), so once winit's loop has ended on
    `Destroy`, no update runs.*
@@ -3060,10 +3088,13 @@ S1 to S8 change with the work. OS libraries: none added.
 
 **proposed; the direction, and items 5 and 6, decided by the owner on
 2026-10-13. Item 5 was REVISED by the owner the same day, and its item (b)
-is wanted for a later PR. Item 2's additions are proposed; the rest
+is wanted (owner, 2026-10-13). Item (b) is built (its As built note). The
+owner's decisions of 2026-10-16 approve item (b)'s two rules, the library's
+named exception to AGENT.md I4, and the Rep-0-first waiver for that one
+library change (owner, 2026-10-16). Item 2's additions are proposed; the rest
 recommended.** Until now only W7's Settle button calls
 the library's `Wallet::settle_if_landed`, from the worker's `settle()`
-(`crates/wallet-core/src/worker.rs:2040`), and Refresh, Check now and
+(`crates/wallet-core/src/worker.rs:2286`), and Refresh, Check now and
 unlock read the chain without settling. The owner decided that a spend
 settles automatically once the chain shows it landed, on desktop and
 phone. This changes how D27 item 16's settling, built in its pull request
@@ -3125,7 +3156,7 @@ item 6's.
    moved ahead and another chain (`crates/app/src/screens/wallet/report.rs:241`,
    `:266-275`). None of them names a reorg, which only the library's full report
    beneath does, and none says that the pause lasts until the spend lands or a
-   saved copy is re-submitted (library `recon.rs:962-964`, `:986-1000`).
+   saved copy is re-submitted (library `recon.rs:964-966`, `:988-1004`).
 4. **The Settle button stays as a fallback (recommended).** It stays on W7
    for a landed spend whose automatic settle could not reach the node, and
    is hidden on a dead reservation, whose present copy promises a
@@ -3153,85 +3184,142 @@ item 6's.
    account is then diverged, not reserved. The chain holds it at the settled
    key's address, one index behind the store's, and the next read that
    reconciles it reports `IndexMismatch` with that block (library
-   `recon.rs:1546-1558`). Re-sign is refused, since `resign_pending` needs a
+   `recon.rs:1550-1562`). Re-sign is refused, since `resign_pending` needs a
    reconciled account and an open reservation (library `wallet.rs:738-740`).
    The library's report names two causes it cannot tell apart: a reorg that
    reverted the settle, or a settle taken on the single observation the
    settle rule permits, where the spend may yet land. For a chain behind the
    store, the report's action is to wait for the spend to land and reconcile
    again; if it never lands, the difference is permanent, and advancing
-   local state backwards is never a remedy (library `recon.rs:962-964`). It
+   local state backwards is never a remedy (library `recon.rs:964-966`). It
    also says that a copy the person saved outside the store can be
    re-submitted while the balance at the source has not moved and a non-zero
-   block-to-live has not passed, and that this build has no command that
-   turns the retained block back into those bytes (library
-   `recon.rs:986-1000`).
+   block-to-live has not passed, and, at `7cdc2e9`, that this build had no
+   command that turns the retained block back into those bytes (library
+   `recon.rs:986-1000` at `7cdc2e9`; `recon.rs:988-1004` at `613e8bd`). At
+   `613e8bd` the report names `resubmit_reverted_settle` in its place (see the
+   As built note below).
 
    What is lost, in plain words. From this store, the balance at the
    reverted address moves only if the reverted spend lands after all, or if
    a copy the person saved is re-submitted while that balance has not moved
    and a non-zero block-to-live has not passed. With no saved copy, neither
    Tawara nor the library's commands can spend that balance from this store.
-   Tawara offers no route to a saved copy from this account either: Submit
-   saved artifact is offered only for an open reservation
-   (`crates/app/src/screens/wallet/account.rs:187-191`), and the
-   acknowledged advance writes nothing for a chain behind the store (library
-   `cli/reconcile.rs:272-281`).
+   Until 2026-10-17, Tawara offered no route to a saved copy from this account
+   either: Submit saved artifact was offered only for an open reservation
+   (`crates/app/src/screens/wallet/account.rs:193-197`), and the acknowledged
+   advance writes nothing for a chain behind the store (library
+   `cli/reconcile.rs:272-281`). The route built on 2026-10-17 is in the As
+   built note below.
 
-   **(b) Wanted (owner, 2026-10-13), in a later PR, not this one.** A
-   diverged account one key behind, with a retained settle, should offer
-   Submit saved artifact, and accept only a saved copy whose digest
+   **(b) Wanted (owner, 2026-10-13), and built on 2026-10-17 (its As built
+   note).** A diverged account one key behind, with a retained settle, should
+   offer Submit saved artifact, and accept only a saved copy whose digest
    matches the retained one. It moves no key index (PLAN 4.9). Its
-   constraints:
+   constraints, and what approves each:
    - only for an account one key behind, with a retained settle (owner,
      2026-10-13);
    - only a saved copy whose digest matches the retained digest (owner,
      2026-10-13);
    - only the identical saved bytes may be re-submitted, and only under the
      library's conditions: the balance at the source has not moved, and a
-     non-zero block-to-live has not passed (library `recon.rs:992-994`;
-     proposed, for the owner's approval when that PR is made);
+     non-zero block-to-live has not passed (owner, 2026-10-16; the library's
+     checks in `recon.rs:995-996`, under the named exception to AGENT.md I4);
    - signing anything else with that key is never allowed, whether or not
-     the reverted spend has expired (library `recon.rs:991-992`,
-     `wallet.rs:810-812` and `README.md:339`; proposed, for the owner's
-     approval when that PR is made);
-   - no key index moves (owner, 2026-10-13; PLAN 4.9).
+     the reverted spend has expired (owner, 2026-10-16; library
+     `recon.rs:993-994`, `wallet.rs:810-812` and `README.md:339`);
+   - no key index moves (owner, 2026-10-13; PLAN 4.9);
+   - the raw submit stays as it is (owner, 2026-10-16). The library's
+     `cli::run_submit`, which `Command::SubmitArtifact` (W9's artifact mode)
+     and the command line's `submit` both call, is unchanged; the
+     digest-checked route is the separate command `Command::ResubmitSaved`;
+   - the library's AGENT.md I4 exception, which names
+     `recon::resubmit_reverted_settle`, is approved (owner, 2026-10-16). The
+     Rep-0-first rule is waived for that one library change, which is made in
+     Rep-1 and not Rep-0 (owner, 2026-10-16; D7).
 
    What happens to the wallet. Refresh and Check now mark the account
    diverged and leave an open wallet open. `Wallet::open`, though, refuses a
    store in which no account is operable (library `wallet.rs:418-427`). So
    in a store whose only account diverged this way, the next open shows the
    library's WALLET WILL NOT START page and the wallet stays closed
-   (`crates/wallet-core/src/worker.rs:967-999`, `:1639-1656`). With another
+   (`crates/wallet-core/src/worker.rs:1031-1032`, `:1829-1837`). With another
    account reconciled, the wallet opens and sets this one aside.
 
    Nothing in this store moves a key index to clear the divergence, as PLAN
    4.9's rule that no button moves a key index to make a refusal go away
    requires: the acknowledged advance names no index for a chain behind the
-   store (library `recon.rs:865-873` and `:1149`, and
+   store (library `recon.rs:867-875` and `:1153`, and
    `cli/reconcile.rs:273`), the recovery page offers no remedy for it
-   (`crates/app/src/app/wallet.rs:213-225`), and restore writes nothing for
+   (`crates/app/src/app/wallet.rs:215-227`), and restore writes nothing for
    an account the store already holds (library `cli/restore.rs:163-168`).
    D27 item 5's amendment holds only while the reservation is open. Tawara's
    side of this is pinned by
    `a_reverted_settle_leaves_the_account_behind_with_no_way_to_advance`
-   (`crates/wallet-core/tests/worker.rs`) and
-   `a_reverted_settle_is_offered_no_button_and_no_remedy`
-   (`crates/app/src/screens/wallet/account.rs`).
+   (`crates/wallet-core/tests/worker.rs`), and by
+   `a_reverted_settle_offers_submit_saved_artifact_and_no_remedy` and
+   `the_resubmit_button_is_drawn_only_for_a_settle_the_chain_reverted`
+   (`crates/app/src/screens/wallet/account.rs`), which pin the one button the
+   panel now draws for it (see the As built note).
+
+   **As built (2026-10-17).** The wallet calls the library's
+   `recon::resubmit_reverted_settle`, the one route that sends a saved copy
+   after checking it against the retained settle, at the library pin `613e8bd`
+   (Rep-1 pull request #10, merged; D7).
+   - Files: `crates/wallet-core/src/command.rs` (`Command::ResubmitSaved`),
+     `crates/wallet-core/src/event.rs` (`Reply::Resubmitted`),
+     `crates/wallet-core/src/view.rs` (`AccountState::Diverged` gains
+     `reverted_settle`, set on an `IndexMismatch` one key behind with a retained
+     settle), `crates/wallet-core/src/worker.rs` (`resubmit_saved`),
+     `crates/wallet-core/src/lib.rs` (`LIBRARY_REV`), `Cargo.toml` and
+     `Cargo.lock` (the pin), `crates/wallet-core/tests/worker.rs`;
+     `crates/app/src/app.rs`, `crates/app/src/app/wallet.rs` (`SubmitMode`),
+     `crates/app/src/screens/wallet/account.rs`,
+     `crates/app/src/screens/wallet/send.rs`,
+     `crates/app/src/screens/wallet/report.rs` and
+     `crates/app/examples/screenshots.rs`.
+   - The command: `Command::ResubmitSaved { account, artifact_hex }` runs only
+     with the wallet open. It decodes the hex, takes the key access `settle`
+     takes, and calls the library function. On success it reads the account
+     again, so its row moves when the copy lands, and replies
+     `Reply::Resubmitted`. A refusal is `Reply::Refused` with the library's own
+     text; a locked wallet is refused as `NotUnlocked`, and a store session as
+     `WalletNotOpen`. It never signs and never moves a key index. The app then
+     reads the account again, quietly, as after a refused sign (W7).
+   - W7: "Submit saved artifact" is drawn only for a diverged account one key
+     behind with its settle retained, in an open wallet, and opens W9 in
+     resubmit mode for that account. W7's summary for a reverted settle is
+     unchanged.
+   - W9: resubmit mode sends `ResubmitSaved` where artifact mode sends
+     `SubmitArtifact`. Its subtitle and helper say what is accepted. A written
+     copy is a banner whose worker text is in D25, and the account is read
+     again. A refusal is the page's error, and the app reads the account again
+     after it (W7). Artifact mode and the raw submit are unchanged.
+   - Pin and screenshots: the wallet's library pin is `613e8bd`, which Settings'
+     About card shows (W11). The W7 and W9 scenes, with their phone images, are
+     in `design/screenshots/`.
+   - Open, for the owner. A store whose only account diverged this way does not
+     open, so W7 draws no button there, though the library's report names the
+     function and the command would be refused (`WalletNotOpen`). The owner
+     decides whether that session should offer the command, or the library's
+     notice should be qualified; until then the button waits for an open wallet.
+     A refusal from the library reads the account again, quietly, as a refused
+     sign does (W7), so the row shows what the node shows then. The row changes
+     only when the chain shows the spend.
 
    A store made from the same recovery phrase elsewhere is different, and
    making one is a natural step after a lost device. It creates account 0 at
    index 0 (library `cli/create.rs:167`,
-   `crates/wallet-core/src/worker.rs:1557`), so it sees the chain ahead, at
+   `crates/wallet-core/src/worker.rs:1717`), so it sees the chain ahead, at
    the settled key's index, and the report names that index as the advance
-   target (library `recon.rs:865-873`, `:941-951`). Tawara's account
+   target (library `recon.rs:867-875`, `:943-953`). Tawara's account
    recovery offers that advance
-   (`crates/app/src/screens/wallet/account.rs:237`,
+   (`crates/app/src/screens/wallet/account.rs:243`,
    `crates/app/src/screens/wallet/recovery.rs:137`), and an account added
    there by restore is placed at that index (library
    `cli/restore.rs:173-176`). That store could then sign with the key the
    reverted settle used, whose signature the library's report calls the only
-   one that key may ever give (library `recon.rs:991-992`). That is PLAN
+   one that key may ever give (library `recon.rs:993-994`). That is PLAN
    4.5's key-reuse hazard. A store made from the same seed must never
    advance to that index or sign anything with that key. That holds whether
    the reverted spend lands, is re-submitted or expires, because the hazard
@@ -3243,7 +3331,7 @@ item 6's.
    that step is analysis, not library text. Only the identical saved bytes
    may be re-submitted, and only while the balance at the source has not
    moved and a non-zero block-to-live has not passed (library
-   `recon.rs:992-994`; item (b)). Neither store can see the other, so this
+   `recon.rs:995-996`; item (b)). Neither store can see the other, so this
    is recorded here and not enforced.
 
    **Why the answer changed (owner, 2026-10-13).** The earlier answer
@@ -3253,12 +3341,12 @@ item 6's.
 
    Notes on the revision (analysis recorded with it, not the owner's
    words). Re-sign is refused after a revert, and no command rebuilds the
-   bytes (library `recon.rs:995-996`), so a copy held outside the store is
+   bytes (library `recon.rs:997-999`), so a copy held outside the store is
    the only way the library names to move the balance before the spend
    lands. The library's full report, one step away in Tawara
    (`crates/app/src/screens/wallet/report.rs:318`,
-   `crates/app/src/app/wallet.rs:1302-1314`), says to keep any copy of the
-   artifact (library `recon.rs:999-1000`). Keeping the bytes until the
+   `crates/app/src/app/wallet.rs:1946-1956`), says to keep any copy of the
+   artifact (library `recon.rs:1004`). Keeping the bytes until the
    balance at the source has moved or a non-zero block-to-live has passed
    would have been another rule. Those are the library's conditions for
    re-submitting a saved copy, which item (b) uses, not a measure of how
@@ -3278,7 +3366,7 @@ item 6's.
      asked for that close, and the bytes may not have been seen.
    - Saved bytes are not wiped by a lock. Their page is kept over it and
      shown again on unlock, as `keep_signed` and `bring_back_signed`
-     (`crates/app/src/app/wallet.rs:713` and `:752`) do today, and they are
+     (`crates/app/src/app/wallet.rs:979` and `:1061`) do today, and they are
      forgotten once the account is in sync.
    - Whenever a kept spend is dropped, its hex and the library's page,
      which repeats the hex, are wiped. Copies outside the model (a
@@ -3321,7 +3409,7 @@ item 6's.
    and a move to the background does not release them. This keeps the code as
    built. The app test
    `a_move_after_a_failed_send_with_no_notice_keeps_the_bytes_until_the_app_ends`
-   (`crates/app/src/app.rs:5443`) pins it. When the notice comes, its reason
+   (`crates/app/src/app.rs:5453`) pins it. When the notice comes, its reason
    decides, as the earlier rules say: a panic keeps the bytes until Tawara
    closes (confirmed 2026-10-14), and a graceful stop releases them, as the
    shutdown does.
@@ -3353,12 +3441,13 @@ item 6's.
 
 Records that change with the work: docs/SCREENS.md's rows for a
 reservation not settled and for a spend between submission and settlement
-(lines 25 and 28), which say "settle", and its W1, W6 and W7 rows; W7's
+(lines 25 and 26), which say "settle", and its W1, W6 and W7 rows; W7's
 row adds that an account set aside at open may settle without a press and
 rejoins on Refresh. Item 5's revision changes W6's row, which keeps a
 spend's page until its account is in sync again and across a lock, and
-the S7 row that says a lock keeps such a page. (b), when built, changes
-W7's and W9's rows. OS libraries: none added.
+the S7 row that says a lock keeps such a page. (b), built on 2026-10-17,
+changed W7's and W9's rows, which docs/SCREENS.md now states. OS libraries:
+none added.
 
 ### D39. The phone's main screen
 
@@ -3399,7 +3488,7 @@ each account is shown as a short line that opens into a larger card.
 
 This would amend D32 item 10 (b). The owner approves the result by
 approving the phone W1 images (D32 item 10 (c)), which for the first time
-draw the Accounts card. docs/SCREENS.md's W1 rows (lines 59 and 131) and
+draw the Accounts card. docs/SCREENS.md's W1 rows (lines 61 and 136) and
 E1's compact row change with the work. OS libraries: none added.
 
 **As built (proposed; approved in part by the owner, 2026-10-16, as marked).**
@@ -3432,7 +3521,11 @@ E1's compact row change with the work. OS libraries: none added.
 
 ### D40. Send on phones as a series of pages
 
-**proposed; asked by the owner (item 5); recommended.** On a phone, Send is
+**proposed; asked by the owner (item 5); recommended. The page images, and
+with them the pages, are approved, and so are the readings of item 7 (a) and
+(c) and Back on page 1 as built (owner, 2026-10-17). Paste on a phone held
+sideways is decided and is to be built in a later pull request (owner,
+2026-10-17). Item 6 is open.** On a phone, Send is
 one long scroll from W4 to W6 today. The owner asked for a series of pages.
 
 1. **Five pages (recommended).** To (1 of 4): the From line, with
@@ -3451,14 +3544,14 @@ one long scroll from W4 to W6 today. The owner asked for a series of pages.
    Back from Sign to Review keeps it, and leaving the Sign page by any other
    way discards the worker's pending plan as leaving Review does. A tap on
    the Send tab during the flow keeps the form. Reason: today a tap on the
-   Send tab builds an empty form (`crates/app/src/app/wallet.rs:929-932`),
+   Send tab builds an empty form (`crates/app/src/app/wallet.rs:1216-1219`),
    and pages make that tap likelier.
 3. **Android's Back steps within the send pages (recommended).** On pages
    1 to 4 the system's Back steps back one page, handled in `tawara-app`
    before `Host::back`; everywhere else it keeps its meaning
    (docs/SCREENS.md, "Android's Back keeps its meaning"). The lock on a
    move to the background is kept. Reason: today Back moves the app to the
-   background (`crates/app/src/app.rs:1193`), which locks it and drops a
+   background (`crates/app/src/app.rs:1648`), which locks it and drops a
    composed spend.
 4. **Refusals where they arise (recommended).** Field checks show under
    their field when Continue is pressed, and refusals and the busy card
@@ -3469,17 +3562,18 @@ one long scroll from W4 to W6 today. The owner asked for a series of pages.
    `tawara-wallet-core` (`crates/wallet-core/src/spend.rs:151`), which is
    not a library change.
 5. **The destination page and Paste (recommended).** The destination page
-   joins `form_of` and `form()` (`crates/app/src/app/wallet.rs:691` and
-   `1029`), so that a Paste read comes back to the form it was asked for,
+   joins `form_of` and `form()` (`crates/app/src/app/wallet.rs:791` and
+   `1323`), so that a Paste read comes back to the form it was asked for,
    as D32 item 10 (g) requires; otherwise its reads are dropped.
 6. **Open:** a note on S7 after a lock, that an unsigned spend was
    discarded, is new wording, for the owner's approval.
-7. **Readings, for the owner's approval.** (a) A refused signing on a phone
+7. **Readings, for the owner's approval; (a) and (c) approved (owner,
+   2026-10-17).** (a) A refused signing on a phone
    goes back to page 2, not to page 1: the worker has dropped the plan, and
    "Review spend" is on page 2, as the desktop's refused signing goes back to
    the form that holds it. The page opens at its end, where the refusal is
    drawn beside "Review spend"; the desktop's form opens at its top, as
-   before. (b) "Give this destination's address." is new wording, for a
+   before. Approved (owner, 2026-10-17). (b) "Give this destination's address." is new wording, for a
    destination with an amount and no address. "Review spend" finds such a
    destination too, since "Continue" passed it with nothing typed in it, and
    page 2 has no field for an address: it goes back to page 1, with the
@@ -3489,7 +3583,7 @@ one long scroll from W4 to W6 today. The owner asked for a series of pages.
    and the three steps are on page 4, with "Sign & submit", and not on the
    review. The review keeps the library's page, the destinations and the
    figures, so the key the spend signs with is shown where the person presses
-   the button that signs. The line under that button, "Submitting writes the
+   the button that signs. Approved (owner, 2026-10-17). The line under that button, "Submitting writes the
    signed spend to the node's socket. That is not the node's verdict: settle
    once the chain has moved.", is new wording in W6's words. (d) "Change" opens,
    under the From line on page 1, the accounts that can spend, and choosing one
@@ -3520,7 +3614,7 @@ threat model's Locking row (PR #21) and docs/SCREENS.md's Back rule (lines
 with the work. The owner approves the pages by approving their images. OS
 libraries: none added.
 
-**As built (proposed; the readings and the images await the owner's approval).**
+**As built (approved in part by the owner, 2026-10-17, as marked).**
 - The pages are drawn by `view` in `crates/app/src/screens/wallet/send.rs`,
   through `to_page`, `amount_page`, `review_page` and `sign_page`. The stages
   are `SendStage` in `crates/app/src/app/wallet.rs`: `To`, `Amount`, `Review`
@@ -3545,19 +3639,23 @@ libraries: none added.
 - docs/SCREENS.md's W4 to W6 rows, their compact rows and the Back rule describe
   the pages. docs/THREAT_MODEL.md's Android Locking row says that Back on pages
   2 to 4 steps back a page and does not lock the application.
-- The page images await the owner's approval, which D40 asks for by approving
-  the images. They are the committed Linux renders, made in a Linux container.
-  Untouched screens already differ by a few pixels on macOS, so the images are
-  not redrawn there.
+- The page images are approved (owner, 2026-10-17) under D32 item 10 (c), and,
+  as D40 asks, that approval approves the pages. They are the committed Linux
+  renders, made in a Linux container. Untouched screens already differ by a few
+  pixels on macOS, so the images are not redrawn there.
 
-Readings for the owner, with item 7:
+Readings approved (owner, 2026-10-17), with item 7:
 - Item 7 (a) and (c) are built as written: a refused signing returns to page 2,
   where "Review spend" is, and the key callout and the three steps are on page
-  4, with "Sign & submit".
+  4, with "Sign & submit". Approved (owner, 2026-10-17).
 - Back on page 1 is unchanged. Item 2 gives a Back at the top of each page, but
   page 1 is the first page and has none. Android's Back there keeps its meaning
   (`Host::back`), which moves the application to the background and locks it,
-  as it does today. Item 3's "pages 1 to 4" is read as pages 2 to 4.
+  as it does today. Item 3's "pages 1 to 4" is read as pages 2 to 4. Approved
+  (owner, 2026-10-17): page 1 has no Back in the application, and Android's
+  Back there still moves it to the background and locks it.
+- The approval names item 7 (a) and (c) and Back on page 1. Item 7's other
+  readings, (b) and (d) to (i), are recorded as built.
 
 Judgment calls that D40 does not settle, for the owner to note:
 - A tap on the Send tab during the flow keeps the whole page, not only the form.
@@ -3571,12 +3669,15 @@ Judgment calls that D40 does not settle, for the owner to note:
 - A Paste read that comes back once the person is on page 2 is dropped, since
   page 2 has no field to paste into (`form_of`).
 
-Not built, and open:
+Not built:
 - Item 6, the note on S7 after a lock, is not built. It is new wording, and the
   owner approves it first.
 - On a phone held sideways, 600 to 1023 wide, the pages draw without Paste
-  buttons, since Paste is drawn in the compact layout only. Whether Paste
-  follows the phone shell, as W1's sections do (D39 item 5), is for the owner.
+  buttons, since Paste is drawn in the compact layout only. Decided (owner,
+  2026-10-17): Paste is to follow `phone()` (`Model::phone` in
+  `crates/app/src/app.rs`), as W1's sections follow the phone shell (D39 item
+  5), so that a phone held sideways draws it too. That is to be built in a later
+  pull request, not this one.
 
 Corrected line references:
 - Items 2, 3 and 5 gave lines that were stale at b67e90c, the base of this
@@ -3696,8 +3797,8 @@ and the threat model's acceptance open.**
    the default is a node, an absent or empty `node` line means the default.
    No node is asked at launch until a wallet is opened or the person
    presses Check now, which keeps true D32 item 9 (h)'s note that start-up
-   needs no network (its reference to `app.rs:898-900` is now lines 1087
-   and 1088). Asking the person to confirm a suggested node was considered
+   needs no network (its reference to `app.rs:903-905` is now lines 1415
+   to 1417). Asking the person to confirm a suggested node was considered
    and not taken: it would still ask someone who does not know what a node
    is to act.
 3. **Open: who operates `api.mochimo.org`.** No public source found names
