@@ -3,6 +3,8 @@
 mod first_run;
 mod wallet;
 
+pub(crate) use first_run::phrase_words_drawn;
+
 use iced::advanced::widget::operation::scrollable::{AbsoluteOffset, scroll_to};
 use iced::advanced::widget::operation::{Focusable, Outcome, Scrollable};
 use iced::advanced::widget::{Id, Operation};
@@ -156,6 +158,15 @@ pub fn phrase_id() -> iced::widget::Id {
 /// up.
 pub fn destination_id(n: usize) -> iced::widget::Id {
     iced::widget::Id::from(format!("destination-{n}"))
+}
+
+/// The height of the page `model` draws in, in logical pixels: the window's,
+/// less the padding the safe area takes above and below (see [`view`]). It is
+/// the height a phone's recovery phrase picks its frame by (docs/DECISIONS.md
+/// D44 item 2), so the application reads it as the layout does.
+pub(crate) fn page_height(model: &Model) -> f32 {
+    let padding = root_padding(model.safe_area, model.phone() && IPHONE);
+    model.height - padding.top - padding.bottom
 }
 
 /// The whole window for `model`. The safe area pads the root in every layout:
