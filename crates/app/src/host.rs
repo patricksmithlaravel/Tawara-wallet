@@ -19,7 +19,7 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use iced::futures::channel::mpsc::UnboundedSender;
-use tawara_wallet_core::SecretText;
+pub use tawara_wallet_core::SecretText;
 
 /// What a mobile shell supplies.
 #[derive(Clone, Debug)]
