@@ -3405,11 +3405,15 @@ E1's compact row change with the work. OS libraries: none added.
   `crates/app/src/screens/wallet.rs` gives the destination's first and last six
   characters, or those of its hex form where no destination is known. The row
   shows no hex tag. The owner confirms this reading (item 3).
-- Two points the text leaves open: "View activity" sits in Recent's header,
-  where "View all" sits on the desktop; and a row opens while the wallet is
-  busy, since that only changes the view, with the card's buttons disabled then,
-  as on W7.
-- The W1 rows of docs/SCREENS.md are now at lines 61 and 135, not 59 and 131.
+- Points the text leaves open: "View activity" sits in Recent's header,
+  where "View all" sits on the desktop; a row opens while the wallet is busy,
+  since that only changes the view, with the card's buttons disabled then, as
+  on W7; a tap on the open row closes it (item 4 says only that a row closes
+  when the page is left); and a spend still settling counts among the phone's
+  three Recent rows, which item 1 leaves open.
+- The W1 rows of docs/SCREENS.md are at lines 61 (desktop) and 136 (compact).
+  D39's text gave 59 and 131, which were already stale at a0fbb39, where the
+  rows were at 61 and 134.
 
 ### D40. Send on phones as a series of pages
 
