@@ -62,9 +62,10 @@ trap 'rm -rf "$work"' EXIT
 #   clarification file that cannot be read only warns, so --check, which compares
 #   the output byte for byte, is what catches a change that such a file causes.
 # --locked: the run uses Cargo.lock exactly, and cannot change it.
-# -L warn: the generator's warnings are printed. Seven are expected: three
-#   about the Mochimo agreement, and four for the objc2 crates whose newer
-#   versions have no LICENSE.txt to fetch; see about.toml.
+# -L warn: the generator's warnings are printed. Five are expected: three
+#   about the Mochimo agreement, and two for objc2 0.6.4 and objc2-foundation
+#   0.3.2, whose LICENSE.txt is not in the repository at the commit about.toml
+#   names; see about.toml.
 # The `git` clarifications in about.toml fetch files from
 # raw.githubusercontent.com, so the run needs the network.
 cargo about -L warn generate --workspace --all-features --locked --fail \

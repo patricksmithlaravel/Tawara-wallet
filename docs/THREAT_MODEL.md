@@ -15,6 +15,8 @@ It was written against these commits, and its line numbers are theirs:
 | the iced fork, release `v0.14.1-mobile.2` | `d4ab3a057db96162b087a27dd0752a3b15abfa6b` (D32 item 9 (a)) |
 | this repository's PR #26 (`work/decisions-2026-10-13`, merged as `79cae88`); D44 as cited here | `0c05b9ef8faf6ed8786005a5d194df565ff3bc5b` |
 
+*Note (2026-10-17, D32 item 9 (a)): the iced pin has moved since these commits, to the fork's release `v0.14.1-mobile.4`, `7325ccd5823a118d46f023e91010d27f07b6dd90`. The table above and the line numbers below are as they were at these commits, and are not updated. At the new pin mundy and zbus have left `Cargo.lock`; the pin is still one fork tag, one winit and `default-features = false` (T39); and the two `deny.toml` ignores still apply (T37).*
+
 References: "D*n*" is an entry of docs/DECISIONS.md; "PLAN 4.*n*" is
 docs/PLAN.md section 4, rule *n*; a path without a repository is in this
 one; `Tawara-mobile:` paths are in that repository at the commit above; the
