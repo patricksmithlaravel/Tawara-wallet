@@ -237,7 +237,14 @@ with its source; what checks that protection; what is left; and the status.
 - **Locking.** `Suspended` (the window destroyed) locks and wipes, without
   waiting (D32 item 6). Back moves the task to the background and never
   finishes the activity (`Tawara-mobile:crates/mobile/src/android.rs:97-108`;
-  `AndroidManifest.xml:28`). After `Destroy` the process ends with
+  `AndroidManifest.xml:28`), and so locks the application, except on pages 2
+  to 4 of a phone's Send. There Back steps back a page inside the application,
+  without moving the task to the background, so it does not lock (`SystemBack`
+  in `crates/app/src/app.rs`; D40 item 3, for the owner's approval with the
+  pages). Going back a page keeps the form, and gives up a plan only as Edit
+  does (D40 item 2). On those pages, as on the desktop, the idle period and
+  Lock are the only locks. On page 1 of Send, and everywhere else, Back moves
+  the task to the background as before. After `Destroy` the process ends with
   `libc::_exit`, without waiting for the lock (D32 item 9 (j), amended
   2026-10-13; G6).
 - **Clipboard.** Copy buttons mark the copy sensitive. The system reads the

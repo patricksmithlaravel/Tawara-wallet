@@ -3507,6 +3507,78 @@ threat model's Locking row (PR #21) and docs/SCREENS.md's Back rule (lines
 with the work. The owner approves the pages by approving their images. OS
 libraries: none added.
 
+**As built (proposed; the readings and the images await the owner's approval).**
+- The pages are drawn by `view` in `crates/app/src/screens/wallet/send.rs`,
+  through `to_page`, `amount_page`, `review_page` and `sign_page`. The stages
+  are `SendStage` in `crates/app/src/app/wallet.rs`: `To`, `Amount`, `Review`
+  and `Sign` are the four pages, `Compose` is the desktop's W4, and `Sent` is
+  W6. The transitions are the handlers for `Continue`, `Review`, `ToSigning`,
+  `Sign`, `Back` and `Edit`, with `send_steps_back` and `step_send_back`; the
+  return of a refused signing to page 2, in the handler for
+  `Purpose::ConfirmSend`; and `WalletPage::choosing` for "Change".
+- `crates/app/src/app.rs` sends the system's Back to `send_steps_back` before
+  `host::back`. `crates/app/src/screens/wallet.rs` draws a phone page's busy
+  card and refusal beneath the button that caused them (`frame_beside` and
+  `beside`). `crates/wallet-core/src/spend.rs` makes `parse_destination` and
+  `parse_reference` public, so that "Continue" checks each address and
+  reference under its own field. The desktop's W4 to W6 draw as before, and
+  their images are the same bytes as before.
+- The images are drawn by `crates/app/examples/screenshots.rs` into
+  `design/screenshots/`. New: `phone-w4-send-to`, `-to-end` and `-to-keyboard`,
+  `phone-w4-send-amount` and `-amount-end`, and `phone-w5-sign` and `-sign-end`.
+  Changed: `phone-w4-send-cannot-spend`, `phone-w5-review` and `-end`. Removed:
+  `phone-w4-send`, `-end` and `-keyboard`, replaced by the page 1 images. The
+  Sent (W6), re-sign (W8) and submit (W9) images are unchanged.
+- docs/SCREENS.md's W4 to W6 rows, their compact rows and the Back rule describe
+  the pages. docs/THREAT_MODEL.md's Android Locking row says that Back on pages
+  2 to 4 steps back a page and does not lock the application.
+- The page images await the owner's approval, which D40 asks for by approving
+  the images. They are the committed Linux renders, made in a Linux container.
+  Untouched screens already differ by a few pixels on macOS, so the images are
+  not redrawn there.
+
+Readings for the owner, with item 7:
+- Item 7 (a) and (c) are built as written: a refused signing returns to page 2,
+  where "Review spend" is, and the key callout and the three steps are on page
+  4, with "Sign & submit".
+- Back on page 1 is unchanged. Item 2 gives a Back at the top of each page, but
+  page 1 is the first page and has none. Android's Back there keeps its meaning
+  (`Host::back`), which moves the application to the background and locks it,
+  as it does today. Item 3's "pages 1 to 4" is read as pages 2 to 4.
+
+Judgment calls that D40 does not settle, for the owner to note:
+- A tap on the Send tab during the flow keeps the whole page, not only the form.
+- Each page of the flow starts at its top when it is entered.
+- While the worker answers a command the page sent, Back does nothing, and
+  Android's Back on pages 2 to 4 is used up without reaching `host::back`.
+- Duplicates, amounts, the fee and the block-to-live are refused beside "Review
+  spend", when it is pressed. "Continue" checks only the addresses and the
+  references.
+- A Paste read that comes back once the person is on page 2 is dropped, since
+  page 2 has no field to paste into (`form_of`).
+
+Not built, and open:
+- Item 6, the note on S7 after a lock, is not built. It is new wording, and the
+  owner approves it first.
+- On a phone held sideways, 600 to 1023 wide, the pages draw without Paste
+  buttons, since Paste is drawn in the compact layout only. Whether Paste
+  follows the phone shell, as W1's sections do (D39 item 5), is for the owner.
+
+Corrected line references:
+- Items 2, 3 and 5 gave lines that were stale at b67e90c, the base of this
+  work. The empty form for the Send tab is built in `open`
+  (`crates/app/src/app/wallet.rs:1198-1201`), not at 929-932; `host::back` is at
+  `crates/app/src/app.rs:1582`, not 1193; and `form_of` is at
+  `crates/app/src/app/wallet.rs:773` and `form` at 1301, not 691 and 1029.
+  Item 4's references were right at b67e90c: `parse_destination` is at
+  `crates/wallet-core/src/spend.rs:151`, and the page's top, where the refusals
+  are drawn, at `crates/app/src/screens/wallet.rs:395-408`. As built,
+  `parse_destination` is at `crates/wallet-core/src/spend.rs:153` and
+  `parse_reference` at 200.
+- The paragraph above gave docs/SCREENS.md's Back rule at lines 108 to 110, its
+  W4 to W6 rows at 62 to 64 and its compact rows at 134 to 136. At b67e90c they
+  are at 112 to 114, 64 to 66 and 139 to 141.
+
 ### D41. A QR code on Receive
 
 **proposed; the feature decided by the owner on 2026-10-13; the rest
