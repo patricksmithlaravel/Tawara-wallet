@@ -1901,7 +1901,7 @@ on the three conditions D18 left open.
    no node, because `Preferences` has no node by default
    (`crates/wallet-core/src/preferences.rs:54`), and the application sends
    `SetNode` at start-up only when a node is set
-   (`crates/app/src/app.rs:898-900`). Today no automated job starts the
+   (`crates/app/src/app.rs:1415-1417`). Today no automated job starts the
    desktop window, before or after the move, so a start-up panic, such as a
    shader or surface failure, would pass CI. Landing the step at the current
    pin gives a baseline, so the move shows whether the fork changes the
@@ -1914,7 +1914,7 @@ on the three conditions D18 left open.
    and the premise above no longer holds. Start-up still needs no network
    if D43 item 2's recommended safeguard is taken: no node is asked at
    launch until a wallet is opened or the person presses Check now. The
-   reference to `app.rs:898-900` is now lines 1087 and 1088.*
+   reference to `app.rs:898-900` is now lines 1415 to 1417.*
 
    **(i) Android: configChanges now, target 36 later: owner, 2026-10-12.**
    Two Tawara-mobile pull requests, kept apart from the move. PR A, now: add
@@ -2018,9 +2018,9 @@ on the three conditions D18 left open.
    `Destroy` arrived 123 ms after the app went to the background. A bounded
    wait after `run_in`, which (j) named, cannot help: `Leaving` completes only
    inside `App::update`, where `Wiped::wiped` is called
-   (`crates/app/src/app.rs:1164`) and `Wiped::taken` is called (lines 1666 and
-   1672) through `on_event` (line 1555), which `update` calls at line 1189. The
-   state they raise is `Wiped` (`crates/app/src/host.rs:103-139`). `run_in`
+   (`crates/app/src/app.rs:1609`) and `Wiped::taken` is called (lines 2182 and
+   2188) through `on_event` (line 2028), which `update` calls at line 1644. The
+   state they raise is `Wiped` (`crates/app/src/host.rs:112-148`). `run_in`
    hands `App::update` to `iced::application(...).run()`
    (`crates/app/src/lib.rs:59-75`), so once winit's loop has ended on
    `Destroy`, no update runs.*
@@ -3089,12 +3089,12 @@ S1 to S8 change with the work. OS libraries: none added.
 **proposed; the direction, and items 5 and 6, decided by the owner on
 2026-10-13. Item 5 was REVISED by the owner the same day, and its item (b)
 is wanted (owner, 2026-10-13). Item (b) is built (its As built note). The
-owner's decisions of 2026-10-16 cover the library's named exception and the
-Rep-0-first waiver for it (library AGENT.md I4, FORK.md); the wallet's wording
-is proposed, for the owner's approval. Item 2's additions are proposed; the
-rest recommended.** Until now only W7's Settle button calls
+owner's decisions of 2026-10-16 approve item (b)'s two rules, the library's
+named exception to AGENT.md I4, and the Rep-0-first waiver for that one
+library change (owner, 2026-10-16). Item 2's additions are proposed; the rest
+recommended.** Until now only W7's Settle button calls
 the library's `Wallet::settle_if_landed`, from the worker's `settle()`
-(`crates/wallet-core/src/worker.rs:2040`), and Refresh, Check now and
+(`crates/wallet-core/src/worker.rs:2286`), and Refresh, Check now and
 unlock read the chain without settling. The owner decided that a spend
 settles automatically once the chain shows it landed, on desktop and
 phone. This changes how D27 item 16's settling, built in its pull request
@@ -3207,7 +3207,7 @@ item 6's.
    Tawara nor the library's commands can spend that balance from this store.
    Until 2026-10-17, Tawara offered no route to a saved copy from this account
    either: Submit saved artifact was offered only for an open reservation
-   (`crates/app/src/screens/wallet/account.rs:187-191`), and the acknowledged
+   (`crates/app/src/screens/wallet/account.rs:193-197`), and the acknowledged
    advance writes nothing for a chain behind the store (library
    `cli/reconcile.rs:272-281`). The route built on 2026-10-17 is in the As
    built note below.
@@ -3223,19 +3223,16 @@ item 6's.
      2026-10-13);
    - only the identical saved bytes may be re-submitted, and only under the
      library's conditions: the balance at the source has not moved, and a
-     non-zero block-to-live has not passed (library `recon.rs:995-996`; the
-     checks of the named exception, which the owner approved on 2026-10-16,
-     AGENT.md I4);
+     non-zero block-to-live has not passed (owner, 2026-10-16; the library's
+     checks in `recon.rs:995-996`, under the named exception to AGENT.md I4);
    - signing anything else with that key is never allowed, whether or not
-     the reverted spend has expired (library `recon.rs:993-994`,
-     `wallet.rs:810-812` and `README.md:339`; proposed, for the owner's
-     approval);
+     the reverted spend has expired (owner, 2026-10-16; library
+     `recon.rs:993-994`, `wallet.rs:810-812` and `README.md:339`);
    - no key index moves (owner, 2026-10-13; PLAN 4.9);
-   - the raw submit stays as it is (owner, 2026-10-16; FORK.md and the spec
-     record it). The library's `cli::run_submit`, which
-     `Command::SubmitArtifact` (W9's artifact mode) and the command line's
-     `submit` both call, is unchanged; the digest-checked route is the separate
-     command `Command::ResubmitSaved`;
+   - the raw submit stays as it is (owner, 2026-10-16). The library's
+     `cli::run_submit`, which `Command::SubmitArtifact` (W9's artifact mode)
+     and the command line's `submit` both call, is unchanged; the
+     digest-checked route is the separate command `Command::ResubmitSaved`;
    - the library's AGENT.md I4 exception, which names
      `recon::resubmit_reverted_settle`, is approved (owner, 2026-10-16). The
      Rep-0-first rule is waived for that one library change, which is made in
@@ -3246,7 +3243,7 @@ item 6's.
    store in which no account is operable (library `wallet.rs:418-427`). So
    in a store whose only account diverged this way, the next open shows the
    library's WALLET WILL NOT START page and the wallet stays closed
-   (`crates/wallet-core/src/worker.rs:967-999`, `:1639-1656`). With another
+   (`crates/wallet-core/src/worker.rs:1031-1032`, `:1829-1837`). With another
    account reconciled, the wallet opens and sets this one aside.
 
    Nothing in this store moves a key index to clear the divergence, as PLAN
@@ -3313,7 +3310,7 @@ item 6's.
    A store made from the same recovery phrase elsewhere is different, and
    making one is a natural step after a lost device. It creates account 0 at
    index 0 (library `cli/create.rs:167`,
-   `crates/wallet-core/src/worker.rs:1557`), so it sees the chain ahead, at
+   `crates/wallet-core/src/worker.rs:1717`), so it sees the chain ahead, at
    the settled key's index, and the report names that index as the advance
    target (library `recon.rs:867-875`, `:943-953`). Tawara's account
    recovery offers that advance
@@ -3348,7 +3345,7 @@ item 6's.
    the only way the library names to move the balance before the spend
    lands. The library's full report, one step away in Tawara
    (`crates/app/src/screens/wallet/report.rs:318`,
-   `crates/app/src/app/wallet.rs:1302-1314`), says to keep any copy of the
+   `crates/app/src/app/wallet.rs:1608-1618`), says to keep any copy of the
    artifact (library `recon.rs:1004`). Keeping the bytes until the
    balance at the source has moved or a non-zero block-to-live has passed
    would have been another rule. Those are the library's conditions for
@@ -3369,7 +3366,7 @@ item 6's.
      asked for that close, and the bytes may not have been seen.
    - Saved bytes are not wiped by a lock. Their page is kept over it and
      shown again on unlock, as `keep_signed` and `bring_back_signed`
-     (`crates/app/src/app/wallet.rs:713` and `:752`) do today, and they are
+     (`crates/app/src/app/wallet.rs:813` and `:895`) do today, and they are
      forgotten once the account is in sync.
    - Whenever a kept spend is dropped, its hex and the library's page,
      which repeats the hex, are wiped. Copies outside the model (a
@@ -3412,7 +3409,7 @@ item 6's.
    and a move to the background does not release them. This keeps the code as
    built. The app test
    `a_move_after_a_failed_send_with_no_notice_keeps_the_bytes_until_the_app_ends`
-   (`crates/app/src/app.rs:5430`) pins it. When the notice comes, its reason
+   (`crates/app/src/app.rs:5439`) pins it. When the notice comes, its reason
    decides, as the earlier rules say: a panic keeps the bytes until Tawara
    closes (confirmed 2026-10-14), and a graceful stop releases them, as the
    shutdown does.
@@ -3444,7 +3441,7 @@ item 6's.
 
 Records that change with the work: docs/SCREENS.md's rows for a
 reservation not settled and for a spend between submission and settlement
-(lines 25 and 28), which say "settle", and its W1, W6 and W7 rows; W7's
+(lines 25 and 26), which say "settle", and its W1, W6 and W7 rows; W7's
 row adds that an account set aside at open may settle without a press and
 rejoins on Refresh. Item 5's revision changes W6's row, which keeps a
 spend's page until its account is in sync again and across a lock, and
@@ -3491,7 +3488,7 @@ each account is shown as a short line that opens into a larger card.
 
 This would amend D32 item 10 (b). The owner approves the result by
 approving the phone W1 images (D32 item 10 (c)), which for the first time
-draw the Accounts card. docs/SCREENS.md's W1 rows (lines 59 and 131) and
+draw the Accounts card. docs/SCREENS.md's W1 rows (lines 61 and 136) and
 E1's compact row change with the work. OS libraries: none added.
 
 **As built (proposed; approved in part by the owner, 2026-10-16, as marked).**
@@ -3543,14 +3540,14 @@ one long scroll from W4 to W6 today. The owner asked for a series of pages.
    Back from Sign to Review keeps it, and leaving the Sign page by any other
    way discards the worker's pending plan as leaving Review does. A tap on
    the Send tab during the flow keeps the form. Reason: today a tap on the
-   Send tab builds an empty form (`crates/app/src/app/wallet.rs:929-932`),
+   Send tab builds an empty form (`crates/app/src/app/wallet.rs:1216-1219`),
    and pages make that tap likelier.
 3. **Android's Back steps within the send pages (recommended).** On pages
    1 to 4 the system's Back steps back one page, handled in `tawara-app`
    before `Host::back`; everywhere else it keeps its meaning
    (docs/SCREENS.md, "Android's Back keeps its meaning"). The lock on a
    move to the background is kept. Reason: today Back moves the app to the
-   background (`crates/app/src/app.rs:1193`), which locks it and drops a
+   background (`crates/app/src/app.rs:1648`), which locks it and drops a
    composed spend.
 4. **Refusals where they arise (recommended).** Field checks show under
    their field when Continue is pressed, and refusals and the busy card
@@ -3561,8 +3558,8 @@ one long scroll from W4 to W6 today. The owner asked for a series of pages.
    `tawara-wallet-core` (`crates/wallet-core/src/spend.rs:151`), which is
    not a library change.
 5. **The destination page and Paste (recommended).** The destination page
-   joins `form_of` and `form()` (`crates/app/src/app/wallet.rs:691` and
-   `1029`), so that a Paste read comes back to the form it was asked for,
+   joins `form_of` and `form()` (`crates/app/src/app/wallet.rs:791` and
+   `1323`), so that a Paste read comes back to the form it was asked for,
    as D32 item 10 (g) requires; otherwise its reads are dropped.
 6. **Open:** a note on S7 after a lock, that an unsigned spend was
    discarded, is new wording, for the owner's approval.
@@ -3676,8 +3673,8 @@ and the threat model's acceptance open.**
    the default is a node, an absent or empty `node` line means the default.
    No node is asked at launch until a wallet is opened or the person
    presses Check now, which keeps true D32 item 9 (h)'s note that start-up
-   needs no network (its reference to `app.rs:898-900` is now lines 1087
-   and 1088). Asking the person to confirm a suggested node was considered
+   needs no network (its reference to `app.rs:898-900` is now lines 1415
+   to 1417). Asking the person to confirm a suggested node was considered
    and not taken: it would still ask someone who does not know what a node
    is to act.
 3. **Open: who operates `api.mochimo.org`.** No public source found names
