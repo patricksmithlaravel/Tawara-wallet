@@ -3289,7 +3289,8 @@ item 6's.
      does. A stop whose reason is not yet known (a command could not be
      sent to the worker before its `Stopped` came) keeps them, through a move
      to the background and any lock but the shutdown's, until that notice says
-     which, as the owner's review of PR #30 (P1) asked on the same day.
+     which, as the owner's review of PR #30 (P1) asked on the same day. The
+     owner confirmed the no-notice case on 2026-10-15, below.
 
    One consequence follows whatever the reading. A revert after the bytes
    have gone, through a lock or a dismissal with no save, finds no copy in
@@ -3311,8 +3312,19 @@ item 6's.
    is not yet known keeps the unsaved bytes until the worker's `Stopped` says
    which, since a worker that panics drops its queue before that notice comes.
    The confirmation above covers the panic only. That a move to the background
-   with no notice at all releases nothing is as built and awaits the owner's
-   confirmation.
+   with no notice at all releases nothing was as built, and the owner confirmed
+   it on 2026-10-15, below.
+
+   **Confirmed (owner, 2026-10-15):** after a failed send with no stop notice
+   yet (a command could not be sent to the worker before its `Stopped` came),
+   the unsaved signed bytes are kept until the notice comes or Tawara closes,
+   and a move to the background does not release them. This keeps the code as
+   built. The app test
+   `a_move_after_a_failed_send_with_no_notice_keeps_the_bytes_until_the_app_ends`
+   (`crates/app/src/app.rs:5430`) pins it. When the notice comes, its reason
+   decides, as the earlier rules say: a panic keeps the bytes until Tawara
+   closes (confirmed 2026-10-14), and a graceful stop releases them, as the
+   shutdown does.
 6. **The narrow lock case is accepted, with no library change (owner,
    2026-10-13).** D19 says every walk takes a cancel, and D24 says a walk
    never holds the lock back. The library's `settle_if_landed` reconciles
@@ -3369,9 +3381,9 @@ each account is shown as a short line that opens into a larger card.
    `short()` builds them, and the balance on the right. An account that is
    not reconciled gets a state dot and word on a second line, so a paused
    or outstanding account is never hidden. Rows act on release (D32 item
-   10 (d)). **Open:** that the item's "TAG" means this short name, since
-   the desktop's column is headed "Address (tag)" and Settings shows
-   shortened hex tags.
+   10 (d)). **Approved (owner, 2026-10-16):** that the item's "TAG" means
+   this short name, since the desktop's column is headed "Address (tag)" and
+   Settings shows shortened hex tags.
 4. **Rows expand in place (recommended).** A tap opens the row where it
    is, one at a time, and it closes when the page is left. The card holds
    the full destination with Copy, the next key and its kind, the state,
@@ -3389,6 +3401,34 @@ This would amend D32 item 10 (b). The owner approves the result by
 approving the phone W1 images (D32 item 10 (c)), which for the first time
 draw the Accounts card. docs/SCREENS.md's W1 rows (lines 59 and 131) and
 E1's compact row change with the work. OS libraries: none added.
+
+**As built (proposed; approved in part by the owner, 2026-10-16, as marked).**
+- The code is the phone's branch of `view`, with `phone_accounts`,
+  `account_card` and the three-row cut in `recent`, all in
+  `crates/app/src/screens/wallet/dashboard.rs`; `WalletPage::expanded` in
+  `crates/app/src/app.rs`; and `WalletMsg::Expand` in
+  `crates/app/src/app/wallet.rs`. The desktop and a narrow window that is not a
+  phone keep their layouts, and `stacked` serves that window (item 5).
+- The images are the six `design/screenshots/phone-w1-wallet*.png` that change,
+  and `phone-w1-wallet-account-open.png`, which is new and drawn by
+  `crates/app/examples/screenshots.rs`. No desktop image changes. Approved
+  (owner, 2026-10-16) under D32 item 10 (c), and that approval approves this
+  decision.
+- "TAG" is read as the short name: `name()` in
+  `crates/app/src/screens/wallet.rs` gives the destination's first and last six
+  characters, or those of its hex form where no destination is known. The row
+  shows no hex tag. Approved (owner, 2026-10-16), so no longer open (item 3).
+- Points the text leaves open: "View activity" sits in Recent's header,
+  where "View all" sits on the desktop; and a row opens while the wallet is
+  busy, since that only changes the view, with the card's buttons disabled
+  then, as on W7. Two readings are approved (owner, 2026-10-16), so they are
+  no longer open: a tap on the open row closes it (item 4 says only that a row
+  closes when the page is left); and pending spends are listed first and capped
+  at three on the phone, so a spend still settling counts among the phone's
+  three Recent rows (item 1 left that open).
+- The W1 rows of docs/SCREENS.md are at lines 61 (desktop) and 136 (compact).
+  D39's text gave 59 and 131, which were already stale at a0fbb39, where the
+  rows were at 61 and 134.
 
 ### D40. Send on phones as a series of pages
 

@@ -210,10 +210,22 @@ pub fn spend_json(id: &[u8; 32], from: Tag, to: &[(Tag, u64)]) -> serde_json::Va
     })
 }
 
+/// Each wait in this module that has no bound of its own gives up after this
+/// long and panics: an answer or event from the worker, a request reaching a
+/// gate, and the release of a request held at one. A test that works never
+/// comes near it. A wait with no end hung a parallel run of `tests/worker.rs`
+/// on a loaded machine, and in CI it would hold the job until its 90-minute
+/// limit (`timeout-minutes` in `.github/workflows/ci.yml`).
+const WAIT: Duration = Duration::from_secs(120);
+
 /// Holds every request at the chain until it is opened, so a test can act
-/// while the worker is waiting on the node.
-#[derive(Clone, Default)]
-pub struct Gate(Arc<(Mutex<GateState>, Condvar)>);
+/// while the worker is waiting on the node. Neither side waits on it for
+/// longer than its bound: [`WAIT`], unless the module's own tests shorten it.
+#[derive(Clone)]
+pub struct Gate {
+    shared: Arc<(Mutex<GateState>, Condvar)>,
+    bound: Duration,
+}
 
 #[derive(Default)]
 struct GateState {
@@ -222,30 +234,65 @@ struct GateState {
     reached: usize,
 }
 
+impl Default for Gate {
+    fn default() -> Gate {
+        Gate::with_bound(WAIT)
+    }
+}
+
 impl Gate {
+    fn with_bound(bound: Duration) -> Gate {
+        Gate {
+            shared: Arc::default(),
+            bound,
+        }
+    }
+
     pub fn open(&self) {
-        let (state, changed) = &*self.0;
+        let (state, changed) = &*self.shared;
         state.lock().expect("gate").open = true;
         changed.notify_all();
     }
 
     /// Wait until `n` requests have reached the gate: the worker is then
-    /// waiting on the node, not about to ask it.
+    /// waiting on the node, not about to ask it. Panics after the gate's bound
+    /// if they have not.
     pub fn wait_reached(&self, n: usize) {
-        let (state, changed) = &*self.0;
-        let mut s = state.lock().expect("gate");
-        while s.reached < n {
-            s = changed.wait(s).expect("gate");
+        let (state, changed) = &*self.shared;
+        let bound = self.bound;
+        let (s, _) = changed
+            .wait_timeout_while(state.lock().expect("gate"), bound, |s| s.reached < n)
+            .expect("gate");
+        if s.reached < n {
+            let reached = s.reached;
+            // Released before the panic: a panic with the lock held would
+            // poison the gate for the next thread to take it.
+            drop(s);
+            panic!(
+                "Gate::wait_reached: only {reached} of the {n} requests the test awaited \
+                 reached the gate within {bound:?}"
+            );
         }
     }
 
+    /// Holds the calling request until the gate is opened. It runs on the
+    /// worker's thread (docs/DECISIONS.md D19), so a gate the test never opens
+    /// must end it after the bound, not leave that thread blocked for good.
     fn pass(&self) {
-        let (state, changed) = &*self.0;
+        let (state, changed) = &*self.shared;
+        let bound = self.bound;
         let mut s = state.lock().expect("gate");
         s.reached += 1;
         changed.notify_all();
-        while !s.open {
-            s = changed.wait(s).expect("gate");
+        let (s, _) = changed
+            .wait_timeout_while(s, bound, |s| !s.open)
+            .expect("gate");
+        if !s.open {
+            drop(s);
+            panic!(
+                "Gate::pass: a request held at the gate was not released within {bound:?}; \
+                 the test never opened the gate"
+            );
         }
     }
 }
@@ -758,8 +805,6 @@ pub struct Harness {
     pub seen: Vec<Event>,
 }
 
-const WAIT: Duration = Duration::from_secs(120);
-
 impl Harness {
     pub fn new() -> Harness {
         Harness::with(Config::default())
@@ -806,7 +851,7 @@ impl Harness {
             match self.events.recv_timeout(left) {
                 Ok(Event::Done { id: got, reply }) if got == id => return *reply,
                 Ok(other) => self.seen.push(other),
-                Err(e) => panic!("no answer to {id:?}: {e}"),
+                Err(e) => panic!("no answer to {id:?} within {WAIT:?}: {e}"),
             }
         }
     }
@@ -819,7 +864,7 @@ impl Harness {
             match self.events.recv_timeout(left) {
                 Ok(Event::Busy { id: got, activity }) if got == id => return activity,
                 Ok(other) => self.seen.push(other),
-                Err(e) => panic!("{id:?} never reported busy: {e}"),
+                Err(e) => panic!("{id:?} never reported busy within {WAIT:?}: {e}"),
             }
         }
     }
@@ -840,7 +885,7 @@ impl Harness {
             match self.events.recv_timeout(left) {
                 Ok(Event::Locked { reason }) => return reason,
                 Ok(other) => self.seen.push(other),
-                Err(e) => panic!("no Locked event: {e}"),
+                Err(e) => panic!("no Locked event within {within:?}: {e}"),
             }
         }
     }
@@ -865,7 +910,7 @@ impl Harness {
             match self.events.recv_timeout(left) {
                 Ok(Event::Backgrounded { seq }) => return (seq, before),
                 Ok(other) => before.push(other),
-                Err(e) => panic!("no Backgrounded event: {e}"),
+                Err(e) => panic!("no Backgrounded event within {within:?}: {e}"),
             }
         }
     }
@@ -899,5 +944,87 @@ impl Harness {
             dir: dir.to_path_buf(),
             password: secret(password),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::any::Any;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::mpsc;
+
+    use super::*;
+
+    /// The bound the panic tests use, short enough that they run in a moment.
+    const SHORT: Duration = Duration::from_millis(200);
+
+    /// What a loaded machine may add to [`SHORT`] before a wait counts as hung.
+    const SLACK: Duration = Duration::from_secs(10);
+
+    fn panic_text(payload: Box<dyn Any + Send>) -> String {
+        if let Some(text) = payload.downcast_ref::<String>() {
+            return text.clone();
+        }
+        payload.downcast_ref::<&str>().map_or_else(
+            || "a panic with no text".to_owned(),
+            |text| (*text).to_owned(),
+        )
+    }
+
+    /// Runs `wait` on a thread of its own, and returns the text of its panic,
+    /// or `None` if it returned. The test waits no longer than [`SHORT`] plus
+    /// [`SLACK`] for that thread, so a wait that never ends fails the test here
+    /// rather than hanging the run.
+    fn run_bounded(wait: impl FnOnce() + Send + 'static) -> Option<String> {
+        let (done, answer) = mpsc::channel();
+        std::thread::spawn(move || {
+            let outcome = catch_unwind(AssertUnwindSafe(wait));
+            let _ = done.send(outcome.err().map(panic_text));
+        });
+        answer
+            .recv_timeout(SHORT + SLACK)
+            .expect("the wait neither returned nor panicked within its bound")
+    }
+
+    #[test]
+    fn a_gate_no_request_reaches_panics_within_its_bound() {
+        let gate = Gate::with_bound(SHORT);
+        let started = Instant::now();
+        let panicked = run_bounded(move || gate.wait_reached(1));
+        assert!(
+            started.elapsed() >= SHORT,
+            "the wait gave up before its bound"
+        );
+        let message = panicked.expect("a gate nothing reaches must panic, not return");
+        assert!(message.contains("Gate::wait_reached"), "{message}");
+        assert!(message.contains("only 0 of the 1 requests"), "{message}");
+    }
+
+    #[test]
+    fn a_request_the_gate_never_releases_panics_within_its_bound() {
+        let held = Gate::with_bound(SHORT);
+        let started = Instant::now();
+        let panicked = run_bounded(move || held.pass());
+        assert!(
+            started.elapsed() >= SHORT,
+            "the request gave up before its bound"
+        );
+        let message = panicked.expect("a request the gate never releases must panic");
+        assert!(
+            message.contains("the test never opened the gate"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_gate_reached_in_time_lets_the_wait_return() {
+        let gate = Gate::default();
+        let held = gate.clone();
+        let request = std::thread::spawn(move || held.pass());
+        gate.wait_reached(1);
+        gate.open();
+        request
+            .join()
+            .expect("the held request is released once the gate opens");
     }
 }

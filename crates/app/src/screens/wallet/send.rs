@@ -1036,6 +1036,7 @@ mod tests {
             error: None,
             copied: None,
             open: Default::default(),
+            expanded: None,
         };
         let s = SubmitPage::default();
         let mut renderer = iced::futures::executor::block_on(<iced::Renderer as Headless>::new(
