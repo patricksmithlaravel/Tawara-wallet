@@ -34,9 +34,10 @@ use tawara_wallet_core::{
 
 pub use wallet::{
     AccountPage, ActivityPage, AddAccountPage, BLOCK_ROWS, BlockPage, DestinationRow, Done,
-    ExplorerPage, FormOf, Level, Missed, Page, QueuePage, ReceivePage, RecoveryPage, Remedy,
-    ReportKey, ResignPage, SHARED, SendPage, SendStage, SentPage, SettingsPage, Signed, SpendForm,
-    SubmitMode, SubmitPage, TagPage, To, TransactionPage, WalletMsg, remedy, spend_request,
+    ExplorerPage, FormOf, Level, Missed, Page, QueuePage, ReceivePage, RecoveryPage, RefusedField,
+    Remedy, ReportKey, ResignPage, SHARED, SendPage, SendStage, SentPage, SettingsPage, Signed,
+    SpendForm, SubmitMode, SubmitPage, TagPage, To, TransactionPage, WalletMsg, remedy,
+    spend_request,
 };
 
 /// How often a poll asks the node about an account [`Watch::asks`] names: one
@@ -482,6 +483,10 @@ pub struct WalletPage {
     /// one is (docs/DECISIONS.md D39 item 4). A page is replaced when it is
     /// left, so the card closes then.
     pub expanded: Option<AccountId>,
+    /// Page 1 of a phone's send flow: whether the account list is open under
+    /// the From line, by "Change" (docs/DECISIONS.md D40 item 1). A page is
+    /// replaced when it is left, so the list closes then.
+    pub choosing: bool,
 }
 
 /// Text typed into a secret field, on its way into the model. Its `Debug`
@@ -1645,7 +1650,16 @@ impl App {
                 }
             }
             Message::Input => self.touch(),
-            Message::SystemBack => host::back(),
+            // On a phone's pages 2 to 4, the system's Back steps back one page
+            // of the send flow, and does not leave the application
+            // (docs/DECISIONS.md D40 item 3). Everywhere else, and on page 1,
+            // it is the shell's.
+            Message::SystemBack => {
+                if self.model.send_steps_back() {
+                    return self.on_wallet(WalletMsg::Back);
+                }
+                host::back();
+            }
             // iced's fields leave Tab to the application.
             Message::FocusNext => {
                 self.touch();
@@ -5918,6 +5932,1052 @@ mod tests {
         );
     }
 
+    /// A destination that is one: the library's own rendering of a tag.
+    fn a_destination() -> String {
+        AccountId::from_tag([9; 20])
+            .destination()
+            .expect("a tag renders")
+    }
+
+    /// The sample's account that can spend, as a send page names it.
+    fn sample_from() -> AccountId {
+        tawara_wallet_core::sample::wallet_view()
+            .accounts
+            .first()
+            .expect("the sample has an account")
+            .id
+    }
+
+    /// A spend form of one destination, `to`, for `amount` MCM.
+    fn spend_to(to: &str, amount: &str) -> SpendForm {
+        SpendForm {
+            rows: vec![DestinationRow {
+                to: to.to_owned(),
+                amount: amount.to_owned(),
+                reference: String::new(),
+            }],
+            ..SpendForm::default()
+        }
+    }
+
+    /// A destination row with only its address typed.
+    fn to_row(to: &str) -> DestinationRow {
+        DestinationRow {
+            to: to.to_owned(),
+            amount: String::new(),
+            reference: String::new(),
+        }
+    }
+
+    /// A send page in `stage`, with `form` typed and the sample's account.
+    fn send_page(stage: SendStage, form: SpendForm) -> Page {
+        Page::Send(SendPage {
+            from: Some(sample_from()),
+            form,
+            stage,
+        })
+    }
+
+    /// Refusals by row and field, as Continue leaves them on the destinations
+    /// page.
+    fn refusals_at(
+        at: &[((usize, RefusedField), &str)],
+    ) -> std::collections::BTreeMap<(usize, RefusedField), String> {
+        at.iter()
+            .map(|(key, why)| (*key, (*why).to_owned()))
+            .collect()
+    }
+
+    /// The refusals the destinations page shown holds.
+    fn refusals_of(app: &App) -> std::collections::BTreeMap<(usize, RefusedField), String> {
+        match &wallet_page(app).page {
+            Page::Send(SendPage {
+                stage: SendStage::To(refused),
+                ..
+            }) => refused.clone(),
+            other => panic!("the destinations page is not shown: {other:?}"),
+        }
+    }
+
+    /// The sample store on a send page, on a phone: its folder is confined,
+    /// and there is no worker.
+    fn on_phone(page: Page) -> App {
+        let mut app = on_wallet(page);
+        app.model
+            .confine(std::env::temp_dir().join("tawara-phone-folder"));
+        app
+    }
+
+    /// The sample store on a send page, on a phone, over a real worker whose
+    /// stores are in `scratch`: what it is sent is waiting for its answer.
+    fn on_phone_with_worker(scratch: &Scratch, page: Page) -> (App, Receiver<Event>) {
+        let (mut app, events) = app(scratch);
+        app.model.confine(scratch.0.clone());
+        app.model.wallet = Some(tawara_wallet_core::sample::wallet_view());
+        app.model.screen = Screen::Wallet(WalletPage {
+            page,
+            ..WalletPage::default()
+        });
+        (app, events)
+    }
+
+    /// How many commands the worker was sent, and has not answered, for
+    /// which `is` holds.
+    fn waiting_for(app: &App, is: fn(&Purpose) -> bool) -> usize {
+        app.worker
+            .as_ref()
+            .map_or(0, |w| w.waiting.iter().filter(|(_, p)| is(p)).count())
+    }
+
+    /// Shows `text` as the page's refusal, as a command it sent would.
+    fn set_error(app: &mut App, text: &str) {
+        match &mut app.model.screen {
+            Screen::Wallet(p) => p.error = Some(text.to_owned()),
+            other => panic!("the wallet is not shown: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_phone_opens_its_send_flow_on_page_one_and_a_desktop_on_its_form() {
+        let mut phone = on_phone(Page::Dashboard);
+        wallet(&mut phone, WalletMsg::Open(To::Send(None)));
+        assert!(
+            matches!(
+                &wallet_page(&phone).page,
+                Page::Send(SendPage {
+                    stage: SendStage::To(refused),
+                    form,
+                    ..
+                }) if refused.is_empty() && *form == SpendForm::default()
+            ),
+            "{:?}",
+            wallet_page(&phone).page
+        );
+
+        let mut desktop = on_wallet(Page::Dashboard);
+        wallet(&mut desktop, WalletMsg::Open(To::Send(None)));
+        assert!(matches!(
+            &wallet_page(&desktop).page,
+            Page::Send(SendPage {
+                stage: SendStage::Compose,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn continue_with_destinations_that_are_right_shows_the_amounts_at_their_top() {
+        let mut app = on_phone(send_page(
+            SendStage::To(Default::default()),
+            spend_to(&a_destination(), ""),
+        ));
+        let task = app.update(WalletMsg::Continue.into());
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Amount,
+                ..
+            })
+        ));
+        assert_eq!(operations(task).len(), 1, "the amounts start at their top");
+    }
+
+    #[test]
+    fn continue_with_a_destination_that_is_not_one_shows_why_under_it_and_stays() {
+        let bad = "not-a-destination";
+        let form = SpendForm {
+            rows: vec![to_row(&a_destination()), to_row(bad)],
+            ..SpendForm::default()
+        };
+        let mut app = on_phone(send_page(SendStage::To(Default::default()), form));
+        let task = app.update(WalletMsg::Continue.into());
+        let why = tawara_wallet_core::spend::parse_destination(bad, 2)
+            .expect_err("it is not a destination")
+            .to_string();
+        assert_eq!(
+            refusals_of(&app),
+            refusals_at(&[((1, RefusedField::Address), why.as_str())]),
+            "under its field"
+        );
+        assert!(wallet_page(&app).error.is_none());
+        assert_eq!(
+            operations(task).len(),
+            1,
+            "the first refusal is brought into view"
+        );
+
+        // Typed again, it is checked again, and Continue then shows the amounts.
+        wallet(&mut app, WalletMsg::DestinationTo(1, a_destination()));
+        assert!(refusals_of(&app).is_empty());
+        let _ = app.update(WalletMsg::Continue.into());
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Amount,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn continue_with_no_destination_says_so_beside_it() {
+        let mut app = on_phone(send_page(
+            SendStage::To(Default::default()),
+            SpendForm::default(),
+        ));
+        let task = app.update(WalletMsg::Continue.into());
+        assert_eq!(
+            wallet_page(&app).error.as_deref(),
+            Some("Give at least one destination.")
+        );
+        assert!(refusals_of(&app).is_empty());
+        assert!(operations(task).is_empty());
+    }
+
+    #[test]
+    fn continue_pressed_at_the_foot_brings_the_first_refusal_into_view() {
+        // Three destinations, the first refused, and the page scrolled to its
+        // foot, where Continue is pressed. The refusal under the first field is
+        // brought into view, not left above it (docs/DECISIONS.md D40 item 4).
+        // A reference the node refuses is brought into view the same way.
+        let not = "not-a-destination";
+        let why_not = tawara_wallet_core::spend::parse_destination(not, 1)
+            .expect_err("it is not a destination")
+            .to_string();
+        let why_reference = tawara_wallet_core::spend::parse_reference("abc", 1)
+            .expect_err("the node refuses it")
+            .to_string();
+        let reference = DestinationRow {
+            to: a_destination(),
+            amount: String::new(),
+            reference: "abc".to_owned(),
+        };
+        let cases = [
+            (
+                vec![
+                    to_row(not),
+                    to_row(&a_destination()),
+                    to_row(&a_destination()),
+                ],
+                why_not,
+            ),
+            (
+                vec![
+                    reference,
+                    to_row(&a_destination()),
+                    to_row(&a_destination()),
+                ],
+                why_reference,
+            ),
+        ];
+        for (rows, why) in cases {
+            let form = SpendForm {
+                rows,
+                ..SpendForm::default()
+            };
+            let mut app = on_phone(send_page(SendStage::To(Default::default()), form));
+            app.model.width = 390.0;
+            let mut at_foot = Driver::new(crate::screens::view(&app.model), (390, 844));
+            at_foot.operate(Box::new(snap_to(
+                crate::screens::page_id(),
+                RelativeOffset::END.into(),
+            )));
+            let cache = at_foot.into_cache();
+
+            let task = app.update(WalletMsg::Continue.into());
+            let mut drawn = Driver::with_cache(crate::screens::view(&app.model), (390, 844), cache);
+            assert!(
+                !shown_on_page(&mut drawn, &why),
+                "the refusal is above the foot's view: {why}"
+            );
+            for operation in operations(task) {
+                drawn.operate(operation);
+            }
+            assert!(
+                shown_on_page(&mut drawn, &why),
+                "the refusal is in view once Continue is pressed: {why}"
+            );
+        }
+    }
+
+    #[test]
+    fn change_opens_the_account_list_on_page_one_only_and_a_choice_or_continue_shuts_it() {
+        // "Change" opens the list under the From line on a phone's page 1, and
+        // only while the wallet is idle. Choosing an account, or Continue, shuts
+        // it (docs/DECISIONS.md D40 item 1).
+        let mut app = on_phone(send_page(
+            SendStage::To(Default::default()),
+            spend_to(&a_destination(), ""),
+        ));
+        let second = tawara_wallet_core::sample::wallet_view().accounts[1].id;
+        app.model
+            .wallet
+            .as_mut()
+            .expect("the sample wallet")
+            .accounts[1]
+            .spendable = true;
+        let from = |app: &App| match &wallet_page(app).page {
+            Page::Send(s) => s.from,
+            other => panic!("expected the send page, got {other:?}"),
+        };
+        let choosing = |app: &App| wallet_page(app).choosing;
+
+        wallet(&mut app, WalletMsg::ChooseAccount(true));
+        assert!(choosing(&app));
+        wallet(&mut app, WalletMsg::From(second));
+        assert_eq!(from(&app), Some(second));
+        assert!(!choosing(&app), "a choice shuts the list");
+
+        wallet(&mut app, WalletMsg::ChooseAccount(true));
+        wallet(&mut app, WalletMsg::Continue);
+        assert!(!choosing(&app), "page 2 has no list");
+        assert_eq!(from(&app), Some(second));
+
+        // Page 2 has no list to open, and a busy wallet opens none.
+        wallet(&mut app, WalletMsg::ChooseAccount(true));
+        assert!(!choosing(&app));
+        wallet(&mut app, WalletMsg::Back);
+        app.model.busy = Some(Busy {
+            id: RequestId::example(),
+            activity: None,
+            progress: None,
+        });
+        wallet(&mut app, WalletMsg::ChooseAccount(true));
+        assert!(!choosing(&app), "not while the worker answers");
+        assert_eq!(from(&app), Some(second));
+    }
+
+    #[test]
+    fn an_amount_with_no_address_asks_for_the_address_under_it() {
+        let form = SpendForm {
+            rows: vec![DestinationRow {
+                to: " ".to_owned(),
+                amount: "5".to_owned(),
+                reference: String::new(),
+            }],
+            ..SpendForm::default()
+        };
+        let mut app = on_phone(send_page(SendStage::To(Default::default()), form));
+        let _ = app.update(WalletMsg::Continue.into());
+        assert_eq!(
+            refusals_of(&app),
+            refusals_at(&[(
+                (0, RefusedField::Address),
+                "Give this destination's address."
+            )])
+        );
+    }
+
+    #[test]
+    fn a_reference_the_node_refuses_is_shown_under_its_own_field() {
+        let form = SpendForm {
+            rows: vec![DestinationRow {
+                to: a_destination(),
+                amount: String::new(),
+                reference: "abc".to_owned(),
+            }],
+            ..SpendForm::default()
+        };
+        let mut app = on_phone(send_page(SendStage::To(Default::default()), form));
+        let task = app.update(WalletMsg::Continue.into());
+        assert_eq!(
+            refusals_of(&app).keys().copied().collect::<Vec<_>>(),
+            [(0, RefusedField::Reference)],
+            "the address is right, so only the reference is refused"
+        );
+        assert_eq!(
+            operations(task).len(),
+            1,
+            "the refusal is brought into view"
+        );
+
+        // Typed again, it is checked again, and Continue then shows the amounts.
+        wallet(&mut app, WalletMsg::Reference(0, "AB-00-EF".to_owned()));
+        assert!(refusals_of(&app).is_empty());
+        let _ = app.update(WalletMsg::Continue.into());
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Amount,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_changed_field_forgets_its_refusal_and_a_removed_row_forgets_them_all() {
+        let mut app = on_phone(send_page(
+            SendStage::To(refusals_at(&[
+                ((0, RefusedField::Address), "first"),
+                ((0, RefusedField::Reference), "second"),
+                ((1, RefusedField::Address), "third"),
+            ])),
+            SpendForm {
+                rows: vec![to_row("x"), to_row("y")],
+                ..SpendForm::default()
+            },
+        ));
+        wallet(&mut app, WalletMsg::DestinationTo(0, a_destination()));
+        assert_eq!(
+            refusals_of(&app),
+            refusals_at(&[
+                ((0, RefusedField::Reference), "second"),
+                ((1, RefusedField::Address), "third"),
+            ]),
+            "the address is checked again, and only it"
+        );
+        wallet(&mut app, WalletMsg::Reference(0, "AB-00-EF".to_owned()));
+        assert_eq!(
+            refusals_of(&app),
+            refusals_at(&[((1, RefusedField::Address), "third")]),
+            "and so is the reference, when it is typed again"
+        );
+        wallet(&mut app, WalletMsg::AddDestination);
+        assert_eq!(
+            refusals_of(&app),
+            refusals_at(&[((1, RefusedField::Address), "third")]),
+            "adding moves none"
+        );
+        wallet(&mut app, WalletMsg::RemoveDestination(2));
+        assert!(
+            refusals_of(&app).is_empty(),
+            "removing one moves those after it"
+        );
+    }
+
+    #[test]
+    fn back_from_the_amounts_keeps_what_was_typed_and_drops_the_review_spend_refusal() {
+        let form = spend_to(&a_destination(), "1.5");
+        let mut app = on_phone(send_page(SendStage::Amount, form.clone()));
+        set_error(&mut app, "Destination 1: the amount is not a number.");
+        let task = app.update(WalletMsg::Back.into());
+        assert!(
+            matches!(
+                &wallet_page(&app).page,
+                Page::Send(SendPage {
+                    stage: SendStage::To(refused),
+                    form: kept,
+                    ..
+                }) if refused.is_empty() && *kept == form
+            ),
+            "{:?}",
+            wallet_page(&app).page
+        );
+        assert!(wallet_page(&app).error.is_none());
+        assert_eq!(
+            operations(task).len(),
+            1,
+            "the destinations start at their top"
+        );
+    }
+
+    #[test]
+    fn back_from_the_review_gives_the_plan_up_and_keeps_what_was_typed() {
+        let scratch = Scratch::new("back-review");
+        let plan = tawara_wallet_core::sample::plan_view();
+        let form = typed_as_planned(&plan);
+        let (mut app, _events) = on_phone_with_worker(
+            &scratch,
+            send_page(SendStage::Review(Box::new(plan)), form.clone()),
+        );
+        let task = app.update(WalletMsg::Back.into());
+        assert!(
+            matches!(
+                &wallet_page(&app).page,
+                Page::Send(SendPage {
+                    stage: SendStage::Amount,
+                    form: kept,
+                    ..
+                }) if *kept == form
+            ),
+            "{:?}",
+            wallet_page(&app).page
+        );
+        assert_eq!(operations(task).len(), 1, "the amounts start at their top");
+        assert_eq!(
+            waiting_for(&app, |p| matches!(p, Purpose::DiscardPlan)),
+            1,
+            "the worker is asked to forget the plan"
+        );
+    }
+
+    #[test]
+    fn back_from_the_signing_page_keeps_the_plan_for_the_review() {
+        let scratch = Scratch::new("back-sign");
+        let plan = tawara_wallet_core::sample::plan_view();
+        let id = plan.plan;
+        let (mut app, _events) = on_phone_with_worker(
+            &scratch,
+            send_page(
+                SendStage::Sign(Box::new(plan)),
+                spend_to(&a_destination(), "1"),
+            ),
+        );
+        let _ = app.update(WalletMsg::Back.into());
+        assert!(
+            matches!(
+                &wallet_page(&app).page,
+                Page::Send(SendPage {
+                    stage: SendStage::Review(p),
+                    ..
+                }) if p.plan == id
+            ),
+            "{:?}",
+            wallet_page(&app).page
+        );
+        assert_eq!(
+            waiting_for(&app, |p| matches!(p, Purpose::DiscardPlan)),
+            0,
+            "the plan is kept"
+        );
+    }
+
+    #[test]
+    fn back_changes_nothing_on_the_destinations_page_or_while_the_worker_answers() {
+        let mut app = on_phone(send_page(
+            SendStage::To(Default::default()),
+            spend_to(&a_destination(), ""),
+        ));
+        let _ = app.update(WalletMsg::Back.into());
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::To(_),
+                ..
+            })
+        ));
+
+        let mut app = on_phone(send_page(
+            SendStage::Amount,
+            spend_to(&a_destination(), "1"),
+        ));
+        app.model.busy = Some(Busy {
+            id: RequestId::example(),
+            activity: None,
+            progress: None,
+        });
+        let _ = app.update(WalletMsg::Back.into());
+        let _ = app.update(Message::SystemBack);
+        assert!(
+            matches!(
+                &wallet_page(&app).page,
+                Page::Send(SendPage {
+                    stage: SendStage::Amount,
+                    ..
+                })
+            ),
+            "{:?}",
+            wallet_page(&app).page
+        );
+    }
+
+    #[test]
+    fn leaving_the_signing_page_any_other_way_gives_the_plan_up() {
+        let scratch = Scratch::new("leave-sign");
+        let plan = tawara_wallet_core::sample::plan_view();
+        let form = typed_as_planned(&plan);
+        let (mut app, _events) =
+            on_phone_with_worker(&scratch, send_page(SendStage::Sign(Box::new(plan)), form));
+        wallet(&mut app, WalletMsg::Open(To::Dashboard));
+        assert!(matches!(wallet_page(&app).page, Page::Dashboard));
+        assert_eq!(
+            waiting_for(&app, |p| matches!(p, Purpose::DiscardPlan)),
+            1,
+            "the worker is asked to forget the plan"
+        );
+    }
+
+    #[test]
+    fn the_send_tab_tapped_mid_flow_keeps_the_form_and_the_page_on_a_phone() {
+        let scratch = Scratch::new("send-tab-flow");
+        let plan = tawara_wallet_core::sample::plan_view();
+        let form = typed_as_planned(&plan);
+        let (mut app, _events) = on_phone_with_worker(
+            &scratch,
+            send_page(SendStage::Review(Box::new(plan)), form.clone()),
+        );
+        wallet(&mut app, WalletMsg::Open(To::Send(None)));
+        assert!(
+            matches!(
+                &wallet_page(&app).page,
+                Page::Send(SendPage {
+                    stage: SendStage::Review(_),
+                    form: kept,
+                    ..
+                }) if *kept == form
+            ),
+            "{:?}",
+            wallet_page(&app).page
+        );
+        assert_eq!(
+            waiting_for(&app, |p| matches!(p, Purpose::DiscardPlan)),
+            0,
+            "the plan is kept"
+        );
+
+        let mut app = on_phone(send_page(SendStage::Amount, form.clone()));
+        wallet(&mut app, WalletMsg::Open(To::Send(None)));
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Amount,
+                form: kept,
+                ..
+            }) if *kept == form
+        ));
+
+        let mut app = on_phone(send_page(
+            SendStage::To(refusals_at(&[((0, RefusedField::Address), "why")])),
+            form.clone(),
+        ));
+        wallet(&mut app, WalletMsg::Open(To::Send(None)));
+        assert_eq!(
+            refusals_of(&app),
+            refusals_at(&[((0, RefusedField::Address), "why")])
+        );
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage { form: kept, .. }) if *kept == form
+        ));
+    }
+
+    #[test]
+    fn the_send_tab_after_a_sent_spend_starts_an_empty_form_on_a_phone() {
+        let sent = SentPage {
+            sent: tawara_wallet_core::sample::sent_view(),
+            order: 0,
+            resigned: false,
+            saved: None,
+            dismissing: false,
+        };
+        let mut app = on_phone(send_page(
+            SendStage::Sent(Box::new(sent)),
+            spend_to(&a_destination(), "1"),
+        ));
+        wallet(&mut app, WalletMsg::Open(To::Send(None)));
+        assert!(
+            matches!(
+                &wallet_page(&app).page,
+                Page::Send(SendPage {
+                    stage: SendStage::To(refused),
+                    form,
+                    ..
+                }) if refused.is_empty() && *form == SpendForm::default()
+            ),
+            "{:?}",
+            wallet_page(&app).page
+        );
+    }
+
+    #[test]
+    fn system_back_steps_back_pages_two_to_four_and_page_one_is_the_shells() {
+        let scratch = Scratch::new("system-back");
+        let plan = tawara_wallet_core::sample::plan_view();
+        let form = typed_as_planned(&plan);
+        let (mut app, _events) = on_phone_with_worker(
+            &scratch,
+            send_page(SendStage::Sign(Box::new(plan)), form.clone()),
+        );
+        // Page 4 to page 3: the plan is kept.
+        let _ = app.update(Message::SystemBack);
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Review(_),
+                ..
+            })
+        ));
+        assert_eq!(waiting_for(&app, |p| matches!(p, Purpose::DiscardPlan)), 0);
+
+        // Page 3 to page 2: the plan is given up.
+        let _ = app.update(Message::SystemBack);
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Amount,
+                form: kept,
+                ..
+            }) if *kept == form
+        ));
+        assert_eq!(waiting_for(&app, |p| matches!(p, Purpose::DiscardPlan)), 1);
+
+        // Page 2 to page 1, with what was typed.
+        let _ = app.update(Message::SystemBack);
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::To(refused),
+                form: kept,
+                ..
+            }) if refused.is_empty() && *kept == form
+        ));
+
+        // Page 1 is the shell's Back, which the flow does not take, so the
+        // page is left as it is.
+        assert!(!app.model.send_steps_back(), "page one is the shell's");
+        let _ = app.update(Message::SystemBack);
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::To(_),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn on_the_desktop_system_back_is_the_shells_on_every_page() {
+        let plan = tawara_wallet_core::sample::plan_view();
+        let form = typed_as_planned(&plan);
+        let mut app = on_wallet(send_page(SendStage::Review(Box::new(plan)), form));
+        let _ = app.update(Message::SystemBack);
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Review(_),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn review_spend_on_the_amounts_page_says_why_beside_it_and_stays_there() {
+        let mut app = on_phone(send_page(
+            SendStage::Amount,
+            spend_to(&a_destination(), "a lot"),
+        ));
+        let _ = app.update(WalletMsg::Review.into());
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Amount,
+                ..
+            })
+        ));
+        assert!(
+            wallet_page(&app).error.is_some(),
+            "why is beside Review spend"
+        );
+    }
+
+    #[test]
+    fn review_spend_on_the_amounts_page_asks_the_worker_to_plan_and_the_plan_is_the_review() {
+        let scratch = Scratch::new("review-spend");
+        let plan = tawara_wallet_core::sample::plan_view();
+        let form = typed_as_planned(&plan);
+        let (mut app, _events) = on_phone_with_worker(&scratch, send_page(SendStage::Amount, form));
+        wallet(&mut app, WalletMsg::Review);
+        assert_eq!(
+            waiting_for(&app, |p| matches!(p, Purpose::PlanSend)),
+            1,
+            "the worker is asked to plan"
+        );
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Amount,
+                ..
+            })
+        ));
+        let task = app.on_reply(Purpose::PlanSend, Reply::Planned(plan));
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Review(_),
+                ..
+            })
+        ));
+        assert_eq!(operations(task).len(), 1, "the review starts at its top");
+    }
+
+    #[test]
+    fn a_plan_is_the_review_from_the_amounts_and_is_forgotten_on_the_destinations() {
+        let plan = tawara_wallet_core::sample::plan_view();
+        let form = typed_as_planned(&plan);
+        let scratch = Scratch::new("plan-amounts");
+        let (mut app, _events) =
+            on_phone_with_worker(&scratch, send_page(SendStage::Amount, form.clone()));
+        let task = app.on_reply(Purpose::PlanSend, Reply::Planned(plan.clone()));
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Review(_),
+                ..
+            })
+        ));
+        assert_eq!(operations(task).len(), 1);
+
+        // A plan that comes back once the destinations page is shown is
+        // forgotten as it comes.
+        let scratch = Scratch::new("plan-destinations");
+        let (mut app, _events) =
+            on_phone_with_worker(&scratch, send_page(SendStage::To(Default::default()), form));
+        let _ = app.on_reply(Purpose::PlanSend, Reply::Planned(plan));
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::To(_),
+                ..
+            })
+        ));
+        assert_eq!(waiting_for(&app, |p| matches!(p, Purpose::DiscardPlan)), 1);
+    }
+
+    #[test]
+    fn continue_to_signing_shows_the_plan_on_page_four_on_a_phone_only() {
+        let plan = tawara_wallet_core::sample::plan_view();
+        let form = typed_as_planned(&plan);
+        let id = plan.plan;
+        let mut app = on_phone(send_page(
+            SendStage::Review(Box::new(plan.clone())),
+            form.clone(),
+        ));
+        let task = app.update(WalletMsg::ToSigning.into());
+        assert!(
+            matches!(
+                &wallet_page(&app).page,
+                Page::Send(SendPage {
+                    stage: SendStage::Sign(p),
+                    ..
+                }) if p.plan == id
+            ),
+            "{:?}",
+            wallet_page(&app).page
+        );
+        assert_eq!(operations(task).len(), 1, "page four starts at its top");
+
+        let mut desktop = on_wallet(send_page(SendStage::Review(Box::new(plan)), form));
+        let _ = desktop.update(WalletMsg::ToSigning.into());
+        assert!(matches!(
+            &wallet_page(&desktop).page,
+            Page::Send(SendPage {
+                stage: SendStage::Review(_),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn sign_is_pressed_on_page_four_on_a_phone_and_not_on_the_review_above_it() {
+        let scratch = Scratch::new("sign-page-four");
+        let plan = tawara_wallet_core::sample::plan_view();
+        let form = typed_as_planned(&plan);
+        let (mut app, _events) =
+            on_phone_with_worker(&scratch, send_page(SendStage::Review(Box::new(plan)), form));
+        wallet(&mut app, WalletMsg::Sign);
+        assert_eq!(
+            waiting_for(&app, |p| matches!(p, Purpose::ConfirmSend)),
+            0,
+            "the review does not sign"
+        );
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Review(_),
+                ..
+            })
+        ));
+
+        wallet(&mut app, WalletMsg::ToSigning);
+        wallet(&mut app, WalletMsg::Sign);
+        assert_eq!(
+            waiting_for(&app, |p| matches!(p, Purpose::ConfirmSend)),
+            1,
+            "page four signs"
+        );
+        assert!(app.model.busy.is_some(), "and waits on the worker");
+    }
+
+    #[test]
+    fn a_refused_signing_on_a_phone_goes_back_to_the_amounts_with_why() {
+        let scratch = Scratch::new("refused-phone");
+        let plan = tawara_wallet_core::sample::plan_view();
+        let form = typed_as_planned(&plan);
+        let (mut app, _events) =
+            on_phone_with_worker(&scratch, send_page(SendStage::Sign(Box::new(plan)), form));
+        let task = app.on_reply(
+            Purpose::ConfirmSend,
+            Reply::Refused(Refusal {
+                kind: RefusalKind::Library,
+                text: "the balance moved".to_owned(),
+            }),
+        );
+        assert!(
+            matches!(
+                &wallet_page(&app).page,
+                Page::Send(SendPage {
+                    stage: SendStage::Amount,
+                    ..
+                })
+            ),
+            "{:?}",
+            wallet_page(&app).page
+        );
+        assert_eq!(
+            wallet_page(&app).error.as_deref(),
+            Some("the balance moved"),
+            "beside Review spend"
+        );
+        // The page opens at its end, where the refusal is drawn beside "Review
+        // spend": at its top the refusal is a screen or more below the view.
+        app.model.width = 390.0;
+        {
+            let mut drawn = Driver::new(crate::screens::view(&app.model), (390, 844));
+            assert!(
+                !shown_on_page(&mut drawn, "the balance moved"),
+                "at its top, the refusal is out of view"
+            );
+            for operation in operations(task) {
+                drawn.operate(operation);
+            }
+            assert!(
+                shown_on_page(&mut drawn, "the balance moved"),
+                "at its end, the refusal is in view"
+            );
+        }
+
+        // The worker dropped the plan, so leaving the amounts gives up nothing.
+        wallet(&mut app, WalletMsg::Open(To::Dashboard));
+        assert_eq!(
+            waiting_for(&app, |p| matches!(p, Purpose::DiscardPlan)),
+            0,
+            "no plan is left to forget"
+        );
+    }
+
+    #[test]
+    fn review_spend_with_an_amount_and_no_address_goes_back_to_that_destination() {
+        // Page 2 takes an amount for a destination that page 1 passed, as it had
+        // nothing typed in it then. "Review spend" asks for its address under
+        // its own field on page 1, and asks the worker for no plan
+        // (docs/DECISIONS.md D40 item 7 (b)).
+        let scratch = Scratch::new("review-no-address");
+        let form = SpendForm {
+            rows: vec![
+                DestinationRow {
+                    to: a_destination(),
+                    amount: "1".to_owned(),
+                    reference: String::new(),
+                },
+                DestinationRow {
+                    to: String::new(),
+                    amount: "5".to_owned(),
+                    reference: String::new(),
+                },
+            ],
+            ..SpendForm::default()
+        };
+        let (mut app, _events) = on_phone_with_worker(&scratch, send_page(SendStage::Amount, form));
+        wallet(&mut app, WalletMsg::Review);
+        assert_eq!(
+            waiting_for(&app, |p| matches!(p, Purpose::PlanSend)),
+            0,
+            "no plan is asked for"
+        );
+        assert_eq!(
+            refusals_of(&app),
+            refusals_at(&[(
+                (1, RefusedField::Address),
+                "Give this destination's address."
+            )])
+        );
+        assert!(wallet_page(&app).error.is_none());
+
+        // Given its address, the spend is planned from page 2 as before.
+        wallet(&mut app, WalletMsg::DestinationTo(1, a_destination()));
+        wallet(&mut app, WalletMsg::Continue);
+        wallet(&mut app, WalletMsg::Review);
+        assert_eq!(
+            waiting_for(&app, |p| matches!(p, Purpose::PlanSend)),
+            1,
+            "the worker is asked to plan"
+        );
+    }
+
+    #[test]
+    fn a_destination_is_pasted_on_page_one_and_a_read_that_comes_back_on_page_two_is_dropped() {
+        let app = on_phone(send_page(
+            SendStage::To(Default::default()),
+            spend_to("", ""),
+        ));
+        let (form, rows) = app
+            .model
+            .form_of()
+            .expect("the destinations page takes a paste");
+        assert!(takes(
+            &app.model,
+            PasteInto::Destination { form, row: 0, rows }
+        ));
+
+        let app = on_phone(send_page(
+            SendStage::Amount,
+            spend_to(&a_destination(), "1"),
+        ));
+        assert!(
+            app.model.form_of().is_none(),
+            "the amounts page has no destination to paste into"
+        );
+        assert!(!takes(
+            &app.model,
+            PasteInto::Destination {
+                form: FormOf::Send(Some(sample_from())),
+                row: 0,
+                rows: 1,
+            }
+        ));
+    }
+
+    #[test]
+    fn the_amounts_page_takes_each_amount_the_fee_and_the_block_to_live() {
+        let mut app = on_phone(send_page(SendStage::Amount, spend_to(&a_destination(), "")));
+        wallet(&mut app, WalletMsg::Amount(0, "2.5".to_owned()));
+        wallet(&mut app, WalletMsg::Fee("1000".to_owned()));
+        wallet(&mut app, WalletMsg::BlockToLive("42".to_owned()));
+        assert!(
+            matches!(
+                &wallet_page(&app).page,
+                Page::Send(SendPage { form, .. })
+                    if form.rows[0].amount == "2.5"
+                        && form.fee == "1000"
+                        && form.blk_to_live == "42"
+            ),
+            "{:?}",
+            wallet_page(&app).page
+        );
+    }
+
+    #[test]
+    fn on_the_desktop_the_phone_steps_change_nothing_and_the_send_tab_empties_the_form() {
+        let plan = tawara_wallet_core::sample::plan_view();
+        let form = typed_as_planned(&plan);
+        let mut app = on_wallet(send_page(SendStage::Compose, form.clone()));
+        for msg in [WalletMsg::Continue, WalletMsg::Back, WalletMsg::ToSigning] {
+            let _ = app.update(msg.into());
+        }
+        assert!(matches!(
+            &wallet_page(&app).page,
+            Page::Send(SendPage {
+                stage: SendStage::Compose,
+                form: kept,
+                ..
+            }) if *kept == form
+        ));
+
+        wallet(&mut app, WalletMsg::Open(To::Send(None)));
+        assert!(
+            matches!(
+                &wallet_page(&app).page,
+                Page::Send(SendPage {
+                    stage: SendStage::Compose,
+                    form: kept,
+                    ..
+                }) if *kept == SpendForm::default()
+            ),
+            "the Send tab builds an empty form on a desktop: {:?}",
+            wallet_page(&app).page
+        );
+    }
+
     /// The sample's spend as a person types it: the payees the sample plan
     /// lays out, with their figures.
     fn typed_as_planned(plan: &tawara_wallet_core::PlanView) -> SpendForm {
@@ -5938,18 +6998,35 @@ mod tests {
         }
     }
 
-    /// The window operations `task` asks the runtime to run, in order.
+    /// The window operations `task` asks the runtime to run, in order. A task
+    /// that `operate` built keeps its stream open for the output of the
+    /// operation, which a test never runs, so the stream is read only as far as
+    /// it is ready: a task that ends on its own gives all of its operations.
     fn operations(task: Task<Message>) -> Vec<Box<dyn Operation>> {
-        let Some(stream) = iced_runtime::task::into_stream(task) else {
+        let Some(mut stream) = iced_runtime::task::into_stream(task) else {
             return Vec::new();
         };
-        iced::futures::executor::block_on(stream.collect::<Vec<_>>())
-            .into_iter()
-            .filter_map(|action| match action {
-                Action::Widget(operation) => Some(operation),
-                _ => None,
-            })
-            .collect()
+        let mut found = Vec::new();
+        while let Some(Some(action)) = iced::futures::future::FutureExt::now_or_never(stream.next())
+        {
+            if let Action::Widget(operation) = action {
+                found.push(operation);
+            }
+        }
+        found
+    }
+
+    /// Whether the text `what` is drawn within the window of the page as
+    /// `drawn` scrolls it: its top and its bottom both between the window's.
+    fn shown_on_page(drawn: &mut Driver<'_, Message>, what: &str) -> bool {
+        let (window, scroll) = drawn
+            .scroll_of(&crate::screens::page_id())
+            .expect("the page is drawn");
+        let text = drawn
+            .text_bounds(what)
+            .unwrap_or_else(|| panic!("{what:?} is not drawn"));
+        let top = text.y - scroll.y;
+        top >= window.y && top + text.height <= window.y + window.height
     }
 
     #[test]

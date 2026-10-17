@@ -147,8 +147,10 @@ impl fmt::Display for SpendInputError {
 
 impl std::error::Error for SpendInputError {}
 
-/// A destination as typed, to its tag.
-pub(crate) fn parse_destination(text: &str, index: usize) -> Result<Tag, SpendInputError> {
+/// A destination as typed, to its tag. Public so that a page can check its
+/// destinations before it asks for a plan (docs/DECISIONS.md D40 item 4).
+/// `index` is the destination's place, one based, as the error names it.
+pub fn parse_destination(text: &str, index: usize) -> Result<Tag, SpendInputError> {
     let t = text.trim();
     let tag = if let Some(hex) = t.strip_prefix("0x") {
         tag_from_hex(hex).ok_or_else(|| SpendInputError::NotADestination {
@@ -193,11 +195,9 @@ fn tag_from_hex(hex: &str) -> Option<Tag> {
 }
 
 /// A reference as typed, to the sixteen-byte field: NUL-padded, checked by
-/// the node's rule. Empty text is the zero field.
-pub(crate) fn parse_reference(
-    text: &str,
-    index: usize,
-) -> Result<[u8; ADDR_REF_LEN], SpendInputError> {
+/// the node's rule. Empty text is the zero field. Public for the same reason
+/// as [`parse_destination`].
+pub fn parse_reference(text: &str, index: usize) -> Result<[u8; ADDR_REF_LEN], SpendInputError> {
     let mut field = [0u8; ADDR_REF_LEN];
     if text.is_empty() {
         return Ok(field);

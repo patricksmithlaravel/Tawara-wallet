@@ -22,13 +22,15 @@
 //! phone's welcome screen, S0, has no desktop image: it is drawn only as
 //! `phone-s0-welcome.png` (docs/DECISIONS.md D37), and W1 with an account's
 //! row opened has none either: it is drawn only as
-//! `phone-w1-wallet-account-open.png` (D39). The recovery phrase after a
-//! screenshot is drawn at 390 by 844, with the warning in the words' place
-//! (`phone-s4-phrase-photographed.png`), and while the screen is captured
-//! (`phone-s4-phrase-captured.png`) (docs/DECISIONS.md D44 items 1 and 3). So
-//! the phone's images are 74 in all. Every piece of text names a bundled face
-//! (`tawara_app::fonts`), so the pixels do not depend on the fonts a machine
-//! has installed.
+//! `phone-w1-wallet-account-open.png` (D39). The Send pages 1, 2 and 4 have
+//! none either: they are drawn only as `phone-w4-send-to.png`,
+//! `phone-w4-send-amount.png` and `phone-w5-sign.png` (D40). The recovery
+//! phrase after a screenshot is drawn at 390 by 844, with the warning in the
+//! words' place (`phone-s4-phrase-photographed.png`), and while the screen is
+//! captured (`phone-s4-phrase-captured.png`) (docs/DECISIONS.md D44 items 1
+//! and 3). So the phone's images are 78 in all. Every piece of text names a
+//! bundled face (`tawara_app::fonts`), so the pixels do not depend on the
+//! fonts a machine has installed.
 //!
 //! Flags:
 //!
@@ -66,6 +68,7 @@
 //!   `----- BEGIN <name>.png -----` and `----- END <name>.png -----`, so that
 //!   the log of CI carries what it would commit (docs/DECISIONS.md D13).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -842,14 +845,18 @@ const SHORT_PHONE: u32 = 640;
 
 /// The long pages drawn a second time scrolled to their end. Receive is one,
 /// so that its QR code, which is below the fold at the top, is in an image the
-/// owner can approve (docs/DECISIONS.md D41). S4 is not among them: its
+/// owner can approve (docs/DECISIONS.md D41). Five of the Send pages are among
+/// them, To, Amount, Review, Sign and Sent, so that the foot of each, with its
+/// button, is in an image (docs/DECISIONS.md D40). S4 is not among them: its
 /// frame fits 390 by 844 without scrolling (docs/DECISIONS.md D44), so its end
 /// is the image itself.
-const PHONE_ENDS: [&str; 11] = [
+const PHONE_ENDS: [&str; 13] = [
     "w1-wallet",
     "w2-receive",
-    "w4-send",
+    "w4-send-to",
+    "w4-send-amount",
     "w5-review",
+    "w5-sign",
     "w6-sent",
     "w10-activity",
     "w11-settings",
@@ -951,17 +958,41 @@ fn sample_named(name: &str) -> Model {
         .unwrap_or_else(|| panic!("no sample named {name}"))
 }
 
+/// The state the phone's image named `name` is drawn from, without its `phone-`
+/// prefix. That is one of the phone's Send pages, or else the sample of that
+/// name. A Send page is the desktop's W4 sample, with its account and form, and
+/// its Send tab on that page (docs/DECISIONS.md D40).
+fn phone_named(name: &str) -> Model {
+    let stage = match name {
+        "w4-send-to" => SendStage::To(BTreeMap::new()),
+        "w4-send-amount" => SendStage::Amount,
+        "w5-sign" => SendStage::Sign(Box::new(sample::plan_view())),
+        _ => return sample_named(name),
+    };
+    let mut model = sample_named("w4-send");
+    if let Screen::Wallet(WalletPage {
+        page: Page::Send(send),
+        ..
+    }) = &mut model.screen
+    {
+        send.stage = stage;
+    }
+    model
+}
+
 /// The phone images at `width` logical pixels across: every desktop sample
 /// but the narrow ones, the phone's welcome screen and W1 with an account's
-/// row open, which the desktop does not have, the long pages scrolled to their
-/// end, two drawn with the keyboard up, and the recovery phrase after a
-/// screenshot and while captured (docs/DECISIONS.md D32 item 10 (c), D37, D39,
-/// D44 item 3).
+/// row open, which the desktop does not have, the phone's Send pages 1, 2
+/// and 4, the long pages scrolled to their end, two drawn with the keyboard
+/// up, and the recovery phrase after a screenshot and while captured
+/// (docs/DECISIONS.md D32 item 10 (c), D37, D39, D40, D44 item 3).
 fn phones(width: u32) -> Vec<Image> {
     let size = (width, PHONE.1);
+    // A phone's Send starts on page 1, so the desktop's W4 sample is not drawn
+    // as an image of its own: its page 1 is "phone-w4-send-to".
     let mut out: Vec<Image> = samples()
         .into_iter()
-        .filter(|(name, _, _)| !name.starts_with("narrow-"))
+        .filter(|(name, _, _)| !name.starts_with("narrow-") && *name != "w4-send")
         .map(|(name, _, model)| Image {
             name: format!("phone-{name}"),
             size,
@@ -997,11 +1028,24 @@ fn phones(width: u32) -> Vec<Image> {
         focus: None,
         scroll: Some(ACCOUNTS_SCROLL),
     });
+    // The phone's Send pages 1, 2 and 4 (docs/DECISIONS.md D40). The desktop's
+    // samples draw W4, the review (page 3, "phone-w5-review") and W6, not
+    // these.
+    for name in ["w4-send-to", "w4-send-amount", "w5-sign"] {
+        out.push(Image {
+            name: format!("phone-{name}"),
+            size,
+            model: phone(phone_named(name), 0.0),
+            to_end: false,
+            focus: None,
+            scroll: None,
+        });
+    }
     for name in PHONE_ENDS {
         out.push(Image {
             name: format!("phone-{name}-end"),
             size,
-            model: phone(sample_named(name), 0.0),
+            model: phone(phone_named(name), 0.0),
             to_end: true,
             focus: None,
             scroll: None,
@@ -1052,15 +1096,15 @@ fn phones(width: u32) -> Vec<Image> {
         scroll: None,
     });
     // The field the keyboard came up for: the recovery phrase, and the first
-    // destination.
+    // destination on Send's page 1.
     for (name, field) in [
         ("s6-restore", screens::phrase_id()),
-        ("w4-send", screens::destination_id(0)),
+        ("w4-send-to", screens::destination_id(0)),
     ] {
         out.push(Image {
             name: format!("phone-{name}-keyboard"),
             size,
-            model: phone(sample_named(name), KEYBOARD),
+            model: phone(phone_named(name), KEYBOARD),
             to_end: false,
             focus: Some(field),
             scroll: None,

@@ -1901,7 +1901,7 @@ on the three conditions D18 left open.
    no node, because `Preferences` has no node by default
    (`crates/wallet-core/src/preferences.rs:54`), and the application sends
    `SetNode` at start-up only when a node is set
-   (`crates/app/src/app.rs:1415-1417`). Today no automated job starts the
+   (`crates/app/src/app.rs:1420-1422`). Today no automated job starts the
    desktop window, before or after the move, so a start-up panic, such as a
    shader or surface failure, would pass CI. Landing the step at the current
    pin gives a baseline, so the move shows whether the fork changes the
@@ -1914,7 +1914,7 @@ on the three conditions D18 left open.
    and the premise above no longer holds. Start-up still needs no network
    if D43 item 2's recommended safeguard is taken: no node is asked at
    launch until a wallet is opened or the person presses Check now. The
-   reference to `app.rs:898-900` is now lines 1415 to 1417.*
+   reference to `app.rs:903-905` is now lines 1415 to 1417.*
 
    **(i) Android: configChanges now, target 36 later: owner, 2026-10-12.**
    Two Tawara-mobile pull requests, kept apart from the move. PR A, now: add
@@ -2018,7 +2018,7 @@ on the three conditions D18 left open.
    `Destroy` arrived 123 ms after the app went to the background. A bounded
    wait after `run_in`, which (j) named, cannot help: `Leaving` completes only
    inside `App::update`, where `Wiped::wiped` is called
-   (`crates/app/src/app.rs:1609`) and `Wiped::taken` is called (lines 2182 and
+   (`crates/app/src/app.rs:1614`) and `Wiped::taken` is called (lines 2182 and
    2188) through `on_event` (line 2028), which `update` calls at line 1644. The
    state they raise is `Wiped` (`crates/app/src/host.rs:112-148`). `run_in`
    hands `App::update` to `iced::application(...).run()`
@@ -3251,7 +3251,7 @@ item 6's.
    requires: the acknowledged advance names no index for a chain behind the
    store (library `recon.rs:867-875` and `:1153`, and
    `cli/reconcile.rs:273`), the recovery page offers no remedy for it
-   (`crates/app/src/app/wallet.rs:213-225`), and restore writes nothing for
+   (`crates/app/src/app/wallet.rs:215-227`), and restore writes nothing for
    an account the store already holds (library `cli/restore.rs:163-168`).
    D27 item 5's amendment holds only while the reservation is open. Tawara's
    side of this is pinned by
@@ -3314,7 +3314,7 @@ item 6's.
    the settled key's index, and the report names that index as the advance
    target (library `recon.rs:867-875`, `:943-953`). Tawara's account
    recovery offers that advance
-   (`crates/app/src/screens/wallet/account.rs:237`,
+   (`crates/app/src/screens/wallet/account.rs:243`,
    `crates/app/src/screens/wallet/recovery.rs:137`), and an account added
    there by restore is placed at that index (library
    `cli/restore.rs:173-176`). That store could then sign with the key the
@@ -3345,7 +3345,7 @@ item 6's.
    the only way the library names to move the balance before the spend
    lands. The library's full report, one step away in Tawara
    (`crates/app/src/screens/wallet/report.rs:318`,
-   `crates/app/src/app/wallet.rs:1608-1618`), says to keep any copy of the
+   `crates/app/src/app/wallet.rs:1946-1956`), says to keep any copy of the
    artifact (library `recon.rs:1004`). Keeping the bytes until the
    balance at the source has moved or a non-zero block-to-live has passed
    would have been another rule. Those are the library's conditions for
@@ -3366,7 +3366,7 @@ item 6's.
      asked for that close, and the bytes may not have been seen.
    - Saved bytes are not wiped by a lock. Their page is kept over it and
      shown again on unlock, as `keep_signed` and `bring_back_signed`
-     (`crates/app/src/app/wallet.rs:813` and `:895`) do today, and they are
+     (`crates/app/src/app/wallet.rs:979` and `:1061`) do today, and they are
      forgotten once the account is in sync.
    - Whenever a kept spend is dropped, its hex and the library's page,
      which repeats the hex, are wiped. Copies outside the model (a
@@ -3409,7 +3409,7 @@ item 6's.
    and a move to the background does not release them. This keeps the code as
    built. The app test
    `a_move_after_a_failed_send_with_no_notice_keeps_the_bytes_until_the_app_ends`
-   (`crates/app/src/app.rs:5439`) pins it. When the notice comes, its reason
+   (`crates/app/src/app.rs:5453`) pins it. When the notice comes, its reason
    decides, as the earlier rules say: a panic keeps the bytes until Tawara
    closes (confirmed 2026-10-14), and a graceful stop releases them, as the
    shutdown does.
@@ -3521,7 +3521,11 @@ E1's compact row change with the work. OS libraries: none added.
 
 ### D40. Send on phones as a series of pages
 
-**proposed; asked by the owner (item 5); recommended.** On a phone, Send is
+**proposed; asked by the owner (item 5); recommended. The page images, and
+with them the pages, are approved, and so are the readings of item 7 (a) and
+(c) and Back on page 1 as built (owner, 2026-10-17). Paste on a phone held
+sideways is decided and is to be built in a later pull request (owner,
+2026-10-17). Item 6 is open.** On a phone, Send is
 one long scroll from W4 to W6 today. The owner asked for a series of pages.
 
 1. **Five pages (recommended).** To (1 of 4): the From line, with
@@ -3563,12 +3567,132 @@ one long scroll from W4 to W6 today. The owner asked for a series of pages.
    as D32 item 10 (g) requires; otherwise its reads are dropped.
 6. **Open:** a note on S7 after a lock, that an unsigned spend was
    discarded, is new wording, for the owner's approval.
+7. **Readings, for the owner's approval; (a) and (c) approved (owner,
+   2026-10-17).** (a) A refused signing on a phone
+   goes back to page 2, not to page 1: the worker has dropped the plan, and
+   "Review spend" is on page 2, as the desktop's refused signing goes back to
+   the form that holds it. The page opens at its end, where the refusal is
+   drawn beside "Review spend"; the desktop's form opens at its top, as
+   before. Approved (owner, 2026-10-17). (b) "Give this destination's address." is new wording, for a
+   destination with an amount and no address. "Review spend" finds such a
+   destination too, since "Continue" passed it with nothing typed in it, and
+   page 2 has no field for an address: it goes back to page 1, with the
+   refusal under the field. Any other address or reference the library refuses
+   is shown under its field, in the library's words, with the destination's
+   number. (c) The key callout
+   and the three steps are on page 4, with "Sign & submit", and not on the
+   review. The review keeps the library's page, the destinations and the
+   figures, so the key the spend signs with is shown where the person presses
+   the button that signs. Approved (owner, 2026-10-17). The line under that button, "Submitting writes the
+   signed spend to the node's socket. That is not the node's verdict: settle
+   once the chain has moved.", is new wording in W6's words. (d) "Change" opens,
+   under the From line on page 1, the accounts that can spend, and choosing one
+   shuts the list. D40 names no way to choose an account, so the open list is a
+   page state (`WalletPage::choosing`). "Change" is drawn when an account other
+   than the one chosen can spend. Item 1's "more than one" gives the same answer
+   while the account chosen can spend. It differs when the account chosen
+   cannot spend now: the callout under the From line then asks for another
+   account, so "Change" is drawn for the other account that can, as
+   `phone-w4-send-cannot-spend` shows. (e) Page 1 draws one block for each
+   destination, with its Paste, its reference and its Remove, as the compact
+   W4 draws them, and not one destination at a time: a page with one destination on it would need a
+   shown row and a way to move between rows, which D40 does not give. (f) On
+   a phone a refusal and the busy card are drawn beneath the button that caused
+   them; the desktop keeps them at the top of the page. (g) Page 3 has no "Edit
+   the spend": the Back at the top of the page keeps what was typed and gives
+   the plan up, as Edit does. (h) The labels "1 of 4" to "4 of 4", "Amounts",
+   "Destinations", "Destination n", and the subtitles of pages 2 and 4 are new
+   wording. (i) When "Continue" refuses, or "Review spend" sends the person back
+   to page 1 for an address (b), page 1 scrolls to the first field refused, so
+   that the refusal under it is in view. Item 4 puts each refusal under its
+   field, but a page that stayed where it was could leave the first refusal
+   off the screen.
 
 The desktop's W4 to W6, `narrow-w4-send.png` included, are unchanged. The
 threat model's Locking row (PR #21) and docs/SCREENS.md's Back rule (lines
 108 to 110) and its W4 to W6 rows (lines 62 to 64 and 134 to 136) change
 with the work. The owner approves the pages by approving their images. OS
 libraries: none added.
+
+**As built (approved in part by the owner, 2026-10-17, as marked).**
+- The pages are drawn by `view` in `crates/app/src/screens/wallet/send.rs`,
+  through `to_page`, `amount_page`, `review_page` and `sign_page`. The stages
+  are `SendStage` in `crates/app/src/app/wallet.rs`: `To`, `Amount`, `Review`
+  and `Sign` are the four pages, `Compose` is the desktop's W4, and `Sent` is
+  W6. The transitions are the handlers for `Continue`, `Review`, `ToSigning`,
+  `Sign`, `Back` and `Edit`, with `send_steps_back` and `step_send_back`; the
+  return of a refused signing to page 2, in the handler for
+  `Purpose::ConfirmSend`; and `WalletPage::choosing` for "Change".
+- `crates/app/src/app.rs` sends the system's Back to `send_steps_back` before
+  `host::back`. `crates/app/src/screens/wallet.rs` draws a phone page's busy
+  card and refusal beneath the button that caused them (`frame_beside` and
+  `beside`). `crates/wallet-core/src/spend.rs` makes `parse_destination` and
+  `parse_reference` public, so that "Continue" checks each address and
+  reference under its own field. The desktop's W4 to W6 draw as before, and
+  their images are the same bytes as before.
+- The images are drawn by `crates/app/examples/screenshots.rs` into
+  `design/screenshots/`. New: `phone-w4-send-to`, `-to-end` and `-to-keyboard`,
+  `phone-w4-send-amount` and `-amount-end`, and `phone-w5-sign` and `-sign-end`.
+  Changed: `phone-w4-send-cannot-spend`, `phone-w5-review` and `-end`. Removed:
+  `phone-w4-send`, `-end` and `-keyboard`, replaced by the page 1 images. The
+  Sent (W6), re-sign (W8) and submit (W9) images are unchanged.
+- docs/SCREENS.md's W4 to W6 rows, their compact rows and the Back rule describe
+  the pages. docs/THREAT_MODEL.md's Android Locking row says that Back on pages
+  2 to 4 steps back a page and does not lock the application.
+- The page images are approved (owner, 2026-10-17) under D32 item 10 (c), and,
+  as D40 asks, that approval approves the pages. They are the committed Linux
+  renders, made in a Linux container. Untouched screens already differ by a few
+  pixels on macOS, so the images are not redrawn there.
+
+Readings approved (owner, 2026-10-17), with item 7:
+- Item 7 (a) and (c) are built as written: a refused signing returns to page 2,
+  where "Review spend" is, and the key callout and the three steps are on page
+  4, with "Sign & submit". Approved (owner, 2026-10-17).
+- Back on page 1 is unchanged. Item 2 gives a Back at the top of each page, but
+  page 1 is the first page and has none. Android's Back there keeps its meaning
+  (`Host::back`), which moves the application to the background and locks it,
+  as it does today. Item 3's "pages 1 to 4" is read as pages 2 to 4. Approved
+  (owner, 2026-10-17): page 1 has no Back in the application, and Android's
+  Back there still moves it to the background and locks it.
+- The approval names item 7 (a) and (c) and Back on page 1. Item 7's other
+  readings, (b) and (d) to (i), are recorded as built.
+
+Judgment calls that D40 does not settle, for the owner to note:
+- A tap on the Send tab during the flow keeps the whole page, not only the form.
+- Each page of the flow starts at its top when it is entered.
+- While the worker answers a command the page sent, Back does nothing, and
+  Android's Back on pages 2 to 4 is used up without reaching `host::back`.
+- Duplicates, amounts, the fee and the block-to-live are refused beside "Review
+  spend", when it is pressed. "Continue" checks the addresses and the
+  references, and "Review spend" checks the addresses of the destinations given
+  an amount (item 7 (b)).
+- A Paste read that comes back once the person is on page 2 is dropped, since
+  page 2 has no field to paste into (`form_of`).
+
+Not built:
+- Item 6, the note on S7 after a lock, is not built. It is new wording, and the
+  owner approves it first.
+- On a phone held sideways, 600 to 1023 wide, the pages draw without Paste
+  buttons, since Paste is drawn in the compact layout only. Decided (owner,
+  2026-10-17): Paste is to follow `phone()` (`Model::phone` in
+  `crates/app/src/app.rs`), as W1's sections follow the phone shell (D39 item
+  5), so that a phone held sideways draws it too. That is to be built in a later
+  pull request, not this one.
+
+Corrected line references:
+- Items 2, 3 and 5 gave lines that were stale at b67e90c, the base of this
+  work. The empty form for the Send tab is built in `open`
+  (`crates/app/src/app/wallet.rs:1198-1201`), not at 929-932; `host::back` is at
+  `crates/app/src/app.rs:1582`, not 1193; and `form_of` is at
+  `crates/app/src/app/wallet.rs:773` and `form` at 1301, not 691 and 1029.
+  Item 4's references were right at b67e90c: `parse_destination` is at
+  `crates/wallet-core/src/spend.rs:151`, and the page's top, where the refusals
+  are drawn, at `crates/app/src/screens/wallet.rs:395-408`. As built,
+  `parse_destination` is at `crates/wallet-core/src/spend.rs:153` and
+  `parse_reference` at 200.
+- The paragraph above gave docs/SCREENS.md's Back rule at lines 108 to 110, its
+  W4 to W6 rows at 62 to 64 and its compact rows at 134 to 136. At b67e90c they
+  are at 112 to 114, 64 to 66 and 139 to 141.
 
 ### D41. A QR code on Receive
 
@@ -3673,7 +3797,7 @@ and the threat model's acceptance open.**
    the default is a node, an absent or empty `node` line means the default.
    No node is asked at launch until a wallet is opened or the person
    presses Check now, which keeps true D32 item 9 (h)'s note that start-up
-   needs no network (its reference to `app.rs:898-900` is now lines 1415
+   needs no network (its reference to `app.rs:903-905` is now lines 1415
    to 1417). Asking the person to confirm a suggested node was considered
    and not taken: it would still ask someone who does not know what a node
    is to act.
