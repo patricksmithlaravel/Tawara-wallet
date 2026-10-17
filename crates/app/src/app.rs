@@ -36,7 +36,7 @@ pub use wallet::{
     AccountPage, ActivityPage, AddAccountPage, BLOCK_ROWS, BlockPage, DestinationRow, Done,
     ExplorerPage, FormOf, Level, Missed, Page, QueuePage, ReceivePage, RecoveryPage, Remedy,
     ReportKey, ResignPage, SHARED, SendPage, SendStage, SentPage, SettingsPage, Signed, SpendForm,
-    SubmitPage, TagPage, To, TransactionPage, WalletMsg, remedy, spend_request,
+    SubmitMode, SubmitPage, TagPage, To, TransactionPage, WalletMsg, remedy, spend_request,
 };
 
 /// How often a poll asks the node about an account [`Watch::asks`] names: one
@@ -56,6 +56,9 @@ fn reads_of(purpose: Purpose, reply: &Reply) -> Reads {
         (_, Reply::Status { account, .. }) => Reads::One(*account),
         (_, Reply::Sent(sent)) => Reads::One(sent.from),
         (Purpose::Settle(account), Reply::Settled { .. }) => Reads::One(account),
+        // The read after a saved copy is written reads its account, as the read
+        // after a send does (docs/DECISIONS.md D38 item 5 (b)).
+        (Purpose::Resubmit(account), Reply::Resubmitted { .. }) => Reads::One(account),
         (
             _,
             Reply::Wallet(_)
@@ -74,13 +77,14 @@ fn reads_of(purpose: Purpose, reply: &Reply) -> Reads {
 /// The accounts the worker settled on its own in answering with `reply`
 /// (docs/DECISIONS.md D38), from the store's view the reply carries. Every
 /// reply that opens or reads the wallet can carry them: a refresh, an unlock,
-/// the read after a send, and the reopen after a restore or an advance. A
-/// check's or a poll's own settlement is `Reply::Status::settled`, which the
-/// check's answer shows itself.
+/// the read after a send or after a saved copy is written, and the reopen after
+/// a restore or an advance. A check's or a poll's own settlement is
+/// `Reply::Status::settled`, which the check's answer shows itself.
 fn settled_in(reply: &Reply) -> Vec<SettledAccount> {
     let view = match reply {
         Reply::Wallet(view) | Reply::Unlocked(view) | Reply::Settled { view, .. } => Some(view),
         Reply::Sent(sent) => Some(&sent.view),
+        Reply::Resubmitted { view, .. } => Some(view),
         Reply::Created {
             opened: Ok(view), ..
         }
@@ -711,6 +715,9 @@ enum Purpose {
     Settle(AccountId),
     Resign,
     SubmitArtifact,
+    /// The saved copy of a settle the chain reverted, sent from W9 for this
+    /// account: its answer reads that account (see [`reads_of`]).
+    Resubmit(AccountId),
     Status,
     /// The network the node serves, in the background.
     Networks,
@@ -765,6 +772,7 @@ impl Purpose {
                 | Purpose::Settle(_)
                 | Purpose::Resign
                 | Purpose::SubmitArtifact
+                | Purpose::Resubmit(_)
                 | Purpose::Status
                 | Purpose::Review
                 | Purpose::Reconcile
@@ -785,6 +793,7 @@ impl Purpose {
                 | Purpose::Settle(_)
                 | Purpose::Resign
                 | Purpose::SubmitArtifact
+                | Purpose::Resubmit(_)
                 | Purpose::Status
                 | Purpose::Review
                 | Purpose::Reconcile
@@ -5700,6 +5709,117 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_copy_written_to_the_node_shows_on_w9_and_its_account_as_read() {
+        // docs/DECISIONS.md D38 item 5 (b): the answer carries the store as the
+        // read after the write left it, so the account's row is what the chain
+        // holds now, and W9 shows the written copy's report.
+        let view = tawara_wallet_core::sample::wallet_view();
+        let account = view.accounts[2].id;
+        let mut app = on_wallet(Page::Submit(SubmitPage {
+            hex: "4f2a00ab11cd".to_owned(),
+            mode: SubmitMode::Resubmit(account),
+            result: None,
+        }));
+        let mut read = view;
+        read.accounts[2].state = tawara_wallet_core::view::AccountState::InSync { balance: 1 };
+        let text = "The saved copy was written to the node's socket, and the node echoed its \
+                    transaction id, 5e5e."
+            .to_owned();
+        let _ = app.on_reply(
+            Purpose::Resubmit(account),
+            Reply::Resubmitted {
+                tx_id: "5e5e".to_owned(),
+                text: text.clone(),
+                view: read,
+            },
+        );
+        assert!(
+            matches!(&wallet_page(&app).page, Page::Submit(s) if s.result == Some((true, text.clone()))),
+            "{:?}",
+            wallet_page(&app).page
+        );
+        assert!(
+            matches!(
+                &app.model.wallet,
+                Some(w) if w.accounts[2].state
+                    == tawara_wallet_core::view::AccountState::InSync { balance: 1 }
+            ),
+            "the account is read again"
+        );
+    }
+
+    #[test]
+    fn a_saved_copy_the_library_refuses_is_read_again_quietly() {
+        // A write that failed after the node received the copy leaves it there,
+        // so the account is read again, quietly, as a sign the library refused
+        // is (docs/DECISIONS.md D38 items 2 and 5 (b)). A refusal the wallet makes
+        // itself, for a locked store, reads nothing.
+        use tawara_wallet_core::{Refusal, RefusalKind};
+        let scratch = Scratch::new("resubmit-refused");
+        let (mut app, _events) = app(&scratch);
+        let view = tawara_wallet_core::sample::wallet_view();
+        let account = view.accounts[2].id;
+        app.model.wallet = Some(view);
+        app.model.screen = Screen::Wallet(WalletPage {
+            page: Page::Submit(SubmitPage {
+                hex: "4f2a00ab11cd".to_owned(),
+                mode: SubmitMode::Resubmit(account),
+                result: None,
+            }),
+            ..WalletPage::default()
+        });
+        let _ = app.on_reply(
+            Purpose::Resubmit(account),
+            Reply::Refused(Refusal {
+                kind: RefusalKind::NotUnlocked,
+                text: "the wallet is locked".to_owned(),
+            }),
+        );
+        assert!(!app.waiting_on(|p| matches!(p, Purpose::Poll)));
+        let _ = app.on_reply(
+            Purpose::Resubmit(account),
+            Reply::Refused(Refusal {
+                kind: RefusalKind::Library,
+                text: "the library refused".to_owned(),
+            }),
+        );
+        assert!(app.waiting_on(|p| matches!(p, Purpose::Poll)), "read again");
+        assert_eq!(
+            wallet_page(&app).error.as_deref(),
+            Some("the library refused")
+        );
+    }
+
+    #[test]
+    fn a_saved_copy_the_library_refuses_shows_its_words_on_w9() {
+        // The refusal is the library's own text, as W9's error. The page keeps
+        // no result, since nothing was written (docs/DECISIONS.md D38 item 5 (b)).
+        let account = tawara_wallet_core::sample::wallet_view().accounts[2].id;
+        let mut app = on_wallet(Page::Submit(SubmitPage {
+            hex: "4f2a00ab11cd".to_owned(),
+            mode: SubmitMode::Resubmit(account),
+            result: None,
+        }));
+        let words = "the balance at the source is 9 nanoMCM, not the 8 the settled spend was \
+                     built against, so the saved artifact can no longer be accepted. Nothing was \
+                     submitted."
+            .to_owned();
+        let _ = app.on_reply(
+            Purpose::Resubmit(account),
+            Reply::Refused(Refusal {
+                kind: RefusalKind::Library,
+                text: words.clone(),
+            }),
+        );
+        assert_eq!(wallet_page(&app).error.as_deref(), Some(words.as_str()));
+        assert!(
+            matches!(&wallet_page(&app).page, Page::Submit(s) if s.result.is_none()),
+            "{:?}",
+            wallet_page(&app).page
+        );
+    }
+
+    #[test]
     fn an_opened_store_reads_every_account_however_it_was_opened() {
         // view::Reads: an opened or refreshed store reads every account, a
         // store just created among them (docs/DECISIONS.md D38 item 2;
@@ -6192,6 +6312,7 @@ mod tests {
             kind: DivergenceKind::Unreachable,
             report: "no answer".to_owned(),
             advance_to: None,
+            reverted_settle: false,
         };
         assert!(!checked(&mut app, 0, unreachable, false).spendable);
         assert!(checked(&mut app, 0, AccountState::InSync { balance: 9 }, true).spendable);
@@ -7080,6 +7201,7 @@ mod tests {
             kind,
             report: "the library's report".to_owned(),
             advance_to: None,
+            reverted_settle: false,
         };
         let silent = diverged(DivergenceKind::Unreachable);
         let not_found = diverged(DivergenceKind::NotFound);
@@ -7351,6 +7473,7 @@ mod tests {
                     kind: DivergenceKind::Unreachable,
                     report: "no answer".to_owned(),
                     advance_to: None,
+                    reverted_settle: false,
                 },
                 vec![],
             ),
@@ -7407,6 +7530,7 @@ mod tests {
             kind: DivergenceKind::Unreachable,
             report: "no answer".to_owned(),
             advance_to: None,
+            reverted_settle: false,
         };
         // The worker's answer to a poll of the account, taken as the app takes it.
         let answer = |app: &mut App, state: AccountState, settled: Option<SettledAccount>| {
@@ -7461,6 +7585,7 @@ mod tests {
                 kind: DivergenceKind::ReservationUnexplained,
                 report: "unexplained".to_owned(),
                 advance_to: None,
+                reverted_settle: false,
             },
             None,
         );
@@ -7520,6 +7645,7 @@ mod tests {
             kind,
             report: "the library's report".to_owned(),
             advance_to: None,
+            reverted_settle: false,
         };
         let silent = diverged(DivergenceKind::Unreachable);
         let not_found = diverged(DivergenceKind::NotFound);
@@ -7664,6 +7790,7 @@ mod tests {
             kind: DivergenceKind::Unreachable,
             report: "no answer".to_owned(),
             advance_to: None,
+            reverted_settle: false,
         };
         answer(&mut app, silent, None);
         assert!(polls(&mut app), "a transient failure keeps the polls going");
@@ -7704,6 +7831,7 @@ mod tests {
             kind: DivergenceKind::NotFound,
             report: "account not found".to_owned(),
             advance_to: None,
+            reverted_settle: false,
         };
         let answer = |app: &mut App, state: AccountState| {
             let _ = app.on_reply(

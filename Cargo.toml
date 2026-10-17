@@ -23,15 +23,18 @@ repository = "https://github.com/patricksmithlaravel/Tawara-wallet"
 [workspace.dependencies]
 # THE WALLET LIBRARY, PINNED BY FULL COMMIT HASH (docs/PLAN.md D1).
 #
-# Rep-1 (`patricksmithlaravel/mcm-rust-cli-windows`) at `main`, 7cdc2e9: the
-# merge that brought down Rep-0's reading of a refused search
-# (`Outcome::SearchFailed`), on top of e41f8c1's explorer reads -- a tag's
-# history past its newest hundred rows, a block's own figures and kind, the
-# node's network and sync state, and the mempool
-# (docs/LIBRARY-PROPOSALS.md items 5 to 8) -- and 8c2f39a's cancellation
-# and progress for the long operations,
-# `Wallet::open_or_return`, the planned-spend page and the command line's
-# decisions made public (docs/DECISIONS.md D7, D23), in the form
+# Rep-1 (`patricksmithlaravel/mcm-rust-cli-windows`) at `main`, 613e8bd: on top
+# of 7cdc2e9, `recon::resubmit_reverted_settle`, which sends a saved copy of a
+# reverted settle (owner, 2026-10-16: the Rep-0-first rule waived for this
+# change), and a correction to the keystore module's comment on the Windows
+# lock range. 7cdc2e9 is the merge that brought down Rep-0's reading of a
+# refused search (`Outcome::SearchFailed`), on top of e41f8c1's explorer reads
+# -- a tag's history past its newest hundred rows, a block's own figures and
+# kind, the node's network and sync state, and the mempool
+# (docs/LIBRARY-PROPOSALS.md items 5 to 8) -- and 8c2f39a's cancellation and
+# progress for the long operations, `Wallet::open_or_return`, the planned-spend
+# page and the command line's decisions made public (docs/DECISIONS.md D7,
+# D23), in the form
 # docs/PLAN.md D1 gives. Upgrading the
 # library is a change to `rev` and to nothing else: no `[patch]`, no vendored
 # copy, no fork. A change the application needs from the library is made in
@@ -45,7 +48,7 @@ repository = "https://github.com/patricksmithlaravel/Tawara-wallet"
 # workspace never turns on `raw-backend`: it is the library's test-only
 # feature, and with it off the only path to a signature is
 # `Keystore::sign_spend` behind an `AdvanceReceipt` (the library's I1).
-mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-windows", rev = "7cdc2e986319d508e4c197a4ba44220dd49a5b1d", default-features = false, features = ["native", "mesh-https"] }
+mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-windows", rev = "613e8bd7d3379a3d1cb88803319931f817a48255", default-features = false, features = ["native", "mesh-https"] }
 
 # THE TOOLKIT (docs/PLAN.md D2): iced 0.14, FROM THE OWNER'S FORK, PINNED BY
 # FULL COMMIT HASH (docs/DECISIONS.md D6, D32 items 1 and 9).

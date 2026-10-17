@@ -17,7 +17,7 @@ use tawara_wallet_core::{MAX_DESTINATIONS, PlanView, REFERENCE_RULE};
 use super::{account_choice, action, copy, figure, frame, name, pair, report, row_of};
 use crate::app::{
     Message, Model, PasteInto, ReportKey, ResignPage, SendPage, SendStage, SentPage, SpendForm,
-    SubmitPage, To, WalletMsg, WalletPage,
+    SubmitMode, SubmitPage, To, WalletMsg, WalletPage,
 };
 use crate::icon::Icon;
 use crate::theme::{self, color, radius, space as sp};
@@ -940,7 +940,23 @@ fn submit_form<'a>(
         None,
         WalletMsg::Submit,
     );
-    let helper = ui::helper("Only the bytes' layout is checked here; the node validates the rest.");
+    // What the page says of the bytes depends on what they are sent as
+    // (docs/DECISIONS.md D38 item 5 (b)).
+    let (helper, subtitle) = match s.mode {
+        SubmitMode::Artifact => (
+            ui::helper("Only the bytes' layout is checked here; the node validates the rest."),
+            "A signed spend saved earlier, written to the node's socket again. Nothing is signed.",
+        ),
+        SubmitMode::Resubmit(_) => (
+            ui::helper(
+                "Only the identical saved copy is accepted, and only while the balance at its \
+                 source has not moved and its block-to-live has not passed. The library checks \
+                 the copy before anything is written.",
+            ),
+            "A saved copy of a settle the chain reverted, written to the node's socket again. \
+             Nothing is signed, and no key index moves.",
+        ),
+    };
     // On a phone the field has the width of its row, less the Paste button
     // beside it (docs/DECISIONS.md D32 item 10 (g)), and Submit stands above
     // its helper (docs/SCREENS.md, "Compact layout").
@@ -974,18 +990,18 @@ fn submit_form<'a>(
     };
     let mut body = vec![ui::card_for(compact, entry).into()];
     if let Some((accepted, text)) = &s.result {
-        body.push(report::show_in(
-            compact,
-            page,
-            ReportKey::Submitted,
-            report::submitted(*accepted, text),
-        ));
+        // A saved copy's answer is a write: a refusal is the page's error.
+        let answer = match s.mode {
+            SubmitMode::Artifact => report::submitted(*accepted, text),
+            SubmitMode::Resubmit(_) => report::resubmitted(text),
+        };
+        body.push(report::show_in(compact, page, ReportKey::Submitted, answer));
     }
     frame(
         model,
         page,
         "Submit saved artifact",
-        "A signed spend saved earlier, written to the node's socket again. Nothing is signed.",
+        subtitle,
         Vec::new(),
         body,
     )
@@ -1348,10 +1364,71 @@ mod tests {
             Page::Submit(SubmitPage {
                 hex: sample::sent_view().artifact_hex,
                 result: Some((true, sample::submitted_text())),
+                ..SubmitPage::default()
             }),
             None,
         );
         assert_eq!(fits(screens::view(&model), NARROWEST), Ok(()));
+    }
+
+    #[test]
+    fn w9_in_resubmit_mode_says_what_is_accepted_and_what_a_write_establishes() {
+        // docs/DECISIONS.md D38 item 5 (b): the page says that only the identical
+        // saved copy is accepted, under the library's two conditions, and the
+        // written copy's report says that the write establishes no more than
+        // that. Both fit a phone.
+        let written = "The saved copy was written to the node's socket.";
+        let model = phone(
+            Page::Submit(SubmitPage {
+                hex: sample::sent_view().artifact_hex,
+                mode: SubmitMode::Resubmit(accounts()[2]),
+                result: Some((true, written.to_owned())),
+            }),
+            Some(ReportKey::Submitted),
+        );
+        assert_eq!(fits(screens::view(&model), NARROWEST), Ok(()));
+        let drawn: Vec<String> = texts(screens::view(&model), (NARROWEST, 844.0))
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect();
+        for line in [
+            "Only the identical saved copy is accepted, and only while the balance at its source \
+             has not moved and its block-to-live has not passed. The library checks the copy \
+             before anything is written.",
+            "Only the write is confirmed here. The node checks the copy after Tawara has gone, \
+             and if it refuses, nothing says so here.",
+        ] {
+            assert!(drawn.iter().any(|text| text == line), "{line}: {drawn:?}");
+        }
+    }
+
+    #[test]
+    fn w9_of_an_open_reservation_keeps_its_copy_and_no_resubmit_copy() {
+        // The copy follows the mode (docs/DECISIONS.md D38 item 5 (b)): the
+        // bytes of an open reservation keep the copy they had. The command each
+        // mode sends is tested with `submit_command`, in app/wallet.rs.
+        let model = phone(
+            Page::Submit(SubmitPage {
+                hex: sample::sent_view().artifact_hex,
+                ..SubmitPage::default()
+            }),
+            None,
+        );
+        let drawn: Vec<String> = texts(screens::view(&model), (NARROWEST, 844.0))
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect();
+        assert!(
+            drawn.iter().any(|text| text
+                == "Only the bytes' layout is checked here; the node validates the rest."),
+            "{drawn:?}"
+        );
+        assert!(
+            !drawn
+                .iter()
+                .any(|text| text.starts_with("Only the identical saved copy")),
+            "{drawn:?}"
+        );
     }
 
     #[test]
@@ -1403,6 +1480,7 @@ mod tests {
             Page::Submit(SubmitPage {
                 hex: sample::sent_view().artifact_hex,
                 result: None,
+                ..SubmitPage::default()
             }),
             None,
         );
