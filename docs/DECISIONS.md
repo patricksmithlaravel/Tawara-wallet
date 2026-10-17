@@ -3841,8 +3841,9 @@ It sets the setting back to `Unoffered`, so that the next unlock with the
 password offers again, and keeps nothing. Unoffered: a note only.
 
 On S7 (`crates/app/src/screens/first_run.rs`) the button sits above the
-password field where the unlock is on. The check is asked on
-`LifecycleEvent::Foreground`, which iced reports at a cold launch as well as
+password field where the unlock is on. What the device unlock last found stands
+under the button, or in its place while the unlock is off. The check is asked
+on `LifecycleEvent::Foreground`, which iced reports at a cold launch as well as
 on each return. An `Active` event asks nothing, since a Face ID prompt makes
 the application inactive. The button asks each time it is pressed. A
 password the check releases unlocks the store as a typed one does, and the

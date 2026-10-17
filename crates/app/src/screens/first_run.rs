@@ -1155,17 +1155,20 @@ fn unlock<'a>(model: &'a Model, form: &'a UnlockForm) -> Element<'a, Message> {
             None,
         ));
     }
-    // Where the device unlock is on, its button stands above the password field,
-    // which stays as it is (docs/DECISIONS.md D45 item 4). What the device unlock
-    // last found stands under the button.
-    if let Some(device) = model.device.as_ref().filter(|_| model.device_unlock_on()) {
-        body = body.push(ui::button_with(
-            format!("Unlock with {}", device.check().name()),
-            theme::Button::Secondary,
-            Size::Xl,
-            Some(crate::icon::Icon::Lock),
-            Some(Message::UnlockWithDevice),
-        ));
+    // Where a shell offers the device unlock, its button stands above the password
+    // field while the unlock is on, and the field stays as it is (docs/DECISIONS.md
+    // D45 item 4). What the device unlock last found stands under the button, or in
+    // its place while the unlock is off, so that the form says why.
+    if let Some(device) = model.device.as_ref() {
+        if model.device_unlock_on() {
+            body = body.push(ui::button_with(
+                format!("Unlock with {}", device.check().name()),
+                theme::Button::Secondary,
+                Size::Xl,
+                Some(crate::icon::Icon::Lock),
+                Some(Message::UnlockWithDevice),
+            ));
+        }
         if let Some(note) = &model.device_note {
             body = body.push(ui::refusal(note.as_str()));
         }
@@ -1233,7 +1236,7 @@ mod tests {
     use tawara_wallet_core::{Activity, CONFIRM_POSITIONS, PhraseForDisplay, Progress, RequestId};
 
     use super::*;
-    use crate::app::NARROWEST;
+    use crate::app::{DEVICE_MISSING_NOTE, DEVICE_WRONG_NOTE, NARROWEST};
     use crate::harness::{
         Driver, finger_lift, finger_move, finger_press, fits, fits_at, fits_the_viewport,
         mouse_move, mouse_press, mouse_release, texts,
@@ -1668,6 +1671,27 @@ mod tests {
             shows(&named("S7"), size, "Unlock"),
             "the password form stays"
         );
+    }
+
+    #[test]
+    fn s7_says_why_the_device_unlock_is_off_where_the_button_would_be() {
+        // The unlock turns itself off when the kept password is missing or no
+        // longer opens the store, and the note that says so stands above the
+        // field, with no button (docs/DECISIONS.md D45 item 4).
+        let size = (NARROWEST, 844.0);
+        for note in [DEVICE_MISSING_NOTE, DEVICE_WRONG_NOTE] {
+            let model = s7_with_device(DeviceUnlock::Off, Some(note));
+            assert!(!shows(&model, size, "Unlock with Face ID"), "no button");
+            let drawn = texts(view(&model), size);
+            let top = |text: &str| {
+                drawn
+                    .iter()
+                    .find(|(shown, _)| shown == text)
+                    .map(|(_, bounds)| bounds.y)
+                    .unwrap_or_else(|| panic!("no text {text:?}"))
+            };
+            assert!(top(note) < top("Password"), "the note is above the field");
+        }
     }
 
     #[test]

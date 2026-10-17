@@ -1050,13 +1050,13 @@ const UNLOCK_REASON: &str = "unlock Tawara";
 /// What the device unlock says when the kept password is not there for this
 /// store, and the unlock with the device is turned off. Provisional wording, for
 /// the owner's approval (docs/DECISIONS.md D45 item 6).
-const DEVICE_MISSING_NOTE: &str = "No password is kept on this device for this store, so \
+pub(crate) const DEVICE_MISSING_NOTE: &str = "No password is kept on this device for this store, so \
      the unlock with the device is off. Type the password to unlock.";
 
 /// What the device unlock says when the kept password no longer opens the store:
 /// it is deleted, and the unlock with the device is turned off. Provisional
 /// wording, for the owner's approval (docs/DECISIONS.md D45 item 6).
-const DEVICE_WRONG_NOTE: &str = "The password kept on this device no longer opens this \
+pub(crate) const DEVICE_WRONG_NOTE: &str = "The password kept on this device no longer opens this \
      store, so it has been deleted and the unlock with the device is off. Type the \
      password to unlock.";
 
