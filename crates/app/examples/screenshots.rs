@@ -22,7 +22,7 @@
 //! phone's welcome screen, S0, has no desktop image: it is drawn only as
 //! `phone-s0-welcome.png` (docs/DECISIONS.md D37), and W1 with an account's
 //! row opened has none either: it is drawn only as
-//! `phone-w1-wallet-account-open.png` (D39), so the phone's images are 70 in
+//! `phone-w1-wallet-account-open.png` (D39), so the phone's images are 72 in
 //! all. Every piece of text names a bundled face (`tawara_app::fonts`), so the
 //! pixels do not depend on the fonts a machine has installed.
 //!
@@ -79,8 +79,8 @@ use tawara_app::app::{
     AccountPage, ActivityPage, AddAccountPage, Back, BlockPage, Busy, DestinationRow, Explored,
     ExplorerPage, Level, Missed, Model, NodeForm, NodeState, Page, PasswordForm, PhraseState,
     QueuePage, ReceivePage, RecoveryPage, ReportKey, ResignPage, RestoreForm, SHARED, Screen,
-    SendPage, SendStage, SentPage, SettingsPage, Signed, SpendForm, StartChoice, SubmitPage,
-    TagPage, TransactionPage, UnlockForm, WalletPage,
+    SendPage, SendStage, SentPage, SettingsPage, Signed, SpendForm, StartChoice, SubmitMode,
+    SubmitPage, TagPage, TransactionPage, UnlockForm, WalletPage,
 };
 use tawara_app::history::Filter;
 use tawara_app::{fonts, overflow, screens, theme};
@@ -88,7 +88,7 @@ use tawara_wallet_core::explorer::{BlockAt, IndexState, LedgerRead, Party, TagVi
 use tawara_wallet_core::location::SyncWarning;
 use tawara_wallet_core::preferences::{AmountUnit, DEFAULT_NODE, Preferences};
 use tawara_wallet_core::sample;
-use tawara_wallet_core::view::AccountState;
+use tawara_wallet_core::view::{AccountState, DivergenceKind};
 use tawara_wallet_core::{
     Activity, CONFIRM_POSITIONS, NetworkName, PhraseForDisplay, Progress, SyncState,
 };
@@ -316,6 +316,24 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
     let landed = |page| {
         let mut m = on(page);
         m.wallet = Some(landed_wallet.clone());
+        m
+    };
+    // The third account's settle was reverted by a reorganisation: the chain
+    // holds it one key behind the store, with the settle retained, so W7 offers
+    // Submit saved artifact (docs/DECISIONS.md D38 item 5 (b)). Its report is
+    // the sample's words, not the library's.
+    let mut reverted_wallet = sample::wallet_view();
+    reverted_wallet.accounts[2].state = AccountState::Diverged {
+        kind: DivergenceKind::Behind { gap: 1 },
+        report: "This store recorded a SETTLE at index 30, and this node's answer does not \
+                 show it."
+            .to_owned(),
+        advance_to: None,
+        reverted_settle: true,
+    };
+    let reverted = |page| {
+        let mut m = on(page);
+        m.wallet = Some(reverted_wallet.clone());
         m
     };
     // The first account's spend once it has settled: the account is in sync
@@ -657,6 +675,14 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
             ),
         ),
         (
+            "w7-account-reverted-settle",
+            DASHBOARD,
+            reverted(Page::Account(AccountPage {
+                account: accounts[2].id,
+                report: None,
+            })),
+        ),
+        (
             "w8-resign",
             DASHBOARD,
             on(Page::Resign(ResignPage {
@@ -670,6 +696,18 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
             on(Page::Submit(SubmitPage {
                 hex: sample::sent_view().artifact_hex,
                 result: Some((true, sample::submitted_text())),
+                ..SubmitPage::default()
+            })),
+        ),
+        // The same page for the saved copy of a settle the chain reverted, from
+        // W7's Submit saved artifact (docs/DECISIONS.md D38 item 5 (b)).
+        (
+            "w9-submit-resubmit",
+            DASHBOARD,
+            on(Page::Submit(SubmitPage {
+                hex: sample::sent_view().artifact_hex,
+                mode: SubmitMode::Resubmit(accounts[2].id),
+                ..SubmitPage::default()
             })),
         ),
         ("w1-wallet-unreconciled", DASHBOARD, unreconciled),

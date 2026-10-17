@@ -167,7 +167,9 @@ nothing. The library's `Error` gained eight variants, all raised by that
 function, and the reverted-settle report names it in place of its statement
 that this build had no command for the retained block. Nothing in the range
 changes a manifest or the lockfile, so the wallet's `Cargo.lock` changes in the
-library's own line and nowhere else. The wallet does not call the function yet.
+library's own line and nowhere else. From 2026-10-17 the wallet calls the
+function, from W9's resubmit mode, for a diverged account one key behind with
+its settle retained (D38 item 5 (b)).
 
 ### D8. Names and identifiers
 
@@ -862,7 +864,14 @@ changed in one place:
   documentation gives (`cli::args`, `index_flag`), and of a discovery bound
   outside 1 to 1,024, whose two reasons are the command line's; reworded
   because its text names its flags and verbs (`--scan-to`, `--advance-to`,
-  `--to`, `address`, `balance`).
+  `--to`, `address`, `balance`);
+- the answer to a saved copy of a reverted settle that was written
+  (`resubmit_saved`, D38 item 5 (b)), which says that the copy was written to
+  the node's socket with the transaction id the node echoed; that this
+  establishes that the bytes were written and no more; that no key index moved
+  and nothing was signed; and that the account was read again. It is new
+  wording, for the owner's approval (2026-10-17). A refusal is the library's
+  own text and is not listed here.
 
 The rendered pages also name command-line verbs (`settle`,
 `reconcile ... --advance-to N`, `submit`).
@@ -3234,9 +3243,31 @@ item 6's.
    D27 item 5's amendment holds only while the reservation is open. Tawara's
    side of this is pinned by
    `a_reverted_settle_leaves_the_account_behind_with_no_way_to_advance`
-   (`crates/wallet-core/tests/worker.rs`) and
-   `a_reverted_settle_is_offered_no_button_and_no_remedy`
-   (`crates/app/src/screens/wallet/account.rs`).
+   (`crates/wallet-core/tests/worker.rs`), and by
+   `a_reverted_settle_offers_submit_saved_artifact_and_no_remedy` and
+   `the_resubmit_button_is_drawn_only_for_a_settle_the_chain_reverted`
+   (`crates/app/src/screens/wallet/account.rs`), which replace the statement
+   above that the panel offers no button for it.
+
+   **Built (2026-10-17, the resubmit lane).** `Command::ResubmitSaved` sends a
+   saved copy through `recon::resubmit_reverted_settle` (the library at
+   `613e8bd`, D7), with the wallet open and the key access `settle` takes. It
+   decodes the hex, reads the account again once the copy is written, and never
+   signs or moves a key index; every refusal is the library's own text
+   (`resubmit_saved`, `crates/wallet-core/src/worker.rs`). W7 draws Submit saved
+   artifact only for a diverged account one key behind with its settle retained,
+   and the button opens W9 in its resubmit mode (`SubmitMode::Resubmit`), whose
+   copy states the two conditions above. A written copy is answered by a banner
+   whose worker text is in D25; W9's copy is in docs/SCREENS.md. Both are new
+   wording, for the owner's approval, and W7's summary for a reverted settle is
+   unchanged, so item 3's question stays open. Tawara's threat model (T9) records
+   the route. Two gaps remain. First, a store whose only account diverged this
+   way does not open, so the command is refused in that session; yet the library's
+   report, which the standing notice carries, names `resubmit_reverted_settle`,
+   and the owner decides whether that session offers the command or the notice is
+   qualified. Second, a refusal does not read the account again, so a copy the
+   node received before the refusal is seen only by the next read (Check now,
+   Refresh or unlock), and the library's refusal does not say so.
 
    A store made from the same recovery phrase elsewhere is different, and
    making one is a natural step after a lost device. It creates account 0 at
