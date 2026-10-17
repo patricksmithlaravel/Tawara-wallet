@@ -449,6 +449,10 @@ pub struct WalletPage {
     pub copied: Option<String>,
     /// How far each of the page's reports is open; closed when absent.
     pub open: std::collections::BTreeMap<ReportKey, Level>,
+    /// W1 on a phone: the account whose row is open in place into a card, if
+    /// one is (docs/DECISIONS.md D39 item 4). A page is replaced when it is
+    /// left, so the card closes then.
+    pub expanded: Option<AccountId>,
 }
 
 /// Text typed into a secret field, on its way into the model. Its `Debug`
@@ -4219,6 +4223,39 @@ mod tests {
         assert!(
             r.code.is_some(),
             "the second account's destination has a code"
+        );
+    }
+
+    #[test]
+    fn a_row_opened_in_place_is_one_at_a_time_and_closes_when_the_page_is_left() {
+        // W1 on a phone (docs/DECISIONS.md D39, item 4): one account's row is
+        // open at a time, and the page forgets it when it is left. Send from it
+        // opens Send with that account as From.
+        let accounts = tawara_wallet_core::sample::wallet_view().accounts;
+        let (first, second) = (accounts[0].id, accounts[1].id);
+        let mut app = on_wallet(Page::Dashboard);
+        wallet(&mut app, WalletMsg::Expand(Some(first)));
+        assert_eq!(wallet_page(&app).expanded, Some(first));
+        wallet(&mut app, WalletMsg::Expand(Some(second)));
+        assert_eq!(
+            wallet_page(&app).expanded,
+            Some(second),
+            "one row at a time"
+        );
+        wallet(&mut app, WalletMsg::Expand(None));
+        assert_eq!(wallet_page(&app).expanded, None);
+
+        wallet(&mut app, WalletMsg::Expand(Some(first)));
+        wallet(&mut app, WalletMsg::Open(To::Settings));
+        assert!(matches!(wallet_page(&app).page, Page::Settings(_)));
+        assert_eq!(wallet_page(&app).expanded, None, "closed when left");
+
+        wallet(&mut app, WalletMsg::Expand(Some(first)));
+        wallet(&mut app, WalletMsg::Open(To::Send(Some(first))));
+        assert!(
+            matches!(&wallet_page(&app).page, Page::Send(s) if s.from == Some(first)),
+            "{:?}",
+            wallet_page(&app).page
         );
     }
 
