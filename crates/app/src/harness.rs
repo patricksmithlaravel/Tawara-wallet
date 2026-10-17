@@ -14,6 +14,7 @@
 //! reads a finger's drag from.
 
 use std::borrow::Cow;
+use std::path::PathBuf;
 
 use iced::advanced::clipboard;
 use iced::advanced::graphics;
@@ -25,6 +26,7 @@ use iced::theme::Base;
 use iced::{Element, Event, Padding, Point, Rectangle, Size, Vector, mouse, touch, window};
 use iced_runtime::user_interface::{Cache, State, UserInterface};
 
+use crate::host::{Device, DeviceCheck, Host, Released};
 use crate::{fonts, overflow, theme};
 
 /// The renderer the tests draw with: the software renderer, with the bundled
@@ -368,6 +370,48 @@ pub(crate) fn redraw(at: iced::time::Instant) -> Event {
     Event::Window(window::Event::RedrawRequested(at))
 }
 
+fn no_copy(_: &str) {}
+
+fn no_share(_: &str, _: &str) -> Result<(), String> {
+    Ok(())
+}
+
+fn no_back() {}
+
+fn face_id() -> Option<DeviceCheck> {
+    Some(DeviceCheck::FaceId)
+}
+
+fn no_keep(_: &[u8; 32], _: &str) -> Result<(), String> {
+    Ok(())
+}
+
+fn no_release(_: &[u8; 32], _: &str, answer: Box<dyn FnOnce(Released) + Send>) {
+    answer(Released::Declined);
+}
+
+fn no_forget() -> Result<(), String> {
+    Ok(())
+}
+
+/// The device unlock of a phone whose shell offers Face ID (docs/DECISIONS.md
+/// D45): what the screens' tests draw such a phone with. Its answers go nowhere.
+pub(crate) fn face_id_device() -> Device {
+    let host = Host {
+        private_dir: PathBuf::new(),
+        copy: no_copy,
+        share: no_share,
+        back: no_back,
+        captured: None,
+        device_check: Some(face_id),
+        keep_password: Some(no_keep),
+        release_password: Some(no_release),
+        forget_password: Some(no_forget),
+    };
+    let (answers, _received) = iced::futures::channel::mpsc::unbounded();
+    Device::of(&host, answers).expect("a shell that gives every device field offers the unlock")
+}
+
 /// Every node of `root` whose right edge passes `width` plus half a pixel
 /// when it is laid out at `width` by 844, and every text whose words do, as a
 /// window of that width would draw them, with `Ok` when there is none
@@ -376,7 +420,18 @@ pub(crate) fn fits<'a, M: 'a>(
     root: impl Into<Element<'a, M>>,
     width: f32,
 ) -> Result<(), Vec<Rectangle>> {
-    let past = overflow::past_the_edge(root.into(), &renderer(), width, 844.0);
+    fits_at(root, width, 844.0)
+}
+
+/// [`fits`], laid out at `width` by `height`. A page that scrolls is laid out
+/// at a shorter window too, as a phone's shorter height draws it, so that its
+/// nodes are held to the width there as well (docs/DECISIONS.md D37, D44).
+pub(crate) fn fits_at<'a, M: 'a>(
+    root: impl Into<Element<'a, M>>,
+    width: f32,
+    height: f32,
+) -> Result<(), Vec<Rectangle>> {
+    let past = overflow::past_the_edge(root.into(), &renderer(), width, height);
     if past.is_empty() {
         Ok(())
     } else {
