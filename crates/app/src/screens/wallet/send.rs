@@ -45,8 +45,8 @@ const RETURN_BROADCASTS: bool = !cfg!(any(target_os = "android", target_os = "io
 /// W4 to W6.
 pub fn view<'a>(model: &'a Model, page: &'a WalletPage, s: &'a SendPage) -> Element<'a, Message> {
     match &s.stage {
-        SendStage::Compose => compose(model, page, s),
-        SendStage::Review(plan) => review(model, page, plan),
+        SendStage::Compose | SendStage::To(_) | SendStage::Amount => compose(model, page, s),
+        SendStage::Review(plan) | SendStage::Sign(plan) => review(model, page, plan),
         SendStage::Sent(sent) => sent_page(model, page, sent),
     }
 }

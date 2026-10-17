@@ -18,7 +18,9 @@ use tawara_wallet_core::explorer::{
     TransactionView,
 };
 use tawara_wallet_core::preferences::{AmountUnit, IDLE_LOCK_MINUTES};
-use tawara_wallet_core::spend::{Amount, DestinationInput, SpendRequest};
+use tawara_wallet_core::spend::{
+    Amount, DestinationInput, SpendRequest, parse_destination, parse_reference,
+};
 use tawara_wallet_core::view::{
     AccountId, AccountState, DivergenceKind, SettledAccount, WalletView,
 };
@@ -42,7 +44,7 @@ pub enum Page {
     Receive(ReceivePage),
     /// W3.
     AddAccount(AddAccountPage),
-    /// W4 to W6.
+    /// W4 to W6, and on a phone the four pages before W6 (docs/DECISIONS.md D40).
     Send(SendPage),
     /// W7.
     Account(AccountPage),
@@ -348,8 +350,9 @@ pub enum FormOf {
     Resign(AccountId),
 }
 
-/// W4 to W6: composing a spend, reviewing the library's page for it, and
-/// what happened once it was signed.
+/// W4 to W6: composing a spend (on a phone, its pages 1 and 2), reviewing the
+/// library's page for it (page 3 on a phone), signing it (page 4), and what
+/// happened once it was signed.
 #[derive(Clone, Debug, Default)]
 pub struct SendPage {
     pub from: Option<AccountId>,
@@ -357,16 +360,50 @@ pub struct SendPage {
     pub stage: SendStage,
 }
 
-/// Where a spend is.
+/// A field of a destination row, for what "Continue" finds wrong with it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RefusedField {
+    /// The address.
+    Address,
+    /// The reference.
+    Reference,
+}
+
+/// Where a spend is. On a desktop it is W4 to W6: the form on one page, the
+/// review, and the sent page. On a phone it is the same flow in four pages
+/// (docs/DECISIONS.md D40), then the sent page: the destinations, the amounts
+/// and the fee, the review, and signing. A desktop is never on the phone's
+/// pages, and a phone is never on [`SendStage::Compose`].
 #[derive(Clone, Debug, Default)]
 pub enum SendStage {
-    /// W4.
+    /// W4, on a desktop: the whole form on one page.
     #[default]
     Compose,
-    /// W5: laid out and not signed; the worker holds the plan.
+    /// Page 1 of 4 on a phone: the destinations. The map holds what "Continue"
+    /// found wrong with an address or a reference, by its row and its field,
+    /// to show under that field.
+    To(BTreeMap<(usize, RefusedField), String>),
+    /// Page 2 of 4 on a phone: the amounts and the fee, and "Review spend".
+    Amount,
+    /// W5, and page 3 of 4 on a phone: laid out and not signed; the worker
+    /// holds the plan.
     Review(Box<PlanView>),
+    /// Page 4 of 4 on a phone: the plan, to sign and submit. The worker holds
+    /// it, as it does on the review.
+    Sign(Box<PlanView>),
     /// W6: signed, and written to the node's socket or not.
     Sent(Box<SentPage>),
+}
+
+impl SendStage {
+    /// The plan the worker holds for this page, if it holds one: the review's,
+    /// and the signing page's.
+    fn plan(&self) -> Option<&PlanView> {
+        match self {
+            SendStage::Review(plan) | SendStage::Sign(plan) => Some(plan),
+            _ => None,
+        }
+    }
 }
 
 /// W6.
@@ -543,12 +580,21 @@ pub enum WalletMsg {
     Everything(bool),
     Fee(String),
     BlockToLive(String),
-    /// W4 to W5: lay the spend out.
+    /// W4 to W5, and page 2 to page 3 on a phone: lay the spend out.
     Review,
     /// W5 back to W4: forget the plan, keep what was typed.
     Edit,
-    /// W5: reserve the key, sign and submit.
+    /// W5: reserve the key, sign and submit. On a phone, page 4 of 4.
     Sign,
+    /// Page 1 of 4 on a phone: "Continue", which checks the destinations and
+    /// shows page 2 when they are right (docs/DECISIONS.md D40 item 4).
+    Continue,
+    /// Page 3 of 4 on a phone: "Continue to signing", which shows page 4 with
+    /// the plan the worker holds.
+    ToSigning,
+    /// Pages 2 to 4 on a phone: back one page, keeping what was typed
+    /// (docs/DECISIONS.md D40 item 2).
+    Back,
     SaveArtifact,
     /// Show again the kept spend whose bytes are these (see
     /// [`Model::signed`]).
@@ -694,6 +740,63 @@ pub fn spend_request(from: AccountId, form: &SpendForm) -> Result<SpendRequest, 
     })
 }
 
+/// What "Continue" on a phone's destinations page finds wrong with the
+/// destinations typed (docs/DECISIONS.md D40 item 4): each address that is not
+/// a destination, and each reference that breaks the node's rule, by its row
+/// and field, in the words the library's checks give. A row with nothing typed
+/// is not a destination, as [`spend_request`] does not take it, so a form with
+/// none at all is refused whole. The amounts, the fee and the rest are checked
+/// by "Review spend", on the page after.
+fn destination_refusals(
+    form: &SpendForm,
+) -> Result<BTreeMap<(usize, RefusedField), String>, String> {
+    let mut refused = BTreeMap::new();
+    let mut typed = false;
+    for (i, row) in form.rows.iter().enumerate() {
+        if *row == DestinationRow::default() {
+            continue;
+        }
+        typed = true;
+        let address = if row.to.trim().is_empty() {
+            Some("Give this destination's address.".to_owned())
+        } else {
+            parse_destination(&row.to, i + 1)
+                .err()
+                .map(|e| e.to_string())
+        };
+        if let Some(why) = address {
+            refused.insert((i, RefusedField::Address), why);
+        }
+        if let Err(e) = parse_reference(row.reference.trim(), i + 1) {
+            refused.insert((i, RefusedField::Reference), e.to_string());
+        }
+    }
+    if !typed {
+        return Err("Give at least one destination.".to_owned());
+    }
+    Ok(refused)
+}
+
+/// The stage a spend's flow starts in: W4 on a desktop, and page 1 of 4 on a
+/// phone.
+fn first_stage(phone: bool) -> SendStage {
+    if phone {
+        SendStage::To(BTreeMap::new())
+    } else {
+        SendStage::Compose
+    }
+}
+
+/// The stage a spend is composed in again once its plan is given up: W4 on a
+/// desktop, and page 2 of 4 on a phone, where "Review spend" is.
+fn composing_stage(phone: bool) -> SendStage {
+    if phone {
+        SendStage::Amount
+    } else {
+        SendStage::Compose
+    }
+}
+
 /// Why a spend is not laid out from the account chosen: it cannot spend
 /// now (`AccountRow::spendable`).
 const CANNOT_SPEND: &str = "This account cannot spend now. An account spends once the wallet \
@@ -768,7 +871,9 @@ impl Model {
     /// The spend form shown, if one is, and how many destination rows it
     /// has: what a destination's Paste button records when it is pressed,
     /// and what its read is checked against when it comes back
-    /// (docs/DECISIONS.md D32 item 10 (g)).
+    /// (docs/DECISIONS.md D32 item 10 (g)). Page 2 of a phone's flow has no
+    /// destination to paste into, so a read that comes back once it is shown
+    /// is dropped (docs/DECISIONS.md D40 item 5).
     #[must_use]
     pub fn form_of(&self) -> Option<(FormOf, usize)> {
         match &self.screen {
@@ -777,7 +882,7 @@ impl Model {
                     Page::Send(SendPage {
                         from,
                         form,
-                        stage: SendStage::Compose,
+                        stage: SendStage::Compose | SendStage::To(_),
                     }),
                 ..
             }) => Some((FormOf::Send(*from), form.rows.len())),
@@ -787,6 +892,45 @@ impl Model {
             }) => Some((FormOf::Resign(*account), form.rows.len())),
             _ => None,
         }
+    }
+
+    /// Whether a phone's send flow is in progress: its page shown is one of
+    /// the four before the sent page. The Send tab tapped now keeps it
+    /// (docs/DECISIONS.md D40 item 2).
+    #[must_use]
+    pub(crate) fn send_in_progress(&self) -> bool {
+        self.phone()
+            && matches!(
+                &self.screen,
+                Screen::Wallet(WalletPage {
+                    page: Page::Send(SendPage {
+                        stage: SendStage::To(_)
+                            | SendStage::Amount
+                            | SendStage::Review(_)
+                            | SendStage::Sign(_),
+                        ..
+                    }),
+                    ..
+                })
+            )
+    }
+
+    /// Whether the system's Back steps back a page of a phone's send flow,
+    /// rather than doing what it does elsewhere: it does on pages 2 to 4, and
+    /// not on page 1 (docs/DECISIONS.md D40 item 3).
+    #[must_use]
+    pub(crate) fn send_steps_back(&self) -> bool {
+        self.send_in_progress()
+            && !matches!(
+                &self.screen,
+                Screen::Wallet(WalletPage {
+                    page: Page::Send(SendPage {
+                        stage: SendStage::To(_),
+                        ..
+                    }),
+                    ..
+                })
+            )
     }
 
     /// Before the screen changes: keep the signed spend's page it shows, if
@@ -1112,17 +1256,14 @@ impl App {
         }
     }
 
-    /// Leave the page shown: a plan the worker holds for the review page is
-    /// forgotten, so nothing waits to be signed that no screen shows; a
-    /// signed spend's page is kept (see [`Model::signed`]).
+    /// Leave the page shown: a plan the worker holds for the review or the
+    /// signing page is forgotten, so nothing waits to be signed that no screen
+    /// shows; a signed spend's page is kept (see [`Model::signed`]).
     fn leave_page(&mut self) {
-        let reviewing = matches!(
-            self.wallet_page().map(|p| &p.page),
-            Some(Page::Send(SendPage {
-                stage: SendStage::Review(_),
-                ..
-            }))
-        );
+        let reviewing = match self.wallet_page().map(|p| &p.page) {
+            Some(Page::Send(s)) => s.stage.plan().is_some(),
+            _ => false,
+        };
         if reviewing {
             self.send(Command::DiscardPlan, Purpose::DiscardPlan);
         }
@@ -1177,7 +1318,14 @@ impl App {
 
     /// Show `page`, and ask the worker for what it needs first.
     fn open(&mut self, to: To) {
+        // On a phone, the Send tab tapped in the middle of the flow keeps the
+        // flow as it is, its form and any plan it holds, rather than building
+        // an empty form (docs/DECISIONS.md D40 item 2).
+        if matches!(to, To::Send(_)) && self.model.send_in_progress() {
+            return;
+        }
         self.leave_page();
+        let phone = self.model.phone();
         let wallet = self.model.wallet.as_ref();
         let first = wallet.and_then(|w| w.accounts.first()).map(|a| a.id);
         let mut receive = None;
@@ -1197,6 +1345,7 @@ impl App {
             // its place. With none asked for, the first that can spend.
             To::Send(from) => Page::Send(SendPage {
                 from: from.or_else(|| spendable(wallet).next()),
+                stage: first_stage(phone),
                 ..SendPage::default()
             }),
             // A settlement reported while this page was not shown is said here
@@ -1297,16 +1446,59 @@ impl App {
         }
     }
 
-    /// The send or re-sign form shown.
+    /// The send or re-sign form shown: on a phone, the pages that hold it are
+    /// the destinations and the amounts.
     fn form(&mut self) -> Option<&mut SpendForm> {
         match &mut self.wallet_page()?.page {
             Page::Send(SendPage {
                 form,
-                stage: SendStage::Compose,
+                stage: SendStage::Compose | SendStage::To(_) | SendStage::Amount,
                 ..
             })
             | Page::Resign(ResignPage { form, .. }) => Some(form),
             _ => None,
+        }
+    }
+
+    /// What "Continue" found wrong with the destinations, on page 1 of a
+    /// phone's send flow, shown.
+    fn refusals(&mut self) -> Option<&mut BTreeMap<(usize, RefusedField), String>> {
+        match &mut self.wallet_page()?.page {
+            Page::Send(SendPage {
+                stage: SendStage::To(refused),
+                ..
+            }) => Some(refused),
+            _ => None,
+        }
+    }
+
+    /// Steps a phone's send flow back one page, keeping what was typed
+    /// (docs/DECISIONS.md D40 item 2). Back from the review to the amounts
+    /// gives up the plan, as Edit does; back from the signing page to the
+    /// review keeps it.
+    fn step_send_back(&mut self) {
+        let Some(WalletPage {
+            page: Page::Send(s),
+            error,
+            ..
+        }) = self.wallet_page()
+        else {
+            return;
+        };
+        *error = None;
+        match &s.stage {
+            SendStage::Amount => s.stage = SendStage::To(BTreeMap::new()),
+            SendStage::Sign(_) => {
+                s.stage = match core::mem::take(&mut s.stage) {
+                    SendStage::Sign(plan) => SendStage::Review(plan),
+                    other => other,
+                };
+            }
+            SendStage::Review(_) => {
+                s.stage = SendStage::Amount;
+                self.send(Command::DiscardPlan, Purpose::DiscardPlan);
+            }
+            _ => {}
         }
     }
 
@@ -1324,7 +1516,15 @@ impl App {
         match msg {
             WalletMsg::Open(to) => {
                 if !busy && self.model.wallet.is_some() {
+                    // A phone's send flow starts at the top of its first
+                    // page, as a page drawn over another does (see `page_top`).
+                    let entering = self.model.phone()
+                        && matches!(to, To::Send(_))
+                        && !self.model.send_in_progress();
                     self.open(to);
+                    if entering {
+                        return crate::screens::page_top();
+                    }
                 }
             }
             WalletMsg::ReceiveFor(account) => {
@@ -1415,6 +1615,11 @@ impl App {
             WalletMsg::DestinationTo(i, text) => {
                 if let Some(row) = self.form().and_then(|f| f.rows.get_mut(i)) {
                     row.to = text;
+                    // "Continue" checks the address again, so what was wrong
+                    // with the one typed before is not kept.
+                    if let Some(refused) = self.refusals() {
+                        refused.remove(&(i, RefusedField::Address));
+                    }
                 }
             }
             WalletMsg::Amount(i, text) => {
@@ -1425,6 +1630,9 @@ impl App {
             WalletMsg::Reference(i, text) => {
                 if let Some(row) = self.form().and_then(|f| f.rows.get_mut(i)) {
                     row.reference = text.to_uppercase();
+                    if let Some(refused) = self.refusals() {
+                        refused.remove(&(i, RefusedField::Reference));
+                    }
                 }
             }
             WalletMsg::AddDestination => {
@@ -1441,6 +1649,11 @@ impl App {
                     && i < f.rows.len()
                 {
                     f.rows.remove(i);
+                    // The rows after it move up, so no refusal is kept for
+                    // the row it was.
+                    if let Some(refused) = self.refusals() {
+                        refused.clear();
+                    }
                 }
             }
             WalletMsg::Everything(on) => {
@@ -1465,7 +1678,7 @@ impl App {
                         Page::Send(SendPage {
                             from: Some(from),
                             form,
-                            stage: SendStage::Compose,
+                            stage: SendStage::Compose | SendStage::Amount,
                         }),
                     ..
                 }) = self.wallet_page()
@@ -1487,13 +1700,14 @@ impl App {
                 }
             }
             WalletMsg::Edit => {
+                let stage = composing_stage(self.model.phone());
                 self.leave_page();
                 if let Some(WalletPage {
                     page: Page::Send(s),
                     ..
                 }) = self.wallet_page()
                 {
-                    s.stage = SendStage::Compose;
+                    s.stage = stage;
                     // The form starts at the top of its page. Drawn in the
                     // review's place, it would otherwise open at the review's
                     // scroll rather than at its first destination
@@ -1502,18 +1716,75 @@ impl App {
                 }
             }
             WalletMsg::Sign => {
+                // A desktop signs from its review, and a phone from its own
+                // page, which the review leads to (docs/DECISIONS.md D40).
+                let phone = self.model.phone();
                 if let Some(WalletPage {
-                    page:
-                        Page::Send(SendPage {
-                            stage: SendStage::Review(plan),
-                            ..
-                        }),
+                    page: Page::Send(SendPage { stage, .. }),
                     ..
                 }) = self.wallet_page()
                 {
-                    let plan = plan.plan;
+                    let plan = match stage {
+                        SendStage::Review(plan) if !phone => plan.plan,
+                        SendStage::Sign(plan) if phone => plan.plan,
+                        _ => return Task::none(),
+                    };
                     self.page_error(None);
                     self.send(Command::ConfirmSend { plan }, Purpose::ConfirmSend);
+                }
+            }
+            WalletMsg::Continue => {
+                let Some(WalletPage {
+                    page: Page::Send(s),
+                    error,
+                    ..
+                }) = self.wallet_page()
+                else {
+                    return Task::none();
+                };
+                if !matches!(s.stage, SendStage::To(_)) {
+                    return Task::none();
+                }
+                match destination_refusals(&s.form) {
+                    Ok(refused) if refused.is_empty() => {
+                        *error = None;
+                        s.stage = SendStage::Amount;
+                        return crate::screens::page_top();
+                    }
+                    Ok(refused) => {
+                        *error = None;
+                        s.stage = SendStage::To(refused);
+                    }
+                    Err(why) => {
+                        *error = Some(why);
+                        s.stage = SendStage::To(BTreeMap::new());
+                    }
+                }
+            }
+            WalletMsg::ToSigning => {
+                let phone = self.model.phone();
+                let Some(WalletPage {
+                    page: Page::Send(s),
+                    ..
+                }) = self.wallet_page()
+                else {
+                    return Task::none();
+                };
+                if !phone || !matches!(s.stage, SendStage::Review(_)) {
+                    return Task::none();
+                }
+                s.stage = match core::mem::take(&mut s.stage) {
+                    SendStage::Review(plan) => SendStage::Sign(plan),
+                    other => other,
+                };
+                return crate::screens::page_top();
+            }
+            WalletMsg::Back => {
+                // Not while the worker answers a command the page sent: the
+                // answer is for the page it was sent from.
+                if !busy && self.model.send_steps_back() {
+                    self.step_send_back();
+                    return crate::screens::page_top();
                 }
             }
             WalletMsg::SaveArtifact => {
@@ -1822,6 +2093,10 @@ impl App {
                         to,
                         ..DestinationRow::default()
                     }];
+                }
+                // A phone's send flow starts at the top of its first page.
+                if self.model.phone() {
+                    return crate::screens::page_top();
                 }
             }
             WalletMsg::ReadOlderActivity => self.read_older_activity(),
@@ -2134,6 +2409,7 @@ impl App {
                     page: Page::Send(s),
                     ..
                 }) = self.wallet_page()
+                    && matches!(s.stage, SendStage::Compose | SendStage::Amount)
                 {
                     s.stage = SendStage::Review(Box::new(plan));
                     // The review starts at the top of its page, so that the
@@ -2141,7 +2417,8 @@ impl App {
                     // reached (docs/SCREENS.md W5).
                     return crate::screens::page_top();
                 } else {
-                    // The page was left while it was being laid out.
+                    // The page was left while it was being laid out, or is no
+                    // longer one that lays a spend out.
                     self.send(Command::DiscardPlan, Purpose::DiscardPlan);
                 }
             }
@@ -2203,7 +2480,8 @@ impl App {
                 return crate::screens::page_top();
             }
             // Signing was refused; the worker dropped the plan. Back to the
-            // form, with why.
+            // form, with why: on a phone, to page 2, where "Review spend" is
+            // (docs/DECISIONS.md D40 item 7, a reading for the owner).
             (Purpose::ConfirmSend, Reply::Refused(r)) => {
                 // The library records the reservation before it signs (library
                 // `wallet.rs:619-620`), so a sign it refused may have left one,
@@ -2212,12 +2490,10 @@ impl App {
                 // is, so that its row and its polls follow what the store holds
                 // (D38 item 2).
                 let from = match self.wallet_page().map(|p| &p.page) {
-                    Some(Page::Send(SendPage {
-                        stage: SendStage::Review(plan),
-                        ..
-                    })) => Some(plan.from),
+                    Some(Page::Send(s)) => s.stage.plan().map(|plan| plan.from),
                     _ => None,
                 };
+                let phone = self.model.phone();
                 if let Some(account) = from.filter(|_| r.kind == RefusalKind::Library) {
                     self.send(
                         Command::Status {
@@ -2233,7 +2509,7 @@ impl App {
                     ..
                 }) = self.wallet_page()
                 {
-                    s.stage = SendStage::Compose;
+                    s.stage = composing_stage(phone);
                     *error = Some(r.text);
                     // The form starts at the top of its page, where why is
                     // shown. Drawn in the review's place, it would otherwise
@@ -2643,5 +2919,54 @@ mod tests {
         assert_eq!(page.saved, Some(Ok(downloads.join(name))));
         assert!(!page.shared());
         let _ = std::fs::remove_dir_all(&downloads);
+    }
+
+    #[test]
+    fn continue_checks_each_typed_address_and_reference_by_its_row_and_field() {
+        let good = AccountId::from_tag([9; 20])
+            .destination()
+            .expect("a tag renders");
+        let form = SpendForm {
+            rows: vec![
+                row(&good, "", "PAYROLL-11"),
+                DestinationRow::default(),
+                row("not-a-destination", "1", "abc"),
+                row("", "2", ""),
+            ],
+            ..SpendForm::default()
+        };
+        let refused = destination_refusals(&form).expect("destinations are typed");
+        assert_eq!(
+            refused.keys().copied().collect::<Vec<_>>(),
+            [
+                (2, RefusedField::Address),
+                (2, RefusedField::Reference),
+                (3, RefusedField::Address),
+            ]
+        );
+        // The row's number is its place in the form, as the page draws it.
+        let address = &refused[&(2, RefusedField::Address)];
+        assert!(
+            address.starts_with("destination 3: `not-a-destination` is not a destination"),
+            "{address}"
+        );
+        assert!(
+            refused[&(2, RefusedField::Reference)]
+                .starts_with("destination 3: the reference `abc`"),
+            "{:?}",
+            refused[&(2, RefusedField::Reference)]
+        );
+        assert_eq!(
+            refused[&(3, RefusedField::Address)],
+            "Give this destination's address."
+        );
+    }
+
+    #[test]
+    fn a_form_with_no_destination_typed_is_refused_as_a_whole() {
+        assert_eq!(
+            destination_refusals(&SpendForm::default()),
+            Err("Give at least one destination.".to_owned())
+        );
     }
 }

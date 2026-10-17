@@ -3474,6 +3474,13 @@ one long scroll from W4 to W6 today. The owner asked for a series of pages.
    as D32 item 10 (g) requires; otherwise its reads are dropped.
 6. **Open:** a note on S7 after a lock, that an unsigned spend was
    discarded, is new wording, for the owner's approval.
+7. **Readings, for the owner's approval.** (a) A refused signing on a phone
+   goes back to page 2, not to page 1: the worker has dropped the plan, and
+   "Review spend" is on page 2, as the desktop's refused signing goes back to
+   the form that holds it. (b) "Give this destination's address." is new
+   wording, for a destination with an amount and no address. Any other
+   address or reference the library refuses is shown under its field, in
+   the library's words, with the destination's number.
 
 The desktop's W4 to W6, `narrow-w4-send.png` included, are unchanged. The
 threat model's Locking row (PR #21) and docs/SCREENS.md's Back rule (lines
