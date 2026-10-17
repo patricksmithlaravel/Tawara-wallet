@@ -3602,14 +3602,23 @@ No library change. OS libraries: none added.
 recommended.** Item 8 asks for the whole phrase in one frame, with no
 scrolling. On a 360 × 640 phone that fits only if the library's warning
 moves off the frame or is shortened, and the warning is the library's text
-(PLAN section 3, D25).
+(PLAN section 3, D25). The exception is the page after a screenshot (item
+3), whose warning takes room the frame lacks. That page scrolls on a phone of
+390 × 844 and on one of 360 × 640, and fits on one of 360 × 800. Item 1 names
+the exception, and the owner's choice among the three options is open (As
+built).
 
 1. **Warning first, then the phrase (owner, 2026-10-13).** On short
    phones the library's warning comes first, on a frame of its own, whole
    and unchanged. Then all 24 words appear in a grid of three columns and
    eight rows on one frame, with the checkbox and Continue. Larger phones
    and the desktop show everything on one frame. The phrase itself is never
-   split across frames.
+   split across frames. *Exception, open for the owner (2026-10-16):* after
+   a screenshot, item 3's warning sits above the words, and then the page
+   scrolls on a phone of 390 × 844 and on one of 360 × 640, so the warned
+   page is not one frame there. The owner has not chosen how to meet that:
+   keep the scroll, hide the words again after a screenshot until "Show the
+   phrase" is pressed, or show a one-line notice (As built).
 2. **The grid (recommended).** Three columns by eight rows on every size,
    read down the columns as the desktop's already is, at 14-pixel words.
    A phone counts as short below about 720 usable pixels. The tests measure
@@ -3654,10 +3663,14 @@ the desktop, which keep S4 as it was), and the crate exports
 `screenshot_taken()` and `capture_changed(captured: bool)`. The shell's
 observers that call them are in Tawara-mobile; until that pull request is in
 a pin, no phone warns or blanks. The wording of item 5 awaits the owner's
-approval. The warned page scrolls on a phone at 390 by 844 and at 360 by 640,
-and fits at 360 by 800. The owner decides whether it keeps the scroll, hides
-the words again after a screenshot until "Show the phrase" is pressed, or
-shows a one-line notice; only the scroll is built. The phone images are
+approval. On review (2026-10-16), the placeholder's copy was reworded to say
+that iOS does not report every recording or mirror. The warned page scrolls
+on a phone at 390 by 844 and at 360 by 640, and fits at 360 by 800. The owner
+decides whether it keeps the scroll, hides the words again after a screenshot
+until "Show the phrase" is pressed, or shows a one-line notice; only the scroll
+is built, and the owner's choice is recorded here before this pull request
+merges. A window 600 pixels or wider draws the desktop's frame, and the warned
+page is not measured at that width. The phone images are
 `phone-s4-phrase-photographed.png` with its end, and
 `phone-s4-phrase-captured.png`.
 

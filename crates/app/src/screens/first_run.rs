@@ -660,11 +660,12 @@ const PHRASE_SHOT_TITLE: &str = "A screenshot was taken";
 const PHRASE_SHOT_BODY: &str = "Delete it. It holds the words.";
 
 /// What stands where the words are while the screen is recorded or mirrored
-/// (docs/DECISIONS.md D44 item 3). It says why, and promises nothing about the
-/// capture, since the blanking is best effort. The wording is new, and awaits
-/// the owner's approval (D44 item 5).
-const PHRASE_HIDDEN: &str = "The words are hidden while this screen is recorded or mirrored. \
-                             They come back when it stops.";
+/// (docs/DECISIONS.md D44 item 3). It says why, and that iOS does not report
+/// every recording or mirror, since the blanking is best effort. The wording is
+/// new, and awaits the owner's approval (D44 item 5).
+const PHRASE_HIDDEN: &str = "While iOS reports this screen as recorded or mirrored, the words are \
+                             hidden, and they come back when it stops. iOS does not report every \
+                             recording or mirror, so the words may show during one.";
 
 /// The height of the words' grid at its 14-pixel words: eight rows of cells,
 /// with [`PHRASE_GAP`] between the rows. The placeholder that replaces the grid
