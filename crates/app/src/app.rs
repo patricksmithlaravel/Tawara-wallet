@@ -255,6 +255,19 @@ pub struct Model {
     /// What the device unlock last found, for the screens to say (provisional
     /// wording, for the owner's approval; docs/DECISIONS.md D45 item 6).
     pub device_note: Option<String>,
+    /// The QR scanner the shell gives, where it gives one: phones only, as
+    /// docs/DECISIONS.md D42 item 1 decides. `None` on the desktop, which offers
+    /// no scan.
+    pub scanner: Option<crate::scan::Scanner>,
+    /// The scan under way, if one is, for the destination row it fills
+    /// (docs/DECISIONS.md D42 item 4).
+    pub scanning: Option<wallet::Scanning>,
+    /// How many scans have been begun. Each scan is numbered, so a reply to one
+    /// that has ended is recognised and dropped (docs/DECISIONS.md D42).
+    scan_asks: u64,
+    /// The camera's latest frame, as the scanner's preview page shows it, where
+    /// the application draws the preview (docs/DECISIONS.md D42 item 3).
+    pub scan_preview: Option<iced::widget::image::Handle>,
 }
 
 /// A password copied for the device unlock's offer. Its `Debug` prints nothing
@@ -646,6 +659,22 @@ pub enum Message {
     /// What the clipboard held when a Paste button was tapped, for the field
     /// that button was drawn beside. `None` when the read was refused.
     Pasted(PasteInto, Option<Clip>),
+    /// A Scan button was tapped beside destination row `row`: a QR code is read
+    /// to fill that row (docs/DECISIONS.md D42). Only a phone's destination
+    /// rows offer it.
+    Scan(usize),
+    /// The shell's reply to scan number `ask`, begun for destination row `row`:
+    /// the text it read, or `None` when the scan was cancelled or refused. A
+    /// reply to a scan that is no longer under way is dropped (docs/DECISIONS.md
+    /// D42 item 4).
+    Scanned(usize, u64, Option<crate::scan::Code>),
+    /// The scan under way is stopped by the person, as its page's Cancel
+    /// (docs/DECISIONS.md D42).
+    CancelScan,
+    /// The camera's preview is due a frame: the latest the shell has given is
+    /// taken, while a scan draws its preview in the application (docs/DECISIONS.md
+    /// D42 item 3).
+    Preview,
     /// The window opened or changed size: its width and height.
     Size(iced::Size),
     /// The safe area changed: what the system covers at each edge, and the
@@ -1149,6 +1178,10 @@ impl Model {
             device_asks: 0,
             device_asked: None,
             device_note: None,
+            scanner: None,
+            scanning: None,
+            scan_asks: 0,
+            scan_preview: None,
             width: crate::WINDOW.0,
             height: crate::WINDOW.1,
             safe_area: iced::mobile::SafeArea::ZERO,
@@ -1284,8 +1317,11 @@ impl Model {
     /// process be suspended before it has (Tawara-mobile#1's second review).
     fn backgrounded(&mut self) {
         // The password kept for the device's offer, and an ask the check has not
-        // answered, go with the foreground (docs/DECISIONS.md D45 item 4).
+        // answered, go with the foreground (docs/DECISIONS.md D45 item 4). So does
+        // a scan under way, whose camera the shell stopped as it left
+        // (docs/DECISIONS.md D42 item 4).
         self.release_device();
+        self.stop_scan();
         if matches!(self.screen, Screen::Phrase(_) | Screen::Confirm(_)) {
             self.back_to_new_wallet(Some(phrase_discarded(
                 "when the application left the screen",
@@ -1422,6 +1458,12 @@ impl App {
     pub fn boot_in(host: &Host) -> (App, Task<Message>) {
         host::set(host);
         let (mut app, task) = App::hosted(&host.private_dir);
+        // The shell's scanner replies come into the interface on their own
+        // channel, as the device's answers do (docs/DECISIONS.md D42). Where the
+        // shell gives no scan, the sender is dropped here and the channel ends
+        // at once.
+        let (replies, scanned) = mpsc::unbounded();
+        app.model.scanner = crate::scan::Scanner::of(host, replies);
         host::on_leaving(app.leaving_hook());
         host::on_capture(Arc::clone(&app.model.capture), host.captured);
         // The shell answers an ask of the device's check from its own thread, and
@@ -1432,7 +1474,11 @@ impl App {
         app.model.device = host::Device::of(host, answers);
         (
             app,
-            Task::batch([task, Task::run(received, Message::Released)]),
+            Task::batch([
+                task,
+                Task::run(received, Message::Released),
+                Task::run(scanned, |(row, ask, text)| Message::Scanned(row, ask, text)),
+            ]),
         )
     }
 
@@ -1467,12 +1513,23 @@ impl App {
     /// move first, on the shell's thread, so the next message the
     /// application takes already finds it; then the worker's lock. What the
     /// shell then waits for is the interface's taking of that lock's
-    /// `Backgrounded`, or, with no worker, its wipe for the move.
+    /// `Backgrounded`, or, with no worker, its wipe for the move. A scan under
+    /// way has its camera stopped on the shell's thread too, since the
+    /// interface may not run again before the system suspends the process
+    /// (docs/DECISIONS.md D42 item 4).
     fn leaving_hook(&self) -> impl Fn() -> host::Leaving + Send + 'static {
         let left = Arc::clone(&self.model.left);
         let wiped = Arc::clone(&self.model.wiped);
         let worker = self.worker.as_ref().map(|w| w.handle.clone());
+        let cancel_scan = self
+            .model
+            .scanner
+            .as_ref()
+            .map(crate::scan::Scanner::cancel_fn);
         move || {
+            if let Some(cancel) = cancel_scan {
+                cancel();
+            }
             let this_move = left.fetch_add(1, Ordering::SeqCst) + 1;
             let done = match &worker {
                 Some(handle) => host::Done::Taken(handle.background()),
@@ -1589,10 +1646,19 @@ impl App {
         } else {
             Subscription::none()
         };
+        // The camera's frames are taken at each redraw, and only while a scan
+        // draws its preview in the application (docs/DECISIONS.md D42 item 3).
+        // The desktop has no scan, so it has no such subscription.
+        let frames = if self.model.previewing() {
+            iced::window::frames().map(|_| Message::Preview)
+        } else {
+            Subscription::none()
+        };
         Subscription::batch([
             event::listen_with(person_input),
             iced::mobile::safe_area().map(Message::SafeArea),
             lifecycle,
+            frames,
         ])
     }
 
@@ -1753,6 +1819,23 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        let task = self.apply(message);
+        // A scan goes on only while the page it was begun on is shown, and
+        // unchanged: the camera stops as soon as it is not (docs/DECISIONS.md
+        // D42 item 4). Every message is looked at, so a change made by any of
+        // them is noticed, not only the ones that begin with the page.
+        let stale = self
+            .model
+            .scanning
+            .as_ref()
+            .is_some_and(|scanning| !self.scan_fits(scanning));
+        if stale {
+            self.model.stop_scan();
+        }
+        task
+    }
+
+    fn apply(&mut self, message: Message) -> Task<Message> {
         // The application left the foreground since the last message: what
         // is typed and not submitted is wiped here, before this message is
         // looked at, and not when the worker's `Backgrounded` comes, which
@@ -2050,6 +2133,9 @@ impl App {
                 }
             }
             Message::Lock => {
+                // A scan under way stops with the store (docs/DECISIONS.md D42
+                // item 4).
+                m.stop_scan();
                 // Stop what is running and queued first, so the store does
                 // not stay open behind a slow refresh (docs/PLAN.md 4.1): a
                 // cancel reaches every command sent before it, and the Lock
@@ -2096,6 +2182,12 @@ impl App {
                     None => Task::none(),
                 };
             }
+            // A Scan button starts a scan for its row, and the shell's reply
+            // comes back as `Scanned` (docs/DECISIONS.md D42).
+            Message::Scan(row) => return self.begin_scan(row),
+            Message::Scanned(row, ask, text) => return self.scanned(row, ask, text),
+            Message::CancelScan => m.stop_scan(),
+            Message::Preview => m.take_preview(),
             Message::Size(size) => {
                 m.width = size.width;
                 m.height = size.height;
@@ -2263,8 +2355,10 @@ impl App {
             Event::Locked { reason } => {
                 // The store is closed, so the password kept for the device's offer
                 // goes with it, and an ask the check has not answered is dropped
-                // (docs/DECISIONS.md D45 item 4).
+                // (docs/DECISIONS.md D45 item 4). A scan under way stops with it
+                // (docs/DECISIONS.md D42 item 4).
                 self.model.release_device();
+                self.model.stop_scan();
                 let dir = self
                     .model
                     .wallet
@@ -3707,6 +3801,349 @@ mod tests {
             form: SpendForm::default(),
             stage: SendStage::Compose,
         })
+    }
+
+    // ---- QR scanning on a phone (docs/DECISIONS.md D42) ----
+
+    use crate::host::ScanPreview;
+
+    thread_local! {
+        /// How many times the shell's camera was stopped on this thread.
+        static CANCELS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+        /// The reply a scan was left waiting for, to be sent later.
+        static HELD: std::cell::RefCell<Option<crate::host::ScanDone>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    type Replies =
+        iced::futures::channel::mpsc::UnboundedReceiver<(usize, u64, Option<crate::scan::Code>)>;
+
+    fn count_cancel() {
+        CANCELS.with(|c| c.set(c.get() + 1));
+    }
+
+    fn cancels() -> u32 {
+        CANCELS.with(std::cell::Cell::get)
+    }
+
+    /// A shell whose scan reads the first destination of the sample wallet, at
+    /// once.
+    fn scan_destination(done: crate::host::ScanDone) -> Result<(), String> {
+        done(Some(a_destination().into_bytes()));
+        Ok(())
+    }
+
+    /// A scan that reads text which is not a destination, at once.
+    fn scan_junk(done: crate::host::ScanDone) -> Result<(), String> {
+        done(Some(b"hello".to_vec()));
+        Ok(())
+    }
+
+    /// A scan that reads more text than a destination can be, at once.
+    fn scan_overlong(done: crate::host::ScanDone) -> Result<(), String> {
+        done(Some(vec![b'1'; crate::scan::MAX_BYTES + 1]));
+        Ok(())
+    }
+
+    /// A scan that reads bytes which are not UTF-8, at once.
+    fn scan_not_text(done: crate::host::ScanDone) -> Result<(), String> {
+        done(Some(vec![0xff, b'1']));
+        Ok(())
+    }
+
+    /// A scan the shell ends with no text, at once: cancelled, or not allowed.
+    fn scan_nothing(done: crate::host::ScanDone) -> Result<(), String> {
+        done(None);
+        Ok(())
+    }
+
+    /// A scan whose reply is left waiting, to be sent by [`reply_later`].
+    fn scan_later(done: crate::host::ScanDone) -> Result<(), String> {
+        HELD.with(|h| *h.borrow_mut() = Some(done));
+        Ok(())
+    }
+
+    /// A camera that will not start.
+    fn scan_refused(_: crate::host::ScanDone) -> Result<(), String> {
+        Err("the camera is not allowed".to_owned())
+    }
+
+    /// Sends the reply that [`scan_later`] left waiting, as the shell would.
+    fn reply_later(text: Option<Vec<u8>>) {
+        let done = HELD
+            .with(|h| h.borrow_mut().take())
+            .expect("a scan is waiting for its reply");
+        done(text);
+    }
+
+    /// A phone's Host that scans with `start`, as a shell that offers scanning
+    /// gives it.
+    fn scanning_host(start: crate::host::ScanStart, preview: crate::host::ScanPreview) -> Host {
+        Host {
+            scan: Some(start),
+            cancel_scan: Some(count_cancel),
+            scan_preview: Some(preview),
+            ..fake_host(PathBuf::from("/nonexistent"))
+        }
+    }
+
+    /// A phone on page 1 of the send form, with two destination rows, and a
+    /// scanner that `start` drives. The shell's replies come on the returned
+    /// receiver, as the application takes them.
+    fn scanning_phone(
+        start: crate::host::ScanStart,
+        preview: crate::host::ScanPreview,
+    ) -> (App, Replies) {
+        let form = SpendForm {
+            rows: vec![DestinationRow::default(), DestinationRow::default()],
+            ..SpendForm::default()
+        };
+        let mut app = on_phone(send_page(SendStage::To(Default::default()), form));
+        let (replies, received) = iced::futures::channel::mpsc::unbounded();
+        app.model.scanner = crate::scan::Scanner::of(&scanning_host(start, preview), replies);
+        (app, received)
+    }
+
+    /// Gives the interface the replies the shell has sent, as it takes them.
+    fn take_replies(app: &mut App, received: &mut Replies) {
+        while let Ok((row, ask, text)) = received.try_recv() {
+            let _ = app.update(Message::Scanned(row, ask, text));
+        }
+    }
+
+    /// The destination rows of the send form shown.
+    fn rows_of(app: &App) -> Vec<DestinationRow> {
+        match &wallet_page(app).page {
+            Page::Send(s) => s.form.rows.clone(),
+            other => panic!("the send form is not shown: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_scan_fills_the_row_it_was_begun_for_and_no_other() {
+        let (mut app, mut received) = scanning_phone(scan_destination, ScanPreview::Shell);
+        let _ = app.update(Message::Scan(1));
+        take_replies(&mut app, &mut received);
+        let rows = rows_of(&app);
+        assert_eq!(rows[0], DestinationRow::default(), "row 1 is not touched");
+        assert_eq!(rows[1].to, a_destination());
+        assert!(app.model.scanning.is_none(), "the scan is over");
+        assert!(refusals_of(&app).is_empty());
+    }
+
+    #[test]
+    fn a_text_that_is_not_a_destination_is_refused_under_its_row() {
+        let (mut app, mut received) = scanning_phone(scan_junk, ScanPreview::Shell);
+        let _ = app.update(Message::Scan(0));
+        take_replies(&mut app, &mut received);
+        let refused = refusals_of(&app);
+        let why = refused
+            .get(&(0, RefusedField::Address))
+            .expect("refused under the address of row 1");
+        assert!(why.contains("is not a destination"), "{why}");
+        assert_eq!(rows_of(&app)[0].to, "", "nothing is put in the row");
+    }
+
+    #[test]
+    fn an_overlong_or_non_utf8_text_is_refused_under_its_row() {
+        let starts: [crate::host::ScanStart; 2] = [scan_overlong, scan_not_text];
+        for start in starts {
+            let (mut app, mut received) = scanning_phone(start, ScanPreview::Shell);
+            let _ = app.update(Message::Scan(0));
+            take_replies(&mut app, &mut received);
+            assert!(
+                refusals_of(&app).contains_key(&(0, RefusedField::Address)),
+                "refused under the address"
+            );
+            assert_eq!(rows_of(&app)[0].to, "");
+        }
+    }
+
+    #[test]
+    fn a_scan_cancelled_or_refused_by_the_shell_fills_nothing() {
+        let (mut app, mut received) = scanning_phone(scan_nothing, ScanPreview::Shell);
+        let _ = app.update(Message::Scan(0));
+        take_replies(&mut app, &mut received);
+        assert!(
+            refusals_of(&app).is_empty(),
+            "a cancelled scan says nothing"
+        );
+        assert_eq!(rows_of(&app)[0].to, "");
+        assert!(app.model.scanning.is_none());
+
+        let (mut app, _received) = scanning_phone(scan_refused, ScanPreview::Shell);
+        let _ = app.update(Message::Scan(0));
+        let why = refusals_of(&app)
+            .get(&(0, RefusedField::Address))
+            .cloned()
+            .expect("a camera that will not start says why, under the row");
+        assert!(why.contains("not allowed"), "{why}");
+        assert!(app.model.scanning.is_none());
+    }
+
+    #[test]
+    fn a_reply_to_a_scan_that_has_ended_is_dropped_even_when_another_is_under_way() {
+        let (mut app, mut received) = scanning_phone(scan_later, ScanPreview::Shell);
+        let _ = app.update(Message::Scan(0));
+        let first = HELD
+            .with(|h| h.borrow_mut().take())
+            .expect("the first scan waits");
+        let _ = app.update(Message::CancelScan);
+        let _ = app.update(Message::Scan(0));
+        first(Some(a_destination().into_bytes()));
+        take_replies(&mut app, &mut received);
+        assert_eq!(
+            rows_of(&app)[0].to,
+            "",
+            "the earlier scan's text is dropped"
+        );
+        assert!(
+            app.model.scanning.is_some(),
+            "the scan under way still waits"
+        );
+    }
+
+    #[test]
+    fn a_reply_after_the_row_the_scan_fills_changed_is_dropped() {
+        let (mut app, mut received) = scanning_phone(scan_later, ScanPreview::Shell);
+        let _ = app.update(Message::Scan(0));
+        let _ = app.update(Message::Wallet(WalletMsg::DestinationTo(
+            0,
+            "typed".to_owned(),
+        )));
+        assert!(app.model.scanning.is_none(), "a changed row ends the scan");
+        reply_later(Some(a_destination().into_bytes()));
+        take_replies(&mut app, &mut received);
+        assert_eq!(rows_of(&app)[0].to, "typed", "the late reply is dropped");
+    }
+
+    #[test]
+    fn a_reply_after_a_row_was_added_or_the_page_was_left_is_dropped() {
+        let (mut app, mut received) = scanning_phone(scan_later, ScanPreview::Shell);
+        let _ = app.update(Message::Scan(0));
+        let _ = app.update(Message::Wallet(WalletMsg::AddDestination));
+        assert!(app.model.scanning.is_none(), "the rows changed");
+        reply_later(Some(a_destination().into_bytes()));
+        take_replies(&mut app, &mut received);
+        assert_eq!(rows_of(&app)[0].to, "");
+
+        let (mut app, mut received) = scanning_phone(scan_later, ScanPreview::Shell);
+        let _ = app.update(Message::Scan(0));
+        let _ = app.update(Message::Wallet(WalletMsg::Open(To::Dashboard)));
+        assert!(app.model.scanning.is_none(), "the page was left");
+        reply_later(Some(a_destination().into_bytes()));
+        take_replies(&mut app, &mut received);
+        assert!(
+            matches!(&wallet_page(&app).page, Page::Dashboard),
+            "the late reply does not bring the form back"
+        );
+    }
+
+    #[test]
+    fn a_scan_ends_when_the_destinations_are_continued_past() {
+        let (mut app, _received) = scanning_phone(scan_later, ScanPreview::Shell);
+        let _ = app.update(Message::Scan(0));
+        let before = cancels();
+        let _ = app.update(Message::Wallet(WalletMsg::DestinationTo(
+            1,
+            a_destination(),
+        )));
+        assert!(app.model.scanning.is_some(), "another row does not end it");
+        let _ = app.update(Message::Wallet(WalletMsg::Continue));
+        assert!(app.model.scanning.is_none(), "the amounts page ends it");
+        assert_eq!(cancels(), before + 1, "and the camera stops");
+    }
+
+    #[test]
+    fn leaving_the_page_locking_or_backgrounding_stops_the_camera() {
+        let (mut app, _received) = scanning_phone(scan_later, ScanPreview::Shell);
+        let _ = app.update(Message::Scan(0));
+        let before = cancels();
+        let _ = app.update(Message::Wallet(WalletMsg::Open(To::Dashboard)));
+        assert_eq!(cancels(), before + 1, "leaving the page");
+        assert!(app.model.scanning.is_none());
+
+        let (mut app, _received) = scanning_phone(scan_later, ScanPreview::Shell);
+        let _ = app.update(Message::Scan(0));
+        let before = cancels();
+        let _ = app.update(Message::Lock);
+        assert_eq!(cancels(), before + 1, "a lock");
+        assert!(app.model.scanning.is_none());
+
+        // The shell's own move to the background stops the camera on its thread,
+        // and the application drops the scan at its next message.
+        let (mut app, _received) = scanning_phone(scan_later, ScanPreview::Shell);
+        let _ = app.update(Message::Scan(0));
+        let before = cancels();
+        let leave = app.leaving_hook();
+        let _ = leave();
+        assert_eq!(cancels(), before + 1, "the move to the background");
+        let _ = app.update(Message::Tick(0));
+        assert!(app.model.scanning.is_none(), "the scan is dropped");
+    }
+
+    #[test]
+    fn the_desktop_offers_no_scan() {
+        let mut app = on_wallet(composing());
+        assert!(!app.model.scan_offered());
+        let _ = app.update(Message::Scan(0));
+        assert!(app.model.scanning.is_none(), "nothing is begun");
+        assert!(app.model.scanner.is_none());
+    }
+
+    /// The shell's frames are one shared slot, so the tests that give frames take
+    /// turns with each other.
+    static FRAME_TURNS: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn a_preview_frame_is_shown_while_a_scan_draws_its_preview_in_the_application() {
+        let _turn = FRAME_TURNS.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut app, _received) = scanning_phone(scan_later, ScanPreview::Application);
+        let _ = app.update(Message::Scan(0));
+        assert!(app.model.previewing(), "the frames are taken");
+        crate::host::preview_frame(2, 2, vec![0; 16]);
+        let _ = app.update(Message::Preview);
+        assert!(
+            app.model.scan_preview.is_some(),
+            "the latest frame is shown"
+        );
+
+        // A frame whose bytes are not its size is refused by the shell's entry
+        // point, so nothing new is shown.
+        app.model.scan_preview = None;
+        crate::host::preview_frame(2, 2, vec![0; 3]);
+        let _ = app.update(Message::Preview);
+        assert!(app.model.scan_preview.is_none(), "a bad frame is dropped");
+
+        let _ = app.update(Message::CancelScan);
+        assert!(app.model.scan_preview.is_none());
+        assert!(app.model.scanning.is_none(), "Cancel ends the scan");
+    }
+
+    #[test]
+    fn the_preview_goes_with_the_scan_when_its_reply_comes() {
+        let _turn = FRAME_TURNS.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut app, mut received) = scanning_phone(scan_later, ScanPreview::Application);
+        let _ = app.update(Message::Scan(0));
+        crate::host::preview_frame(2, 2, vec![0; 16]);
+        let _ = app.update(Message::Preview);
+        assert!(app.model.scan_preview.is_some());
+        reply_later(Some(a_destination().into_bytes()));
+        take_replies(&mut app, &mut received);
+        assert!(
+            app.model.scan_preview.is_none(),
+            "the scan ended with its reply"
+        );
+        assert!(app.model.scanning.is_none());
+        assert_eq!(rows_of(&app)[0].to, a_destination());
+    }
+
+    #[test]
+    fn a_scanned_text_is_never_in_a_message_log() {
+        let message = Message::Scanned(0, 1, Some(crate::scan::Code(b"0xSECRETTEXT".to_vec())));
+        let log = format!("{message:?}");
+        assert!(!log.contains("SECRETTEXT"), "{log}");
+        assert!(log.contains("Code(..)"), "{log}");
     }
 
     /// What W4's Paste button beside row `row` asks for, as `app` shows it.
@@ -10257,6 +10694,9 @@ mod tests {
             keep_password: Some(fake_keep),
             release_password: Some(fake_release),
             forget_password: Some(fake_forget),
+            scan: None,
+            cancel_scan: None,
+            scan_preview: None,
         }
     }
 

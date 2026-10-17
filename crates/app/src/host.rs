@@ -12,6 +12,9 @@
 //! the recovery phrase's screen reads (docs/DECISIONS.md D44 item 3). Its
 //! device fields offer the unlock with the device's own check, and keep the
 //! store's password for it in the system's storage (docs/DECISIONS.md D45).
+//! Its scan fields start a QR scan and take back the text it reads, and an
+//! Android shell hands each camera frame to [`preview_frame`] (docs/DECISIONS.md
+//! D42).
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -83,10 +86,50 @@ pub struct Host {
     /// item 4). `Ok` also when none is kept. `Err` says why it was not deleted,
     /// in the platform's words.
     pub forget_password: Option<ForgetPassword>,
+    /// Starts a QR scan, where a shell has a camera for one (docs/DECISIONS.md
+    /// D42). The text the scan reads comes back through `done`, once (see
+    /// [`ScanStart`]). `Err` says why the scan did not start, in the platform's
+    /// words: the camera is not allowed, or there is none. `None` where a shell
+    /// offers no scan, and on the desktop, which has no `Host` at all.
+    pub scan: Option<ScanStart>,
+    /// Stops the scan under way, if there is one (docs/DECISIONS.md D42 item 4).
+    /// Its camera stops, and its `done` may still be called, with `None`, which
+    /// the application drops. With no scan under way it does nothing. It may be
+    /// called from any thread: a move to the background calls it from the
+    /// shell's own (see [`left_foreground`]).
+    pub cancel_scan: Option<fn()>,
+    /// Who draws the camera's preview during a scan (see [`ScanPreview`]). An
+    /// application offers a scan only when `scan`, `cancel_scan` and this are
+    /// all given (see `Scanner::of` in `crate::scan`).
+    pub scan_preview: Option<ScanPreview>,
 }
 
 /// What [`Host::keep_password`] is.
 pub type KeepPassword = fn(identifier: &[u8; 32], password: &str) -> Result<(), String>;
+
+/// What [`Host::scan`] is: starts a scan, whose text `done` receives once. It
+/// returns at once, since it runs on the interface's thread: the shell's own
+/// scanner is shown and runs on its own. `done` may be called before it returns,
+/// as a refusal the shell makes at once is.
+pub type ScanStart = fn(done: ScanDone) -> Result<(), String>;
+
+/// The way a scan's text goes back to the interface, called once, from a thread
+/// of the shell's own and never the interface's. It takes the bytes the decoder
+/// read, or `None` when the scan was cancelled or the camera was not allowed.
+/// The shell does not check the bytes: the application trims them, bounds them,
+/// and checks them as UTF-8 and as a destination (docs/DECISIONS.md D42 item 4).
+pub type ScanDone = Box<dyn FnOnce(Option<Vec<u8>>) + Send>;
+
+/// Who draws the camera's preview during a scan (docs/DECISIONS.md D42 item 3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScanPreview {
+    /// The shell draws it: iOS presents its own scanner, which shows the camera
+    /// through the system's preview layer.
+    Shell,
+    /// The application draws it, from the frames the shell gives through
+    /// [`preview_frame`]: Android.
+    Application,
+}
 
 /// What [`Host::release_password`] is.
 pub type ReleasePassword = fn(identifier: &[u8; 32], reason: &str, answer: Deliver);
@@ -449,6 +492,51 @@ pub(crate) fn on_capture(capture: Arc<Capture>, captured: Option<fn() -> bool>) 
     }
 }
 
+/// One frame of the camera's preview, as a shell gives it (see [`preview_frame`]).
+pub(crate) struct Frame {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) rgba: Vec<u8>,
+}
+
+/// The latest preview frame not yet taken (docs/DECISIONS.md D42 item 3).
+static FRAME: Mutex<Option<Frame>> = Mutex::new(None);
+
+/// Hands the application the camera's latest preview frame, from the shell's
+/// thread (docs/DECISIONS.md D42 item 3). `rgba` holds `width` by `height`
+/// pixels, four bytes each, RGBA and not premultiplied, row by row from the top.
+/// The application takes a frame at its next redraw, while a scan draws its
+/// preview in the application ([`ScanPreview::Application`]). A frame not yet
+/// taken is replaced by the next, so the application shows the latest. A frame
+/// with no pixels, or whose bytes are not `width` by `height` by four, is
+/// dropped.
+pub fn preview_frame(width: u32, height: u32, rgba: Vec<u8>) {
+    if !frame_fits(width, height, rgba.len()) {
+        return;
+    }
+    *FRAME.lock().unwrap_or_else(PoisonError::into_inner) = Some(Frame {
+        width,
+        height,
+        rgba,
+    });
+}
+
+/// The latest preview frame, if one has come since the last take.
+pub(crate) fn take_frame() -> Option<Frame> {
+    FRAME.lock().unwrap_or_else(PoisonError::into_inner).take()
+}
+
+/// Whether `len` bytes are a frame of `width` by `height` pixels, four bytes
+/// each, and the frame has pixels.
+fn frame_fits(width: u32, height: u32, len: usize) -> bool {
+    width > 0
+        && height > 0
+        && (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|pixels| pixels.checked_mul(4))
+            == Some(len)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -536,7 +624,7 @@ mod tests {
         std::thread::spawn(move || answer(Released::Declined));
     }
 
-    /// A shell with no device unlock, as Android has it.
+    /// A shell with no device unlock, as Android has it, and no scan.
     fn bare() -> Host {
         Host {
             private_dir: PathBuf::from("/nonexistent"),
@@ -548,7 +636,21 @@ mod tests {
             keep_password: None,
             release_password: None,
             forget_password: None,
+            scan: None,
+            cancel_scan: None,
+            scan_preview: None,
         }
+    }
+
+    #[test]
+    fn a_preview_frame_must_have_pixels_and_exactly_four_bytes_each() {
+        assert!(frame_fits(2, 3, 2 * 3 * 4));
+        assert!(frame_fits(1, 1, 4));
+        assert!(!frame_fits(0, 3, 0), "no pixels");
+        assert!(!frame_fits(2, 0, 0), "no pixels");
+        assert!(!frame_fits(2, 3, 2 * 3 * 3), "three bytes a pixel");
+        assert!(!frame_fits(2, 3, 2 * 3 * 4 + 1), "one byte too many");
+        assert!(!frame_fits(u32::MAX, u32::MAX, 4), "a size that overflows");
     }
 
     /// A shell that gives all four device fields, with `check` as its check.

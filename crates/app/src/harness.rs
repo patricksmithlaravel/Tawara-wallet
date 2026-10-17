@@ -407,6 +407,9 @@ pub(crate) fn face_id_device() -> Device {
         keep_password: Some(no_keep),
         release_password: Some(no_release),
         forget_password: Some(no_forget),
+        scan: None,
+        cancel_scan: None,
+        scan_preview: None,
     };
     let (answers, _received) = iced::futures::channel::mpsc::unbounded();
     Device::of(&host, answers).expect("a shell that gives every device field offers the unlock")

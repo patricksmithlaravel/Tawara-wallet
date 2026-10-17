@@ -3842,6 +3842,29 @@ declares their functions, but links `mediandk` only behind its `media`
 feature, which Tawara-mobile's build does not turn on today, and links
 nothing for `camera2ndk`.
 
+**As built, the application's side (this change).** `crates/app/src/scan.rs`
+holds the scanner a shell gives, `Scanner::of`, which a `Host` gives by all
+three of its scan fields (`scan`, `cancel_scan` and `scan_preview`), and the
+text a reply carries, `Code`, whose `Debug` prints nothing of it. `destination`
+checks a reply: the text is trimmed of the whitespace round it, bounded at 128
+bytes (`MAX_BYTES`, where the longest destination is 42 characters with `0x`
+and 31 in Base58), read as UTF-8, and then checked by `parse_destination`. The
+shell hands over the bytes its decoder read, unchecked. A Scan button begins a
+scan with `Message::Scan(row)`, on a phone's destination rows of the send form
+and the re-sign form, while nothing else is being done; its reply is
+`Message::Scanned(row, ask, text)`. The number `ask`
+is what drops a reply to a scan that has ended, which the row and the form
+alone would not, since a row can be scanned again. The camera is stopped when
+the page or the row changes (checked after each message), on a lock, on a move
+to the background (on the shell's own thread, from `host::left_foreground`),
+and by `Message::CancelScan`. On Android the shell hands each frame to
+`host::preview_frame`, and `Message::Preview` takes the latest while a scan
+draws its preview in the application. A refusal shows under the row's address:
+the library's words, or one of three new ones, `EMPTY`, `OVERLONG` and
+`NOT_TEXT`, which await the owner's approval with the page's text. Not built
+yet: the Scan button and the scanner page, which are views, and the shells'
+scanners, which are Tawara-mobile's.
+
 ### D43. A default node: `https://api.mochimo.org`
 
 **proposed; the default decided by the owner on 2026-10-13; the safeguards
