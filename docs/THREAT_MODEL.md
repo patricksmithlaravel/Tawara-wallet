@@ -11,7 +11,7 @@ It was written against these commits, and its line numbers are theirs:
 |---|---|
 | this repository, `main` | `389f7317578dd1b28a0127d3e7b2bb87e2725d16` |
 | Tawara-mobile, `main` | `587329c7bf774129d59e617cef0f6b0a7e91c51e` |
-| the wallet library, `mochimo-crypto` (Rep-1) | `7cdc2e986319d508e4c197a4ba44220dd49a5b1d` (D7) |
+| the wallet library, `mochimo-crypto` (Rep-1) | `613e8bd7d3379a3d1cb88803319931f817a48255` (D7) |
 | the iced fork, release `v0.14.1-mobile.2` | `d4ab3a057db96162b087a27dd0752a3b15abfa6b` (D32 item 9 (a)) |
 | this repository's PR #26 (`work/decisions-2026-10-13`, merged as `79cae88`); D44 as cited here | `0c05b9ef8faf6ed8786005a5d194df565ff3bc5b` |
 

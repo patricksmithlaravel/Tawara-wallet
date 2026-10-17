@@ -211,7 +211,7 @@ Settings' node card and Activity use them (D30); the explorer's own pages
 (PR (d)) are still to come, and will read item 6's transactions whole.
 The library's reading of a refused search, which read the middleware's
 code 1 as "no indexer", was fixed the same way: Rep-0's pull request #17,
-merged down in Rep-1's #8 (`7cdc2e9`), where the pin now is.
+merged down in Rep-1's #8 (`7cdc2e9`), which the pin now includes.
 
 | item | what the library now has |
 |---|---|

@@ -93,7 +93,7 @@ now pins, `v0.14.1-mobile.2`. Its defaults add `android-native-activity`,
 `mobile-logger`, `mobile-fira-sans` and `mobile-system-fonts`, which
 `default-features = false` leaves off. See D32 item 9.*
 
-### D7. The library pin: Rep-1 at `7cdc2e9`
+### D7. The library pin: Rep-1 at `613e8bd`
 
 **owner, 2026-10-03.** The owner's instructions for phase 0 named Rep-1's
 `02239c1`, or a later commit the owner named; by the time the work began, Rep-1's `main` was at
@@ -149,6 +149,25 @@ Phase 0 first added `version = "2.0.0"` to it, on the belief that
 cargo-deny would otherwise deny the line as a wildcard. That was wrong:
 `allow-wildcard-paths` admits a version-less git dependency of an
 unpublished crate. The key was removed, so the line is the plan's again.
+
+**Moved again, 2026-10-16, when the owner waived the Rep-0-first rule for one
+change.** The pin is now `613e8bd7d3379a3d1cb88803319931f817a48255`, Rep-1's
+`main` after its pull requests #9 and #10, which add these to `7cdc2e9`.
+Rep-1's `7f83140` corrects the keystore module's comment on the Windows lock
+range: `File::try_lock` covers the whole range there, and the comment had said
+the lock covered a range no file reaches. It is a comment change only. Rep-1's
+`23c89fa` adds `recon::resubmit_reverted_settle`, which sends a saved copy of a
+reverted settle. The function reads the store and never writes it: no index
+moves, no reservation opens and no key signs. It sends the copy only when the
+account retains a settle and holds no open reservation, the copy's signed part
+hashes to the retained digest, its signature recovers to the source key, the
+chain shows that settle reverted, the balance at the source is the one reserved
+and a non-zero block-to-live has not passed. Otherwise it refuses and sends
+nothing. The library's `Error` gained eight variants, all raised by that
+function, and the reverted-settle report names it in place of its statement
+that this build had no command for the retained block. Nothing in the range
+changes a manifest or the lockfile, so the wallet's `Cargo.lock` changes in the
+library's own line and nowhere else. The wallet does not call the function yet.
 
 ### D8. Names and identifiers
 

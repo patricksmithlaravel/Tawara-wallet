@@ -3364,7 +3364,8 @@ fn a_reverted_settle_leaves_the_account_behind_with_no_way_to_advance() {
             assert!(behind(&state), "Check now: {state:?}");
             assert!(!spendable);
             assert!(
-                text.contains("THIS BUILD HAS NO COMMAND THAT TURNS THE RETAINED BLOCK"),
+                text.contains("No command rebuilds these bytes, and none may:")
+                    && text.contains("`resubmit_reverted_settle` sends a saved copy only when"),
                 "{text}"
             );
         }
