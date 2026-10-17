@@ -1772,8 +1772,10 @@ on the three conditions D18 left open.
    fourteen fork packages in `Cargo.lock`, name
    `4f609cd1bcfd30b4690f531817c1cfce03857cd2`, a commit of the fork's branch
    `work/ios-safe-area-reread` (fork pull request #8), in place of
-   `d4ab3a057db96162b087a27dd0752a3b15abfa6b`. The range is 150 fork commits
-   (140 without merges; 138 files, +32,846/-1,716). It holds the iPhone SE
+   `d4ab3a057db96162b087a27dd0752a3b15abfa6b`. The head of fork pull request
+   #8 is now `668b8154d`, one commit on top of the stage that changes only
+   prose in a doc comment; the wallet keeps `4f609cd1b`. The range is 150 fork
+   commits (140 without merges; 138 files, +32,846/-1,716). It holds the iPhone SE
    safe-area re-read of item 10 (f); the iOS Return and Tab fix `586665c08`,
    which this move takes with it; and the fork's keyboard, input-method and
    composition work, which the desktop build compiles. The owner's answers of
