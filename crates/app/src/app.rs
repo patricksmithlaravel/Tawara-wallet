@@ -453,6 +453,10 @@ pub struct WalletPage {
     /// one is (docs/DECISIONS.md D39 item 4). A page is replaced when it is
     /// left, so the card closes then.
     pub expanded: Option<AccountId>,
+    /// Page 1 of a phone's send flow: whether the account list is open under
+    /// the From line, by "Change" (docs/DECISIONS.md D40 item 1). A page is
+    /// replaced when it is left, so the list closes then.
+    pub choosing: bool,
 }
 
 /// Text typed into a secret field, on its way into the model. Its `Debug`
@@ -5755,6 +5759,53 @@ mod tests {
         );
         assert!(refusals_of(&app).is_empty());
         assert!(operations(task).is_empty());
+    }
+
+    #[test]
+    fn change_opens_the_account_list_on_page_one_only_and_a_choice_or_continue_shuts_it() {
+        // "Change" opens the list under the From line on a phone's page 1, and
+        // only while the wallet is idle. Choosing an account, or Continue, shuts
+        // it (docs/DECISIONS.md D40 item 1).
+        let mut app = on_phone(send_page(
+            SendStage::To(Default::default()),
+            spend_to(&a_destination(), ""),
+        ));
+        let second = tawara_wallet_core::sample::wallet_view().accounts[1].id;
+        app.model
+            .wallet
+            .as_mut()
+            .expect("the sample wallet")
+            .accounts[1]
+            .spendable = true;
+        let from = |app: &App| match &wallet_page(app).page {
+            Page::Send(s) => s.from,
+            other => panic!("expected the send page, got {other:?}"),
+        };
+        let choosing = |app: &App| wallet_page(app).choosing;
+
+        wallet(&mut app, WalletMsg::ChooseAccount(true));
+        assert!(choosing(&app));
+        wallet(&mut app, WalletMsg::From(second));
+        assert_eq!(from(&app), Some(second));
+        assert!(!choosing(&app), "a choice shuts the list");
+
+        wallet(&mut app, WalletMsg::ChooseAccount(true));
+        wallet(&mut app, WalletMsg::Continue);
+        assert!(!choosing(&app), "page 2 has no list");
+        assert_eq!(from(&app), Some(second));
+
+        // Page 2 has no list to open, and a busy wallet opens none.
+        wallet(&mut app, WalletMsg::ChooseAccount(true));
+        assert!(!choosing(&app));
+        wallet(&mut app, WalletMsg::Back);
+        app.model.busy = Some(Busy {
+            id: RequestId::example(),
+            activity: None,
+            progress: None,
+        });
+        wallet(&mut app, WalletMsg::ChooseAccount(true));
+        assert!(!choosing(&app), "not while the worker answers");
+        assert_eq!(from(&app), Some(second));
     }
 
     #[test]

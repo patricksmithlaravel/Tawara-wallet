@@ -572,6 +572,9 @@ pub enum WalletMsg {
     /// W3: add derived account N, as the sweep found it.
     Add(u32),
     From(AccountId),
+    /// Page 1 of 4 on a phone: "Change" opens the account list under the From
+    /// line, or closes it (docs/DECISIONS.md D40 item 1).
+    ChooseAccount(bool),
     DestinationTo(usize, String),
     Amount(usize, String),
     Reference(usize, String),
@@ -1604,12 +1607,30 @@ impl App {
                 );
             }
             WalletMsg::From(account) => {
+                // Choosing an account closes the list it was chosen from.
                 if let Some(WalletPage {
                     page: Page::Send(s),
+                    choosing,
                     ..
                 }) = self.wallet_page()
                 {
                     s.from = Some(account);
+                    *choosing = false;
+                }
+            }
+            WalletMsg::ChooseAccount(open) => {
+                if let Some(WalletPage {
+                    page:
+                        Page::Send(SendPage {
+                            stage: SendStage::To(_),
+                            ..
+                        }),
+                    choosing,
+                    ..
+                }) = self.wallet_page()
+                    && !busy
+                {
+                    *choosing = open;
                 }
             }
             WalletMsg::DestinationTo(i, text) => {
@@ -1737,6 +1758,7 @@ impl App {
                 let Some(WalletPage {
                     page: Page::Send(s),
                     error,
+                    choosing,
                     ..
                 }) = self.wallet_page()
                 else {
@@ -1748,6 +1770,7 @@ impl App {
                 match destination_refusals(&s.form) {
                     Ok(refused) if refused.is_empty() => {
                         *error = None;
+                        *choosing = false;
                         s.stage = SendStage::Amount;
                         return crate::screens::page_top();
                     }

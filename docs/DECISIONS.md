@@ -3480,7 +3480,26 @@ one long scroll from W4 to W6 today. The owner asked for a series of pages.
    the form that holds it. (b) "Give this destination's address." is new
    wording, for a destination with an amount and no address. Any other
    address or reference the library refuses is shown under its field, in
-   the library's words, with the destination's number.
+   the library's words, with the destination's number. (c) The key callout
+   and the three steps are on page 4, with "Sign & submit", and not on the
+   review. The review keeps the library's page, the destinations and the
+   figures, so the key the spend signs with is shown where the person presses
+   the button that signs. The line under that button, "Submitting writes the
+   signed spend to the node's socket. That is not the node's verdict: settle
+   once the chain has moved.", is new wording in W6's words. (d) "Change" opens,
+   under the From line on page 1, the accounts that can spend, and choosing one
+   shuts the list. D40 names no way to choose an account, so the open list is a
+   page state (`WalletPage::choosing`). With one account that can spend there
+   is no "Change". (e) Page 1 draws one block for each destination, with its
+   Paste, its reference and its Remove, as the compact W4 draws them, and not
+   one destination at a time: a page with one destination on it would need a
+   shown row and a way to move between rows, which D40 does not give. (f) On
+   a phone a refusal and the busy card are drawn beneath the button that caused
+   them; the desktop keeps them at the top of the page. (g) Page 3 has no "Edit
+   the spend": the Back at the top of the page keeps what was typed and gives
+   the plan up, as Edit does. (h) The labels "1 of 4" to "4 of 4", "Amounts",
+   "Destinations", "Destination n", and the subtitles of pages 2 and 4 are new
+   wording.
 
 The desktop's W4 to W6, `narrow-w4-send.png` included, are unchanged. The
 threat model's Locking row (PR #21) and docs/SCREENS.md's Back rule (lines
