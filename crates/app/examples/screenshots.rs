@@ -28,9 +28,15 @@
 //! phrase after a screenshot is drawn at 390 by 844, with the warning in the
 //! words' place (`phone-s4-phrase-photographed.png`), and while the screen is
 //! captured (`phone-s4-phrase-captured.png`) (docs/DECISIONS.md D44 items 1
-//! and 3). So the phone's images are 78 in all. Every piece of text names a
-//! bundled face (`tawara_app::fonts`), so the pixels do not depend on the
-//! fonts a machine has installed.
+//! and 3). The unlock with the device's own check has three images of its own,
+//! drawn with a shell that offers Face ID: S7 with its button
+//! (`phone-s7-unlock-device.png`), the offer on the wallet's page
+//! (`phone-w1-wallet-offer.png`), and Settings with the unlock's row
+//! (`phone-w11-settings-device.png`) (docs/DECISIONS.md D45 item 4). The
+//! desktop offers no device unlock, so they are the phone's alone. So the
+//! phone's images are 81 in all. Every piece of text names a bundled face
+//! (`tawara_app::fonts`), so the pixels do not depend on the fonts a machine
+//! has installed.
 //!
 //! Flags:
 //!
@@ -90,10 +96,11 @@ use tawara_app::app::{
     SubmitPage, TagPage, TransactionPage, UnlockForm, WalletPage,
 };
 use tawara_app::history::Filter;
+use tawara_app::host::{Device, DeviceCheck, Host, Released};
 use tawara_app::{fonts, overflow, screens, theme};
 use tawara_wallet_core::explorer::{BlockAt, IndexState, LedgerRead, Party, TagView};
 use tawara_wallet_core::location::SyncWarning;
-use tawara_wallet_core::preferences::{AmountUnit, DEFAULT_NODE, Preferences};
+use tawara_wallet_core::preferences::{AmountUnit, DEFAULT_NODE, DeviceUnlock, Preferences};
 use tawara_wallet_core::sample;
 use tawara_wallet_core::view::{AccountState, DivergenceKind};
 use tawara_wallet_core::{
@@ -875,6 +882,11 @@ const KEYBOARD: f32 = 336.0;
 /// the card under the open row is drawn whole.
 const ACCOUNTS_SCROLL: f32 = 555.0;
 
+/// How far the phone's Settings page is scrolled down for the image of the
+/// device unlock's row, in logical pixels: the keystore card's last row is in
+/// the window (docs/DECISIONS.md D45 item 4).
+const DEVICE_ROW_SCROLL: f32 = 650.0;
+
 /// `model` as a phone draws it: the phone's safe area, with the keyboard up
 /// when `keyboard` is above zero, every store in the phone's own folder, and
 /// Save artifact's share sheet where the desktop wrote a file
@@ -984,8 +996,9 @@ fn phone_named(name: &str) -> Model {
 /// but the narrow ones, the phone's welcome screen and W1 with an account's
 /// row open, which the desktop does not have, the phone's Send pages 1, 2
 /// and 4, the long pages scrolled to their end, two drawn with the keyboard
-/// up, and the recovery phrase after a screenshot and while captured
-/// (docs/DECISIONS.md D32 item 10 (c), D37, D39, D40, D44 item 3).
+/// up, the recovery phrase after a screenshot and while captured, and the
+/// device unlock's three images (docs/DECISIONS.md D32 item 10 (c), D37, D39,
+/// D40, D44 item 3, D45 item 4).
 fn phones(width: u32) -> Vec<Image> {
     let size = (width, PHONE.1);
     // A phone's Send starts on page 1, so the desktop's W4 sample is not drawn
@@ -1110,7 +1123,86 @@ fn phones(width: u32) -> Vec<Image> {
             scroll: None,
         });
     }
+    // The unlock with the device's own check, on a phone whose shell offers it
+    // (docs/DECISIONS.md D45 item 4): S7 with the unlock on, the offer on the
+    // wallet's page, and Settings with the unlock's row, scrolled to it.
+    out.push(Image {
+        name: "phone-s7-unlock-device".to_owned(),
+        size,
+        model: phone(
+            with_device(sample_named("s7-unlock"), DeviceUnlock::On),
+            0.0,
+        ),
+        to_end: false,
+        focus: None,
+        scroll: None,
+    });
+    let mut offer = with_device(sample_named("w1-wallet"), DeviceUnlock::Off);
+    offer.device_offer = true;
+    out.push(Image {
+        name: "phone-w1-wallet-offer".to_owned(),
+        size,
+        model: phone(offer, 0.0),
+        to_end: false,
+        focus: None,
+        scroll: None,
+    });
+    out.push(Image {
+        name: "phone-w11-settings-device".to_owned(),
+        size,
+        model: phone(
+            with_device(sample_named("w11-settings"), DeviceUnlock::On),
+            0.0,
+        ),
+        to_end: false,
+        focus: None,
+        scroll: Some(DEVICE_ROW_SCROLL),
+    });
     out
+}
+
+/// `model` on a phone whose shell offers the device unlock with Face ID, with
+/// the unlock in `state` (docs/DECISIONS.md D45 item 4).
+fn with_device(mut model: Model, state: DeviceUnlock) -> Model {
+    model.device = Some(face_id_device());
+    model.prefs.device_unlock = state;
+    model
+}
+
+/// The device of a shell that offers Face ID (docs/DECISIONS.md D45 item 4). A
+/// drawing asks nothing of it, so its functions answer as a shell does when the
+/// person declines.
+fn face_id_device() -> Device {
+    fn copy(_: &str) {}
+    fn share(_: &str, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn back() {}
+    fn check() -> Option<DeviceCheck> {
+        Some(DeviceCheck::FaceId)
+    }
+    fn keep(_: &[u8; 32], _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn release(_: &[u8; 32], _: &str, answer: Box<dyn FnOnce(Released) + Send>) {
+        answer(Released::Declined);
+    }
+    fn forget() -> Result<(), String> {
+        Ok(())
+    }
+    let host = Host {
+        private_dir: PathBuf::from(PHONE_DIR),
+        copy,
+        share,
+        back,
+        captured: None,
+        device_check: Some(check),
+        keep_password: Some(keep),
+        release_password: Some(release),
+        forget_password: Some(forget),
+    };
+    let (answers, _received) = iced::futures::channel::mpsc::unbounded();
+    Device::of(&host, answers).expect("a shell that gives every device field offers the unlock")
 }
 
 /// The phone's wallet page in nanoMCM, the unit a person can choose in place
