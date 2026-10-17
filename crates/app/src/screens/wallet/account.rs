@@ -2,7 +2,9 @@
 //! actions that state allows (docs/PLAN.md section 4.9; docs/SCREENS.md,
 //! "The states that fail closed"). Nothing on this page moves a key index:
 //! a diverged account's remedy is the account-recovery screen, reached on
-//! purpose (docs/DECISIONS.md D19, D27 item 3).
+//! purpose (docs/DECISIONS.md D19, D27 item 3), or, for a settle a
+//! reorganisation reverted, sending its saved copy again from W9 (D38 item 5
+//! (b)).
 
 use iced::widget::text::Wrapping;
 use iced::widget::{column, container, row};
@@ -216,7 +218,11 @@ fn panel<'a>(
             kind,
             report: text,
             advance_to,
+            reverted_settle,
         } => {
+            // A store that did not open refuses the saved copy's command, so the
+            // button waits for an open wallet (docs/DECISIONS.md D38 item 5 (b)).
+            let opened = model.wallet.as_ref().is_some_and(|w| w.opened);
             let parts = column![report::show_in(
                 model.compact(),
                 page,
@@ -237,6 +243,17 @@ fn panel<'a>(
             (
                 parts.into(),
                 match kind {
+                    // A settle the chain reverted leaves the account one key
+                    // behind with its settle retained: the saved copy may be
+                    // sent again, from W9 in an open wallet, and nothing else
+                    // here moves the account (docs/DECISIONS.md D38 item 5 (b)).
+                    DivergenceKind::Behind { gap: 1 } if *reverted_settle && opened => {
+                        vec![button(
+                            "Submit saved artifact",
+                            theme::Button::Secondary,
+                            WalletMsg::Open(To::Resubmit(id)),
+                        )]
+                    }
                     DivergenceKind::NotFound => vec![button(
                         "Receive to it again",
                         theme::Button::Secondary,
@@ -309,7 +326,7 @@ fn button_id(n: usize) -> iced::widget::Id {
 mod tests {
     use super::*;
     use crate::app::{AccountPage, Level, NARROWEST, Page, Screen};
-    use crate::harness::fits;
+    use crate::harness::{Driver, fits, mouse_move, mouse_press, mouse_release, texts};
     use iced::advanced::widget::Operation;
     use iced_runtime::user_interface::{Cache, UserInterface};
     use tawara_wallet_core::preferences::Preferences;
@@ -390,6 +407,10 @@ mod tests {
             balance: 3_180_000_000_000,
         };
         aside.accounts[1].spendable = false;
+        // The third account's settle reverted, with its saved copy to send
+        // again: the panel draws one button more.
+        let mut reverted = sample::wallet_view();
+        reverted.accounts[2].state = reverted_settle();
         let cases = [
             ("reconciled", phone(wallet.clone(), accounts[0].id, None)),
             ("outstanding", phone(wallet.clone(), accounts[1].id, None)),
@@ -410,6 +431,10 @@ mod tests {
                     accounts[2].id,
                     Some((ReportKey::Diverged, Level::Full)),
                 ),
+            ),
+            (
+                "diverged, reverted settle",
+                phone(reverted, accounts[2].id, None),
             ),
         ];
         for (label, model) in cases {
@@ -513,26 +538,110 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_reverted_settle_is_offered_no_button_and_no_remedy() {
-        // docs/DECISIONS.md D38 item 5: a settle that a reorganisation
-        // reverted leaves the account one key behind the store, with no
-        // reservation. Nothing here may move a key index (PLAN 4.9), and
-        // Submit saved artifact belongs to an open reservation, so the panel
-        // draws the report and no button, and account recovery offers nothing.
-        let mut wallet = sample::wallet_view();
-        let id = wallet.accounts[2].id;
-        wallet.accounts[2].state = AccountState::Diverged {
+    /// The state of an account whose settle a reorganisation reverted: one key
+    /// behind the store, with its settle retained and no reservation
+    /// (docs/DECISIONS.md D38 item 5).
+    fn reverted_settle() -> AccountState {
+        AccountState::Diverged {
             kind: DivergenceKind::Behind { gap: 1 },
             report: "This store recorded a SETTLE at index 4".to_owned(),
             advance_to: None,
-        };
+            reverted_settle: true,
+        }
+    }
+
+    /// The text `model` draws, the buttons' labels among it.
+    fn drawn(model: &Model) -> Vec<String> {
+        texts(crate::screens::view(model), (NARROWEST, 1200.0))
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect()
+    }
+
+    #[test]
+    fn a_reverted_settle_offers_submit_saved_artifact_and_no_remedy() {
+        // docs/DECISIONS.md D38 item 5 (b): the saved copy of a settle that a
+        // reorganisation reverted may be sent again, from Submit saved artifact,
+        // which opens W9 in its resubmit mode for this account. Nothing here
+        // moves a key index (PLAN 4.9), and the recovery page offers no remedy.
+        let mut wallet = sample::wallet_view();
+        let id = wallet.accounts[2].id;
+        wallet.accounts[2].state = reverted_settle();
         assert_eq!(crate::app::remedy(&wallet.accounts[2].state), None);
         let model = phone(wallet, id, None);
+        assert!(
+            drawn(&model).contains(&"Submit saved artifact".to_owned()),
+            "{:?}",
+            drawn(&model)
+        );
         assert_eq!(
-            find_bounds(crate::screens::view(&model), TALL, &button_id(0)),
+            find_bounds(crate::screens::view(&model), TALL, &button_id(1)),
             None,
-            "a Behind account draws no button"
+            "it is the only button"
+        );
+        // Tapping it asks for W9 in resubmit mode, for this account.
+        let at = bounds_of(crate::screens::view(&model), TALL, &button_id(0));
+        let mut driver = Driver::new(crate::screens::view(&model), TALL);
+        let (messages, _, _) = driver.send(&[
+            mouse_move(at.center_x(), at.center_y()),
+            mouse_press(),
+            mouse_release(),
+        ]);
+        assert!(
+            matches!(
+                messages.as_slice(),
+                [Message::Wallet(WalletMsg::Open(To::Resubmit(account)))] if *account == id
+            ),
+            "{messages:?}"
+        );
+    }
+
+    #[test]
+    fn the_resubmit_button_is_drawn_only_for_a_settle_the_chain_reverted() {
+        // docs/DECISIONS.md D38 item 5 (b) names one case: one key behind, with
+        // the settle retained. Every other diverged state draws no such button.
+        let cases = [
+            (DivergenceKind::Behind { gap: 1 }, false),
+            (DivergenceKind::Behind { gap: 2 }, true),
+            (DivergenceKind::Ahead { gap: 1 }, true),
+            (DivergenceKind::Unlocated, false),
+        ];
+        for (kind, reverted_settle) in cases {
+            let mut wallet = sample::wallet_view();
+            let id = wallet.accounts[2].id;
+            wallet.accounts[2].state = AccountState::Diverged {
+                kind,
+                report: String::new(),
+                advance_to: None,
+                reverted_settle,
+            };
+            let model = phone(wallet, id, None);
+            assert!(
+                !drawn(&model).contains(&"Submit saved artifact".to_owned()),
+                "{kind:?}, with its settle retained: {reverted_settle}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_store_that_did_not_open_offers_no_saved_copy() {
+        // A store whose only account diverged this way does not open, and the
+        // command is refused in that session, so no button is drawn there. The
+        // same account draws it once the wallet is open (docs/DECISIONS.md D38
+        // item 5 (b)).
+        let mut wallet = sample::wallet_view();
+        let id = wallet.accounts[2].id;
+        wallet.accounts[2].state = reverted_settle();
+        assert!(
+            drawn(&phone(wallet.clone(), id, None)).contains(&"Submit saved artifact".to_owned()),
+            "an open wallet offers it"
+        );
+        wallet.opened = false;
+        let model = phone(wallet, id, None);
+        assert!(
+            !drawn(&model).contains(&"Submit saved artifact".to_owned()),
+            "{:?}",
+            drawn(&model)
         );
     }
 }

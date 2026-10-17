@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use mochimo_crypto::keystore::{self, Keystore, Unlock};
+use mochimo_crypto::tx::wire::Transaction;
 use support::*;
 use tawara_wallet_core::explorer::IndexState;
 use tawara_wallet_core::location::{Environment, Platform, default_store_dir};
@@ -404,6 +405,7 @@ fn a_store_nobody_has_paid_stays_a_store_until_it_is() {
             kind: DivergenceKind::NotFound,
             report,
             advance_to: None,
+            ..
         } if report.contains("account not found")),
         "{:?}",
         view.accounts[0].state
@@ -3340,7 +3342,8 @@ fn a_reverted_settle_leaves_the_account_behind_with_no_way_to_advance() {
             kind: DivergenceKind::Behind { gap: 1 },
             report,
             advance_to: None,
-        } => report.contains(&settle),
+            reverted_settle,
+        } => *reverted_settle && report.contains(&settle),
         _ => false,
     };
 
@@ -3364,7 +3367,8 @@ fn a_reverted_settle_leaves_the_account_behind_with_no_way_to_advance() {
             assert!(behind(&state), "Check now: {state:?}");
             assert!(!spendable);
             assert!(
-                text.contains("THIS BUILD HAS NO COMMAND THAT TURNS THE RETAINED BLOCK"),
+                text.contains("No command rebuilds these bytes, and none may:")
+                    && text.contains("`resubmit_reverted_settle` sends a saved copy only when"),
                 "{text}"
             );
         }
@@ -3408,6 +3412,323 @@ fn a_reverted_settle_leaves_the_account_behind_with_no_way_to_advance() {
         }
         other => panic!("expected the refused advance, got {other:?}"),
     }
+}
+
+/// The spend `pay` makes, with a block-to-live of its own (0 for none).
+fn pay_by(to: String, amount: Amount, blk_to_live: u64) -> SpendRequest {
+    SpendRequest {
+        blk_to_live,
+        ..pay(to, amount)
+    }
+}
+
+/// Whether `state` is the one a reverted settle leaves: one key behind the
+/// store, the settle retained, and no index to advance to (docs/DECISIONS.md
+/// D38 item 5).
+fn one_behind_with_settle(state: &AccountState) -> bool {
+    matches!(
+        state,
+        AccountState::Diverged {
+            kind: DivergenceKind::Behind { gap: 1 },
+            advance_to: None,
+            reverted_settle: true,
+            ..
+        }
+    )
+}
+
+/// The setup of `a_reverted_settle_leaves_the_account_behind_with_no_way_to_advance`,
+/// with the spend's own block-to-live: a funded store whose spend settled and
+/// was then reverted, so account 0 is one key behind the store with the settle
+/// retained. Returns the harness, the key index the store opened at, the spend
+/// as the reply gave it, and the change the spend left, which the chain holds
+/// at the key the settle moved to.
+fn reverted_settle(scratch: &Scratch, blk_to_live: u64) -> (Harness, u32, SentView, u64) {
+    let (mut h, start) = funded(scratch);
+    let request = pay_by(destination(1), Amount::Nano(100_000), blk_to_live);
+    let plan = planned(h.call(Command::PlanSend { spend: request }));
+    let spent = sent(h.call(Command::ConfirmSend { plan: plan.plan }));
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    match h.call(Command::Settle {
+        account: account0(),
+    }) {
+        Reply::Settled { view, text } => assert_eq!(view.accounts[0].index, start + 1, "{text}"),
+        other => panic!("expected the settlement, got {other:?}"),
+    }
+    // The block that showed the spend is reverted: the chain holds the
+    // account at the key it spent from, with the balance it had.
+    h.chain.hold(tag(0), address(0, start), FUNDS);
+    let view = opened(h.call(Command::Refresh));
+    assert!(view.opened, "{view:?}");
+    assert!(
+        one_behind_with_settle(&view.accounts[0].state),
+        "{:?}",
+        view.accounts[0].state
+    );
+    (h, start, spent, plan.change_total)
+}
+
+/// docs/DECISIONS.md D38 item 5 (b): the saved copy of a reverted settle is
+/// sent again, and only that. The node takes the identical bytes once, the
+/// account is read again and its row moves when the copy lands, and no key
+/// index moves.
+#[test]
+fn a_saved_copy_of_a_reverted_settle_is_sent_again_and_the_account_is_read_again() {
+    let scratch = Scratch::new("resubmit-sent");
+    let (mut h, start, spent, change) = reverted_settle(&scratch, 0);
+    let before = h.chain.submits().len();
+    // The copy lands when the node takes it: the chain then holds the account
+    // at the key the settle moved to, with the change the spend left.
+    h.chain
+        .land_on_submit(tag(0), address(0, start + 1), change);
+    let (tx_id, text, view) = match h.call(Command::ResubmitSaved {
+        account: account0(),
+        artifact_hex: spent.artifact_hex.clone(),
+    }) {
+        Reply::Resubmitted { tx_id, text, view } => (tx_id, text, view),
+        other => panic!("expected the copy sent again, got {other:?}"),
+    };
+
+    // The bytes given went to the node unchanged, once, and the node echoed
+    // the spend's own transaction id.
+    let submits = h.chain.submits();
+    assert_eq!(submits.len(), before + 1, "{text}");
+    assert_eq!(hex_of(&submits[before]), spent.artifact_hex);
+    assert_eq!(Some(tx_id.clone()), spent.tx_id);
+    assert!(text.contains(&tx_id), "{text}");
+    assert!(
+        text.contains("it does not establish that the node accepted"),
+        "{text}"
+    );
+
+    // No key index moved, and the account was read again: the copy has landed.
+    assert_eq!(view.accounts[0].index, start + 1, "{text}");
+    assert_eq!(
+        view.accounts[0].state,
+        AccountState::InSync { balance: change }
+    );
+
+    // Nothing else is signed or sent. Re-sign has no open reservation to
+    // rebuild, and an advance names no index to move to.
+    let _ = refusal(h.call(Command::Resign {
+        spend: pay(destination(1), Amount::Nano(100_000)),
+    }));
+    match h.call(Command::Reconcile {
+        account: account0(),
+        advance_to: start + 1,
+    }) {
+        Reply::Reconciled {
+            ok,
+            advanced_to,
+            text,
+            opened: Ok(view),
+        } => {
+            assert!(!ok, "{text}");
+            assert_eq!(advanced_to, None, "{text}");
+            assert_eq!(view.accounts[0].index, start + 1);
+        }
+        other => panic!("expected the refused advance, got {other:?}"),
+    }
+    assert_eq!(h.chain.submits().len(), before + 1, "nothing else was sent");
+}
+
+/// The library's digest check: a copy whose signed part is not the settled
+/// spend is refused before the chain is asked, and nothing is sent.
+#[test]
+fn a_saved_copy_whose_signed_part_is_not_the_settled_spend_is_refused() {
+    let scratch = Scratch::new("resubmit-digest");
+    let (mut h, start, spent, _) = reverted_settle(&scratch, 0);
+    let wire = mochimo_crypto::mesh::hex::decode(&spent.artifact_hex, "artifact")
+        .expect("the saved copy is hex");
+    // The same layout with one field of the signed part changed, so the
+    // digest of that part is not the one the store retained.
+    let mut tx = Transaction::from_wire(&wire).expect("a transaction");
+    tx.change_total = tx.change_total.wrapping_add(1);
+    let altered = tx.to_wire();
+    assert_ne!(altered, wire);
+
+    let before = h.chain.submits().len();
+    let r = refusal(h.call(Command::ResubmitSaved {
+        account: account0(),
+        artifact_hex: hex_of(&altered),
+    }));
+    assert_eq!(r.kind, RefusalKind::Library);
+    assert!(
+        r.text.contains("is not the spend this account settled"),
+        "{}",
+        r.text
+    );
+    assert!(r.text.contains("Nothing was submitted"), "{}", r.text);
+    assert_eq!(h.chain.submits().len(), before, "nothing was sent");
+
+    // The refusal leaves the account as it was, and Re-sign and Reconcile are
+    // still refused.
+    match h.call(Command::Status {
+        account: account0(),
+        scan_to: None,
+    }) {
+        Reply::Status { state, .. } => {
+            assert!(one_behind_with_settle(&state), "{state:?}");
+        }
+        other => panic!("expected the check, got {other:?}"),
+    }
+    let _ = refusal(h.call(Command::Resign {
+        spend: pay(destination(1), Amount::Nano(100_000)),
+    }));
+    match h.call(Command::Reconcile {
+        account: account0(),
+        advance_to: start,
+    }) {
+        Reply::Reconciled {
+            ok,
+            advanced_to,
+            text,
+            opened: Ok(view),
+        } => {
+            assert!(!ok, "{text}");
+            assert_eq!(advanced_to, None, "{text}");
+            assert_eq!(view.accounts[0].index, start + 1);
+        }
+        other => panic!("expected the refused advance, got {other:?}"),
+    }
+    assert_eq!(h.chain.submits().len(), before, "nothing was sent");
+}
+
+/// The library's balance check: once the source holds other than the balance
+/// the settled spend was built against, the copy can no longer be accepted,
+/// and it is refused.
+#[test]
+fn a_saved_copy_is_refused_once_the_balance_at_the_source_has_moved() {
+    let scratch = Scratch::new("resubmit-moved");
+    let (mut h, start, spent, _) = reverted_settle(&scratch, 0);
+    // A credit reached the source after the settled spend was built.
+    h.chain.hold(tag(0), address(0, start), FUNDS + 1);
+    let before = h.chain.submits().len();
+    let r = refusal(h.call(Command::ResubmitSaved {
+        account: account0(),
+        artifact_hex: spent.artifact_hex.clone(),
+    }));
+    assert_eq!(r.kind, RefusalKind::Library);
+    assert!(
+        r.text.contains(&format!(
+            "the balance at the source is {} nanoMCM, not the {FUNDS} the settled spend",
+            FUNDS + 1
+        )),
+        "{}",
+        r.text
+    );
+    assert_eq!(h.chain.submits().len(), before, "nothing was sent");
+
+    // Re-sign and Reconcile are still refused.
+    let _ = refusal(h.call(Command::Resign {
+        spend: pay(destination(1), Amount::Nano(100_000)),
+    }));
+    assert_eq!(h.chain.submits().len(), before, "nothing was sent");
+}
+
+/// The library's expiry check: once the tip has reached the settled spend's
+/// block-to-live, the copy can no longer be included, and it is refused.
+#[test]
+fn a_saved_copy_is_refused_once_the_block_to_live_of_the_settled_spend_is_reached() {
+    let scratch = Scratch::new("resubmit-expired");
+    let (mut h, _, spent, _) = reverted_settle(&scratch, 1_010);
+    h.chain.set_tip(1_010);
+    let before = h.chain.submits().len();
+    let r = refusal(h.call(Command::ResubmitSaved {
+        account: account0(),
+        artifact_hex: spent.artifact_hex.clone(),
+    }));
+    assert_eq!(r.kind, RefusalKind::Library);
+    assert!(
+        r.text
+            .contains("block-to-live 1010 has been reached at tip 1010"),
+        "{}",
+        r.text
+    );
+    assert_eq!(h.chain.submits().len(), before, "nothing was sent");
+}
+
+/// The library's own check that the chain shows the settle reverted: an
+/// account the chain holds in sync, with its settle retained, is refused.
+#[test]
+fn a_saved_copy_is_refused_for_an_account_the_chain_holds_in_sync() {
+    let scratch = Scratch::new("resubmit-in-sync");
+    let (mut h, start) = funded(&scratch);
+    let plan = planned(h.call(Command::PlanSend {
+        spend: pay(destination(1), Amount::Nano(100_000)),
+    }));
+    let spent = sent(h.call(Command::ConfirmSend { plan: plan.plan }));
+    h.chain
+        .hold(tag(0), address(0, start + 1), plan.change_total);
+    match h.call(Command::Settle {
+        account: account0(),
+    }) {
+        Reply::Settled { view, text } => assert_eq!(view.accounts[0].index, start + 1, "{text}"),
+        other => panic!("expected the settlement, got {other:?}"),
+    }
+
+    // Nothing was reverted: the chain holds the account at the key the settle
+    // moved to.
+    let before = h.chain.submits().len();
+    let r = refusal(h.call(Command::ResubmitSaved {
+        account: account0(),
+        artifact_hex: spent.artifact_hex,
+    }));
+    assert_eq!(r.kind, RefusalKind::Library);
+    assert!(r.text.contains("the chain is in sync"), "{}", r.text);
+    assert_eq!(h.chain.submits().len(), before, "nothing was sent");
+}
+
+/// The copy is sent only with the wallet open.
+#[test]
+fn a_saved_copy_is_refused_while_the_wallet_is_locked() {
+    let scratch = Scratch::new("resubmit-locked");
+    let (mut h, _) = funded(&scratch);
+    assert!(matches!(h.call(Command::Lock), Reply::Locked));
+    assert_eq!(h.wait_locked(Duration::from_secs(5)), LockReason::Asked);
+    let r = refusal(h.call(Command::ResubmitSaved {
+        account: account0(),
+        artifact_hex: "00".to_owned(),
+    }));
+    assert_eq!(r.kind, RefusalKind::NotUnlocked);
+    assert_eq!(h.chain.submits().len(), 0, "nothing was sent");
+}
+
+/// Text that is not hex is refused before the node is asked.
+#[test]
+fn a_saved_copy_that_is_not_hex_is_refused_before_the_node_is_asked() {
+    let scratch = Scratch::new("resubmit-not-hex");
+    let (mut h, _) = funded(&scratch);
+    let calls = h.chain.calls();
+    let r = refusal(h.call(Command::ResubmitSaved {
+        account: account0(),
+        artifact_hex: "xyz".to_owned(),
+    }));
+    assert_eq!(r.kind, RefusalKind::Library);
+    assert!(r.text.contains("not hex"), "{}", r.text);
+    assert_eq!(h.chain.calls(), calls, "the node was not asked");
+}
+
+/// A write the node does not take is reported in the library's words, and
+/// the write was attempted.
+#[test]
+fn a_saved_copy_the_node_does_not_take_is_refused_in_the_library_words() {
+    let scratch = Scratch::new("resubmit-write-refused");
+    let (mut h, _, spent, _) = reverted_settle(&scratch, 0);
+    h.chain.refuse_submits(true);
+    let before = h.chain.submits().len();
+    let r = refusal(h.call(Command::ResubmitSaved {
+        account: account0(),
+        artifact_hex: spent.artifact_hex.clone(),
+    }));
+    assert_eq!(r.kind, RefusalKind::Library);
+    assert!(!r.text.is_empty(), "the library's words are shown");
+    assert_eq!(
+        h.chain.submits().len(),
+        before + 1,
+        "the write was attempted"
+    );
 }
 
 // ------------------------------------------------- teardown, failed reopen

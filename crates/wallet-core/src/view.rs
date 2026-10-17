@@ -141,6 +141,12 @@ pub enum AccountState {
         kind: DivergenceKind,
         report: String,
         advance_to: Option<u32>,
+        /// Whether the chain holds the account one key behind, at the index
+        /// of a settle this store retained: the case that
+        /// [`crate::Command::ResubmitSaved`] serves. The library checks its
+        /// other conditions when the saved copy is sent
+        /// (`recon::resubmit_reverted_settle`).
+        reverted_settle: bool,
     },
     /// Nothing has asked a node about it: no node is chosen.
     NotReconciled,
@@ -176,6 +182,14 @@ impl AccountState {
             kind: DivergenceKind::of(d),
             report: d.to_string(),
             advance_to: d.advance_target().map(|i| i.get()),
+            reverted_settle: matches!(
+                d,
+                Divergence::IndexMismatch {
+                    found: ChainPosition::Behind { gap: 1, .. },
+                    reverted_settle: Some(_),
+                    ..
+                }
+            ),
         }
     }
 
@@ -803,6 +817,7 @@ mod tests {
             kind,
             report: "the library's report".to_owned(),
             advance_to: None,
+            reverted_settle: false,
         }
     }
 

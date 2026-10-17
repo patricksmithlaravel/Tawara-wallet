@@ -128,6 +128,20 @@ pub enum Command {
     Resign { spend: SpendRequest },
     /// Submit signed bytes saved earlier, as hex. Opens no store.
     SubmitArtifact { artifact_hex: String },
+    /// Send again a saved copy, as hex, of a settle the chain has reverted,
+    /// for an account the chain holds one key behind with the settle retained
+    /// (docs/DECISIONS.md D38 item 5, (b)). Needs the wallet open. The library
+    /// writes the bytes only when every check holds: their signed part hashes
+    /// to the retained digest, their signature recovers to the source key, the
+    /// balance at the source is the one the settle was built against, and a
+    /// non-zero block-to-live has not been reached. Nothing is signed and no
+    /// key index moves. The account is read again after the write, so its row
+    /// moves when the copy lands. After a refusal the caller reads the account,
+    /// as it does after a sign the library refused.
+    ResubmitSaved {
+        account: AccountId,
+        artifact_hex: String,
+    },
 
     /// Reconcile one account now and report, whatever its state. `scan_to`
     /// sets how far the search for where the chain holds it goes (key
