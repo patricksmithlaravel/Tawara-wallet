@@ -3787,3 +3787,115 @@ it (PLAN 4.1, D32 item 6).
 docs/SCREENS.md's S7 row changes with the work. OS libraries:
 Security.framework and LocalAuthentication, on iOS, linked by
 Tawara-mobile.
+
+**As built (2026-10-17).** The application side is built in this
+repository, and its tests drive it with a fake shell. The Keychain side is
+not in this change: it is in a Tawara-mobile pull request. Until that pull
+request is merged and its pin moves, no phone keeps a password or offers
+the check. Tawara-mobile's `Host` literals do not build against this change
+until that pull request sets the four fields.
+
+The `Host` (`crates/app/src/host.rs`) gains four optional fields, each
+`None` where a shell has none: `device_check`, which gives the check a shell
+offers (`DeviceCheck`: `FaceId`, `TouchId` or `Passcode`); `keep_password`,
+which takes the store identifier and the password as text and keeps them;
+`release_password`, which takes the identifier and the reason, "unlock
+Tawara", and answers once with a `Released` (`Password`, `Declined`,
+`Missing` or `Failed`); and `forget_password`, which deletes what is kept.
+A `Device` is built only where all four are set and a check is offered. The
+answer and `Released` print no text under `Debug`.
+
+The identifier (`crates/wallet-core/src/store_identifier.rs`) is 32 random
+bytes in `store-id`, in the application's folder beside `preferences`. It is
+drawn from the operating system's generator the first time a password is
+kept, and written through `store-id.new` and renamed over the file. On Unix
+the file is mode `0600`. A file that is not 32 bytes long is no identifier.
+The identifier is not secret: it names no password and opens nothing. The
+Keychain item is labelled with it (D45 item 4).
+
+The setting is `device-unlock = off` or `on` in `preferences`. `Unoffered`,
+the default, is not written, so a shell that never offers the check leaves
+the file as it was. The setting is saved when it changes, so the offer is
+made once, across restarts.
+
+The offer (`crates/app/src/app.rs`, `make_offer` and `answer_offer`;
+`crates/app/src/screens/wallet.rs`, `device_offer`) is made once, after a
+password unlock has opened the store, and only where the setting is
+`Unoffered` and a shell offers the check. The setting becomes `Off` as the
+offer is shown, so the offer is not made again even if the application stops
+before an answer. "Turn on" keeps the password under the identifier and turns
+the unlock on; "Not now" keeps nothing. The offer stands under the header of
+every wallet page until it is answered or the store locks, and what the
+device unlock last found stands under it. The copy of the password that the
+offer would keep is taken when the unlock is sent, and only where an offer is
+possible. It is dropped at the answer, when the unlock is refused, and by
+`release_device` on a lock, a move to the background or a stop.
+
+The Settings row (`crates/app/src/screens/wallet/settings.rs`,
+`device_unlock`) is in the keystore card, after Auto-lock, and only where a
+shell offers the check. On: the note, and "Turn off", which deletes the
+password first and sets the unlock to `Off` only once the deletion has
+worked. If the deletion fails, the unlock stays on, and the page says why.
+Off: "Turn on", which is left off while the offer is on the wallet's page.
+It sets the setting back to `Unoffered`, so that the next unlock with the
+password offers again, and keeps nothing. Unoffered: a note only.
+
+On S7 (`crates/app/src/screens/first_run.rs`) the button sits above the
+password field where the unlock is on. The check is asked on
+`LifecycleEvent::Foreground`, which iced reports at a cold launch as well as
+on each return. An `Active` event asks nothing, since a Face ID prompt makes
+the application inactive. The button asks each time it is pressed. A
+password the check releases unlocks the store as a typed one does, and the
+form stays. A check that finds no password for this store, or no identifier
+to look for, deletes what is kept and turns the unlock off, and the form says
+why. A password the store refuses as wrong is deleted in the same way. Any
+other refusal, such as a store in use, keeps the password. A declined check
+changes nothing. A check that fails says why and keeps the unlock on. An
+answer for an ask that a lock, a move to the background or a stop has dropped
+is ignored, and the password it carries is wiped.
+
+The wording awaits the owner's approval (item 6). All of it is provisional:
+the S7 button, "Unlock with Face ID", "Unlock with Touch ID" or "Unlock with
+passcode"; the system's reason, "unlock Tawara"; the offer's title, "Unlock
+with Face ID next time?", its body, which begins "Keep this wallet's password
+on this phone" and says that anyone who knows the phone's passcode can open
+the wallet, and its buttons "Turn on" and "Not now"; the Settings row's
+label, "Unlock with Face ID", its three notes, and its buttons "Turn off" and
+"Turn on"; the six notes beside `DEVICE_MISSING_NOTE` in
+`crates/app/src/app.rs`; and the usage string `NSFaceIDUsageDescription`,
+which the Tawara-mobile pull request sets. The full texts are in
+docs/SCREENS.md.
+
+Choices outside D45's text, for the owner to confirm:
+
+1. "Turn on" in Settings sets the setting back to `Unoffered` and keeps no
+   password. The offer then comes at the next unlock with the password, and
+   nothing is kept until that unlock and its answer. Keeping the password at
+   once would need the password typed in Settings, and the worker has no
+   command that only checks a password.
+2. The check is asked at a cold launch as well as on a return to the
+   foreground.
+3. The offer and the note stand on every wallet page, not on one.
+4. The S7 button is secondary, so the password's Unlock stays the primary
+   action.
+5. The setting is kept in `preferences`, so that the offer is made once
+   across restarts.
+6. A failed deletion keeps the unlock on, so that it can be tried again.
+7. `zeroize` is a new dependency of `tawara-app`: one line in `Cargo.lock`
+   and no new package.
+8. `keep_password` takes a `&str`, borrowed from a `Zeroizing` copy for the
+   call only. The shell receives text, which Tawara cannot zero on its side.
+
+Not verified: no device has run any of it. The Face ID, Touch ID and
+passcode prompts, the timing of `Foreground`, and whether a Keychain item
+survives an uninstall are checks V19 (D45 items 5 and 6). After an uninstall
+the setting and `store-id` go with the folder, so a reinstalled application
+asks nothing, and only a keep reaches an item left by an earlier install
+(G28). Two things are open. A failed write of the
+preferences is not reported for this setting, since `save_prefs` ignores the
+error, so the file keeps the old value until the next write. And
+`PasswordForm` and `UnlockForm` derive `Debug` over plain `String`s, which
+G5 in docs/THREAT_MODEL.md already records with the other forms.
+
+The records are docs/THREAT_MODEL.md T43, G28, V19 and 5.4 item 16, and
+docs/SCREENS.md S7, W11, the wallet's offer and the texts table.
