@@ -5731,7 +5731,11 @@ mod tests {
             "under its field"
         );
         assert!(wallet_page(&app).error.is_none());
-        assert!(operations(task).is_empty(), "the page does not move");
+        assert_eq!(
+            operations(task).len(),
+            1,
+            "the first refusal is brought into view"
+        );
 
         // Typed again, it is checked again, and Continue then shows the amounts.
         wallet(&mut app, WalletMsg::DestinationTo(1, a_destination()));
@@ -5759,6 +5763,72 @@ mod tests {
         );
         assert!(refusals_of(&app).is_empty());
         assert!(operations(task).is_empty());
+    }
+
+    #[test]
+    fn continue_pressed_at_the_foot_brings_the_first_refusal_into_view() {
+        // Three destinations, the first refused, and the page scrolled to its
+        // foot, where Continue is pressed. The refusal under the first field is
+        // brought into view, not left above it (docs/DECISIONS.md D40 item 4).
+        // A reference the node refuses is brought into view the same way.
+        let not = "not-a-destination";
+        let why_not = tawara_wallet_core::spend::parse_destination(not, 1)
+            .expect_err("it is not a destination")
+            .to_string();
+        let why_reference = tawara_wallet_core::spend::parse_reference("abc", 1)
+            .expect_err("the node refuses it")
+            .to_string();
+        let reference = DestinationRow {
+            to: a_destination(),
+            amount: String::new(),
+            reference: "abc".to_owned(),
+        };
+        let cases = [
+            (
+                vec![
+                    to_row(not),
+                    to_row(&a_destination()),
+                    to_row(&a_destination()),
+                ],
+                why_not,
+            ),
+            (
+                vec![
+                    reference,
+                    to_row(&a_destination()),
+                    to_row(&a_destination()),
+                ],
+                why_reference,
+            ),
+        ];
+        for (rows, why) in cases {
+            let form = SpendForm {
+                rows,
+                ..SpendForm::default()
+            };
+            let mut app = on_phone(send_page(SendStage::To(Default::default()), form));
+            app.model.width = 390.0;
+            let mut at_foot = Driver::new(crate::screens::view(&app.model), (390, 844));
+            at_foot.operate(Box::new(snap_to(
+                crate::screens::page_id(),
+                RelativeOffset::END.into(),
+            )));
+            let cache = at_foot.into_cache();
+
+            let task = app.update(WalletMsg::Continue.into());
+            let mut drawn = Driver::with_cache(crate::screens::view(&app.model), (390, 844), cache);
+            assert!(
+                !shown_on_page(&mut drawn, &why),
+                "the refusal is above the foot's view: {why}"
+            );
+            for operation in operations(task) {
+                drawn.operate(operation);
+            }
+            assert!(
+                shown_on_page(&mut drawn, &why),
+                "the refusal is in view once Continue is pressed: {why}"
+            );
+        }
     }
 
     #[test]
@@ -5846,7 +5916,11 @@ mod tests {
             [(0, RefusedField::Reference)],
             "the address is right, so only the reference is refused"
         );
-        assert!(operations(task).is_empty(), "the page does not move");
+        assert_eq!(
+            operations(task).len(),
+            1,
+            "the refusal is brought into view"
+        );
 
         // Typed again, it is checked again, and Continue then shows the amounts.
         wallet(&mut app, WalletMsg::Reference(0, "AB-00-EF".to_owned()));
@@ -6375,7 +6449,23 @@ mod tests {
             Some("the balance moved"),
             "beside Review spend"
         );
-        assert_eq!(operations(task).len(), 1, "the amounts start at their top");
+        // The page opens at its end, where the refusal is drawn beside "Review
+        // spend": at its top the refusal is a screen or more below the view.
+        app.model.width = 390.0;
+        {
+            let mut drawn = Driver::new(crate::screens::view(&app.model), (390, 844));
+            assert!(
+                !shown_on_page(&mut drawn, "the balance moved"),
+                "at its top, the refusal is out of view"
+            );
+            for operation in operations(task) {
+                drawn.operate(operation);
+            }
+            assert!(
+                shown_on_page(&mut drawn, "the balance moved"),
+                "at its end, the refusal is in view"
+            );
+        }
 
         // The worker dropped the plan, so leaving the amounts gives up nothing.
         wallet(&mut app, WalletMsg::Open(To::Dashboard));
@@ -6383,6 +6473,55 @@ mod tests {
             waiting_for(&app, |p| matches!(p, Purpose::DiscardPlan)),
             0,
             "no plan is left to forget"
+        );
+    }
+
+    #[test]
+    fn review_spend_with_an_amount_and_no_address_goes_back_to_that_destination() {
+        // Page 2 takes an amount for a destination that page 1 passed, as it had
+        // nothing typed in it then. "Review spend" asks for its address under
+        // its own field on page 1, and asks the worker for no plan
+        // (docs/DECISIONS.md D40 item 7 (b)).
+        let scratch = Scratch::new("review-no-address");
+        let form = SpendForm {
+            rows: vec![
+                DestinationRow {
+                    to: a_destination(),
+                    amount: "1".to_owned(),
+                    reference: String::new(),
+                },
+                DestinationRow {
+                    to: String::new(),
+                    amount: "5".to_owned(),
+                    reference: String::new(),
+                },
+            ],
+            ..SpendForm::default()
+        };
+        let (mut app, _events) = on_phone_with_worker(&scratch, send_page(SendStage::Amount, form));
+        wallet(&mut app, WalletMsg::Review);
+        assert_eq!(
+            waiting_for(&app, |p| matches!(p, Purpose::PlanSend)),
+            0,
+            "no plan is asked for"
+        );
+        assert_eq!(
+            refusals_of(&app),
+            refusals_at(&[(
+                (1, RefusedField::Address),
+                "Give this destination's address."
+            )])
+        );
+        assert!(wallet_page(&app).error.is_none());
+
+        // Given its address, the spend is planned from page 2 as before.
+        wallet(&mut app, WalletMsg::DestinationTo(1, a_destination()));
+        wallet(&mut app, WalletMsg::Continue);
+        wallet(&mut app, WalletMsg::Review);
+        assert_eq!(
+            waiting_for(&app, |p| matches!(p, Purpose::PlanSend)),
+            1,
+            "the worker is asked to plan"
         );
     }
 
@@ -6490,18 +6629,35 @@ mod tests {
         }
     }
 
-    /// The window operations `task` asks the runtime to run, in order.
+    /// The window operations `task` asks the runtime to run, in order. A task
+    /// that `operate` built keeps its stream open for the output of the
+    /// operation, which a test never runs, so the stream is read only as far as
+    /// it is ready: a task that ends on its own gives all of its operations.
     fn operations(task: Task<Message>) -> Vec<Box<dyn Operation>> {
-        let Some(stream) = iced_runtime::task::into_stream(task) else {
+        let Some(mut stream) = iced_runtime::task::into_stream(task) else {
             return Vec::new();
         };
-        iced::futures::executor::block_on(stream.collect::<Vec<_>>())
-            .into_iter()
-            .filter_map(|action| match action {
-                Action::Widget(operation) => Some(operation),
-                _ => None,
-            })
-            .collect()
+        let mut found = Vec::new();
+        while let Some(Some(action)) = iced::futures::future::FutureExt::now_or_never(stream.next())
+        {
+            if let Action::Widget(operation) = action {
+                found.push(operation);
+            }
+        }
+        found
+    }
+
+    /// Whether the text `what` is drawn within the window of the page as
+    /// `drawn` scrolls it: its top and its bottom both between the window's.
+    fn shown_on_page(drawn: &mut Driver<'_, Message>, what: &str) -> bool {
+        let (window, scroll) = drawn
+            .scroll_of(&crate::screens::page_id())
+            .expect("the page is drawn");
+        let text = drawn
+            .text_bounds(what)
+            .unwrap_or_else(|| panic!("{what:?} is not drawn"));
+        let top = text.y - scroll.y;
+        top >= window.y && top + text.height <= window.y + window.height
     }
 
     #[test]

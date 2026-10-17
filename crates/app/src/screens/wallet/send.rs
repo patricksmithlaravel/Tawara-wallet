@@ -229,7 +229,9 @@ fn to_page<'a>(
         ]
         .spacing(sp::S12)
         .align_y(Alignment::Center);
-        if spendable.len() > 1 {
+        // Another account that can spend is the choice the callout below asks
+        // for, when the one chosen cannot (docs/DECISIONS.md D40 item 7 (d)).
+        if spendable.iter().any(|other| *other != id) {
             line = line.push(ui::button_with(
                 "Change",
                 theme::Button::Secondary,
@@ -259,7 +261,7 @@ fn to_page<'a>(
             list = list.push(ui::divider());
         }
         let mut to = entry(&r.to, "Base58 destination", true).id(crate::screens::destination_id(i));
-        let mut reference = entry(&r.reference, "none", true);
+        let mut reference = entry(&r.reference, "none", true).id(crate::screens::reference_id(i));
         if idle {
             to = to.on_input(move |v| WalletMsg::DestinationTo(i, v).into());
             reference = reference.on_input(move |v| WalletMsg::Reference(i, v).into());
@@ -2086,6 +2088,43 @@ mod tests {
         let messages = press(&open, at(&drawn, &name(accounts()[1])));
         assert!(
             matches!(messages.as_slice(), [Message::Wallet(WalletMsg::From(id))] if *id == accounts()[1]),
+            "{messages:?}"
+        );
+    }
+
+    #[test]
+    fn change_is_drawn_when_the_account_chosen_cannot_spend_and_another_can() {
+        // The account asked for cannot spend now, and the sample's first can.
+        // The callout says to choose another account, so "Change" is drawn to
+        // choose it, though it is the only other account that can spend
+        // (docs/DECISIONS.md D40 item 7 (d)).
+        let model = phone_at(
+            Page::Send(SendPage {
+                from: Some(accounts()[1]),
+                form: typed(),
+                stage: SendStage::To(BTreeMap::new()),
+            }),
+            NARROWEST,
+        );
+        let shut = drawn_on(&model);
+        assert!(has(&shut, "Change"), "{shut:?}");
+        assert!(
+            !has(&shut, &name(accounts()[0])),
+            "the list is shut: {shut:?}"
+        );
+
+        let spot = at(&shut, "Change");
+        let mut driver = Driver::new(screens::view(&model), (360, 844));
+        let (messages, _, _) = driver.send(&[
+            mouse_move(spot.center_x(), spot.center_y()),
+            mouse_press(),
+            mouse_release(),
+        ]);
+        assert!(
+            matches!(
+                messages.as_slice(),
+                [Message::Wallet(WalletMsg::ChooseAccount(true))]
+            ),
             "{messages:?}"
         );
     }

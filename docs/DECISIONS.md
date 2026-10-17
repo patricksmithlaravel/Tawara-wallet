@@ -3477,10 +3477,15 @@ one long scroll from W4 to W6 today. The owner asked for a series of pages.
 7. **Readings, for the owner's approval.** (a) A refused signing on a phone
    goes back to page 2, not to page 1: the worker has dropped the plan, and
    "Review spend" is on page 2, as the desktop's refused signing goes back to
-   the form that holds it. (b) "Give this destination's address." is new
-   wording, for a destination with an amount and no address. Any other
-   address or reference the library refuses is shown under its field, in
-   the library's words, with the destination's number. (c) The key callout
+   the form that holds it. The page opens at its end, where the refusal is
+   drawn beside "Review spend"; the desktop's form opens at its top, as
+   before. (b) "Give this destination's address." is new wording, for a
+   destination with an amount and no address. "Review spend" finds such a
+   destination too, since "Continue" passed it with nothing typed in it, and
+   page 2 has no field for an address: it goes back to page 1, with the
+   refusal under the field. Any other address or reference the library refuses
+   is shown under its field, in the library's words, with the destination's
+   number. (c) The key callout
    and the three steps are on page 4, with "Sign & submit", and not on the
    review. The review keeps the library's page, the destinations and the
    figures, so the key the spend signs with is shown where the person presses
@@ -3489,17 +3494,25 @@ one long scroll from W4 to W6 today. The owner asked for a series of pages.
    once the chain has moved.", is new wording in W6's words. (d) "Change" opens,
    under the From line on page 1, the accounts that can spend, and choosing one
    shuts the list. D40 names no way to choose an account, so the open list is a
-   page state (`WalletPage::choosing`). With one account that can spend there
-   is no "Change". (e) Page 1 draws one block for each destination, with its
-   Paste, its reference and its Remove, as the compact W4 draws them, and not
-   one destination at a time: a page with one destination on it would need a
+   page state (`WalletPage::choosing`). "Change" is drawn when an account other
+   than the one chosen can spend. Item 1's "more than one" gives the same answer
+   while the account chosen can spend. It differs when the account chosen
+   cannot spend now: the callout under the From line then asks for another
+   account, so "Change" is drawn for the other account that can, as
+   `phone-w4-send-cannot-spend` shows. (e) Page 1 draws one block for each
+   destination, with its Paste, its reference and its Remove, as the compact
+   W4 draws them, and not one destination at a time: a page with one destination on it would need a
    shown row and a way to move between rows, which D40 does not give. (f) On
    a phone a refusal and the busy card are drawn beneath the button that caused
    them; the desktop keeps them at the top of the page. (g) Page 3 has no "Edit
    the spend": the Back at the top of the page keeps what was typed and gives
    the plan up, as Edit does. (h) The labels "1 of 4" to "4 of 4", "Amounts",
    "Destinations", "Destination n", and the subtitles of pages 2 and 4 are new
-   wording.
+   wording. (i) When "Continue" refuses, or "Review spend" sends the person back
+   to page 1 for an address (b), page 1 scrolls to the first field refused, so
+   that the refusal under it is in view. Item 4 puts each refusal under its
+   field, but a page that stayed where it was could leave the first refusal
+   off the screen.
 
 The desktop's W4 to W6, `narrow-w4-send.png` included, are unchanged. The
 threat model's Locking row (PR #21) and docs/SCREENS.md's Back rule (lines
@@ -3552,8 +3565,9 @@ Judgment calls that D40 does not settle, for the owner to note:
 - While the worker answers a command the page sent, Back does nothing, and
   Android's Back on pages 2 to 4 is used up without reaching `host::back`.
 - Duplicates, amounts, the fee and the block-to-live are refused beside "Review
-  spend", when it is pressed. "Continue" checks only the addresses and the
-  references.
+  spend", when it is pressed. "Continue" checks the addresses and the
+  references, and "Review spend" checks the addresses of the destinations given
+  an amount (item 7 (b)).
 - A Paste read that comes back once the person is on page 2 is dropped, since
   page 2 has no field to paste into (`form_of`).
 

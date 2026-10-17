@@ -780,6 +780,25 @@ fn destination_refusals(
     Ok(refused)
 }
 
+/// Puts a phone's page 1 of Send in `s`, with `refused` on it, and returns the
+/// task that brings the first refusal into view. "Continue" and "Review spend"
+/// are pressed at the foot of a page that scrolls, and a refusal under a field
+/// above the view would say nothing of why (docs/DECISIONS.md D40 item 4).
+fn to_destinations(
+    s: &mut SendPage,
+    refused: BTreeMap<(usize, RefusedField), String>,
+) -> Task<Message> {
+    let first = refused.keys().next().map(|&(i, field)| match field {
+        RefusedField::Address => crate::screens::destination_id(i),
+        RefusedField::Reference => crate::screens::reference_id(i),
+    });
+    s.stage = SendStage::To(refused);
+    match first {
+        Some(id) => iced::advanced::widget::operate(crate::screens::reveal_field(id)).discard(),
+        None => Task::none(),
+    }
+}
+
 /// The stage a spend's flow starts in: W4 on a desktop, and page 1 of 4 on a
 /// phone.
 fn first_stage(phone: bool) -> SendStage {
@@ -1694,6 +1713,7 @@ impl App {
             }
             WalletMsg::Review => {
                 let can: Vec<AccountId> = spendable(self.model.wallet.as_ref()).collect();
+                let phone = self.model.phone();
                 let Some(WalletPage {
                     page:
                         Page::Send(SendPage {
@@ -1708,16 +1728,40 @@ impl App {
                 };
                 let from = *from;
                 let request = spend_request(from, form);
+                // On a phone, a destination given an amount on page 2 may have
+                // no address: "Continue" passed it, as it had nothing typed in
+                // it then. The address is checked here, and page 1 asks for it
+                // under its field, as "Continue" does (docs/DECISIONS.md D40
+                // item 7 (b)).
+                let addresses = if phone {
+                    destination_refusals(form)
+                } else {
+                    Ok(BTreeMap::new())
+                };
                 if !can.contains(&from) {
                     self.page_error(Some(CANNOT_SPEND.to_owned()));
                     return Task::none();
                 }
-                match request {
-                    Ok(spend) => {
-                        self.page_error(None);
-                        self.send(Command::PlanSend { spend }, Purpose::PlanSend);
+                match addresses {
+                    Ok(refused) if refused.is_empty() => match request {
+                        Ok(spend) => {
+                            self.page_error(None);
+                            self.send(Command::PlanSend { spend }, Purpose::PlanSend);
+                        }
+                        Err(e) => self.page_error(Some(e)),
+                    },
+                    Ok(refused) => {
+                        if let Some(WalletPage {
+                            page: Page::Send(s),
+                            error,
+                            ..
+                        }) = self.wallet_page()
+                        {
+                            *error = None;
+                            return to_destinations(s, refused);
+                        }
                     }
-                    Err(e) => self.page_error(Some(e)),
+                    Err(why) => self.page_error(Some(why)),
                 }
             }
             WalletMsg::Edit => {
@@ -1776,7 +1820,7 @@ impl App {
                     }
                     Ok(refused) => {
                         *error = None;
-                        s.stage = SendStage::To(refused);
+                        return to_destinations(s, refused);
                     }
                     Err(why) => {
                         *error = Some(why);
@@ -2534,11 +2578,19 @@ impl App {
                 {
                     s.stage = composing_stage(phone);
                     *error = Some(r.text);
-                    // The form starts at the top of its page, where why is
-                    // shown. Drawn in the review's place, it would otherwise
+                    // Why is shown beside the button that caused it. On a
+                    // desktop, the form starts at its top, where a refusal is
+                    // drawn: drawn in the review's place, it would otherwise
                     // open at the review's scroll, near "Sign & submit", with
-                    // the refusal out of view above it (docs/SCREENS.md W4).
-                    return crate::screens::page_top();
+                    // the refusal out of view above it (docs/SCREENS.md W4). On
+                    // a phone it is beside "Review spend" at the foot of page
+                    // 2, so that page opens at its end (docs/DECISIONS.md D40
+                    // item 7 (a)).
+                    return if phone {
+                        crate::screens::page_end()
+                    } else {
+                        crate::screens::page_top()
+                    };
                 }
             }
             (Purpose::Settle(_), Reply::Settled { text, view }) => {
