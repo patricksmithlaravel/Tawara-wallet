@@ -3369,9 +3369,9 @@ each account is shown as a short line that opens into a larger card.
    `short()` builds them, and the balance on the right. An account that is
    not reconciled gets a state dot and word on a second line, so a paused
    or outstanding account is never hidden. Rows act on release (D32 item
-   10 (d)). **Open:** that the item's "TAG" means this short name, since
-   the desktop's column is headed "Address (tag)" and Settings shows
-   shortened hex tags.
+   10 (d)). **Approved (owner, 2026-10-16):** that the item's "TAG" means
+   this short name, since the desktop's column is headed "Address (tag)" and
+   Settings shows shortened hex tags.
 4. **Rows expand in place (recommended).** A tap opens the row where it
    is, one at a time, and it closes when the page is left. The card holds
    the full destination with Copy, the next key and its kind, the state,
@@ -3390,7 +3390,7 @@ approving the phone W1 images (D32 item 10 (c)), which for the first time
 draw the Accounts card. docs/SCREENS.md's W1 rows (lines 59 and 131) and
 E1's compact row change with the work. OS libraries: none added.
 
-**As built (proposed, for the owner's confirmation).**
+**As built (proposed; approved in part by the owner, 2026-10-16, as marked).**
 - The code is the phone's branch of `view`, with `phone_accounts`,
   `account_card` and the three-row cut in `recent`, all in
   `crates/app/src/screens/wallet/dashboard.rs`; `WalletPage::expanded` in
@@ -3399,18 +3399,21 @@ E1's compact row change with the work. OS libraries: none added.
   phone keep their layouts, and `stacked` serves that window (item 5).
 - The images are the six `design/screenshots/phone-w1-wallet*.png` that change,
   and `phone-w1-wallet-account-open.png`, which is new and drawn by
-  `crates/app/examples/screenshots.rs`. No desktop image changes. They await the
-  owner's approval (D32 item 10 (c)), which approves this decision.
+  `crates/app/examples/screenshots.rs`. No desktop image changes. Approved
+  (owner, 2026-10-16) under D32 item 10 (c), and that approval approves this
+  decision.
 - "TAG" is read as the short name: `name()` in
   `crates/app/src/screens/wallet.rs` gives the destination's first and last six
   characters, or those of its hex form where no destination is known. The row
-  shows no hex tag. The owner confirms this reading (item 3).
+  shows no hex tag. Approved (owner, 2026-10-16), so no longer open (item 3).
 - Points the text leaves open: "View activity" sits in Recent's header,
-  where "View all" sits on the desktop; a row opens while the wallet is busy,
-  since that only changes the view, with the card's buttons disabled then, as
-  on W7; a tap on the open row closes it (item 4 says only that a row closes
-  when the page is left); and a spend still settling counts among the phone's
-  three Recent rows, which item 1 leaves open.
+  where "View all" sits on the desktop; and a row opens while the wallet is
+  busy, since that only changes the view, with the card's buttons disabled
+  then, as on W7. Two readings are approved (owner, 2026-10-16), so they are
+  no longer open: a tap on the open row closes it (item 4 says only that a row
+  closes when the page is left); and pending spends are listed first and capped
+  at three on the phone, so a spend still settling counts among the phone's
+  three Recent rows (item 1 left that open).
 - The W1 rows of docs/SCREENS.md are at lines 61 (desktop) and 136 (compact).
   D39's text gave 59 and 131, which were already stale at a0fbb39, where the
   rows were at 61 and 134.
