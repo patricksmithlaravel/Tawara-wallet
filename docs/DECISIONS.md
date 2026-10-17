@@ -3820,7 +3820,9 @@ or mirrored.
 ### D45. Unlock with Face ID, Touch ID or the passcode, on iOS
 
 **proposed; items 1 to 3 decided by the owner on 2026-10-13; the details
-recommended.** Item 9 asks that the keystore can be opened with the
+recommended. The application side's six choices that the owner was asked to
+confirm are approved (owner, 2026-10-17), as marked under its As built note;
+the wording stays provisional (item 6).** Item 9 asks that the keystore can be opened with the
 system's credentials or biometrics. Today the store opens only with its
 password, typed on S7, and on a phone every move to the background locks
 it (PLAN 4.1, D32 item 6).
@@ -3945,7 +3947,8 @@ changes nothing. A check that fails says why and keeps the unlock on. An
 answer for an ask that a lock, a move to the background or a stop has dropped
 is ignored, and the password it carries is wiped.
 
-The wording awaits the owner's approval (item 6). All of it is provisional:
+The wording awaits the owner's approval (item 6), and the approval of
+2026-10-17 does not cover it. All of it is provisional:
 the S7 button, "Unlock with Face ID", "Unlock with Touch ID" or "Unlock with
 passcode"; the system's reason, "unlock Tawara"; the offer's title, "Unlock
 with Face ID next time?", its body, which begins "Keep this wallet's password
@@ -3957,23 +3960,28 @@ label, "Unlock with Face ID", its three notes, and its buttons "Turn off" and
 which a Tawara-mobile pull request, not yet opened, will set. The full texts
 are in docs/SCREENS.md.
 
-Choices outside D45's text, for the owner to confirm:
+Choices outside D45's text. Choices 1, 2, 3, 4, 6 and 7 are approved
+(owner, 2026-10-17); choices 5 and 8 are recorded as built:
 
 1. "Turn on" in Settings sets the setting back to `Unoffered` and keeps no
    password. The offer then comes at the next unlock with the password, and
    nothing is kept until that unlock and its answer. Keeping the password at
    once would need the password typed in Settings, and the worker has no
-   command that only checks a password.
+   command that only checks a password. Approved (owner, 2026-10-17): "Turn
+   on" re-arms the offer, and the password is kept after the next password
+   unlock.
 2. The check is asked at a cold launch as well as on a return to the
-   foreground.
-3. The offer and the note stand on every wallet page, not on one.
+   foreground. Approved (owner, 2026-10-17).
+3. The offer and the note stand on every wallet page, not on one, until the
+   offer is answered or the store locks. Approved (owner, 2026-10-17).
 4. The S7 button is secondary, so the password's Unlock stays the primary
-   action.
+   action. Approved (owner, 2026-10-17).
 5. The setting is kept in `preferences`, so that the offer is made once
    across restarts.
 6. A failed deletion keeps the unlock on, so that it can be tried again.
+   Approved (owner, 2026-10-17).
 7. `zeroize` is a new dependency of `tawara-app`: one line in `Cargo.lock`
-   and no new package.
+   and no new package. Approved (owner, 2026-10-17).
 8. `keep_password` takes a `&str`, borrowed from a `Zeroizing` copy for the
    call only. The shell receives text, which Tawara cannot zero on its side.
 
