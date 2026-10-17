@@ -44,17 +44,21 @@ const ICED_GIT: &str = "https://github.com/patricksmithlaravel/iced_mobile";
 /// The features the `iced` line in the workspace manifest names, in any order.
 /// D27 added `canvas` and `advanced` to the list the workspace line writes out,
 /// beyond iced 0.14.0's own defaults. D41 added `qr_code`, for the code on
-/// Receive, which the owner approved on 2026-10-13. The owner's decision of
-/// 2026-10-17 removed `linux-theme-detection`, which the fork's
-/// `v0.14.1-mobile.4` drops with mundy (D32 item 9 (a)). Each feature turns on
-/// code, crates or a platform backend in every build, so a change to this list
-/// needs a decision, recorded in docs/DECISIONS.md first (D32 item 9).
-const ICED_FEATURES: [&str; 10] = [
+/// Receive, which the owner approved on 2026-10-13. D42 added
+/// `image-without-codecs`, for the Android scanner's preview, in place of the
+/// `image` the owner approved on 2026-10-16, which the codecs keep out (D42 item
+/// 5). The owner's decision of 2026-10-17 removed `linux-theme-detection`,
+/// which the fork's `v0.14.1-mobile.4` drops with mundy (D32 item 9 (a)). Each
+/// feature turns on code, crates or a platform backend in every build, so a
+/// change to this list needs a decision, recorded in docs/DECISIONS.md first
+/// (D32 item 9).
+const ICED_FEATURES: [&str; 11] = [
     "wgpu",
     "tiny-skia",
     "canvas",
     "advanced",
     "qr_code",
+    "image-without-codecs",
     "crisp",
     "web-colors",
     "thread-pool",
