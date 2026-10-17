@@ -278,6 +278,15 @@ with its source; what checks that protection; what is left; and the status.
   recreate the Activity (D32 item 9 (i); `AndroidManifest.xml:39-44`). Target
   API 36 is PR B, due before 2026-11-01 if the Play extension is needed
   (D32 items 9 (i) and 10 (k)).
+- **Camera (D42; not built, G29).** The scanner's permission is
+  `android.permission.CAMERA`, with `android.hardware.camera.any` not required,
+  so that the app installs on a phone with no camera (D42 item 5). The
+  permission is asked through JNI and then polled, since a NativeActivity is not
+  expected to receive the answer; that is an inference, to be checked on a
+  device (D42 item 3). The camera's frames reach the application through
+  `host::preview_frame`. The camera stops when the scan ends, on a lock and on a
+  move to the background (T45). Nothing of this is in the shell yet, and nothing
+  has run on a device (G29, V20).
 - **Verified** in Tawara-mobile CI on an x86_64 API 35 emulator: 14 checks,
   passed on 587329c (the manifest's attributes, `SECURE` in `dumpsys`,
   `no_backup` mode, the lock's log lines on Home and Back). Nothing on a
@@ -310,6 +319,13 @@ with its source; what checks that protection; what is left; and the status.
 - **Device unlock (D45).** The Keychain side will be in a Tawara-mobile pull
   request, not yet opened (its number goes here when it is). Until it is in the
   shell's `main`, no phone keeps a password or offers the check (T43).
+- **Camera (D42; not built, G29).** The scanner is UIKit's own screen, presented
+  as the share sheet is, with `AVCaptureMetadataOutput`, which decodes the code
+  (D42 item 2). Its usage text is `NSCameraUsageDescription`, which awaits the
+  owner's approval (D42 item 5). The camera stops when the scan ends, and on a
+  move to the background, where the shell stops it on its own thread (T45).
+  Nothing of this is in the shell yet, and nothing has run on a device (G29,
+  V20).
 - **Verified** in Tawara-mobile CI on the simulator: 18 checks, passed on
   587329c (protection call returned success, backup attribute, folder mode
   and access list, cover added, key window in a scene, lock on background,
@@ -434,17 +450,21 @@ bundled roots (owner, 2026-10-04). Not yet accepted, each named in section 3:
     shared (D45 items 2 and 5). The offer says that anyone who knows the
     passcode can open the wallet, and the unlock is off until the person
     accepts it.
+17. T44: a code printed or placed over another one (A11) can give a valid
+    destination that is the wrong one, and it fills its row. Only the review
+    catches it, as it does a destination typed or pasted wrongly (T34). D42 item
+    4 names this residual, and the owner is asked to accept it, or to add a
+    control.
 
 ## 6. Before release
 
 PLAN section 7 makes this file a condition of phase 5. These must be closed,
 or accepted by the owner in writing in DECISIONS, before any release:
 
-1. **Every device check in 5.2**, V1 to V19, on the builds to be
-   released, with results recorded in DECISIONS. A failure of V1 (what
-   counts as one is the owner's to decide, T17), V2, V5, V6, or of the
-   footer link or Paste in V9, blocks the phone release it concerns until
-   fixed.
+1. **Every device check in 5.2**, V1 to V20, on the builds to be released, with
+   results recorded in DECISIONS. A failure of V1 (what counts as one is the
+   owner's to decide, T17), V2, V5, V6, or of the footer link or Paste in V9,
+   blocks the phone release it concerns until fixed.
 2. **G6** (the Android exit after `Destroy`) is answered by the
    2026-10-13 amendment to D32 item 9 (j). Its emulator check is repeated at
    the release's pin, and its device check is V4, in item 1.
