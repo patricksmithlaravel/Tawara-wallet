@@ -3618,8 +3618,10 @@ pressed (item 1; As built).
    the grid's space, with "Show the phrase" under it. The words come back when
    the button is pressed, and the warning goes with them. So the warned page
    is one frame, with no scroll, on a phone of 360 × 640, 360 × 800 and
-   390 × 844, and the checkbox and Continue keep their rules. The owner chose
-   this over keeping the scroll and over a one-line notice (As built).
+   390 × 844, and the checkbox and Continue keep their rules. A phone held
+   sideways draws the desktop's frame and takes the same warning in the
+   grid's space. The owner chose this over keeping the scroll and over a
+   one-line notice (As built).
 2. **The grid (recommended).** Three columns by eight rows on every size,
    read down the columns as the desktop's already is, at 14-pixel words.
    A phone counts as short below about 720 usable pixels. The tests measure
@@ -3675,10 +3677,14 @@ tall as the grid, with the checkbox and Continue below, so the warned page is
 one frame at 360 by 640, 360 by 800 and 390 by 844. The tests hold it to that
 (`the_warned_page_fits_one_frame_at_360_by_640_360_by_800_and_390_by_844`). A
 screenshot while the words wait changes nothing, and "Show the phrase" brings
-the words back. A window 600 pixels or wider draws the desktop's frame, which
-keeps its warning above the words as before; no shell reports a screenshot
-there. The phone image of the warned page is `phone-s4-phrase-photographed.png`,
-and its scrolled end, which the page no longer needs, is removed.
+the words back. A phone held sideways is 600 pixels or wider, so it draws the
+desktop's frame, and there the iOS shell's screenshot report puts the warning
+in the words' place too, as on a narrow phone, until "Show the phrase" is
+pressed (`a_screenshot_takes_the_words_place_on_a_phone_held_sideways`). The
+desktop, which no phone shell confines and no shell reports a screenshot for,
+keeps its warning above the words as before. The phone image of the warned
+page is `phone-s4-phrase-photographed.png`, and its scrolled end, which the
+page no longer needs, is removed.
 `phone-s4-phrase-captured.png` is the placeholder while the screen is recorded
 or mirrored.
 

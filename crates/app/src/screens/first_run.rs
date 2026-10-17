@@ -57,11 +57,7 @@ fn view_of<'a>(model: &'a Model, words: Vec<&'a str>) -> Element<'a, Message> {
             &words,
             p.written,
             PhraseFrame::Whole,
-            if p.photographed {
-                Shot::Above
-            } else {
-                Shot::Clear
-            },
+            wide_shot(model, p),
             model.captured,
         ),
         (None, Screen::Confirm(p)) => confirm(p, model.drawn()),
@@ -717,11 +713,13 @@ enum PhraseFrame {
 enum Shot {
     /// No warning: no screenshot was taken, or the words are drawn after one.
     Clear,
-    /// The desktop, which no shell reports a screenshot for: the warning comes
-    /// above the words, as it did before the phone's layout.
+    /// The desktop, which no phone shell confines and no shell reports a
+    /// screenshot for: the warning comes above the words, as it did before the
+    /// phone's layout.
     Above,
-    /// A phone: the words are hidden, and the warning takes their place, with
-    /// "Show the phrase", until the person presses it.
+    /// A phone, at any width and held sideways too: the words are hidden, and
+    /// the warning takes their place, with "Show the phrase", until the person
+    /// presses it.
     InPlace,
 }
 
@@ -747,13 +745,38 @@ fn words_hidden_by_shot(p: &PhraseState) -> bool {
     p.photographed && !p.shown
 }
 
+/// What the desktop's frame draws of a screenshot taken while its words were
+/// drawn (docs/DECISIONS.md D44 items 1 and 3). A phone shell's screenshots
+/// come in whatever its orientation, so a phone held sideways, which draws
+/// that frame, puts the warning in the words' place as a tall phone does, at
+/// any width. Only a desktop, which no phone shell confines, keeps the warning
+/// above the words.
+fn wide_shot(model: &Model, p: &PhraseState) -> Shot {
+    if model.phone() {
+        if words_hidden_by_shot(p) {
+            Shot::InPlace
+        } else {
+            Shot::Clear
+        }
+    } else if p.photographed {
+        Shot::Above
+    } else {
+        Shot::Clear
+    }
+}
+
 /// Whether S4 draws its words now (docs/DECISIONS.md D44 items 1 and 3): on the
 /// desktop, always; on a phone, when it is too short for the warning and the
 /// words on one frame, only once "Show the phrase" is pressed; and on a taller
-/// phone, unless a screenshot has hidden them. It is the frame [`phone_phrase`]
-/// draws, decided by the window's height as the model holds it, so that a
-/// screenshot is noted only when the words were on screen.
+/// phone, unless a screenshot has hidden them. A phone held sideways draws the
+/// desktop's frame, and a screenshot hides its words there too, so they are
+/// not noted again while they wait. It is the frame [`phone_phrase`] draws,
+/// decided by the window's height as the model holds it, so that a screenshot
+/// is noted only when the words were on screen.
 pub(crate) fn phrase_words_drawn(model: &Model, p: &PhraseState) -> bool {
+    if model.phone() && words_hidden_by_shot(p) {
+        return false;
+    }
     !model.compact()
         || (!words_hidden_by_shot(p)
             && phrase_frame(super::page_height(model), p.shown, p.photographed)
@@ -803,8 +826,8 @@ fn phone_phrase<'a>(
 /// The warning comes before the words. `frame` decides what is drawn: both
 /// together, or the warning with "Show the phrase", or the words alone. A
 /// screenshot taken while the words were drawn is drawn as `shot` says: above
-/// the words on the desktop, or in their place on a phone until "Show the
-/// phrase" is pressed. While the screen is recorded or mirrored (`captured`)
+/// the words on the desktop, or in their place on a phone, held sideways too,
+/// until "Show the phrase" is pressed. While the screen is recorded or mirrored (`captured`)
 /// the grid is a placeholder of its height, whatever `shot` says (docs/DECISIONS.md
 /// D44 items 1 and 3).
 fn phrase_content<'a>(
@@ -2063,10 +2086,10 @@ mod tests {
 
     #[test]
     fn the_desktop_keeps_its_warning_above_the_words_after_a_screenshot() {
-        // docs/DECISIONS.md D44 item 3: no shell reports a screenshot on the
-        // desktop. Where one is noted, the desktop's warning comes above the
-        // words on its one frame, as it did before the phone's layout, and there
-        // is no "Show the phrase" button.
+        // docs/DECISIONS.md D44 item 3: no phone shell confines the desktop, and
+        // no shell reports a screenshot on it. Where one is noted, the desktop's
+        // warning comes above the words on its one frame, as it did before the
+        // phone's layout, and there is no "Show the phrase" button.
         let mut model = desktop_phrase_model(1024.0);
         if let Screen::Phrase(p) = &mut model.screen {
             p.photographed = true;
@@ -2082,6 +2105,84 @@ mod tests {
         assert!(
             !drawn.iter().any(|(t, _)| t == "Show the phrase"),
             "the desktop has one frame"
+        );
+    }
+
+    #[test]
+    fn a_screenshot_takes_the_words_place_on_a_phone_held_sideways() {
+        // docs/DECISIONS.md D44 items 1 and 3: a phone held sideways is 844 by 390
+        // and draws the desktop's frame. The iOS shell reports its screenshots in
+        // any orientation, so the warning takes the words' place there as it does
+        // on a tall phone, until "Show the phrase" is pressed. The checkbox and
+        // Continue do not move, and the words come back with no warning.
+        fn s4(model: &Model) -> &PhraseState {
+            match &model.screen {
+                Screen::Phrase(p) => p,
+                _ => panic!("S4 is shown"),
+            }
+        }
+        let size = (844.0, 390.0);
+        let mut model = phone_phrase_model(844.0, false);
+        model.height = 390.0;
+        let drawn = words_drawn(&model, size);
+        assert!(drawn.iter().any(|t| t == "abandon"), "the words: {drawn:?}");
+        assert!(
+            phrase_words_drawn(&model, s4(&model)),
+            "the words are drawn before a screenshot"
+        );
+        if let Screen::Phrase(p) = &mut model.screen {
+            p.photographed = true;
+        }
+        assert!(
+            !phrase_words_drawn(&model, s4(&model)),
+            "a screenshot hides the words, and they are not noted again"
+        );
+        let hidden = words_drawn(&model, size);
+        for text in [
+            PHRASE_SHOT_TITLE,
+            PHRASE_SHOT_BODY,
+            "Show the phrase",
+            "Continue",
+            "Start over with a new phrase",
+        ] {
+            assert!(
+                hidden.iter().any(|t| t == text),
+                "{text} is drawn: {hidden:?}"
+            );
+        }
+        assert!(
+            !hidden.iter().any(|t| t == "abandon"),
+            "no word is drawn: {hidden:?}"
+        );
+        let mut shown_model = phone_phrase_model(844.0, true);
+        shown_model.height = 390.0;
+        for text in [
+            "I have written down every word, in order.",
+            "Continue",
+            "Start over with a new phrase",
+        ] {
+            let at_words = drawn_at(&shown_model, size, text);
+            let at_warning = drawn_at(&model, size, text);
+            assert!(
+                (at_words.y - at_warning.y).abs() < 0.5,
+                "{text} is at {} with the words, {} with the warning",
+                at_words.y,
+                at_warning.y
+            );
+        }
+        if let Screen::Phrase(p) = &mut model.screen {
+            p.shown = true;
+        }
+        let back = words_drawn(&model, size);
+        assert!(
+            back.iter().any(|t| t == "abandon"),
+            "the words are back: {back:?}"
+        );
+        assert!(
+            !back
+                .iter()
+                .any(|t| t == PHRASE_SHOT_TITLE || t == "Show the phrase"),
+            "the warning goes with them: {back:?}"
         );
     }
 

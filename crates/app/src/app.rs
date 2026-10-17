@@ -438,7 +438,8 @@ pub struct PhraseState {
     pub shown: bool,
     /// A screenshot was taken while the words were drawn (docs/DECISIONS.md D44
     /// items 1 and 3). On a phone the warning then takes the words' place until
-    /// "Show the phrase" is pressed; on the desktop it comes above them. The mark
+    /// "Show the phrase" is pressed, held sideways too; on a desktop, which no
+    /// phone shell confines, it comes above them. The mark
     /// stays with this screen, and goes with it.
     pub photographed: bool,
     pub words: [String; 3],
@@ -4300,6 +4301,59 @@ mod tests {
             matches!(&app.model.screen, Screen::Phrase(p) if !p.shown),
             "{:?}",
             app.model.screen
+        );
+
+        // A phone held sideways, 844 by 390, draws the desktop's frame. Its words
+        // are drawn there, so a screenshot is noted, and the warning takes their
+        // place until "Show the phrase" is pressed, as on a tall phone
+        // (docs/DECISIONS.md D44 items 1 and 3). A screenshot while they wait is
+        // not noted again.
+        let mut app = phone_at(390.0);
+        app.model.width = 844.0;
+        app.model.screen = phrase(false);
+        app.model.capture.shot();
+        let _ = app.update(Message::Tick(0));
+        assert!(noted(&app), "the words are drawn held sideways");
+        assert!(
+            matches!(&app.model.screen, Screen::Phrase(p) if !p.shown),
+            "{:?}",
+            app.model.screen
+        );
+        // The page draws the warning in the words' place, not the words above it.
+        let drawn = crate::harness::texts(crate::screens::view(&app.model), (844.0, 390.0));
+        assert!(
+            !drawn.iter().any(|(t, _)| t == "abandon"),
+            "the words are hidden: {drawn:?}"
+        );
+        assert!(
+            drawn.iter().any(|(t, _)| t == "Show the phrase"),
+            "the warning's button is drawn: {drawn:?}"
+        );
+        app.model.capture.shot();
+        let _ = app.update(Message::Tick(0));
+        assert!(
+            matches!(&app.model.screen, Screen::Phrase(p) if p.photographed && !p.shown),
+            "a screenshot while the warning shows changes nothing: {:?}",
+            app.model.screen
+        );
+        let _ = app.update(Message::ShowPhrase);
+        assert!(
+            matches!(&app.model.screen, Screen::Phrase(p) if p.photographed && p.shown),
+            "{:?}",
+            app.model.screen
+        );
+        app.model.capture.shot();
+        let _ = app.update(Message::Tick(0));
+        assert!(
+            matches!(&app.model.screen, Screen::Phrase(p) if p.photographed && !p.shown),
+            "a screenshot of the words hides them again: {:?}",
+            app.model.screen
+        );
+
+        let hidden = crate::harness::texts(crate::screens::view(&app.model), (844.0, 390.0));
+        assert!(
+            !hidden.iter().any(|(t, _)| t == "abandon"),
+            "a screenshot after Show hides the words on the page: {hidden:?}"
         );
 
         // The desktop draws the words from the start.
