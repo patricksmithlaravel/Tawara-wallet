@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::host::{self, Host};
+use crate::screens::phrase_words_drawn;
 use iced::futures::channel::mpsc;
 use iced::widget::operation;
 use iced::{Element, Event as IcedEvent, Subscription, Task, event, keyboard, mouse, touch};
@@ -203,6 +204,21 @@ pub struct Model {
     /// shell waits on before it
     /// lets the system suspend the process (docs/DECISIONS.md D32 item 6).
     pub(crate) wiped: Arc<host::Wiped>,
+    /// What a mobile shell has said about the screen's capture: screenshots
+    /// taken, and whether the screen is recorded or mirrored (docs/DECISIONS.md
+    /// D44 item 3). The shell writes it on its own thread.
+    pub(crate) capture: Arc<host::Capture>,
+    /// The screenshots this model has acted on, as [`Model::capture`] counts
+    /// them.
+    shots_seen: u64,
+    /// Whether the screen is being recorded or mirrored, as the shell last said.
+    /// While it is, the recovery phrase's words are drawn as a placeholder
+    /// (docs/DECISIONS.md D44 item 3).
+    pub(crate) captured: bool,
+    /// The window's height in logical pixels, as the window last reported it.
+    /// With the safe area it decides a phone's frame for the recovery phrase
+    /// (docs/DECISIONS.md D44 items 1 and 2).
+    pub(crate) height: f32,
     /// In a mobile shell, the app-private folder every store must be
     /// inside: the one the system keeps out of backups and away from other
     /// apps, and on iOS protects (docs/DECISIONS.md D32 items 3 and 7).
@@ -417,6 +433,9 @@ pub struct PhraseState {
     /// too short for the library's warning and the phrase on one frame, the
     /// warning comes first, on its own, and the words only after this.
     pub shown: bool,
+    /// A screenshot was taken while the words were drawn (docs/DECISIONS.md D44
+    /// item 3). The warning about it stays with this screen, and goes with it.
+    pub photographed: bool,
     pub words: [String; 3],
     pub error: Option<String>,
 }
@@ -542,8 +561,8 @@ pub enum Message {
     /// What the clipboard held when a Paste button was tapped, for the field
     /// that button was drawn beside. `None` when the read was refused.
     Pasted(PasteInto, Option<Clip>),
-    /// The window opened or changed size: its width.
-    Width(f32),
+    /// The window opened or changed size: its width and height.
+    Size(iced::Size),
     /// The safe area changed: what the system covers at each edge, and the
     /// keyboard's height. Not the person's input, so it does not restart the
     /// idle period (docs/DECISIONS.md D32 item 10 (b)).
@@ -977,8 +996,12 @@ impl Model {
             left: Arc::new(AtomicU64::new(0)),
             left_seen: 0,
             wiped: Arc::default(),
+            capture: Arc::default(),
+            shots_seen: 0,
+            captured: false,
             confined: None,
             width: crate::WINDOW.0,
+            height: crate::WINDOW.1,
             safe_area: iced::mobile::SafeArea::ZERO,
             clock_ms: now_ms(),
             settled_waiting: BTreeMap::new(),
@@ -1103,6 +1126,21 @@ impl Model {
         wipe_typed(&mut self.screen);
     }
 
+    /// A screenshot was taken, as the shell reported it. The recovery phrase on
+    /// S4 is marked for its warning if its words are drawn at that moment
+    /// (docs/DECISIONS.md D44 item 3): on a phone that waits for "Show the
+    /// phrase", they are not, and nothing is marked. Any other screen has no
+    /// phrase to mark.
+    fn photographed(&mut self) {
+        let drawn = match &self.screen {
+            Screen::Phrase(p) => phrase_words_drawn(self, p),
+            _ => false,
+        };
+        if let (true, Screen::Phrase(p)) = (drawn, &mut self.screen) {
+            p.photographed = true;
+        }
+    }
+
     /// Releases the unsaved bytes that a lock releases, when no lock comes for
     /// them: a store the worker closed for a read-back that failed keeps them,
     /// and nothing is open for a move to the background or a shutdown to close,
@@ -1208,12 +1246,13 @@ impl App {
 
     /// Start the application in a mobile shell: the store and the
     /// preferences in the shell's private directory, its clipboard for
-    /// Copy, and its word when the application leaves the foreground
-    /// (docs/DECISIONS.md D32).
+    /// Copy, its word when the application leaves the foreground, and its
+    /// word on the screen's capture (docs/DECISIONS.md D32, D44 item 3).
     pub fn boot_in(host: &Host) -> (App, Task<Message>) {
         host::set(host);
         let (app, task) = App::hosted(&host.private_dir);
         host::on_leaving(app.leaving_hook());
+        host::on_capture(Arc::clone(&app.model.capture), host.captured);
         (app, task)
     }
 
@@ -1548,6 +1587,16 @@ impl App {
             self.model.backgrounded();
             self.model.wiped.wiped(left);
         }
+        // What the shell has said about the screen's capture is read at each
+        // message too, on this thread (docs/DECISIONS.md D44 item 3): a
+        // screenshot is noted on the recovery phrase's screen when its words
+        // are drawn, and the capture state is kept for the words' placeholder.
+        let (shots, captured) = self.model.capture.read();
+        self.model.captured = captured;
+        if shots != self.model.shots_seen {
+            self.model.shots_seen = shots;
+            self.model.photographed();
+        }
         // iced takes a whole batch of messages against the fields as drawn
         // before it draws them again, so every one of them from a field
         // drawn before the latest move is refused, not only the first, and
@@ -1825,7 +1874,10 @@ impl App {
                     None => Task::none(),
                 };
             }
-            Message::Width(width) => m.width = width,
+            Message::Size(size) => {
+                m.width = size.width;
+                m.height = size.height;
+            }
             // Not the person's input: the idle period is not restarted here.
             // When the keyboard comes up or grows on a phone, the page is
             // scrolled so the focused field stands above it, once the page
@@ -2402,6 +2454,7 @@ impl App {
                     positions: confirm_positions,
                     written: false,
                     shown: false,
+                    photographed: false,
                     words: Default::default(),
                     error: None,
                 });
@@ -2542,7 +2595,7 @@ fn person_input(event: IcedEvent, status: event::Status, _: iced::window::Id) ->
         | IcedEvent::Touch(touch::Event::FingerPressed { .. }) => Some(Message::Input),
         IcedEvent::Window(
             iced::window::Event::Opened { size, .. } | iced::window::Event::Resized(size),
-        ) => Some(Message::Width(size.width)),
+        ) => Some(Message::Size(size)),
         // Whether the window is in the foreground, for the poll of a live
         // reservation (docs/DECISIONS.md D38 item 2). Not the person's input.
         IcedEvent::Window(iced::window::Event::Focused) => Some(Message::Foreground(true)),
@@ -3874,6 +3927,7 @@ mod tests {
                     positions: tawara_wallet_core::CONFIRM_POSITIONS,
                     written: true,
                     shown: true,
+                    photographed: false,
                     words: Default::default(),
                     error: None,
                 }),
@@ -3974,6 +4028,7 @@ mod tests {
                 positions: tawara_wallet_core::CONFIRM_POSITIONS,
                 written: true,
                 shown: true,
+                photographed: false,
                 words: ["abandon".into(), "abandon".into(), String::new()],
                 error: None,
             }),
@@ -3983,6 +4038,7 @@ mod tests {
                 positions: tawara_wallet_core::CONFIRM_POSITIONS,
                 written: false,
                 shown: false,
+                photographed: false,
                 words: Default::default(),
                 error: None,
             }),
@@ -4063,6 +4119,7 @@ mod tests {
                 positions: tawara_wallet_core::CONFIRM_POSITIONS,
                 written: true,
                 shown: true,
+                photographed: false,
                 words: Default::default(),
                 error: None,
             })
@@ -4123,6 +4180,7 @@ mod tests {
             words: Default::default(),
             error: None,
             shown: false,
+            photographed: false,
         });
         let _ = app.update(Message::ShowPhrase);
         assert!(
@@ -4143,6 +4201,79 @@ mod tests {
     }
 
     #[test]
+    fn a_screenshot_is_noted_on_the_phrase_only_while_its_words_are_drawn() {
+        // docs/DECISIONS.md D44 item 3: a screenshot taken while the words are
+        // not drawn (a short phone's warning, before "Show the phrase") is noted
+        // on no phrase, and one taken once they are drawn is noted.
+        let phrase = |shown| {
+            Screen::Phrase(PhraseState {
+                phrase: PhraseForDisplay::example(),
+                dir: "/a/chosen/folder".to_owned(),
+                positions: tawara_wallet_core::CONFIRM_POSITIONS,
+                written: false,
+                words: Default::default(),
+                error: None,
+                shown,
+                photographed: false,
+            })
+        };
+        let noted = |app: &App| matches!(&app.model.screen, Screen::Phrase(p) if p.photographed);
+
+        // A short phone: 800 pixels less the insets is 719, under one frame.
+        let mut app = alone();
+        app.model.width = NARROWEST;
+        app.model.confine(PathBuf::from("/a/private"));
+        app.model.safe_area = iced::mobile::SafeArea::new(iced::Padding {
+            top: 47.0,
+            right: 0.0,
+            bottom: 34.0,
+            left: 0.0,
+        });
+        app.model.height = 800.0;
+        app.model.screen = phrase(false);
+        app.model.capture.shot();
+        let _ = app.update(Message::Tick(0));
+        assert!(!noted(&app), "the words were not drawn");
+        let _ = app.update(Message::ShowPhrase);
+        assert!(!noted(&app), "a screenshot before Show is not the words'");
+        app.model.capture.shot();
+        let _ = app.update(Message::Tick(0));
+        assert!(noted(&app), "the words were drawn");
+
+        // The desktop draws the words from the start.
+        let mut app = alone();
+        app.model.screen = phrase(false);
+        app.model.capture.shot();
+        let _ = app.update(Message::Tick(0));
+        assert!(noted(&app));
+
+        // No phrase on the screen: nothing to note, and nothing changes.
+        let mut app = alone();
+        app.model.capture.shot();
+        let _ = app.update(Message::Tick(0));
+        assert!(matches!(app.model.screen, Screen::Start { .. }));
+    }
+
+    #[test]
+    fn the_capture_the_shell_reports_reaches_the_model_at_its_next_message() {
+        let mut app = alone();
+        app.model.capture.set_captured(true);
+        assert!(!app.model.captured, "read at the next message, not before");
+        let _ = app.update(Message::Tick(0));
+        assert!(app.model.captured);
+        app.model.capture.set_captured(false);
+        let _ = app.update(Message::Input);
+        assert!(!app.model.captured);
+    }
+
+    #[test]
+    fn the_window_reports_its_height_with_its_width() {
+        let mut app = alone();
+        let _ = app.update(Message::Size(iced::Size::new(390.0, 844.0)));
+        assert_eq!((app.model.width, app.model.height), (390.0, 844.0));
+    }
+
+    #[test]
     fn starting_over_keeps_the_folder_chosen() {
         let mut app = alone();
         app.model.screen = Screen::Confirm(PhraseState {
@@ -4151,6 +4282,7 @@ mod tests {
             positions: tawara_wallet_core::CONFIRM_POSITIONS,
             written: true,
             shown: true,
+            photographed: false,
             words: Default::default(),
             error: None,
         });

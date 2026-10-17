@@ -170,6 +170,10 @@ for hours, and on mobile it is suspended and resumed. The following hold:
    - Android: `FLAG_SECURE` on every screen that shows a secret.
    - iOS: content is hidden when the app becomes inactive, so the app
      switcher's snapshot shows nothing.
+   - *Recommended (D44 item 3): on iOS, a warning follows a screenshot taken
+     while the words are drawn, and the words are blanked while iOS reports
+     the screen as recorded or mirrored, as far as it reports it. The
+     blanking is best effort, and the copy does not promise it.*
 4. **Entropy.** It comes from the operating system's generator, as the
    command-line binary draws it (`/dev/urandom`, `BCryptGenRandom`). The
    library takes entropy as a parameter. Record the mechanism chosen.

@@ -213,6 +213,7 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
         words: Default::default(),
         error: None,
         shown: false,
+        photographed: false,
     };
     let synced = SyncWarning {
         service: "Dropbox",
