@@ -8,8 +8,11 @@
 //! phones at the pin, but it sets none of the protection that
 //! docs/DECISIONS.md D32 item 9 (d) puts in the shell's write. It calls
 //! [`left_foreground`] when the system takes the application off the screen.
+//! On iOS it also calls [`screenshot_taken`] and [`capture_changed`], which
+//! the recovery phrase's screen reads (docs/DECISIONS.md D44 item 3).
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
@@ -45,6 +48,12 @@ pub struct Host {
     /// winit can build its event loop again, so that choice is Tawara's,
     /// not winit's.
     pub back: fn(),
+    /// Whether the screen is being recorded or mirrored, as the system reports
+    /// it (`UIScreen.isCaptured` on iOS), read once when the application
+    /// starts. Later changes come through [`capture_changed`]. `None` where a
+    /// shell supplies none, as Android does, and keeps FLAG_SECURE
+    /// (docs/DECISIONS.md D32 item 4, D44 items 3 and 4).
+    pub captured: Option<fn() -> bool>,
 }
 
 /// What a shell's share sheet is: [`Host::share`].
@@ -184,6 +193,84 @@ pub(crate) fn copy(text: &str) -> bool {
     COPY.get().map(|copy| copy(text)).is_some()
 }
 
+/// Where [`screenshot_taken`] and [`capture_changed`] write: the capture state
+/// of the hosted application, once it has started.
+static CAPTURE: Mutex<Option<Arc<Capture>>> = Mutex::new(None);
+
+/// A screenshot was taken. iOS says so after the capture, through
+/// `UIApplicationUserDidTakeScreenshotNotification`, so it cannot block the
+/// capture. The application then warns on the recovery phrase's screen, when
+/// the words were on it (docs/DECISIONS.md D44 item 3). A screenshot taken
+/// before the application has started is not counted.
+pub fn screenshot_taken() {
+    if let Some(capture) = registered() {
+        capture.shot();
+    }
+}
+
+/// The screen is being recorded or mirrored (`captured`), or no longer is,
+/// as iOS reports it through `UIScreenCapturedDidChangeNotification`. The
+/// application hides the recovery phrase's words while it is captured. The
+/// report is best effort: iOS can read the screen as not captured while a
+/// recording runs (docs/DECISIONS.md D44 item 3). A change before the
+/// application has started is not kept; [`Host::captured`] gives that state.
+pub fn capture_changed(captured: bool) {
+    if let Some(capture) = registered() {
+        capture.set_captured(captured);
+    }
+}
+
+/// The capture state [`screenshot_taken`] and [`capture_changed`] write to, if
+/// an application has started.
+fn registered() -> Option<Arc<Capture>> {
+    CAPTURE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+}
+
+/// What the shell has reported about the screen's capture. The application
+/// reads it on its UI thread, at each message, as it reads the moves to the
+/// background: a screenshot is a change in the count, however many came since
+/// the last read, and the capture state is the last one the shell gave.
+#[derive(Debug, Default)]
+pub(crate) struct Capture {
+    shots: AtomicU64,
+    captured: AtomicBool,
+}
+
+impl Capture {
+    /// A screenshot was taken.
+    pub(crate) fn shot(&self) {
+        self.shots.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// The screen is captured (`true`) or no longer is.
+    pub(crate) fn set_captured(&self, captured: bool) {
+        self.captured.store(captured, Ordering::SeqCst);
+    }
+
+    /// How many screenshots have been taken, and whether the screen is
+    /// captured now.
+    pub(crate) fn read(&self) -> (u64, bool) {
+        (
+            self.shots.load(Ordering::SeqCst),
+            self.captured.load(Ordering::SeqCst),
+        )
+    }
+}
+
+/// Makes `capture` the state [`screenshot_taken`] and [`capture_changed`]
+/// write to. Where the shell can read the screen's state, `captured` gives it
+/// as the application starts. It is read after `capture` is registered, so a
+/// change made in between is not lost (docs/DECISIONS.md D44 item 3).
+pub(crate) fn on_capture(capture: Arc<Capture>, captured: Option<fn() -> bool>) {
+    *CAPTURE.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&capture));
+    if let Some(read) = captured {
+        capture.set_captured(read());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,5 +299,33 @@ mod tests {
         let _ = left_foreground();
         assert_eq!(first.load(Ordering::SeqCst), 1);
         assert_eq!(second.load(Ordering::SeqCst), 2, "the worker started last");
+    }
+
+    #[test]
+    fn a_screenshot_is_counted_and_the_capture_state_is_the_last_one_given() {
+        let capture = Capture::default();
+        assert_eq!(capture.read(), (0, false));
+        capture.shot();
+        capture.shot();
+        capture.set_captured(true);
+        assert_eq!(capture.read(), (2, true));
+        capture.set_captured(false);
+        assert_eq!(capture.read(), (2, false));
+    }
+
+    #[test]
+    fn the_shell_reaches_the_registered_capture_and_reads_its_start_state() {
+        fn captured_at_start() -> bool {
+            true
+        }
+        // Nothing registered: the shell's calls do nothing, and do not panic.
+        screenshot_taken();
+        capture_changed(false);
+        let capture = Arc::new(Capture::default());
+        on_capture(Arc::clone(&capture), Some(captured_at_start));
+        assert_eq!(capture.read(), (0, true), "the state at start is read");
+        screenshot_taken();
+        capture_changed(false);
+        assert_eq!(capture.read(), (1, false));
     }
 }

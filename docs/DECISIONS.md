@@ -3321,7 +3321,7 @@ item 6's.
    and a move to the background does not release them. This keeps the code as
    built. The app test
    `a_move_after_a_failed_send_with_no_notice_keeps_the_bytes_until_the_app_ends`
-   (`crates/app/src/app.rs:5145`) pins it. When the notice comes, its reason
+   (`crates/app/src/app.rs:5430`) pins it. When the notice comes, its reason
    decides, as the earlier rules say: a panic keeps the bytes until Tawara
    closes (confirmed 2026-10-14), and a graceful stop releases them, as the
    shutdown does.
@@ -3638,18 +3638,30 @@ No library change. OS libraries: none added.
 
 ### D44. The recovery phrase on one screen
 
-**proposed; the order decided by the owner on 2026-10-13; the details
-recommended.** Item 8 asks for the whole phrase in one frame, with no
-scrolling. On a 360 × 640 phone that fits only if the library's warning
-moves off the frame or is shortened, and the warning is the library's text
-(PLAN section 3, D25).
+**proposed; the order decided by the owner on 2026-10-13, and the page after
+a screenshot on 2026-10-16; the details recommended.** Item 8 asks for the
+whole phrase in one frame, with no scrolling. On a 360 × 640 phone that fits
+only if the library's warning moves off the frame or is shortened, and the
+warning is the library's text (PLAN section 3, D25). The exception is the page
+after a screenshot (item 3), whose warning took room the frame lacks. The
+owner chose on 2026-10-16 that the warning takes the words' place, so that
+page is one frame too, and the words come back when "Show the phrase" is
+pressed (item 1; As built).
 
 1. **Warning first, then the phrase (owner, 2026-10-13).** On short
    phones the library's warning comes first, on a frame of its own, whole
    and unchanged. Then all 24 words appear in a grid of three columns and
    eight rows on one frame, with the checkbox and Continue. Larger phones
    and the desktop show everything on one frame. The phrase itself is never
-   split across frames.
+   split across frames. *Exception (owner, 2026-10-16):* after a screenshot
+   taken while the words are drawn, item 3's warning takes their place, in
+   the grid's space, with "Show the phrase" under it. The words come back when
+   the button is pressed, and the warning goes with them. So the warned page
+   is one frame, with no scroll, on a phone of 360 × 640, 360 × 800 and
+   390 × 844, and the checkbox and Continue keep their rules. A phone held
+   sideways draws the desktop's frame and takes the same warning in the
+   grid's space. The owner chose this over keeping the scroll and over a
+   one-line notice (As built).
 2. **The grid (recommended).** Three columns by eight rows on every size,
    read down the columns as the desktop's already is, at 14-pixel words.
    A phone counts as short below about 720 usable pixels. The tests measure
@@ -3663,10 +3675,11 @@ moves off the frame or is shortened, and the warning is the library's text
    written.
 3. **iOS (recommended).** A warning follows a screenshot taken while the
    phrase is shown (`UIApplicationUserDidTakeScreenshotNotification`, which
-   arrives after the capture and cannot block it), and the grid is blanked
-   while the screen is reported as recorded or mirrored, as far as iOS
-   reports it. Reports from developers say the capture state can read
-   inactive while a recording runs, so the blanking is a best effort and
+   arrives after the capture and cannot block it), and on a phone the words
+   then wait behind the warning until "Show the phrase" is pressed (item 1).
+   The grid is blanked while the screen is reported as recorded or mirrored,
+   as far as iOS reports it. Reports from developers say the capture state can
+   read inactive while a recording runs, so the blanking is a best effort and
    the copy must not promise it.
 4. **Android and the desktop (recommended).** Android keeps `FLAG_SECURE`
    (D32 item 4). Android's guide to securing sensitive activities says that
@@ -3687,6 +3700,33 @@ The phone S4 images are redrawn for the owner's approval (D32 item 10
 best-effort blanking of item 3, and on Android the recording caveat of item
 4. OS libraries: none added; the iOS observers use UIKit, which the shell
 already links.
+
+**As built (2026-10-16).** Item 3's application side is built. `Host` gains
+`captured: Option<fn() -> bool>`, read once at start (`None` on Android and
+the desktop, which keep S4 as it was), and the crate exports
+`screenshot_taken()` and `capture_changed(captured: bool)`. The shell's
+observers that call them are in Tawara-mobile; until that pull request is in
+a pin, no phone warns or blanks. The wording of item 5 awaits the owner's
+approval. On review (2026-10-16), the placeholder's copy was reworded to say
+that iOS does not report every recording or mirror. The owner chose that
+after a screenshot the words are hidden again behind the warning until "Show
+the phrase" is pressed (owner, 2026-10-16; item 1). It is built: a screenshot
+taken while the words are drawn clears `shown` and sets
+`photographed`, and a phone then draws the warning and the button in a box as
+tall as the grid, with the checkbox and Continue below, so the warned page is
+one frame at 360 by 640, 360 by 800 and 390 by 844. The tests hold it to that
+(`the_warned_page_fits_one_frame_at_360_by_640_360_by_800_and_390_by_844`). A
+screenshot while the words wait changes nothing, and "Show the phrase" brings
+the words back. A phone held sideways is 600 pixels or wider, so it draws the
+desktop's frame, and there the iOS shell's screenshot report puts the warning
+in the words' place too, as on a narrow phone, until "Show the phrase" is
+pressed (`a_screenshot_takes_the_words_place_on_a_phone_held_sideways`). The
+desktop, which no phone shell confines and no shell reports a screenshot for,
+keeps its warning above the words as before. The phone image of the warned
+page is `phone-s4-phrase-photographed.png`, and its scrolled end, which the
+page no longer needs, is removed.
+`phone-s4-phrase-captured.png` is the placeholder while the screen is recorded
+or mirrored.
 
 ### D45. Unlock with Face ID, Touch ID or the passcode, on iOS
 
