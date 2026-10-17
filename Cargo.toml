@@ -50,11 +50,13 @@ mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-wi
 # THE TOOLKIT (docs/PLAN.md D2): iced 0.14, FROM THE OWNER'S FORK, PINNED BY
 # FULL COMMIT HASH (docs/DECISIONS.md D6, D32 items 1 and 9).
 #
-# `patricksmithlaravel/iced_mobile` at 4f609cd1b, the head of the fork's branch
-# `work/ios-safe-area-reread` (the fork's pull request #8). That branch is on
-# the fork's main line above the release tag `v0.14.1-mobile.2` (d4ab3a0), and
-# its last commit reads the iOS safe area again for 600 ms after a change
-# (D32 item 10 (f)). The fork starts from iced's own `0.14` branch at 38237dd,
+# `patricksmithlaravel/iced_mobile` at 4f609cd1b, a commit on the fork's branch
+# `work/ios-safe-area-reread` (the fork's pull request #8). It was that branch's
+# head when pinned; the branch has since gained a commit that changes only
+# documentation. The branch is on the fork's main line above the release tag
+# `v0.14.1-mobile.2` (d4ab3a0), and 4f609cd1b reads the iOS safe area again for
+# 600 ms after a change (D32 item 10 (f)). The fork starts from iced's own
+# `0.14` branch at 38237dd,
 # whose sources are, crate for crate, the crates.io releases
 # this workspace was built on until now (iced 0.14.0, iced_widget 0.14.2,
 # iced_winit and iced_tiny_skia 0.14.1, the rest 0.14.0; the lockfile names the
@@ -65,7 +67,7 @@ mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-wi
 # (0b02176; D17, D32); and iOS windows put in UIKit's window scene, which an
 # app linked with the iOS 27 SDK needs (71f00e8; D32 item 8).
 #
-# This rev is a branch head, not a release tag, and D32 item 9 (a) allows only
+# This rev is a branch commit, not a release tag, and D32 item 9 (a) allows only
 # tags. It is pinned so that the fork's fix can be checked in this repository
 # before the tag exists. It moves to the tag `v0.14.1-mobile.3` once the fork's
 # pull request #8 merges, and it is not to reach `main` before that move. The
@@ -83,8 +85,9 @@ mochimo-crypto = { git = "https://github.com/patricksmithlaravel/mcm-rust-cli-wi
 # it goes only to a release tag of the fork (`v*-mobile.*`), by its full hash;
 # these lines no longer return to crates.io when an iced release carries the
 # change (D32 item 9 (a)).
-# `crates/wallet-core/tests/policy.rs` holds them to it, and deny.toml admits
-# this one git source beside the library's.
+# `crates/wallet-core/tests/policy.rs` holds them to it, and to the two commits
+# that D32 item 9 (a) records (`APPROVED_ICED_REVS`); deny.toml admits this one
+# git source beside the library's.
 #
 # The features are iced 0.14.0's own defaults, written out so that what
 # ships is a list in this file rather than whatever iced's default becomes:

@@ -248,6 +248,11 @@ entry in `ignore` carries a written reason").
   Both still arrive, now with iced 0.14.1, and both are still needed:
   removing either makes `cargo deny` fail. deny.toml names the path that
   reaches each at the pin (D32 item 9 (e)).*
+  *Re-examined 2026-10-16 at the stage `4f609cd1b` (D32 item 9 (a)):
+  `cargo tree --locked -i paste@1.0.15 --target all` and
+  `cargo tree --locked -i ttf-parser@0.25.1 --target all` show the paths that
+  `deny.toml` names, and `cargo deny --locked check` passes there. To be
+  repeated at the tag.*
 - **Kept from Rep-1:** `unmaintained = "all"`, `yanked = "deny"`, the
   `digest` 0.11 ban, and the denied features of `ureq`, `argon2` and
   `serde_json`. Feature unification means a crate in the interface's graph
@@ -1763,6 +1768,61 @@ on the three conditions D18 left open.
    entry points Tawara uses (`set_android_app`, `on_lifecycle` and the
    two-variant `Lifecycle`) as they are.
 
+   *Moved 2026-10-16, to a stage and not a tag.* The two iced lines, and the
+   fourteen fork packages in `Cargo.lock`, name
+   `4f609cd1bcfd30b4690f531817c1cfce03857cd2`, a commit of the fork's branch
+   `work/ios-safe-area-reread` (fork pull request #8), in place of
+   `d4ab3a057db96162b087a27dd0752a3b15abfa6b`. The range is 150 fork commits
+   (140 without merges; 138 files, +32,846/-1,716). It holds the iPhone SE
+   safe-area re-read of item 10 (f); the iOS Return and Tab fix `586665c08`,
+   which this move takes with it; and the fork's keyboard, input-method and
+   composition work, which the desktop build compiles. The owner's answers of
+   2026-10-16 approve the fork fix, the tag `v0.14.1-mobile.3` and the re-pin
+   of both repositories. They do not approve a branch commit on `main`, so the
+   stage stays on the wallet's branch `work/iced-se-safe-area` until the owner
+   has merged fork pull request #8 and created the tag. Then both iced lines
+   and the fourteen `Cargo.lock` sources move to that tag's full hash, and
+   Tawara-mobile follows (item 9 (c)). `policy.rs` admits the two commits that
+   `APPROVED_ICED_REVS` names, and no other iced pin. A merge of the stage to
+   `main` before the tag would need a dated exception recorded here first. The
+   fork's root `Cargo.toml` has two lines more than at the tag, an
+   `android-activity = "0.6.1"` and a comment; only `cargo deny` has reviewed
+   them.
+
+   *Read 2026-10-16 from the diff, not tested:* `core/src/input_method.rs`,
+   `core/src/text/editor.rs`, `graphics/src/text/editor.rs` and
+   `widget/src/text_editor.rs` change behaviour on Android and iOS only, and
+   the two `Motion` variants that `core/src/text/editor.rs` adds exist on
+   Android alone. The touch rule in `widget/src/text_editor.rs` is compiled on
+   every platform and is on only on those two. `widget/src/text_input.rs`
+   builds a password field's paragraph from bullets on every platform, desktop
+   included.
+
+   *Checks on the stage, 2026-10-16, through the build lock, with
+   `CARGO_TARGET_DIR` unset:* `cargo fmt --all --check`, exit 0.
+   `cargo clippy --workspace --all-targets --locked -- -D warnings`, exit 0.
+   `cargo test --workspace --locked`, exit 0: 494 passed, 0 failed (tawara_app
+   313, tawara_wallet_core 76, explorer 8, policy 17, worker 80). The policy
+   suite, 17 passed; with the stage's hash replaced by zeros in
+   `APPROVED_ICED_REVS`, its iced test fails and names the hash. `RUSTDOCFLAGS=
+   "-D warnings" cargo doc --workspace --no-deps --locked`, exit 0. `cargo deny
+   --locked check`: advisories, bans, licenses and sources ok. The Linux
+   screenshot run on the commit before the comment edits gave 127 same, 0
+   differ, 0 missing; no drawing code has changed since.
+
+   *Owed before the tag, not run:* the iPhone SE device check (THREAT_MODEL
+   V16) and the taps listed in item 10 (f); the mobile emulator and simulator
+   jobs; the hand-run desktop check of typing, paste, password entry and
+   composition, after a person has read the five files above; clippy, tests
+   and docs on Windows and on Linux (the container ran the screenshot example
+   only); the Linux liveness step, desktop under Xvfb; the fork's own
+   `cargo doc -p iced --no-deps`, which fails on two unresolved links in
+   `src/lib.rs` (lines 330 and 371) that the tag carries; the fork's root
+   manifest, as above; and Tawara-mobile's `tawara-app` and `iced_winit` revs,
+   with its policy suite, which need the tag's hash. The release gate 'Fork
+   pin settled' in `docs/RELEASE.md` section 3 says no iced fork move is in
+   flight, so this stage fails that gate while it stands.
+
    **(b) One winit, the fork's: owner, 2026-10-12.** Tawara-mobile takes
    `winit` only from the fork, through `iced_winit` with the
    `android-native-activity` feature. The crates.io `winit` lines in the
@@ -2260,6 +2320,12 @@ on the three conditions D18 left open.
    build: the first gesture after launch, the footer link by touch, a drag
    that starts on a row, Paste, and the keyboard shown again are still to
    be checked by hand.
+
+   *Owner, 2026-10-16 (the owner's answers of that date):* the fork fix for
+   the iPhone SE safe area is approved, with the fork tagged
+   `v0.14.1-mobile.3` and both repositories re-pinned to that tag. The owner
+   merges fork pull request #8; the agents do not merge it. The fix is not
+   yet shown on a phone, and the check above is still owed.
 
    **(g) Paste buttons (decided under the owner's delegation, 2026-10-12).** In
    the compact layout a Paste button stands beside each destination field (W4,

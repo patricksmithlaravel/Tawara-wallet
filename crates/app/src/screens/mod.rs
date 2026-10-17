@@ -42,12 +42,13 @@ pub fn page_top() -> Task<Message> {
 /// a `cfg` attribute, so that both branches are compiled on every target.
 const IPHONE: bool = cfg!(target_os = "ios");
 
-/// What pads an iPhone's root while its shell reports no inset at all: the
-/// fork's template keeps the same, 64 above and 48 below, until the safe area
-/// arrives (the fork's `docs/icm/DESIGN.md`, F6). It stays until the device
-/// check of an iPhone SE passes (THREAT_MODEL V16, listed in docs/RELEASE.md
-/// section 8): the fork's pin re-reads the inset for 600 ms after a change, but
-/// that is not yet shown on a phone.
+/// What pads an iPhone's root while its shell reports no inset at all (D32
+/// item 10 (b)): the fork's template keeps the same, 64 above and 48 below,
+/// until the safe area arrives (the fork's `docs/icm/DESIGN.md`, F6). An inset
+/// the shell does report is used as it is. THREAT_MODEL V16 checks the
+/// wordmark with this padding in place, so it does not test the fork's fix:
+/// that check on an iPhone SE is still owed, and passing it is no reason to
+/// remove the padding.
 const UNREPORTED: Padding = Padding {
     top: 64.0,
     right: 0.0,

@@ -41,6 +41,16 @@ const LIBRARY: &str = "mochimo-crypto";
 /// D32, items 1 and 9).
 const ICED_GIT: &str = "https://github.com/patricksmithlaravel/iced_mobile";
 
+/// The commits the wallet may pin iced to, by full hash (docs/DECISIONS.md D32
+/// item 9 (a)): the release `v0.14.1-mobile.2`, which `main` pins, and the
+/// stage `4f609cd1b`, a commit of fork pull request #8, which stands until the
+/// tag `v0.14.1-mobile.3` replaces it. Any other commit is a move, and needs
+/// its entry in that item before it is named here.
+const APPROVED_ICED_REVS: [&str; 2] = [
+    "d4ab3a057db96162b087a27dd0752a3b15abfa6b",
+    "4f609cd1bcfd30b4690f531817c1cfce03857cd2",
+];
+
 /// The features the `iced` line in the workspace manifest names, in any order.
 /// D27 added `canvas` and `advanced` to the list the workspace line writes out,
 /// beyond iced 0.14.0's own defaults. D41 added `qr_code`, for the code on
@@ -1972,6 +1982,11 @@ fn iced_comes_from_the_fork_pinned_by_full_commit_hash() {
         "every iced line names the same commit, so one copy of each crate is built: {revs:?}"
     );
     let rev = revs.pop_first().unwrap_or_default();
+    assert!(
+        APPROVED_ICED_REVS.contains(&rev.as_str()),
+        "iced is pinned to {rev}, which docs/DECISIONS.md D32 item 9 (a) does not record: a \
+         move needs its entry there, then its line in APPROVED_ICED_REVS"
+    );
 
     // Every crate takes iced from the workspace's lines.
     for dir in crate_dirs() {
