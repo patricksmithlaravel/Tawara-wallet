@@ -44,10 +44,12 @@ const ICED_GIT: &str = "https://github.com/patricksmithlaravel/iced_mobile";
 /// The features the `iced` line in the workspace manifest names, in any order.
 /// D27 added `canvas` and `advanced` to the list the workspace line writes out,
 /// beyond iced 0.14.0's own defaults. D41 added `qr_code`, for the code on
-/// Receive, which the owner approved on 2026-10-13. Each feature turns on code,
-/// crates or a platform backend in every build, so a change to this list needs
-/// a decision, recorded in docs/DECISIONS.md first (D32 item 9).
-const ICED_FEATURES: [&str; 11] = [
+/// Receive, which the owner approved on 2026-10-13. The owner's decision of
+/// 2026-10-17 removed `linux-theme-detection`, which the fork's
+/// `v0.14.1-mobile.4` drops with mundy (D32 item 9 (a)). Each feature turns on
+/// code, crates or a platform backend in every build, so a change to this list
+/// needs a decision, recorded in docs/DECISIONS.md first (D32 item 9).
+const ICED_FEATURES: [&str; 10] = [
     "wgpu",
     "tiny-skia",
     "canvas",
@@ -56,7 +58,6 @@ const ICED_FEATURES: [&str; 11] = [
     "crisp",
     "web-colors",
     "thread-pool",
-    "linux-theme-detection",
     "x11",
     "wayland",
 ];
@@ -2637,20 +2638,14 @@ fn the_committed_notices_end_with_the_agreement_and_hold_no_placeholder() {
 /// (docs/DECISIONS.md D35, item 6 (a); about.toml names them). A crate added
 /// to that entry, or a new version of one of these, has to be looked up again
 /// before it joins this list: it may publish a text that names its holder,
-/// which about.toml then has to take.
-const STANDARD_MIT_TEXT: [&str; 15] = [
+/// which about.toml then has to take. Seven entries left the lock with mundy
+/// at `v0.14.1-mobile.4` (D32 item 9 (a)) and are not listed.
+const STANDARD_MIT_TEXT: [&str; 8] = [
     "block 0.1.6",
-    "block2 0.6.2",
     "dispatch 0.2.0",
     "objc2 0.6.4",
-    "objc2-app-kit 0.3.2",
-    "objc2-cloud-kit 0.3.2",
-    "objc2-core-data 0.3.2",
     "objc2-core-foundation 0.3.2",
     "objc2-core-graphics 0.3.2",
-    "objc2-core-image 0.3.2",
-    "objc2-core-text 0.3.2",
-    "objc2-core-video 0.3.2",
     "objc2-encode 4.1.0",
     "objc2-foundation 0.3.2",
     "objc2-quartz-core 0.3.2",

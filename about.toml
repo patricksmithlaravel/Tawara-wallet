@@ -334,19 +334,6 @@ path = "license-apache-2.0"
 license = "Apache-2.0"
 checksum = "c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b"
 
-[windows-collections.clarify]
-license = "MIT OR Apache-2.0"
-
-[[windows-collections.clarify.files]]
-path = "license-mit"
-license = "MIT"
-checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
-
-[[windows-collections.clarify.files]]
-path = "license-apache-2.0"
-license = "Apache-2.0"
-checksum = "c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b"
-
 [windows-core.clarify]
 license = "MIT OR Apache-2.0"
 
@@ -356,19 +343,6 @@ license = "MIT"
 checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
 
 [[windows-core.clarify.files]]
-path = "license-apache-2.0"
-license = "Apache-2.0"
-checksum = "c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b"
-
-[windows-future.clarify]
-license = "MIT OR Apache-2.0"
-
-[[windows-future.clarify.files]]
-path = "license-mit"
-license = "MIT"
-checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
-
-[[windows-future.clarify.files]]
 path = "license-apache-2.0"
 license = "Apache-2.0"
 checksum = "c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b"
@@ -408,19 +382,6 @@ license = "MIT"
 checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
 
 [[windows-link.clarify.files]]
-path = "license-apache-2.0"
-license = "Apache-2.0"
-checksum = "c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b"
-
-[windows-numerics.clarify]
-license = "MIT OR Apache-2.0"
-
-[[windows-numerics.clarify.files]]
-path = "license-mit"
-license = "MIT"
-checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
-
-[[windows-numerics.clarify.files]]
 path = "license-apache-2.0"
 license = "Apache-2.0"
 checksum = "c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b"
@@ -473,19 +434,6 @@ license = "MIT"
 checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
 
 [[windows-targets.clarify.files]]
-path = "license-apache-2.0"
-license = "Apache-2.0"
-checksum = "c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b"
-
-[windows-threading.clarify]
-license = "MIT OR Apache-2.0"
-
-[[windows-threading.clarify.files]]
-path = "license-mit"
-license = "MIT"
-checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
-
-[[windows-threading.clarify.files]]
 path = "license-apache-2.0"
 license = "Apache-2.0"
 checksum = "c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b"
@@ -566,18 +514,6 @@ license = "MIT"
 path = "LICENSE"
 license = "MIT"
 checksum = "31b94860253d8ec7b4529f51901044d3b459d6292d996504a36b1bae3a36a812"
-
-# zvariant_utils's package carries the MIT text with no copyright line. The
-# zbus repository it is published from keeps, at its root, the same licence
-# with the holders named.
-
-[zvariant_utils.clarify]
-license = "MIT"
-
-[[zvariant_utils.clarify.git]]
-path = "LICENSE-MIT"
-license = "MIT"
-checksum = "260e4ff3fc493695880c90774283eb1e3d018f898fabe655bbd52dd2cbd2fcad"
 
 # Packages with no licence file, whose repository has one at the published
 # commit: lyon, profiling, svg_fmt, gpu-alloc and gpu-descriptor. Each is
