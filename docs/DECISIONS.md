@@ -249,10 +249,10 @@ entry in `ignore` carries a written reason").
   removing either makes `cargo deny` fail. deny.toml names the path that
   reaches each at the pin (D32 item 9 (e)).*
   *Re-examined 2026-10-16 at the stage `4f609cd1b` (D32 item 9 (a)):
-  `cargo tree --locked -i paste@1.0.15 --target all` and
-  `cargo tree --locked -i ttf-parser@0.25.1 --target all` show the paths that
-  `deny.toml` names, and `cargo deny --locked check` passes there. To be
-  repeated at the tag.*
+  `cargo tree --locked -i paste@1.0.15 --target all -e normal,build` and
+  `cargo tree --locked -i ttf-parser@0.25.1 --target all -e normal,build`
+  show the paths that `deny.toml` names, and `cargo deny --locked check`
+  passes there. To be repeated at the tag.*
 - **Kept from Rep-1:** `unmaintained = "all"`, `yanked = "deny"`, the
   `digest` 0.11 ban, and the denied features of `ureq`, `argon2` and
   `serde_json`. Feature unification means a crate in the interface's graph
