@@ -1095,9 +1095,10 @@ fn review<'a>(model: &'a Model, page: &'a WalletPage, plan: &'a PlanView) -> Ele
     let unit = model.prefs.unit;
     let compact = model.compact();
     let index = row_of(model, plan.from).map(|a| a.index);
-    // What to check, one destination each, as they go on the wire. A phone
-    // has no table header: each destination is a block (docs/SCREENS.md,
-    // "Compact layout").
+    // What to check, one destination each, as they go on the wire. The
+    // desktop's W5 draws them as a table with its header. A phone never reaches
+    // this function: its page 3 is `review_page`, which draws each destination
+    // as a block at every width (docs/SCREENS.md, W5 and "Compact layout").
     let mut list = column![ui::section_label(
         "Check each destination against its payee"
     )]
@@ -2927,7 +2928,8 @@ mod tests {
 
             // Page 1: a table with its header, a Paste and a Scan for each row, and
             // no block. Both buttons stand beneath the field, the Paste beside the
-            // Scan, and the field takes the cell's width: 250 pixels or more.
+            // Scan, and the field takes the cell's width: at least 250 pixels, the
+            // implementer's floor and not the owner's (docs/DECISIONS.md D42 item 7).
             let to = with_buttons(stage_page(SendStage::To(BTreeMap::new()), typed()));
             let drawn = texts(screens::view(&to), (width, height));
             for head in ["#", "Destination", "Reference"] {
@@ -2977,8 +2979,9 @@ mod tests {
             assert_eq!(scans_at(&resign, width).len(), 2, "at {width} wide");
             assert_side_by_side(&drawn, "Fee, nanoMCM in total", "Block-to-live");
             assert_eq!(fits_at(screens::view(&resign), width, height), Ok(()));
-            // W8's destination field, with both buttons beneath it: 180 pixels or
-            // more (owner, 2026-10-18, answer (A)).
+            // W8's destination field, with both buttons beneath it: at least 180
+            // pixels, the implementer's floor and not the owner's (docs/DECISIONS.md
+            // D42 item 7).
             let field = focusable_bounds_at(screens::view(&resign), width, height)[0];
             let (paste, scan) = (at(&drawn, "Paste"), at(&drawn, "Scan"));
             assert!(
@@ -3041,6 +3044,28 @@ mod tests {
             assert!(has(&drawn, "Destination 1"), "a block at {width} wide");
             assert!(!has(&drawn, "#"), "no table at {width} wide");
             assert_eq!(fits_at(screens::view(&resign), width, height), Ok(()));
+        }
+    }
+
+    #[test]
+    fn a_phone_review_page_draws_its_destinations_as_blocks_at_every_width() {
+        // Page 3 of a phone's Send is `review_page`, and it draws each destination
+        // as a block at every width, sideways included: the table is on page 1 and
+        // on W8 alone, from 844 wide (docs/SCREENS.md, W5 and "Compact layout").
+        for (width, height) in [
+            (NARROWEST, 640.0),
+            (667.0, 375.0),
+            (780.0, 360.0),
+            (844.0, 390.0),
+            (1024.0, 600.0),
+        ] {
+            let model = phone_at(stage_page(SendStage::Review(plan()), typed()), width);
+            let drawn = texts(screens::view(&model), (width, height));
+            assert!(has(&drawn, "3 of 4"), "page 3 at {width} wide");
+            assert!(has(&drawn, "#1"), "a block at {width} wide");
+            assert!(!has(&drawn, "#"), "no table header at {width} wide");
+            assert!(has(&drawn, "Continue to signing"), "page 3 at {width} wide");
+            assert_eq!(fits_at(screens::view(&model), width, height), Ok(()));
         }
     }
 

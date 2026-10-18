@@ -4004,9 +4004,13 @@ destination field is 260.7 pixels wide at 844 and 380.7 at 1024, and W8's is
 pixels of insets at each side (`phone_sideways` in
 `crates/app/examples/screenshots.rs`), which the render assumes and a device may
 not give. With them the To page's field is 198.0 at 844 and 318.0 at 1024, and
-W8's is 142.5 and 232.5. So the 250 and the 180 pixels that answer 7 asks of the
-To page and of W8 hold in the harness at both widths, and with the insets only
-at 1024. Before answer 7, with Paste beside each field, the harness measured 188
+W8's is 142.5 and 232.5. The 250 and the 180 pixels are the implementer's test
+floors, not the owner's: answer 7 asks that the field take the cell's full width
+and names no pixel figure. The tests hold the To page's field to 250 pixels and
+W8's to 180 in the harness, at both widths and without the insets. With the
+insets they hold only at 1024: at 844 the To page's field is 198.0 and W8's is
+142.5, each below its floor. The owner must accept that or change the layout.
+Before answer 7, with Paste beside each field, the harness measured 188
 and 117 at 844, and 308 and 207 at 1024: the Paste button and its space took
 72.7 pixels from each field.
 
