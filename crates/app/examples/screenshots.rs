@@ -29,7 +29,11 @@
 //! buttons (`phone-w4-send-to-scan.png`), the same page held sideways, 844 by
 //! 390 (`phone-w4-send-to-sideways.png`), and the scanner's own page, drawn by
 //! the application with a stand-in frame (`phone-w4-send-scan-preview.png`)
-//! (docs/DECISIONS.md D42). The recovery phrase after a screenshot is drawn at
+//! (docs/DECISIONS.md D42). The re-sign form with a shell's scanner is drawn
+//! as `phone-w8-resign-scan.png`, and page 2 held sideways, 844 by 390, with
+//! the fee and the block-to-live side by side, as
+//! `phone-w4-send-amount-sideways.png` (docs/DECISIONS.md D42; owner,
+//! 2026-10-18). The recovery phrase after a screenshot is drawn at
 //! 390 by 844, with the warning in the words' place
 //! (`phone-s4-phrase-photographed.png`), and while the screen is captured
 //! (`phone-s4-phrase-captured.png`) (docs/DECISIONS.md D44 items 1 and 3). The
@@ -39,7 +43,7 @@
 //! (`phone-w1-wallet-offer.png`), and Settings with the unlock's row
 //! (`phone-w11-settings-device.png`) (docs/DECISIONS.md D45 item 4). The
 //! desktop offers no device unlock, so they are the phone's alone. So the
-//! phone's images are 84 in all. Every piece of text names a bundled face
+//! phone's images are 86 in all. Every piece of text names a bundled face
 //! (`tawara_app::fonts`), so the pixels do not depend on the fonts a machine
 //! has installed.
 //!
@@ -856,6 +860,10 @@ const SIDEWAYS: (u32, u32) = (844, 390);
 /// How far the sideways To page is scrolled down, in logical pixels, so that its
 /// first destination's row, with its Paste and its Scan, is in the window.
 const SIDEWAYS_SCROLL: f32 = 90.0;
+/// How far the sideways amounts page is scrolled down, in logical pixels, so that
+/// its table's header and rows, and the fee and the block-to-live side by side,
+/// are in the window.
+const SIDEWAYS_AMOUNTS_SCROLL: f32 = 100.0;
 /// A short phone's height (docs/DECISIONS.md D44 item 2): under 733 pixels
 /// between its insets, so the recovery phrase is drawn in two frames on it.
 /// D44 item 2 gives the 733, held as `PHRASE_ONE_FRAME` in
@@ -1088,6 +1096,17 @@ fn phones(width: u32) -> Vec<Image> {
         focus: None,
         scroll: Some(SIDEWAYS_SCROLL),
     });
+    // Page 2 held sideways: the amounts as the table's rows, and the fee and the
+    // block-to-live side by side, in the width a sideways phone has (owner,
+    // 2026-10-18; docs/DECISIONS.md D42).
+    out.push(Image {
+        name: "phone-w4-send-amount-sideways".to_owned(),
+        size: SIDEWAYS,
+        model: phone_sideways(phone_named("w4-send-amount")),
+        to_end: false,
+        focus: None,
+        scroll: Some(SIDEWAYS_AMOUNTS_SCROLL),
+    });
     out.push(Image {
         name: "phone-w4-send-scan-preview".to_owned(),
         size,
@@ -1096,6 +1115,20 @@ fn phones(width: u32) -> Vec<Image> {
                 phone_named("w4-send-to"),
                 ScanPreview::Application,
             )),
+            0.0,
+        ),
+        to_end: false,
+        focus: None,
+        scroll: None,
+    });
+    // The re-sign form (W8) with a shell's scanner: its Paste stands beside each
+    // field, and its Scan beneath it (docs/DECISIONS.md D42 item 1; owner,
+    // 2026-10-18).
+    out.push(Image {
+        name: "phone-w8-resign-scan".to_owned(),
+        size,
+        model: phone(
+            with_scanner(phone_named("w8-resign"), ScanPreview::Shell),
             0.0,
         ),
         to_end: false,

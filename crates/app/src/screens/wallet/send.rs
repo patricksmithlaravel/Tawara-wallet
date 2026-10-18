@@ -122,10 +122,10 @@ pub fn scanner<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Messag
 /// Cancel (docs/DECISIONS.md D42 item 3).
 const VIEWFINDER: f32 = 200.0;
 
-/// The Scan button beside destination row `row` on a phone whose shell gives a
-/// scanner (docs/DECISIONS.md D42 item 1): drawn with the Scan glyph, and enabled
-/// while nothing is being done for the page and no scan is under way. `None`
-/// where no scanner is offered, which is every desktop.
+/// The Scan button of destination row `row`, which stands beneath the row's field
+/// on a phone whose shell gives a scanner (docs/DECISIONS.md D42 item 1): drawn
+/// with the Scan glyph, and enabled while nothing is being done for the page and no
+/// scan is under way. `None` where no scanner is offered, which is every desktop.
 fn scan_button<'a>(model: &Model, row: usize) -> Option<Element<'a, Message>> {
     model.scan_offered().then(|| {
         let idle = model.busy.is_none() && model.scanning.is_none();
@@ -140,13 +140,13 @@ fn scan_button<'a>(model: &Model, row: usize) -> Option<Element<'a, Message>> {
     })
 }
 
-/// The field of destination row `n` in a table row, with the buttons a phone has
-/// (docs/DECISIONS.md D32 item 10 (g), D42 item 1). On a phone the Paste button
-/// stands beside the field, and the Scan button, where a shell gives a scanner, on
-/// a line of its own beneath it (owner, 2026-10-18). On the desktop the field is
-/// the cell's alone. `shown` is the form the Paste button records, as
-/// [`destinations`] records it.
-fn table_field<'a>(
+/// The address field of destination row `n`, with the buttons a phone has, in a
+/// table row's cell or in a block (docs/DECISIONS.md D32 item 10 (g), D42 item 1).
+/// On a phone the Paste button stands beside the field, and the Scan button, where
+/// a shell gives a scanner, on a line of its own beneath it, at every width (owner,
+/// 2026-10-18). On the desktop the field stands alone. `shown` is the form the Paste
+/// button records, as [`destinations`] records it.
+fn address_field<'a>(
     model: &Model,
     n: usize,
     to: iced::widget::TextInput<'a, Message>,
@@ -406,7 +406,7 @@ fn to_page<'a>(
             let mut line = column![
                 row![
                     t((i + 1).to_string(), ty::MONO, color::TEXT_MUTED).width(Length::Fixed(20.0)),
-                    container(table_field(model, i, to, shown)).width(Length::FillPortion(6)),
+                    container(address_field(model, i, to, shown)).width(Length::FillPortion(6)),
                     container(reference).width(Length::FillPortion(3)),
                     table_remove(
                         (idle && several).then(|| Message::Wallet(WalletMsg::RemoveDestination(i)))
@@ -434,19 +434,11 @@ fn to_page<'a>(
                 Some(Icon::Trash),
                 (idle && several).then(|| Message::Wallet(WalletMsg::RemoveDestination(i))),
             );
-            // The Paste button beside the field, on a phone at any width, and the
-            // Scan button beside that where a shell gives a scanner, as
-            // [`destinations`] has them (docs/DECISIONS.md D32 item 10 (g), D42
-            // item 1).
-            let mut address = row![to.width(Length::Fill)];
-            if model.phone() {
-                address = address.push(paste::button(shown.map(|(form, rows)| {
-                    Message::Paste(PasteInto::Destination { form, row: i, rows })
-                })));
-                if let Some(scan) = scan_button(model, i) {
-                    address = address.push(scan);
-                }
-            }
+            // The Paste button stands beside the field, on a phone at any width, and
+            // the Scan button, where a shell gives a scanner, on a line of its own
+            // beneath it, as [`destinations`] has them (docs/DECISIONS.md D32 item 10
+            // (g), D42 item 1; owner, 2026-10-18).
+            let address = address_field(model, i, to, shown);
             let mut block = column![
                 row![
                     t(
@@ -458,10 +450,7 @@ fn to_page<'a>(
                     remove,
                 ]
                 .align_y(Alignment::Center),
-                address
-                    .spacing(sp::S8)
-                    .align_y(Alignment::Center)
-                    .width(Length::Fill),
+                address,
             ]
             .spacing(sp::S12);
             if let Some(why) = refused.get(&(i, RefusedField::Address)) {
@@ -701,10 +690,10 @@ fn amount_page<'a>(
 /// desktop and on a phone held sideways, they are rows of a table with the fees
 /// side by side (docs/SCREENS.md, "Compact layout"; docs/DECISIONS.md D32 item 10
 /// (b), D39 item 5; owner, 2026-10-18). The Paste and Scan buttons follow
-/// `phone()`, so a phone held sideways has them in the table.
+/// `phone()`: a phone's Paste stands beside each field and its Scan beneath it,
+/// upright and sideways alike (owner, 2026-10-18).
 fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> {
     let idle = model.busy.is_none();
-    let phone = model.phone();
     let table = !model.compact();
     let field = |value: &'a str, placeholder: &'a str, mono: bool| {
         let face = if mono { ty::MONO } else { ty::FIELD };
@@ -762,11 +751,11 @@ fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> 
         if table {
             // A table row, as the desktop has it. On a phone the destination's cell
             // holds its Paste button beside the field and its Scan button beneath
-            // (see `table_field`).
+            // (see `address_field`).
             list = list.push(
                 row![
                     t((i + 1).to_string(), ty::MONO, color::TEXT_MUTED).width(Length::Fixed(20.0)),
-                    container(table_field(model, i, to, shown)).width(Length::FillPortion(6)),
+                    container(address_field(model, i, to, shown)).width(Length::FillPortion(6)),
                     container(amount).width(Length::FillPortion(3)),
                     container(reference).width(Length::FillPortion(3)),
                     remove,
@@ -782,18 +771,9 @@ fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> 
             // The destination takes the width, and the amount and the
             // reference sit side by side beneath it, so that a long
             // destination is not cut short on a phone (D32 item 10 (b)).
-            // Beside the destination stand its Paste button (docs/DECISIONS.md
-            // D32 item 10 (g)) and, where a shell gives a scanner, its Scan
-            // button (D42 item 1).
-            let mut address = row![to.width(Length::Fill)];
-            if phone {
-                address = address.push(paste::button(shown.map(|(form, rows)| {
-                    Message::Paste(PasteInto::Destination { form, row: i, rows })
-                })));
-                if let Some(scan) = scan_button(model, i) {
-                    address = address.push(scan);
-                }
-            }
+            // Beside the destination stands its Paste button (docs/DECISIONS.md
+            // D32 item 10 (g)), and beneath it, where a shell gives a scanner, its
+            // Scan button (D42 item 1; owner, 2026-10-18).
             list = list.push(
                 column![
                     row![
@@ -807,10 +787,7 @@ fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> 
                     ]
                     .width(Length::Fill)
                     .align_y(Alignment::Center),
-                    address
-                        .spacing(sp::S8)
-                        .align_y(Alignment::Center)
-                        .width(Length::Fill),
+                    address_field(model, i, to, shown),
                     row![
                         column![
                             t("Amount (MCM)", ty::FORM_LABEL, color::TEXT_SECONDARY),
@@ -2076,7 +2053,7 @@ mod tests {
             ("page 1 with the account set aside", set_aside_model),
             ("page 1 with the account list open", list),
             (
-                "page 1 with a scanner, so Scan stands by each destination",
+                "page 1 with a scanner, so Scan stands beneath each destination's field",
                 with_scanner(
                     phone_at(stage_page(to(), typed()), width),
                     ScanPreview::Shell,
@@ -2543,14 +2520,33 @@ mod tests {
 
     #[test]
     fn w8_fits_a_phone_screen() {
-        let model = phone(
+        // W8 at both phone sizes, bare and with a shell's scanner: its Paste stands
+        // beside each field and its Scan beneath it, and nothing passes the edge
+        // (docs/DECISIONS.md D32 item 10 (b), D42 item 1; owner, 2026-10-18).
+        let page = || {
             Page::Resign(ResignPage {
                 account: accounts()[1],
                 form: typed(),
-            }),
-            None,
-        );
-        assert_eq!(fits(screens::view(&model), NARROWEST), Ok(()));
+            })
+        };
+        for (width, height) in PHONES {
+            let bare = phone_at(page(), width);
+            let scanned = with_scanner(phone_at(page(), width), ScanPreview::Shell);
+            for model in [bare, scanned] {
+                assert_eq!(
+                    fits_at(screens::view(&model), width, height),
+                    Ok(()),
+                    "at {width} by {height}"
+                );
+            }
+            // The first destination keeps the width its card gives less its Paste.
+            let model = phone_at(page(), width);
+            let field = focusable_bounds_at(screens::view(&model), width, height)[0];
+            assert!(
+                field.width >= 200.0,
+                "at {width} by {height} the destination is {field:?}"
+            );
+        }
     }
 
     #[test]
@@ -2722,9 +2718,10 @@ mod tests {
     }
 
     #[test]
-    fn on_a_phone_a_destination_beside_its_paste_and_its_scan_keeps_the_rest_of_its_row() {
-        // With a scanner, the Scan button stands beside the Paste button, and the
-        // destination still takes what the two leave of its row, at 360 and at 390.
+    fn on_a_phone_a_destination_beside_its_paste_and_its_scan_beneath_it() {
+        // With a scanner, the Paste button stands beside the field and the Scan
+        // button beneath it, on a line of its own, so the destination keeps the width
+        // its card gives less the Paste, at 360 and at 390 (owner, 2026-10-18).
         for width in [NARROWEST, 390.0] {
             let model = with_scanner(
                 phone_at(stage_page(SendStage::To(BTreeMap::new()), typed()), width),
@@ -2735,12 +2732,16 @@ mod tests {
             let paste = pastes_at(&model, width)[0];
             let scan = scans_at(&model, width)[0];
             assert!(
-                field.width >= 120.0,
+                field.width >= 200.0,
                 "at {width} wide the destination is {field:?}"
             );
             assert!(
-                field.x + field.width < paste.x && paste.x + paste.width < scan.x,
-                "the field, the Paste and the Scan run in that order: {field:?}, {paste:?}, {scan:?}"
+                field.x + field.width < paste.x && paste.y < field.y + field.height,
+                "the Paste stands beside the field: {paste:?}, {field:?}"
+            );
+            assert!(
+                scan.y > field.y + field.height && scan.x < paste.x,
+                "the Scan stands beneath the field: {scan:?}, {field:?}"
             );
         }
     }
@@ -2809,12 +2810,12 @@ mod tests {
     }
 
     #[test]
-    fn a_scan_button_stands_with_each_paste_and_none_without_a_scanner() {
-        // A Scan button for each destination row, on page 1 and on the re-sign
-        // form (docs/DECISIONS.md D42 item 1). Upright it stands beside its Paste.
-        // In the table of a phone held sideways it stands on a line of its own,
-        // beneath the field (owner, 2026-10-18). A phone whose shell gives no
-        // scanner has none.
+    fn a_scan_button_stands_beneath_each_field_and_none_without_a_scanner() {
+        // A Scan button for each destination row, on page 1 and on the re-sign form
+        // (docs/DECISIONS.md D42 item 1). At every width the Paste stands beside the
+        // field and the Scan on a line of its own beneath it, upright and in the
+        // table of a phone held sideways (owner, 2026-10-18). A phone whose shell
+        // gives no scanner has none.
         let pages = || {
             [
                 stage_page(SendStage::To(BTreeMap::new()), typed()),
@@ -2825,7 +2826,6 @@ mod tests {
             ]
         };
         for width in [NARROWEST, 390.0, 600.0, 844.0, 1023.0] {
-            let upright = width < crate::app::COMPACT;
             for page in pages() {
                 let model = with_scanner(phone_at(page.clone(), width), ScanPreview::Shell);
                 let pastes = pastes_at(&model, width);
@@ -2833,20 +2833,16 @@ mod tests {
                 assert_eq!(scans.len(), 2, "at {width} wide");
                 assert_eq!(pastes.len(), 2, "at {width} wide");
                 for (paste, scan) in pastes.iter().zip(&scans) {
-                    if upright {
-                        assert!(
-                            scan.x > paste.x + paste.width && (scan.y - paste.y).abs() < 1.0,
-                            "the Scan button stands to the Paste button's right: {scan:?}, {paste:?}"
-                        );
-                    } else {
-                        // The Paste stands beside the field, so a Scan that is
-                        // lower than the Paste stands beneath the field.
-                        assert!(
-                            scan.y > paste.y + 20.0,
-                            "the Scan button stands beneath the field at {width} wide: \
-                             {scan:?}, {paste:?}"
-                        );
-                    }
+                    // Each Scan is lower than its own Paste, which stands beside the
+                    // field, so the Scan stands beneath the field. Its x is not
+                    // compared: at 600 the table's cell is so narrow that the Paste
+                    // sits at its left edge, and the Scan's label may start to the
+                    // Paste's right.
+                    assert!(
+                        scan.y > paste.y + 20.0,
+                        "the Scan button stands beneath the field at {width} wide: \
+                         {scan:?}, {paste:?}"
+                    );
                 }
                 assert_eq!(
                     fits(screens::view(&model), width),
