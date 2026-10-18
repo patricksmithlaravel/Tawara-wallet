@@ -110,9 +110,12 @@ checked at those widths. Its Paste and Scan buttons follow the phone, not the
 width, so that a phone held sideways has the same buttons as a phone held
 upright (D40 item 5; D42, as built). Inside its pages it uses the width (owner,
 2026-10-18): from 600 wide its Send destinations, on page 1 and on W8, are table
-rows, and the fee and block-to-live stand side by side, as on a narrow desktop;
-W9's field lays out by the width, with Submit beside its helper. Its pages stay
-pages (D40).
+rows, and the fee and block-to-live stand side by side, as on a narrow desktop.
+Its pages stay pages (D40). At 600 the table leaves W8's destination field no
+width, where Paste takes the cell; the owner decides whether that stands (D42).
+W9's field also lays out by the width, with Submit beside its helper from 600
+wide: the implementer's extension, awaiting the owner's approval, not part of
+the owner's answer.
 
 The wallet's shell in the compact layout (`crates/app/src/screens/wallet.rs`):
 
@@ -173,7 +176,7 @@ gives a scanner, which reads a QR code into that destination (D42; owner,
 | W5 | one block per destination; the summary follows. On a phone, pages 3 and 4 of Send (D40): page 3 has the same blocks, then the figures and "Continue to signing"; page 4 has the key callout, the three steps stacked, and "Sign & submit" alone |
 | W6 | the artifact buttons and the "Back to the wallet" and "Open the account" pair wrap; on a phone Save artifact asks the system to open the share sheet, and the page says the spend still counts as not saved (D32 item 10 (i)) |
 | W7 | the state panel's buttons wrap |
-| W9 | the signed-bytes field takes the full width less its Paste button; Submit and its helper stack |
+| W9 | the signed-bytes field takes the full width less its Paste button; Submit and its helper stack. Held sideways from 600 wide, Submit sits beside its helper: the implementer's extension, awaiting the owner's approval (see the compact layout above) |
 | W10 | the four filters share one line and the search field sits beneath them; rows are two lines (title and amount, then date and account, then the detail); the chosen transaction's detail opens under its row |
 | W11 | accounts are stacked items with their status; each control sits under its label; the auto-lock periods keep their own widths and wrap onto a second line, since five that share 328 pixels cannot hold their labels on one line; the two units share the width; where a shell offers the device unlock, its row is stacked under the keystore's auto-lock, with its control under its note (D45 item 4) |
 | W12 | each head row is stacked; labels sit over the index fields |

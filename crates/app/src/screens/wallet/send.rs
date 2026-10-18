@@ -1625,8 +1625,9 @@ fn submit_form<'a>(
     // Paste button beside it (docs/DECISIONS.md D32 item 10 (g)); the desktop has
     // no Paste. The layout follows the width, as the destinations' does: Submit
     // stands above its helper on a phone held upright, and beside it in a wider
-    // window, a phone held sideways included (docs/SCREENS.md, "Compact layout";
-    // owner, 2026-10-18).
+    // window, a phone held sideways included (docs/SCREENS.md, "Compact layout").
+    // Beside it on a sideways phone is the implementer's extension, awaiting the
+    // owner's approval (docs/DECISIONS.md D40).
     let paste = paste::button(
         model
             .busy

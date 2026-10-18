@@ -3739,9 +3739,13 @@ inside the pages follows the width, not the phone shell (owner, 2026-10-18):
 from 600 wide, a phone held sideways draws its Send destinations as table rows,
 and its fees and block-to-live side by side, as a narrow desktop does (the table
 follows `compact()` in `crates/app/src/screens/wallet/send.rs`). Its pages stay
-pages; only the layout inside them uses the width. W9's signed-bytes field
-follows the width too, with Submit beside its helper from 600 wide up. Below 600
-wide the blocks and the stacked fees are as they are upright.
+pages; only the layout inside them uses the width. Below 600 wide the blocks and
+the stacked fees are as they are upright. The limit of the table at 600 is open
+for the owner ("Still open for the owner", D42).
+
+W9's signed-bytes field also follows the width, with Submit beside its helper
+from 600 wide up. That is the implementer's extension, not part of the owner's
+answer above, and it awaits the owner's approval.
 
 Not built:
 - Item 6, the note on S7 after a lock, is not built. It is new wording, and the
@@ -3964,15 +3968,32 @@ approved; answers 4 to 6 are decided and built.
    1023 wide, the Send destinations draw as table rows and the fees side by
    side, using the extra width, as on a narrow desktop. Paste and Scan still
    appear, since they follow `phone()`. D40's pages stay pages on a phone;
-   only the layout inside them uses the width.
+   only the layout inside them uses the width. It is built at 600, as the owner
+   set it; its limit at 600 is open, below.
 
 **Still open for the owner.** At 600 wide the table leaves the destination
-field narrow. A measurement taken on 2026-10-18, while the table was built,
-put the To page's field at about 26 pixels, and W8's at none, where Paste
-takes the cell. Those figures have not been measured since, and nothing has
-been seen on a device. The owner set 600 in answer 6. Whether the table should
-start higher is the owner's decision; raising it would change the table's
-checks in `crates/app/src/screens/wallet/send.rs`.
+field too narrow to use, and the owner has not yet said whether to accept that
+or to raise the threshold. Measured on 2026-10-18 in the test harness's
+geometry, with the table as built (not on a device; nothing has been seen on a
+device):
+
+- The To page's destination field is 26 pixels wide at 600, 52 at 640, 92 at
+  700, 146 at 780, 188 at 844 and 308 at 1024.
+- W8's destination field is none at 600, where Paste takes the cell, and 15,
+  45, 85, 117 and 207 pixels at 640, 700, 780, 844 and 1024.
+- W8's amount and reference fields are 34 pixels at 600, 44 at 640, 59 at 700,
+  79 at 780, 95 at 844 and 140 at 1024.
+- On page 2 (Amount), the amount field is 65 pixels at 600, 78 at 640, 98 at
+  700, 125 at 780, 146 at 844 and 206 at 1024.
+- At 600 the Paste label's box is 31.5 pixels for a word of 36.3, and the
+  Scan label's box is 15.5 pixels for a word of 32.9. From 640 up both fit.
+
+The owner either keeps 600 and records W8's field at 600 as an accepted limit,
+or raises the threshold, which changes the four `compact()` checks in
+`crates/app/src/screens/wallet/send.rs`. A threshold of 844 would give W8's
+destination 117 pixels; 1024, the narrowest desktop window (`WINDOW_MIN` in
+`crates/app/src/lib.rs`), would give a sideways phone the desktop's table. This
+item stays open until the owner answers.
 
 **Wording awaiting approval.** None of it is approved yet:
 
