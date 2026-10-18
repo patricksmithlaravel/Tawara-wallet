@@ -57,6 +57,8 @@ pub enum Page {
     Activity(ActivityPage),
     /// W11.
     Settings(SettingsPage),
+    /// The licences, from W11's About (docs/DECISIONS.md D35).
+    Licences,
     /// W12.
     Recovery(RecoveryPage),
     /// E1.
@@ -582,6 +584,8 @@ pub enum To {
     Resubmit(AccountId),
     Activity,
     Settings,
+    /// The licences, from W11's About.
+    Licences,
     /// W12, with this account to act on.
     Recovery(Option<AccountId>),
     /// E1.
@@ -726,7 +730,7 @@ impl Page {
             | Page::Tag(_)
             | Page::Transaction(_)
             | Page::Queue(_) => 4,
-            Page::Settings(_) | Page::Recovery(_) => 5,
+            Page::Settings(_) | Page::Licences | Page::Recovery(_) => 5,
             Page::Dashboard | Page::AddAccount(_) | Page::Account(_) => 0,
         }
     }
@@ -1496,6 +1500,7 @@ impl App {
             To::Settings => Page::Settings(SettingsPage {
                 node: self.model.node.url.clone().unwrap_or_default(),
             }),
+            To::Licences => Page::Licences,
             To::Recovery(target) => Page::Recovery(RecoveryPage {
                 target,
                 ..RecoveryPage::default()
@@ -1745,8 +1750,14 @@ impl App {
                     let entering = self.model.phone()
                         && matches!(to, To::Send(_))
                         && !self.model.send_in_progress();
+                    // The licences open at their top, and so does Settings when
+                    // Back returns from them. A page keeps the scroll its
+                    // predecessor had, since the page's scrollable is the same
+                    // widget, and the licences are long (docs/DECISIONS.md D35).
+                    let licences = matches!(to, To::Licences)
+                        || matches!(self.wallet_page().map(|p| &p.page), Some(Page::Licences));
                     self.open(to);
-                    if entering {
+                    if entering || licences {
                         return crate::screens::page_top();
                     }
                 }

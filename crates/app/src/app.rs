@@ -8617,6 +8617,29 @@ mod tests {
     }
 
     #[test]
+    fn the_licences_open_from_settings_and_back_returns_to_settings() {
+        // The row in About opens the licences, and Back returns to Settings, as a
+        // person goes between them (docs/DECISIONS.md D35).
+        let mut app = on_wallet(Page::Settings(SettingsPage::default()));
+        for message in press_drawn(&app.model, "Show the licences", SETTINGS_WINDOW) {
+            let _ = app.update(message);
+        }
+        assert!(
+            matches!(wallet_page(&app).page, Page::Licences),
+            "{:?}",
+            wallet_page(&app).page
+        );
+        for message in press_drawn(&app.model, "Back", (1440, 900)) {
+            let _ = app.update(message);
+        }
+        assert!(
+            matches!(wallet_page(&app).page, Page::Settings(_)),
+            "{:?}",
+            wallet_page(&app).page
+        );
+    }
+
+    #[test]
     fn recovery_shows_every_report_whole_and_advances_only_as_typed_and_confirmed() {
         let reports = tawara_wallet_core::sample::review();
         let paused = reports[2].account;
