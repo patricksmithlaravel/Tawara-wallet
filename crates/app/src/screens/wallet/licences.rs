@@ -160,7 +160,10 @@ mod tests {
 
     use super::*;
     use crate::app::{Page, Screen};
-    use crate::harness::{Driver, fits_at, mouse_move, mouse_press, mouse_release, texts};
+    use crate::harness::{
+        Driver, finger_lift, finger_move, finger_press, fits_at, mouse_move, mouse_press,
+        mouse_release, texts,
+    };
     use crate::screens;
 
     /// A window of the desktop, as the wallet's first window is drawn.
@@ -277,6 +280,27 @@ mod tests {
                 "{messages:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_finger_drags_the_licences_on_a_phone() {
+        // The text is one scrollable column with no touch of its own, so a finger
+        // on it drags the page, as a phone's page is dragged: 200 pixels up scrolls
+        // the page 200 down.
+        let model = licences_at(PHONE.0);
+        let mut driver = Driver::new(screens::view(&model), (PHONE.0 as u32, PHONE.1 as u32));
+        let _ = driver.send(&[
+            finger_press(1, 180.0, 500.0),
+            finger_move(1, 180.0, 300.0),
+            finger_lift(1, 180.0, 300.0),
+        ]);
+        let scrolled = driver
+            .scroll_of(&screens::page_id())
+            .map_or(0.0, |(_, offset)| offset.y);
+        assert!(
+            (scrolled - 200.0).abs() < 1.0,
+            "a finger dragged 200 pixels, and the page scrolled {scrolled}"
+        );
     }
 
     #[test]
