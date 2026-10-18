@@ -396,9 +396,33 @@ pub(crate) fn set(host: &Host) {
 
 /// The system's Back, where a shell has one.
 pub(crate) fn back() {
+    count_back();
     if let Some(back) = BACK.get() {
         back();
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times [`back`] was called on this thread, so that a test can
+    /// tell whether the system's Back went to the shell.
+    static BACKS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts a call of [`back`], for the tests.
+#[cfg(test)]
+fn count_back() {
+    BACKS.with(|b| b.set(b.get() + 1));
+}
+
+/// Counts nothing outside the tests.
+#[cfg(not(test))]
+fn count_back() {}
+
+/// How many times [`back`] has been called on this thread, for the tests.
+#[cfg(test)]
+pub(crate) fn backs() -> u32 {
+    BACKS.with(std::cell::Cell::get)
 }
 
 /// The shell's share sheet, where a shell has one: `None` with no shell, as

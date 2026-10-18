@@ -1895,11 +1895,18 @@ impl App {
                 }
             }
             Message::Input => self.touch(),
-            // On a phone's pages 2 to 4, the system's Back steps back one page
-            // of the send flow, and does not leave the application
-            // (docs/DECISIONS.md D40 item 3). Everywhere else, and on page 1,
-            // it is the shell's.
+            // On the scanner's page, the system's Back cancels the scan, through
+            // the scan's own stop, and the page the scan began from shows again
+            // with what was typed; the application is not sent to the background
+            // (owner, 2026-10-18). On a phone's pages 2 to 4, the system's Back
+            // steps back one page of the send flow, and does not leave the
+            // application (docs/DECISIONS.md D40 item 3). Everywhere else, and on
+            // page 1, it is the shell's.
             Message::SystemBack => {
+                if self.model.previewing() {
+                    self.model.stop_scan();
+                    return Task::none();
+                }
                 if self.model.send_steps_back() {
                     return self.on_wallet(WalletMsg::Back);
                 }
@@ -4156,6 +4163,51 @@ mod tests {
         );
         assert!(app.model.scanning.is_none());
         assert_eq!(rows_of(&app)[0].to, a_destination());
+    }
+
+    #[test]
+    fn back_on_the_scanner_page_cancels_the_scan_and_keeps_the_form() {
+        // (owner, 2026-10-18): the system's Back on the scanner's page ends the scan
+        // through the scan's own stop, shows the page the scan began from with what
+        // was typed, and is not the shell's Back, so the application stays in the
+        // foreground.
+        let _turn = FRAME_TURNS.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut app, mut received) = scanning_phone(scan_later, ScanPreview::Application);
+        let _ = app.update(Message::Wallet(WalletMsg::DestinationTo(
+            1,
+            a_destination(),
+        )));
+        let typed = rows_of(&app);
+        let _ = app.update(Message::Scan(0));
+        assert!(app.model.previewing(), "the scanner's page shows");
+        let (cancelled, backs) = (cancels(), host::backs());
+
+        let _ = app.update(Message::SystemBack);
+        assert!(app.model.scanning.is_none(), "Back ends the scan");
+        assert!(app.model.scan_preview.is_none());
+        assert_eq!(cancels(), cancelled + 1, "the camera is stopped");
+        assert_eq!(host::backs(), backs, "Back is not the shell's");
+        assert!(
+            !app.model.previewing(),
+            "the page the scan began from shows"
+        );
+        assert!(
+            matches!(
+                &wallet_page(&app).page,
+                Page::Send(SendPage {
+                    stage: SendStage::To(_),
+                    ..
+                })
+            ),
+            "{:?}",
+            wallet_page(&app).page
+        );
+        assert_eq!(rows_of(&app), typed, "what was typed is kept");
+
+        // The shell's reply, which comes after the Back, finds no scan to fill.
+        reply_later(Some(a_destination().into_bytes()));
+        take_replies(&mut app, &mut received);
+        assert_eq!(rows_of(&app), typed, "a reply after the Back fills nothing");
     }
 
     #[test]
@@ -7436,6 +7488,7 @@ mod tests {
             &scratch,
             send_page(SendStage::Sign(Box::new(plan)), form.clone()),
         );
+        let backs = host::backs();
         // Page 4 to page 3: the plan is kept.
         let _ = app.update(Message::SystemBack);
         assert!(matches!(
@@ -7469,9 +7522,14 @@ mod tests {
                 ..
             }) if refused.is_empty() && *kept == form
         ));
+        assert_eq!(
+            host::backs(),
+            backs,
+            "pages two to four do not reach the shell"
+        );
 
         // Page 1 is the shell's Back, which the flow does not take, so the
-        // page is left as it is.
+        // page is left as it is, and the shell is asked.
         assert!(!app.model.send_steps_back(), "page one is the shell's");
         let _ = app.update(Message::SystemBack);
         assert!(matches!(
@@ -7481,6 +7539,7 @@ mod tests {
                 ..
             })
         ));
+        assert_eq!(host::backs(), backs + 1, "page one hands Back to the shell");
     }
 
     #[test]
