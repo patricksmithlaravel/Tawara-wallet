@@ -175,7 +175,9 @@ an engineering reading, not legal advice.
   `platforms/android-36`, uses the android-36 emulator image, and adds
   `assetsPaths` and `resourcesUnused` to `configChanges`, which `aapt2 dump
   xmltree` must then read as `0xd800ffff`. Confirm the rule in Play Console
-  first (owner).
+  first (owner). Tawara-mobile PR #19 makes these changes
+  (`platform/android/tawara.sh`, `platform/android/AndroidManifest.xml`); the
+  rule stays the owner's to confirm.
 
 ### 1.6 The machines that build and sign
 
@@ -210,6 +212,10 @@ following before section 6 starts.
     AVD it created;
   - the `apt-get` step skipped off Linux, and an arm64-v8a system image on
     an Apple silicon Mac, where the x86_64 image does not run.
+
+  Tawara-mobile PR #19 makes the NDK host change, in `ndk_host`. It does not
+  make the other three: the emulator's port and AVD name, the `apt-get` step,
+  and the arm64 image.
 
 ## 2. The threat model's must-close items
 
@@ -334,6 +340,10 @@ builds.
   becomes Android's `versionCode` and iOS's `CFBundleVersion`, replacing the
   development bundle's literal `1`. A rebuilt upload of the same version
   takes a new build number. The desktop has no build number.
+  Tawara-mobile PR #19 keeps the counter in `platform/build-number`, at 0 until
+  the first upload, raised with `platform/build-number.sh bump N`. Both release
+  scripts refuse any other number. Where the counter lives is the owner's
+  choice.
 
 ### 5.3 Notices current
 
@@ -487,6 +497,12 @@ run.
 
 In Tawara-mobile, after sections 1.5 and 1.6.
 
+`platform/android/release.sh` (Tawara-mobile PR #19) makes the first four
+bullets below and the manifest checks of the fifth. Two things differ from the
+bullets. Its universal APK, made with `TAWARA_ANDROID_APK=1`, is signed with the
+upload key, where the fifth bullet names a throwaway key. The emulator checks on
+that APK are not in the script. Both are for the owner to decide.
+
 - [ ] Build `libtawara_mobile.so` for `aarch64-linux-android` and
   `x86_64-linux-android` with NDK 29.0.14206865, as `tawara.sh build`
   does, with its checks: `ANativeActivity_onCreate` exported and 16 KB
@@ -513,6 +529,14 @@ In Tawara-mobile, after sections 1.5 and 1.6.
 
 In Tawara-mobile, after the owner items of section 1.2 and Xcode 26.6
 (section 1.6).
+
+`platform/ios/release.sh` (Tawara-mobile PR #19) makes the bullets below up to
+the archive checks, and stops before signing unless the signing variables are
+set. Validation and upload stay with the owner. Its privacy manifest declares
+file timestamps and the system boot time, which the release binary's imports
+read on 2026-10-18 show, and no disk-space reason, since the binary imports no
+disk-space call. The reason codes are for the owner to confirm against Apple's
+list and the 26.x build.
 
 - [ ] Every command below runs with
   `DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer`.
