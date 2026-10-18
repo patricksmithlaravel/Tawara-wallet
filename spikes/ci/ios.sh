@@ -126,6 +126,14 @@ print(rt["identifier"], (named or phones)[-1]["identifier"])
 PY
   )
   echo "runtime $runtime; device type $devtype"
+  # UDID is the one device this run creates, and cleanup deletes only that
+  # device. UDID and LOGPID are reset first, so that a value from the
+  # environment is never taken for either. The trap is set before the creation,
+  # so that it runs whichever step fails; if the creation fails there is no
+  # device, and UDID stays empty.
+  UDID=
+  LOGPID=
+  trap cleanup EXIT
   UDID=$(xcrun simctl create tawara-spike "$devtype" "$runtime")
   echo "udid $UDID"
   # The software keyboard: Simulator's preference, written before boot.
@@ -143,7 +151,6 @@ PY
   xcrun simctl spawn "$UDID" log stream --style compact --level debug \
     --predicate "process == \"$BIN\"" >"$OUT/os.log" 2>&1 &
   LOGPID=$!
-  trap 'kill $LOGPID 2>/dev/null || true; xcrun simctl shutdown "$UDID" >/dev/null 2>&1 || true' EXIT
   checklist || true
   evidence
 }
@@ -302,6 +309,20 @@ evidence() {
     echo "::error::iOS checklist has failures"
     return 1
   fi
+}
+
+# cleanup is the EXIT trap of simulator. It stops the log stream, then shuts
+# down and deletes the device this run created. Errors here do not change the
+# exit status: a failed delete is a warning, and the run keeps its own status.
+cleanup() {
+  local rc=$?
+  trap - EXIT
+  if [ -n "${LOGPID:-}" ]; then kill "$LOGPID" 2>/dev/null || true; fi
+  if [ -n "${UDID:-}" ]; then
+    xcrun simctl shutdown "$UDID" >/dev/null 2>&1 || true
+    xcrun simctl delete "$UDID" >/dev/null || echo "::warning::could not delete the simulator $UDID"
+  fi
+  exit "$rc"
 }
 
 case ${1:-} in
