@@ -3989,11 +3989,14 @@ device):
   Scan label's box is 15.5 pixels for a word of 32.9. From 640 up both fit.
 
 The owner either keeps 600 and records W8's field at 600 as an accepted limit,
-or raises the threshold, which changes the four `compact()` checks in
-`crates/app/src/screens/wallet/send.rs`. A threshold of 844 would give W8's
-destination 117 pixels; 1024, the narrowest desktop window (`WINDOW_MIN` in
-`crates/app/src/lib.rs`), would give a sideways phone the desktop's table. This
-item stays open until the owner answers.
+or raises the threshold. Three checks set the table, in `to_page`, `amount_page`
+and `destinations` in `crates/app/src/screens/wallet/send.rs`. W9's Submit
+placement has a fourth, in `submit_form`, which a new threshold would move too
+unless it is split off. A threshold of 844 would give W8's destination 117
+pixels and the table from 844 wide. A threshold of 1024, the narrowest desktop
+window (`WINDOW_MIN` in `crates/app/src/lib.rs`), would take the table away from
+every sideways phone, since they are 600 to 1023 wide. This item stays open
+until the owner answers.
 
 **Wording awaiting approval.** None of it is approved yet:
 
