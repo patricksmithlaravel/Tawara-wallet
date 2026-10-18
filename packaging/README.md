@@ -16,7 +16,10 @@ user-visible wording listed under "Not decided".
 | `packaging/macos/Info.plist` | the template for the bundle's `Info.plist`; the script sets its version, build number and minimum system version | this change |
 | `packaging/macos/entitlements.plist` | the hardened runtime's entitlements: an empty dictionary, so no exception is granted | this change |
 | `packaging/windows.*` | the NSIS installer, per user (D36 decision 2) | not yet written |
-| `packaging/linux.sh` | the AppImage and the `.deb`, built in a pinned `ubuntu:22.04` container | not yet written |
+| `packaging/linux.sh` | the AppImage and the `.deb` for x86_64, built in a pinned `ubuntu:22.04` container, with `SHA256SUMS` and optional GPG signatures | this change |
+| `packaging/linux/in-container.sh` | what runs inside that container: the build, the glibc floor check, the `.deb` and the AppImage | this change |
+| `packaging/linux/AppRun` | the AppImage's entry point: it runs the executable beside it | this change |
+| `packaging/linux/com.patricksmithlaravel.tawara.desktop` | the desktop entry, the same in both Linux packages | this change |
 
 The two plist files carry no XML comments: `codesign` refuses an entitlements file with one (`AMFIUnserializeXML: syntax error`), so the reasons are written here instead.
 
@@ -24,7 +27,8 @@ D36 decision 1 proposes one script per target instead of one packaging tool.
 Each script stands alone. The tools it uses are the platform's own, or pinned
 by version and hash where D36 says so. The scripts run under
 macOS's `/bin/bash` (version 3.2), and pass `bash -n` and
-`shellcheck -S warning`.
+`shellcheck -S warning`. `packaging/linux/in-container.sh` runs in the Linux
+container under that image's bash, and passes the same two checks.
 
 ## `packaging/macos.sh`
 
@@ -77,6 +81,91 @@ The script first checks that both Rust targets are installed
 (`rustup target list --installed`). When one is not, it stops and prints the
 `rustup target add` command to run.
 
+## `packaging/linux.sh`
+
+Run it from the repository root, on the machine that holds the keys:
+
+```sh
+bash packaging/linux.sh --dev              # a local check build, not for distribution
+bash packaging/linux.sh --out DIR          # a release build (needs the variables below)
+```
+
+It needs a Docker daemon that can run `linux/amd64` images. The image is
+`ubuntu:22.04` pinned by digest, the index digest
+`sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956`,
+which Docker resolves to the `linux/amd64` manifest (`sha256:98510ac07bb4545e389be502a8918b385c018bfe4ceeb5ac7e0375c782268b04`).
+On an Apple silicon Mac the container runs under emulation. That is slower, and
+changes nothing about the checks (`docs/RELEASE.md` section 6.3).
+
+It makes these, in order, and stops with an error at the first step that fails:
+
+1. It checks its inputs before Docker is used: the icon, the maintainer, the
+   two notices at the repository root, and the GPG key when one is named.
+2. It starts the container with `--platform linux/amd64 --cpus=2 --memory=4g`
+   and `CARGO_BUILD_JOBS=2`. The repository is mounted read-only at `/src`. A
+   volume named `tawara-linux-N`, with `N` made from the checkout's path, is
+   mounted at `/cache`, so that the next run compiles only what changed. The
+   packages go to `/out`.
+3. Inside the container, `packaging/linux/in-container.sh` installs the packages
+   `docs/RELEASE.md` section 6.3 names, and two more that the AppImage step needs
+   (`file` and `squashfs-tools`, see step 6). It checks rustup-init 1.29.1
+   against its SHA-256, installs the toolchain `rust-toolchain.toml` names, and
+   runs `cargo build --release --locked -p tawara-desktop --target
+   x86_64-unknown-linux-gnu`.
+4. The glibc floor check: `objdump -T` names the `GLIBC_` symbol versions the
+   executable needs. The highest must be 2.35 or lower, or the build fails.
+5. The `.deb`, from a tree holding `usr/bin/tawara-desktop`, the desktop entry
+   under `usr/share/applications/`, the hicolor icons at 16, 32, 48, 64, 128,
+   256 and 512 pixels, `LICENSE.md` and `THIRD-PARTY-NOTICES.txt` under
+   `usr/share/doc/tawara-desktop/`, and `DEBIAN/control`. `Depends` is the value
+   `dpkg-shlibdeps -O` prints for the executable, followed by the libraries the
+   app opens at run time, which `docs/RELEASE.md` section 6.3 names by hand.
+   `Recommends` is `libvulkan1`. The package is made with
+   `dpkg-deb --root-owner-group --build`, and its `--info` and `--contents` are
+   printed.
+6. The AppImage, only when an icon is given: an AppDir with `AppRun`, the
+   desktop entry at its top and in `usr/share/applications`, the 256-pixel icon,
+   and the notices beside the executable. Then appimagetool 1.9.1 and the type 2
+   runtime 20251108 are each checked against their SHA-256. appimagetool is
+   itself an AppImage, and the emulated container's binfmt rule refuses to
+   execute an AppImage's ELF header (`Exec format error`, seen with Docker
+   Desktop on Apple silicon). So its squashfs part, which begins where the
+   runtime ends, is unpacked with `unsquashfs`, and that tree's `AppRun` runs
+   the same tool with `--runtime-file`, which needs no FUSE. The new AppImage
+   is checked by listing its squashfs part for `AppRun` and
+   `usr/bin/tawara-desktop`. On a native x86_64 host the same steps run
+   unchanged.
+7. On the host, `SHA256SUMS` lists the packages and is checked with
+   `shasum -a 256 -c`. With `TAWARA_GPG_KEY`, `SHA256SUMS`, the `.deb` and the
+   AppImage each get a detached armored signature (`.asc`), which `gpg --verify`
+   checks.
+
+The packages go to `target/package/linux` unless `--out` says otherwise:
+
+| Release | `--dev` |
+|---|---|
+| `tawara-desktop_X.Y.Z_amd64.deb` | `tawara-desktop_X.Y.Z~dev_amd64.deb` |
+| `Tawara-X.Y.Z-x86_64.AppImage` (with an icon) | `Tawara-X.Y.Z-dev-x86_64.AppImage` (with an icon) |
+| `SHA256SUMS` | `SHA256SUMS` |
+
+The version is the one `[workspace.package]` sets in `Cargo.toml`. The pins
+are at the top of `packaging/linux.sh`: the image digest, rustup-init 1.29.1,
+appimagetool 1.9.1 and runtime 20251108, each with the SHA-256 that
+`docs/DECISIONS.md` D36 records. The first two were checked against the
+publisher's own digests on 2026-10-18 (rustup's published `.sha256`, and
+GitHub's digest for each release asset). A change to any pin is a pull request
+that names the new version and hash.
+
+The build's volume is kept between runs. Remove it with
+`docker volume rm tawara-linux-N` when its cache is no longer wanted. Its
+name's `N` is printed by `cksum` on the checkout's path.
+
+The apt packages are not pinned. `apt-get` installs the archive's current
+versions of the packages `docs/RELEASE.md` section 6.3 names, and of `file` and
+`squashfs-tools`, which that section does not name: appimagetool needs `file`,
+and unpacking its squashfs part needs `squashfs-tools`. The image digest pins
+the base system only.
+
 ## Environment
 
 No identity, team, key, certificate or password is read from a file, and none
@@ -92,6 +181,15 @@ environment and is skipped, with a message, when that name is unset.
 | `TAWARA_TEAM_ID` | the team the signature must name, checked after signing | optional | optional |
 | `TAWARA_NOTARY_PROFILE` | the `notarytool` keychain profile, made with `xcrun notarytool store-credentials` on this Mac | needed to notarise | not used |
 | `CARGO_TARGET_DIR` | where cargo writes its output, as cargo reads it | optional | optional |
+
+The Linux script reads three variables. Its build never uses `CARGO_TARGET_DIR`:
+the build's target directory is the volume described above.
+
+| Variable | What it is for | Release | `--dev` |
+|---|---|---|---|
+| `TAWARA_ICON_PNG` | the app icon as a square PNG of at least 1024 pixels. It is the owner's artwork (`docs/RELEASE.md` section 1.2), and `sips` makes the sizes. `TAWARA_ICON` is the macOS `.icns` above, so this has its own name | required | optional; without it the `.deb` has no icons and there is no AppImage |
+| `TAWARA_DEB_MAINTAINER` | the `.deb`'s `Maintainer:` field, as `Name <address>` (`docs/RELEASE.md` section 1.2). A release refuses the placeholder `Tawara Maintainer <maintainer@example.invalid>` and any `.invalid` address | required | optional; the placeholder when unset |
+| `TAWARA_GPG_KEY` | the GPG key that signs `SHA256SUMS` and the packages, named by an identity in the keyring (`gpg --local-user`). Checked before the build starts | unset: unsigned | signs when set |
 
 `TAWARA_MAC_SIGN_ID=-` makes an ad-hoc signature. It is not an identity, it
 exercises the signing steps for a local check, and its output is not for
@@ -110,6 +208,32 @@ CI never runs this script with secrets. `.github/workflows/ci.yml` has
   script starts the app with a fresh `HOME`, once on wgpu and once on
   tiny-skia. Each launch must still be running after the wait, with no panic in
   its log, and the app is stopped at the end of each launch.
+
+### Linux checks
+
+- `bash -n` and `shellcheck -S warning` on `packaging/linux.sh` and
+  `packaging/linux/in-container.sh`, and `/bin/bash -n` (macOS's bash 3.2) on
+  the first.
+- The input checks stop before Docker is used: a missing or wrong icon, an
+  unset, placeholder or malformed maintainer, a `TAWARA_GPG_KEY` that names no
+  secret key, and an unknown argument each exit with an error and a message.
+- `bash packaging/linux.sh --dev`, with a 1024-pixel PNG as `TAWARA_ICON_PNG`,
+  makes the `.deb` and the AppImage. Its log holds the glibc check and the
+  `dpkg-deb --info` and `--contents` output. The host then checks
+  `SHA256SUMS` and prints it.
+- `bash packaging/linux.sh --dev` without an icon makes the `.deb` alone, with
+  no AppImage, and `SHA256SUMS` lists the `.deb` alone.
+- On a fresh `ubuntu:22.04` container of the same digest, `--platform
+  linux/amd64`, with `xvfb`, `xauth` and `mesa-vulkan-drivers` added, the
+  `.deb` installs by its path, `ci/liveness.sh` passes on
+  `/usr/bin/tawara-desktop`, and the package is removed (`docs/RELEASE.md`
+  section 7). The repository is mounted read-only at `/src` for the script.
+- For the AppImage: in another fresh container, its squashfs part is unpacked
+  (from the offset the runtime's size gives), `AppRun` is run under `xvfb-run`
+  for 20 seconds, and `ci/liveness.sh` passes on the executable inside. The
+  AppImage itself cannot be executed in the emulated container, so this check
+  runs the same files from their squashfs part (`docs/RELEASE.md` section 7
+  says `--appimage-extract`).
 
 ## Not decided
 
@@ -137,4 +261,26 @@ Nothing below is settled by this change. The owner decides each one.
   it (`docs/RELEASE.md` section 1.6).
 - **Signing, notarisation and stapling** with the owner's identities. No step
   in this change runs them against any account.
-- **Windows and Linux.** Their scripts are not written yet.
+- **Windows.** Its script is not written yet.
+- **The Linux choices in D36, awaiting the owner.** This change builds to D36's
+  recommendations for Linux: the AppImage and the `.deb` (decision 1); the
+  x86_64 architecture with glibc 2.35 as the floor (decision 6); the identifier
+  `com.patricksmithlaravel.tawara.desktop` (decision 7); and the pinned tools,
+  checked by SHA-256 (decision 8). Decision 9's accounts are the owner's.
+- **The Linux maintainer and GPG key** (`docs/RELEASE.md` section 1.2). The
+  script names no maintainer and holds no key. A release refuses the
+  placeholder maintainer, and signs only when `TAWARA_GPG_KEY` is set.
+- **Wording the owner has not approved** (awaiting the owner): the `.deb`'s
+  `Description` ("Mochimo wallet for the desktop"), the desktop entry's
+  `Comment` ("Mochimo wallet"), and its `Categories` (`Office;Finance;`). The
+  name "Tawara" is D8's display name.
+- **The checklist's text for Linux.** `docs/RELEASE.md` section 6.3 names the
+  apt packages without `file` and `squashfs-tools`, and it runs appimagetool
+  with `--appimage-extract-and-run`. The script does both differently, as step
+  6 above says, and needs the two packages for it. Whether the checklist's text
+  changes is the owner's to decide: this change leaves `docs/RELEASE.md` as it
+  is.
+- **The Linux build's caps.** The container has 2 CPUs, 4 GiB and two cargo
+  jobs, the caps the owner's build-CPU rule sets. `docs/RELEASE.md` section 6.3
+  records a `rustc` killed for lack of memory in an 8 GiB Docker VM at four
+  jobs, so the caps are the owner's to change, here, in a pull request.
