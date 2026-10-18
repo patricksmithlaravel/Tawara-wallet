@@ -3817,7 +3817,8 @@ the details recommended.** Item 6 asks that Send can scan a QR code.
    decides whether it is a destination. It fills only the row it was asked
    for, is dropped if the page changed while the camera ran, and never
    reaches a password or phrase field. The camera stops when the page is
-   left and on a move to the background. A swapped sticker gives a valid
+   left, when the shell's reply comes back (a read, or none), and on a move
+   to the background. A swapped sticker gives a valid
    but wrong destination, which only the review catches, as with Paste.
    The threat model gains the camera as an input.
 5. **iced's image widget, the camera permission and `ndk-sys` (owner,
@@ -3883,8 +3884,10 @@ Nothing here has run on a phone.
   message log shows a scanned text. The camera stops when the page or its row
   changes (checked after each message), on a lock, on a move to the background
   (where the shell stops it on its own thread, from `host::left_foreground`),
-  and on Cancel. A scan begins only while nothing is being done for the page, as
-  Paste does, and no other scan is under way.
+  on Cancel, and when the shell's reply comes back, a read or none (`scanned`,
+  which stops it once the reply is taken, so a stale reply stops nothing). A
+  scan begins only while nothing is being done for the page, as Paste does, and
+  no other scan is under way.
 - **The image feature.** The owner approved iced's `image` on 2026-10-16, for
   the Android preview. This change lists `image-without-codecs` instead: the
   widget, without the image crate's codecs, which is what the preview uses,
@@ -3959,8 +3962,8 @@ each decoder, in varied light, angle and distance, with the decode time and any
 wrong text recorded. On Android the decoder is `rqrr`, with its default features
 off. No Android phone is attached, so the spike has not run. Nothing on a phone
 has been checked: the camera permission, the two scanners, the preview, and the
-camera's stop on a page's leaving, a lock and a move to the background are all
-owed, on an iPhone and an arm64 Android phone (G29; V20).
+camera's stop on a read, a page's leaving, a lock and a move to the background
+are all owed, on an iPhone and an arm64 Android phone (G29; V20).
 
 **Not built.** The shells' scanners and camera permission (Tawara-mobile, G29),
 and the device checks (V20). The Tawara-mobile pull request that provides the

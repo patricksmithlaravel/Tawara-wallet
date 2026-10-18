@@ -3932,6 +3932,20 @@ mod tests {
     }
 
     #[test]
+    fn a_read_stops_the_camera_as_its_reply_is_taken() {
+        let (mut app, mut received) = scanning_phone(scan_destination, ScanPreview::Shell);
+        let _ = app.update(Message::Scan(1));
+        let before = cancels();
+        take_replies(&mut app, &mut received);
+        assert_eq!(
+            rows_of(&app)[1].to,
+            a_destination(),
+            "the read fills its row"
+        );
+        assert_eq!(cancels(), before + 1, "and the camera stops with the scan");
+    }
+
+    #[test]
     fn a_text_that_is_not_a_destination_is_refused_under_its_row() {
         let (mut app, mut received) = scanning_phone(scan_junk, ScanPreview::Shell);
         let _ = app.update(Message::Scan(0));
@@ -3990,6 +4004,7 @@ mod tests {
             .expect("the first scan waits");
         let _ = app.update(Message::CancelScan);
         let _ = app.update(Message::Scan(0));
+        let before = cancels();
         first(Some(a_destination().into_bytes()));
         take_replies(&mut app, &mut received);
         assert_eq!(
@@ -4000,6 +4015,11 @@ mod tests {
         assert!(
             app.model.scanning.is_some(),
             "the scan under way still waits"
+        );
+        assert_eq!(
+            cancels(),
+            before,
+            "and the camera of the scan under way does not stop"
         );
     }
 

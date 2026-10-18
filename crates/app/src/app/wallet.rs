@@ -1690,6 +1690,12 @@ impl App {
         let Some(scanning) = self.model.scanning.take_if(|s| s.ask == ask) else {
             return Task::none();
         };
+        // The scan is over, so the shell's camera stops, whatever the reply holds
+        // (docs/DECISIONS.md D42 item 4). A reply to a scan that has ended was
+        // dropped above, so this stops only the scan that the reply ends.
+        if let Some(scanner) = &self.model.scanner {
+            scanner.cancel();
+        }
         // The scan is over, so its preview goes with it, whatever the reply holds.
         self.model.scan_preview = None;
         if scanning.row != row || !self.scan_fits(&scanning) || self.model.busy.is_some() {
