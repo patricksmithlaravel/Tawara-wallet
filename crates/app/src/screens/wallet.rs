@@ -44,6 +44,10 @@ const NAV: [(Icon, &str, Option<To>); 6] = [
 /// The wallet's page with the sidebar.
 pub fn view<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> {
     let content: Element<'a, Message> = match &page.page {
+        // A scan that draws its camera's preview in the application stands its
+        // page in place of the page it began on, which is back once it ends
+        // (docs/DECISIONS.md D42 item 3).
+        _ if model.previewing() => send::scanner(model, page),
         Page::Dashboard => dashboard::view(model, page),
         Page::Receive(r) => receive::view(model, page, r),
         Page::AddAccount(a) => add_account::view(model, page, a),

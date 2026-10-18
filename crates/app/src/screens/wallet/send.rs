@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 
 use iced::widget::text::Wrapping;
 use iced::widget::{Row, checkbox, column, container, row, space, text_input};
-use iced::{Alignment, Element, Length, Padding};
+use iced::{Alignment, ContentFit, Element, Length, Padding};
 use tawara_wallet_core::preferences::AmountUnit;
 use tawara_wallet_core::view::{AccountId, AccountState};
 use tawara_wallet_core::{MAX_DESTINATIONS, PlanView, PlannedDestination, REFERENCE_RULE};
@@ -26,8 +26,8 @@ use super::{
     report, row_of, short,
 };
 use crate::app::{
-    Message, Model, PasteInto, RefusedField, ReportKey, ResignPage, SendPage, SendStage, SentPage,
-    SpendForm, SubmitMode, SubmitPage, To, WalletMsg, WalletPage,
+    FormOf, Message, Model, PHONE_TABLE, PasteInto, RefusedField, ReportKey, ResignPage, SendPage,
+    SendStage, SentPage, SpendForm, SubmitMode, SubmitPage, To, WalletMsg, WalletPage,
 };
 use crate::icon::Icon;
 use crate::theme::{self, color, radius, space as sp};
@@ -68,6 +68,153 @@ pub fn view<'a>(model: &'a Model, page: &'a WalletPage, s: &'a SendPage) -> Elem
         SendStage::Review(plan) => review(model, page, plan),
         SendStage::Sign(plan) => sign_page(model, page, plan),
         SendStage::Sent(sent) => sent_page(model, page, sent),
+    }
+}
+
+/// The scanner's page on a phone whose shell draws the camera's preview in the
+/// application (docs/DECISIONS.md D42 item 3): the camera's latest frame, a
+/// line on what to point at, and Cancel. It is drawn in place of the page the
+/// scan began on, which it returns to when the scan ends. The text a code holds
+/// is not drawn here, since it is untrusted until it is checked (D42 item 4).
+/// The line and the title are new wording, for the owner's approval.
+pub fn scanner<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> {
+    // The frame is drawn whole, letterboxed in the box, so that the code can be
+    // seen in it; until the first frame comes, the box is empty.
+    let shown: Element<'a, Message> = match &model.scan_preview {
+        Some(frame) => iced::widget::image(frame.clone())
+            .content_fit(ContentFit::Contain)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into(),
+        None => space().width(Length::Fill).height(Length::Fill).into(),
+    };
+    let viewfinder = container(shown)
+        .width(Length::Fill)
+        .height(Length::Fixed(VIEWFINDER))
+        .clip(true)
+        .style(theme::field_box);
+    let cancel = ui::button_with(
+        "Cancel",
+        theme::Button::Secondary,
+        Size::Medium,
+        None,
+        Some(Message::CancelScan),
+    )
+    .width(Length::Fill);
+    frame(
+        model,
+        page,
+        "Scan a destination",
+        "Point the camera at a QR code with a destination in it.",
+        Vec::new(),
+        vec![
+            ui::card_for(
+                model.compact(),
+                column![viewfinder, cancel].spacing(sp::S16),
+            )
+            .into(),
+        ],
+    )
+}
+
+/// The height of the scanner's viewfinder, in logical pixels: the most the
+/// page holds at 360 by 640 without scrolling, with its title, its line and
+/// Cancel (docs/DECISIONS.md D42 item 3).
+const VIEWFINDER: f32 = 200.0;
+
+/// The Scan button of destination row `row`, which stands beneath the row's field
+/// on a phone whose shell gives a scanner (docs/DECISIONS.md D42 item 1): drawn
+/// with the Scan glyph, and enabled while nothing is being done for the page and no
+/// scan is under way. `None` where no scanner is offered, which is every desktop.
+fn scan_button<'a>(model: &Model, row: usize) -> Option<Element<'a, Message>> {
+    model.scan_offered().then(|| {
+        let idle = model.busy.is_none() && model.scanning.is_none();
+        ui::button_with(
+            "Scan",
+            theme::Button::Secondary,
+            Size::Small,
+            Some(Icon::Scan),
+            idle.then_some(Message::Scan(row)),
+        )
+        .into()
+    })
+}
+
+/// The address field of destination row `n`, with the buttons a phone has, in a
+/// table row's cell or in a block (docs/DECISIONS.md D32 item 10 (g), D42 item 1).
+/// On a phone, in a block, the Paste button stands beside the field, and the Scan
+/// button, where a shell gives a scanner, on a line of its own beneath it. In a
+/// table row the field takes the cell's full width, and the Paste and the Scan both
+/// stand beneath it, on one line (owner, 2026-10-18, answer (A)). On the desktop the
+/// field stands alone. `shown` is the form the Paste button records, as
+/// [`destinations`] records it, and `table` says whether the field is a table row's.
+fn address_field<'a>(
+    model: &Model,
+    n: usize,
+    to: iced::widget::TextInput<'a, Message>,
+    shown: Option<(FormOf, usize)>,
+    table: bool,
+) -> Element<'a, Message> {
+    if !model.phone() {
+        return to.width(Length::Fill).into();
+    }
+    let paste = paste::button(
+        shown.map(|(form, rows)| Message::Paste(PasteInto::Destination { form, row: n, rows })),
+    );
+    if table {
+        let mut buttons = row![paste].spacing(sp::S8).align_y(Alignment::Center);
+        if let Some(scan) = scan_button(model, n) {
+            buttons = buttons.push(scan);
+        }
+        return column![to.width(Length::Fill), buttons]
+            .spacing(sp::S8)
+            .width(Length::Fill)
+            .into();
+    }
+    let beside = row![to.width(Length::Fill), paste]
+        .spacing(sp::S8)
+        .align_y(Alignment::Center)
+        .width(Length::Fill);
+    let mut cell = column![beside].spacing(sp::S8).width(Length::Fill);
+    if let Some(scan) = scan_button(model, n) {
+        cell = cell.push(scan);
+    }
+    cell.into()
+}
+
+/// The Remove button of a destination's table row: an icon, as the desktop's
+/// table has it, pressed as `press` says, and `None` while it is not offered.
+fn table_remove<'a>(press: Option<Message>) -> Element<'a, Message> {
+    iced::widget::button(crate::icon::icon(Icon::Trash, 16.0, 2.0, color::TEXT_MUTED))
+        .padding(sp::S10)
+        .style(theme::button(theme::Button::Ghost))
+        .on_press_maybe(press)
+        .into()
+}
+
+/// How a table row's cells stand beside each other. On a phone a destination's
+/// cell is taller than its neighbours, with its buttons beneath its field, so
+/// the cells stand at the top and their fields line up with the destination's;
+/// on the desktop they are centred, as they always were.
+fn table_alignment(model: &Model) -> Alignment {
+    if model.phone() {
+        Alignment::Start
+    } else {
+        Alignment::Center
+    }
+}
+
+/// Whether the Send destinations and the fees are drawn as table rows, on W4's
+/// pages 1 and 2 and on W8 (docs/DECISIONS.md D40 item 1, D42 item 6). On the
+/// desktop, from [`crate::app::COMPACT`] wide, as it always was. On a phone, only
+/// from [`PHONE_TABLE`] wide: a phone held sideways narrower than that draws its
+/// blocks, as it does upright, so that a destination's field keeps its width
+/// (owner, 2026-10-18, answer (A)).
+fn table_of(model: &Model) -> bool {
+    if model.phone() {
+        model.width >= PHONE_TABLE
+    } else {
+        !model.compact()
     }
 }
 
@@ -202,10 +349,10 @@ fn back<'a>(model: &Model) -> Element<'a, Message> {
 
 /// Page 1 of 4 on a phone (docs/DECISIONS.md D40 item 1): the account the spend
 /// comes from, with "Change" beside it when another account can spend too, and
-/// the destinations, each with its Paste, its reference and its Remove; then
-/// "Add another destination" and "Continue". What "Continue" found wrong with
-/// an address or a reference is shown under that field, and what it refused
-/// beside it (docs/DECISIONS.md D40 item 4).
+/// the destinations, each with its Paste and its Scan, its reference and its
+/// Remove; then "Add another destination" and "Continue". What "Continue" found
+/// wrong with an address or a reference is shown under that field, and what it
+/// refused beside it (docs/DECISIONS.md D40 item 4).
 fn to_page<'a>(
     model: &'a Model,
     page: &'a WalletPage,
@@ -213,7 +360,6 @@ fn to_page<'a>(
     refused: &'a BTreeMap<(usize, RefusedField), String>,
 ) -> Element<'a, Message> {
     let idle = model.busy.is_none();
-    let compact = model.compact();
     let spendable = spendable_of(model);
     let blocked = s.from.filter(|f| !spendable.contains(f));
     let mut from = column![ui::section_label("From account")].spacing(sp::S12);
@@ -255,63 +401,101 @@ fn to_page<'a>(
     }
     let shown = model.form_of().filter(|_| idle);
     let several = s.form.rows.len() > 1;
-    let mut list = column![].spacing(sp::S16);
+    // The destinations are rows of a table on the desktop from 600 wide, and on a phone
+    // held sideways from 844 wide; below that a phone draws a block of its own for each
+    // destination, as it does upright. The buttons follow the phone (docs/DECISIONS.md
+    // D40 item 1, D42 item 6; owner, 2026-10-18, answer (A)).
+    let table = table_of(model);
+    let mut list = if table {
+        column![
+            row![
+                t("#", ty::TABLE_HEADER, color::TEXT_MUTED).width(Length::Fixed(20.0)),
+                t("Destination", ty::TABLE_HEADER, color::TEXT_MUTED).width(Length::FillPortion(6)),
+                t("Reference", ty::TABLE_HEADER, color::TEXT_MUTED).width(Length::FillPortion(3)),
+                space().width(Length::Fixed(36.0)),
+            ]
+            .spacing(sp::S12),
+        ]
+        .spacing(sp::S10)
+    } else {
+        column![].spacing(sp::S16)
+    };
     for (i, r) in s.form.rows.iter().enumerate() {
-        if i > 0 {
-            list = list.push(ui::divider());
-        }
         let mut to = entry(&r.to, "Base58 destination", true).id(crate::screens::destination_id(i));
         let mut reference = entry(&r.reference, "none", true).id(crate::screens::reference_id(i));
         if idle {
             to = to.on_input(move |v| WalletMsg::DestinationTo(i, v).into());
             reference = reference.on_input(move |v| WalletMsg::Reference(i, v).into());
         }
-        let remove = ui::button_with(
-            "Remove",
-            theme::Button::Ghost,
-            Size::Small,
-            Some(Icon::Trash),
-            (idle && several).then(|| Message::Wallet(WalletMsg::RemoveDestination(i))),
-        );
-        // The Paste button beside the field, in the compact layout only, as
-        // [`destinations`] has it (docs/DECISIONS.md D32 item 10 (g)).
-        let mut address = row![to.width(Length::Fill)];
-        if compact {
-            address = address.push(paste::button(shown.map(|(form, rows)| {
-                Message::Paste(PasteInto::Destination { form, row: i, rows })
-            })));
-        }
-        let mut block = column![
-            row![
-                t(
-                    format!("Destination {}", i + 1),
-                    ty::FORM_LABEL,
-                    color::TEXT_SECONDARY
-                )
-                .width(Length::Fill),
-                remove,
+        if table {
+            // A row, with what Continue refused under it: a block holds each
+            // refusal under its own field instead.
+            let mut line = column![
+                row![
+                    t((i + 1).to_string(), ty::MONO, color::TEXT_MUTED).width(Length::Fixed(20.0)),
+                    container(address_field(model, i, to, shown, true))
+                        .width(Length::FillPortion(6)),
+                    container(reference).width(Length::FillPortion(3)),
+                    table_remove(
+                        (idle && several).then(|| Message::Wallet(WalletMsg::RemoveDestination(i)))
+                    ),
+                ]
+                .spacing(sp::S12)
+                .align_y(table_alignment(model)),
             ]
-            .align_y(Alignment::Center),
-            address
-                .spacing(sp::S8)
-                .align_y(Alignment::Center)
-                .width(Length::Fill),
-        ]
-        .spacing(sp::S12);
-        if let Some(why) = refused.get(&(i, RefusedField::Address)) {
-            block = block.push(ui::refusal(why.as_str()));
-        }
-        block = block.push(
-            column![
-                t("Reference", ty::FORM_LABEL, color::TEXT_SECONDARY),
-                reference
+            .spacing(sp::S8);
+            if let Some(why) = refused.get(&(i, RefusedField::Address)) {
+                line = line.push(ui::refusal(why.as_str()));
+            }
+            if let Some(why) = refused.get(&(i, RefusedField::Reference)) {
+                line = line.push(ui::refusal(why.as_str()));
+            }
+            list = list.push(line);
+        } else {
+            if i > 0 {
+                list = list.push(ui::divider());
+            }
+            let remove = ui::button_with(
+                "Remove",
+                theme::Button::Ghost,
+                Size::Small,
+                Some(Icon::Trash),
+                (idle && several).then(|| Message::Wallet(WalletMsg::RemoveDestination(i))),
+            );
+            // In a block the Paste button stands beside the field, on a phone at any
+            // width, and the Scan button, where a shell gives a scanner, on a line of
+            // its own beneath it, as [`destinations`] has them (docs/DECISIONS.md D32
+            // item 10 (g), D42 item 1; owner, 2026-10-18).
+            let address = address_field(model, i, to, shown, false);
+            let mut block = column![
+                row![
+                    t(
+                        format!("Destination {}", i + 1),
+                        ty::FORM_LABEL,
+                        color::TEXT_SECONDARY
+                    )
+                    .width(Length::Fill),
+                    remove,
+                ]
+                .align_y(Alignment::Center),
+                address,
             ]
-            .spacing(sp::S6),
-        );
-        if let Some(why) = refused.get(&(i, RefusedField::Reference)) {
-            block = block.push(ui::refusal(why.as_str()));
+            .spacing(sp::S12);
+            if let Some(why) = refused.get(&(i, RefusedField::Address)) {
+                block = block.push(ui::refusal(why.as_str()));
+            }
+            block = block.push(
+                column![
+                    t("Reference", ty::FORM_LABEL, color::TEXT_SECONDARY),
+                    reference
+                ]
+                .spacing(sp::S6),
+            );
+            if let Some(why) = refused.get(&(i, RefusedField::Reference)) {
+                block = block.push(ui::refusal(why.as_str()));
+            }
+            list = list.push(block);
         }
-        list = list.push(block);
     }
     let section = column![
         row![
@@ -384,11 +568,24 @@ fn amount_page<'a>(
     let spendable = spendable_of(model);
     let blocked = s.from.filter(|f| !spendable.contains(f));
     let several = s.form.rows.len() > 1;
+    // The amounts are rows of a table on the desktop from 600 wide, and on a phone held
+    // sideways from 844 wide; below that, on a phone, a block of their own for each
+    // destination, as upright (docs/DECISIONS.md D40 item 1, D32 item 10 (b), D42 item
+    // 6; owner, 2026-10-18, answer (A)).
+    let table = table_of(model);
     let mut amounts = column![ui::section_label("Amounts")].spacing(sp::S12);
+    if table {
+        amounts = amounts.push(
+            row![
+                t("#", ty::TABLE_HEADER, color::TEXT_MUTED).width(Length::Fixed(20.0)),
+                t("Destination", ty::TABLE_HEADER, color::TEXT_MUTED).width(Length::FillPortion(6)),
+                t("Amount (MCM)", ty::TABLE_HEADER, color::TEXT_MUTED)
+                    .width(Length::FillPortion(3)),
+            ]
+            .spacing(sp::S12),
+        );
+    }
     for (i, r) in s.form.rows.iter().enumerate() {
-        if i > 0 {
-            amounts = amounts.push(ui::divider());
-        }
         let amount: Element<'a, Message> = if s.form.everything && !several {
             container(t("everything", ty::FIELD, color::TEXT_MUTED))
                 .padding(Padding::from([sp::S12, sp::S14]))
@@ -402,26 +599,42 @@ fn amount_page<'a>(
             }
             amount.into()
         };
-        amounts = amounts.push(
-            column![
+        if table {
+            amounts = amounts.push(
                 row![
-                    t(
-                        format!("Destination {}", i + 1),
-                        ty::FORM_LABEL,
-                        color::TEXT_SECONDARY
-                    ),
-                    space().width(Length::Fill),
-                    t(short(&r.to), ty::MONO_SMALL, color::TEXT_MUTED),
+                    t((i + 1).to_string(), ty::MONO, color::TEXT_MUTED).width(Length::Fixed(20.0)),
+                    container(t(short(&r.to), ty::MONO_SMALL, color::TEXT_MUTED))
+                        .width(Length::FillPortion(6)),
+                    container(amount).width(Length::FillPortion(3)),
                 ]
+                .spacing(sp::S12)
                 .align_y(Alignment::Center),
+            );
+        } else {
+            if i > 0 {
+                amounts = amounts.push(ui::divider());
+            }
+            amounts = amounts.push(
                 column![
-                    t("Amount (MCM)", ty::FORM_LABEL, color::TEXT_SECONDARY),
-                    amount
+                    row![
+                        t(
+                            format!("Destination {}", i + 1),
+                            ty::FORM_LABEL,
+                            color::TEXT_SECONDARY
+                        ),
+                        space().width(Length::Fill),
+                        t(short(&r.to), ty::MONO_SMALL, color::TEXT_MUTED),
+                    ]
+                    .align_y(Alignment::Center),
+                    column![
+                        t("Amount (MCM)", ty::FORM_LABEL, color::TEXT_SECONDARY),
+                        amount
+                    ]
+                    .spacing(sp::S6),
                 ]
-                .spacing(sp::S6),
-            ]
-            .spacing(sp::S12),
-        );
+                .spacing(sp::S12),
+            );
+        }
     }
     if !several {
         let mut all = checkbox(s.form.everything)
@@ -439,31 +652,33 @@ fn amount_page<'a>(
         fee = fee.on_input(|v| WalletMsg::Fee(v).into());
         btl = btl.on_input(|v| WalletMsg::BlockToLive(v).into());
     }
-    amounts = amounts
-        .push(ui::divider())
-        .push(
-            column![
-                t(
-                    "Fee, nanoMCM in total",
-                    ty::FORM_LABEL,
-                    color::TEXT_SECONDARY
-                ),
-                fee
-            ]
-            .spacing(sp::S6),
-        )
-        .push(
-            column![
-                t("Block-to-live", ty::FORM_LABEL, color::TEXT_SECONDARY),
-                btl
-            ]
-            .spacing(sp::S6),
-        )
-        .push(ui::helper(format!(
-            "The fee is {FEE_FLOOR} nanoMCM per destination, the node's floor, unless you give \
-             one. A block-to-live is the last block the spend may land in; none means it never \
-             expires."
-        )));
+    let fee = column![
+        t(
+            "Fee, nanoMCM in total",
+            ty::FORM_LABEL,
+            color::TEXT_SECONDARY
+        ),
+        fee
+    ]
+    .spacing(sp::S6);
+    let btl = column![
+        t("Block-to-live", ty::FORM_LABEL, color::TEXT_SECONDARY),
+        btl
+    ]
+    .spacing(sp::S6);
+    amounts = amounts.push(ui::divider());
+    // The fee and the block-to-live stand side by side in the table's width, and
+    // one over the other on a phone held upright (docs/DECISIONS.md D32 item 10 (b)).
+    amounts = if table {
+        amounts.push(row![fee.width(Length::Fill), btl.width(Length::Fill)].spacing(sp::S12))
+    } else {
+        amounts.push(fee).push(btl)
+    };
+    amounts = amounts.push(ui::helper(format!(
+        "The fee is {FEE_FLOOR} nanoMCM per destination, the node's floor, unless you give \
+         one. A block-to-live is the last block the spend may land in; none means it never \
+         expires."
+    )));
     let mut next = column![ui::button_with(
         "Review spend",
         theme::Button::Primary,
@@ -498,12 +713,18 @@ fn amount_page<'a>(
 }
 
 /// The destinations as typed, the "everything" choice, and the fee and
-/// block-to-live: W4's form and W8's. On a phone each destination is a block
-/// of its own, with no table header (docs/SCREENS.md, "Compact layout";
-/// docs/DECISIONS.md D32 item 10 (b)).
+/// block-to-live: W4's form and W8's. The layout follows the width: on a phone
+/// each destination is a block of its own, with no table header, and the fee and
+/// block-to-live one over the other, unless the phone is held sideways from 844
+/// wide, where they are rows of a table with the fees side by side; the desktop
+/// has the table from 600 wide up (docs/SCREENS.md, "Compact layout";
+/// docs/DECISIONS.md D32 item 10 (b), D39 item 5, D42 item 6; owner, 2026-10-18,
+/// answer (A)). The Paste and Scan buttons follow `phone()`: in a block a phone's
+/// Paste stands beside each field and its Scan beneath it, upright and sideways
+/// alike; in a table row both stand beneath the field (owner, 2026-10-18).
 fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> {
     let idle = model.busy.is_none();
-    let compact = model.compact();
+    let table = table_of(model);
     let field = |value: &'a str, placeholder: &'a str, mono: bool| {
         let face = if mono { ty::MONO } else { ty::FIELD };
         text_input(placeholder, value)
@@ -512,9 +733,7 @@ fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> 
             .padding(Padding::from([sp::S12, sp::S14]))
             .style(theme::field(radius::R12))
     };
-    let mut list = if compact {
-        column![].spacing(sp::S16)
-    } else {
+    let mut list = if table {
         column![
             row![
                 t("#", ty::TABLE_HEADER, color::TEXT_MUTED).width(Length::Fixed(20.0)),
@@ -529,6 +748,8 @@ fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> 
             .spacing(sp::S12),
         ]
         .spacing(sp::S10)
+    } else {
+        column![].spacing(sp::S16)
     };
     let several = f.rows.len() > 1;
     // Each Paste button records the form it was drawn on and its rows, so
@@ -556,13 +777,24 @@ fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> 
             reference = reference.on_input(move |v| WalletMsg::Reference(i, v).into());
         }
         let remove =
-            iced::widget::button(crate::icon::icon(Icon::Trash, 16.0, 2.0, color::TEXT_MUTED))
-                .padding(sp::S10)
-                .style(theme::button(theme::Button::Ghost))
-                .on_press_maybe(
-                    (idle && several).then_some(WalletMsg::RemoveDestination(i).into()),
-                );
-        if compact {
+            table_remove((idle && several).then_some(WalletMsg::RemoveDestination(i).into()));
+        if table {
+            // A table row, as the desktop has it. On a phone the destination's cell
+            // holds its Paste and its Scan button beneath the field (see
+            // `address_field`).
+            list = list.push(
+                row![
+                    t((i + 1).to_string(), ty::MONO, color::TEXT_MUTED).width(Length::Fixed(20.0)),
+                    container(address_field(model, i, to, shown, true))
+                        .width(Length::FillPortion(6)),
+                    container(amount).width(Length::FillPortion(3)),
+                    container(reference).width(Length::FillPortion(3)),
+                    remove,
+                ]
+                .spacing(sp::S12)
+                .align_y(table_alignment(model)),
+            );
+        } else {
             // The blocks are divided, with none above the first.
             if i > 0 {
                 list = list.push(ui::divider());
@@ -570,6 +802,9 @@ fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> 
             // The destination takes the width, and the amount and the
             // reference sit side by side beneath it, so that a long
             // destination is not cut short on a phone (D32 item 10 (b)).
+            // Beside the destination stands its Paste button (docs/DECISIONS.md
+            // D32 item 10 (g)), and beneath it, where a shell gives a scanner, its
+            // Scan button (D42 item 1; owner, 2026-10-18).
             list = list.push(
                 column![
                     row![
@@ -583,17 +818,7 @@ fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> 
                     ]
                     .width(Length::Fill)
                     .align_y(Alignment::Center),
-                    // A Paste button beside it (docs/DECISIONS.md D32 item
-                    // 10 (g)).
-                    row![
-                        to.width(Length::Fill),
-                        paste::button(shown.map(|(form, rows)| {
-                            Message::Paste(PasteInto::Destination { form, row: i, rows })
-                        })),
-                    ]
-                    .spacing(sp::S8)
-                    .align_y(Alignment::Center)
-                    .width(Length::Fill),
+                    address_field(model, i, to, shown, false),
                     row![
                         column![
                             t("Amount (MCM)", ty::FORM_LABEL, color::TEXT_SECONDARY),
@@ -612,18 +837,6 @@ fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> 
                     .width(Length::Fill),
                 ]
                 .spacing(sp::S12),
-            );
-        } else {
-            list = list.push(
-                row![
-                    t((i + 1).to_string(), ty::MONO, color::TEXT_MUTED).width(Length::Fixed(20.0)),
-                    container(to).width(Length::FillPortion(6)),
-                    container(amount).width(Length::FillPortion(3)),
-                    container(reference).width(Length::FillPortion(3)),
-                    remove,
-                ]
-                .spacing(sp::S12)
-                .align_y(Alignment::Center),
             );
         }
     }
@@ -682,12 +895,13 @@ fn destinations<'a>(model: &'a Model, f: &'a SpendForm) -> Element<'a, Message> 
     .spacing(sp::S6)
     .width(Length::Fill);
     // At 360 a half-width fee field cuts its placeholder, "the node's floor",
-    // short, so on a phone the two fields stand one over the other
-    // (docs/DECISIONS.md D32 item 10 (b)).
-    let fees: Element<'a, Message> = if compact {
-        column![fee, btl].spacing(sp::S12).into()
-    } else {
+    // short, so on a phone held upright the two fields stand one over the other
+    // (docs/DECISIONS.md D32 item 10 (b)). In the table's width they stand side by
+    // side, as on the desktop.
+    let fees: Element<'a, Message> = if table {
         row![fee, btl].spacing(sp::S12).into()
+    } else {
+        column![fee, btl].spacing(sp::S12).into()
     };
     part.push(fees)
         .push(ui::helper(format!(
@@ -881,9 +1095,10 @@ fn review<'a>(model: &'a Model, page: &'a WalletPage, plan: &'a PlanView) -> Ele
     let unit = model.prefs.unit;
     let compact = model.compact();
     let index = row_of(model, plan.from).map(|a| a.index);
-    // What to check, one destination each, as they go on the wire. A phone
-    // has no table header: each destination is a block (docs/SCREENS.md,
-    // "Compact layout").
+    // What to check, one destination each, as they go on the wire. The
+    // desktop's W5 draws them as a table with its header. A phone never reaches
+    // this function: its page 3 is `review_page`, which draws each destination
+    // as a block at every width (docs/SCREENS.md, W5 and "Compact layout").
     let mut list = column![ui::section_label(
         "Check each destination against its payee"
     )]
@@ -1390,7 +1605,9 @@ pub fn submit<'a>(
 
 /// W9 with Return's binding given, so that the tests, which run on the
 /// desktop, can draw the page as a phone has it (docs/DECISIONS.md D32 item
-/// 9).
+/// 9). Its Submit stands beside its helper from [`crate::app::COMPACT`] wide,
+/// a phone held sideways included, and above it narrower (owner, 2026-10-18,
+/// answer (B)).
 fn submit_form<'a>(
     model: &'a Model,
     page: &'a WalletPage,
@@ -1438,37 +1655,38 @@ fn submit_form<'a>(
              Nothing is signed, and no key index moves.",
         ),
     };
-    // On a phone the field has the width of its row, less the Paste button
-    // beside it (docs/DECISIONS.md D32 item 10 (g)), and Submit stands above
-    // its helper (docs/SCREENS.md, "Compact layout").
+    // On a phone, at any width, the field has the width of its row, less the
+    // Paste button beside it (docs/DECISIONS.md D32 item 10 (g)); the desktop has
+    // no Paste. The layout follows the window's width from 600 wide, as the
+    // desktop's does, and not the table's 844 (`COMPACT`, not `PHONE_TABLE`):
+    // Submit stands above its helper on a phone held upright, and beside it in a
+    // wider window, a phone held sideways included (docs/SCREENS.md, "Compact
+    // layout"). That Submit beside its helper on a phone held sideways is approved
+    // (owner, 2026-10-18, answer (B); docs/DECISIONS.md D40).
     let paste = paste::button(
         model
             .busy
             .is_none()
             .then_some(Message::Paste(PasteInto::SignedBytes)),
     );
-    let entry: Element<'a, Message> = if compact {
-        column![
-            label,
-            row![hex, paste]
-                .spacing(sp::S8)
-                .align_y(Alignment::Center)
-                .width(Length::Fill),
-            column![submit, helper].spacing(sp::S12),
-        ]
-        .spacing(sp::S12)
-        .into()
+    let field: Element<'a, Message> = if model.phone() {
+        row![hex, paste]
+            .spacing(sp::S8)
+            .align_y(Alignment::Center)
+            .width(Length::Fill)
+            .into()
     } else {
-        column![
-            label,
-            hex,
-            row![submit, helper]
-                .spacing(sp::S12)
-                .align_y(Alignment::Center),
-        ]
-        .spacing(sp::S12)
-        .into()
+        hex.into()
     };
+    let actions: Element<'a, Message> = if compact {
+        column![submit, helper].spacing(sp::S12).into()
+    } else {
+        row![submit, helper]
+            .spacing(sp::S12)
+            .align_y(Alignment::Center)
+            .into()
+    };
+    let entry: Element<'a, Message> = column![label, field, actions].spacing(sp::S12).into();
     let mut body = vec![ui::card_for(compact, entry).into()];
     if let Some((accepted, text)) = &s.result {
         // A saved copy's answer is a write: a refusal is the page's error.
@@ -1497,15 +1715,17 @@ mod tests {
     use iced::advanced::widget::{Operation, Tree};
     use iced::keyboard::key::{Named, NativeCode, Physical};
     use iced::keyboard::{Key, Location, Modifiers};
-    use iced::{Event, Rectangle, keyboard, mouse};
+    use iced::mobile::SafeArea;
+    use iced::{Event, Padding, Rectangle, keyboard, mouse};
     use iced_runtime::user_interface::{Cache, UserInterface};
     use tawara_wallet_core::preferences::Preferences;
     use tawara_wallet_core::sample;
     use tawara_wallet_core::view::AccountState;
 
     use super::*;
-    use crate::app::{Busy, DestinationRow, Level, NARROWEST, Page, Screen};
-    use crate::harness::{Driver, fits, mouse_move, mouse_press, mouse_release, texts};
+    use crate::app::{Busy, DestinationRow, FormOf, Level, NARROWEST, Page, Scanning, Screen};
+    use crate::harness::{Driver, fits, fits_at, mouse_move, mouse_press, mouse_release, texts};
+    use crate::host::ScanPreview;
     use crate::screens;
 
     /// A key press as the keyboard sends it, with the text it types, if any.
@@ -1749,6 +1969,11 @@ mod tests {
     /// The bounds of the focusable widgets of `root` in a phone's window, in
     /// Tab's order: a text field's bounds are its drawn box.
     fn focusable_bounds(root: Element<'_, Message>) -> Vec<Rectangle> {
+        focusable_bounds_at(root, NARROWEST, 844.0)
+    }
+
+    /// [`focusable_bounds`] in a window `width` by `height`.
+    fn focusable_bounds_at(root: Element<'_, Message>, width: f32, height: f32) -> Vec<Rectangle> {
         #[derive(Default)]
         struct Bounds(Vec<Rectangle>);
 
@@ -1770,7 +1995,7 @@ mod tests {
         let mut renderer = crate::harness::renderer();
         let mut ui = UserInterface::build(
             root,
-            iced::Size::new(NARROWEST, 844.0),
+            iced::Size::new(width, height),
             Cache::default(),
             &mut renderer,
         );
@@ -1863,6 +2088,23 @@ mod tests {
             ),
             ("page 1 with the account set aside", set_aside_model),
             ("page 1 with the account list open", list),
+            (
+                "page 1 with a scanner, so Scan stands beneath each destination's field",
+                with_scanner(
+                    phone_at(stage_page(to(), typed()), width),
+                    ScanPreview::Shell,
+                ),
+            ),
+            (
+                "the scanner's page, drawn by the application",
+                scanning(
+                    with_scanner(
+                        phone_at(stage_page(to(), typed()), width),
+                        ScanPreview::Application,
+                    ),
+                    0,
+                ),
+            ),
             (
                 "page 1 with refusals under its fields",
                 phone_at(
@@ -2314,14 +2556,33 @@ mod tests {
 
     #[test]
     fn w8_fits_a_phone_screen() {
-        let model = phone(
+        // W8 at both phone sizes, bare and with a shell's scanner: its Paste stands
+        // beside each field and its Scan beneath it, and nothing passes the edge
+        // (docs/DECISIONS.md D32 item 10 (b), D42 item 1; owner, 2026-10-18).
+        let page = || {
             Page::Resign(ResignPage {
                 account: accounts()[1],
                 form: typed(),
-            }),
-            None,
-        );
-        assert_eq!(fits(screens::view(&model), NARROWEST), Ok(()));
+            })
+        };
+        for (width, height) in PHONES {
+            let bare = phone_at(page(), width);
+            let scanned = with_scanner(phone_at(page(), width), ScanPreview::Shell);
+            for model in [bare, scanned] {
+                assert_eq!(
+                    fits_at(screens::view(&model), width, height),
+                    Ok(()),
+                    "at {width} by {height}"
+                );
+            }
+            // The first destination keeps the width its card gives less its Paste.
+            let model = phone_at(page(), width);
+            let field = focusable_bounds_at(screens::view(&model), width, height)[0];
+            assert!(
+                field.width >= 200.0,
+                "at {width} by {height} the destination is {field:?}"
+            );
+        }
     }
 
     #[test]
@@ -2420,12 +2681,58 @@ mod tests {
     /// Where each Paste button's label lies in `model`'s window at the
     /// phone's narrowest width.
     fn pastes(model: &Model) -> Vec<Rectangle> {
-        texts(screens::view(model), (NARROWEST, 844.0))
+        pastes_at(model, NARROWEST)
+    }
+
+    /// Where each Paste button's label lies in `model`'s window `width` wide.
+    fn pastes_at(model: &Model, width: f32) -> Vec<Rectangle> {
+        labels_at(model, width, "Paste")
+    }
+
+    /// Where each Scan button's label lies in `model`'s window `width` wide.
+    fn scans_at(model: &Model, width: f32) -> Vec<Rectangle> {
+        labels_at(model, width, "Scan")
+    }
+
+    /// Where each button labelled `label` lies in `model`'s window `width` wide,
+    /// top to bottom.
+    fn labels_at(model: &Model, width: f32, label: &str) -> Vec<Rectangle> {
+        texts(screens::view(model), (width, 844.0))
             .into_iter()
-            .filter(|(text, _)| text == "Paste")
+            .filter(|(text, _)| text == label)
             .map(|(_, at)| at)
             .collect()
     }
+
+    /// `model` as a phone whose shell gives a scanner, which draws the camera's
+    /// preview in the application when `preview` says so.
+    fn with_scanner(mut model: Model, preview: ScanPreview) -> Model {
+        model.scanner = Some(crate::harness::scanner(preview));
+        model
+    }
+
+    /// `model` with a scan of destination `row` under way, begun from the
+    /// sample's form as the page shows it.
+    fn scanning(mut model: Model, row: usize) -> Model {
+        model.scanning = Some(Scanning {
+            ask: 1,
+            row,
+            form: FormOf::Send(Some(accounts()[0])),
+            rows: typed().rows.len(),
+            typed: typed().rows[row].clone(),
+        });
+        model
+    }
+
+    /// The phone's two sizes as the scanner's page is held to them: the phone's
+    /// insets, which are the status bar's above and the home indicator's below
+    /// (docs/DECISIONS.md D32 item 10 (b)).
+    const PHONE_INSETS: Padding = Padding {
+        top: 47.0,
+        right: 0.0,
+        bottom: 34.0,
+        left: 0.0,
+    };
 
     #[test]
     fn on_a_phone_a_destination_takes_the_width_of_its_card_beside_its_paste() {
@@ -2447,14 +2754,44 @@ mod tests {
     }
 
     #[test]
+    fn on_a_phone_a_destination_beside_its_paste_and_its_scan_beneath_it() {
+        // With a scanner, the Paste button stands beside the field and the Scan
+        // button beneath it, on a line of its own, so the destination keeps the width
+        // its card gives less the Paste, at 360, at 390, and on a phone held sideways
+        // narrower than the table's 844, at 667 and 780 (owner, 2026-10-18, answer (A)).
+        for width in [NARROWEST, 390.0, 667.0, 780.0] {
+            let model = with_scanner(
+                phone_at(stage_page(SendStage::To(BTreeMap::new()), typed()), width),
+                ScanPreview::Shell,
+            );
+            let fields = focusable_bounds_at(screens::view(&model), width, 844.0);
+            let field = fields.first().copied().expect("the first destination");
+            let paste = pastes_at(&model, width)[0];
+            let scan = scans_at(&model, width)[0];
+            assert!(
+                field.width >= 200.0,
+                "at {width} wide the destination is {field:?}"
+            );
+            assert!(
+                field.x + field.width < paste.x && paste.y < field.y + field.height,
+                "the Paste stands beside the field: {paste:?}, {field:?}"
+            );
+            assert!(
+                scan.y > field.y + field.height && scan.x < paste.x,
+                "the Scan stands beneath the field: {scan:?}, {field:?}"
+            );
+        }
+    }
+
+    #[test]
     fn on_a_phone_the_signed_bytes_field_takes_its_row_beside_its_paste() {
-        let model = phone(
+        let model = phone_at(
             Page::Submit(SubmitPage {
                 hex: sample::sent_view().artifact_hex,
                 result: None,
                 ..SubmitPage::default()
             }),
-            None,
+            NARROWEST,
         );
         let fields = focusable_bounds(screens::view(&model));
         let field = fields.first().copied().expect("the signed-bytes field");
@@ -2487,16 +2824,468 @@ mod tests {
                 (Page::Submit(SubmitPage::default()), 1),
             ]
         };
-        for (page, fields) in pages() {
-            assert_eq!(pastes(&phone_at(page, NARROWEST)).len(), fields);
+        // A phone pastes at every width, held sideways as upright, and in a table or
+        // in blocks (docs/DECISIONS.md D40 item 5, as built; D42 item 1).
+        for width in [NARROWEST, 390.0, 600.0, 667.0, 780.0, 844.0, 1023.0] {
+            for (page, fields) in pages() {
+                assert_eq!(
+                    pastes_at(&phone_at(page, width), width).len(),
+                    fields,
+                    "at {width} wide"
+                );
+            }
         }
-        for (page, _) in pages() {
-            let drawn = drawn_on(&desktop_at(page, 1440.0));
+        for width in [1024.0, 1440.0] {
+            for (page, _) in pages() {
+                let drawn = drawn_on(&desktop_at(page, width));
+                assert!(
+                    !has(&drawn, "Paste"),
+                    "the desktop pastes from the keyboard, at {width} wide"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_scan_button_stands_beneath_each_field_and_none_without_a_scanner() {
+        // A Scan button for each destination row, on page 1 and on the re-sign form
+        // (docs/DECISIONS.md D42 item 1). In a block, on a phone narrower than 844, the
+        // Paste stands beside the field and the Scan on a line of its own beneath it;
+        // in a table row, from 844 wide held sideways, the Paste and the Scan both stand
+        // beneath the field (owner, 2026-10-18, answer (A)). A phone whose shell gives
+        // no scanner has none.
+        let pages = || {
+            [
+                stage_page(SendStage::To(BTreeMap::new()), typed()),
+                Page::Resign(ResignPage {
+                    account: accounts()[1],
+                    form: typed(),
+                }),
+            ]
+        };
+        for width in [NARROWEST, 390.0, 600.0, 667.0, 780.0, 844.0, 1023.0] {
+            for page in pages() {
+                let model = with_scanner(phone_at(page.clone(), width), ScanPreview::Shell);
+                let pastes = pastes_at(&model, width);
+                let scans = scans_at(&model, width);
+                assert_eq!(scans.len(), 2, "at {width} wide");
+                assert_eq!(pastes.len(), 2, "at {width} wide");
+                let field = focusable_bounds_at(screens::view(&model), width, 844.0)[0];
+                for (paste, scan) in pastes.iter().zip(&scans) {
+                    if width < crate::app::PHONE_TABLE {
+                        // In a block the Paste stands beside the field, and the Scan on
+                        // a line of its own beneath it. The Scan's x is not compared.
+                        assert!(
+                            scan.y > paste.y + 20.0,
+                            "the Scan stands beneath the Paste in a block at {width} \
+                             wide: {scan:?}, {paste:?}"
+                        );
+                    } else {
+                        // In a table row both stand beneath the field, on one line, so
+                        // the field takes the cell's width (owner, 2026-10-18, answer
+                        // (A)).
+                        assert!(
+                            paste.y > field.y + field.height
+                                && (scan.y - paste.y).abs() < 1.0
+                                && scan.x > paste.x,
+                            "the Paste and the Scan stand beneath the field at {width} \
+                             wide: {paste:?}, {scan:?}, {field:?}"
+                        );
+                    }
+                }
+                assert_eq!(
+                    fits(screens::view(&model), width),
+                    Ok(()),
+                    "at {width} wide"
+                );
+                let bare = phone_at(page, width);
+                assert!(scans_at(&bare, width).is_empty(), "no scanner, no Scan");
+                assert_eq!(pastes_at(&bare, width).len(), 2, "Paste stays without one");
+            }
+        }
+    }
+
+    /// Asserts that the labels `first` and `second` stand on one line, `second`
+    /// to the right of `first`.
+    fn assert_side_by_side(drawn: &[(String, Rectangle)], first: &str, second: &str) {
+        let (a, b) = (at(drawn, first), at(drawn, second));
+        assert!(
+            (a.y - b.y).abs() < 1.0 && b.x > a.x,
+            "{first} and {second} stand side by side: {a:?}, {b:?}"
+        );
+    }
+
+    #[test]
+    fn a_phone_held_sideways_draws_its_destinations_as_table_rows_with_paste_and_scan_beneath() {
+        // From 844 wide, a phone held sideways draws its destinations as the
+        // desktop's table rows, and its fee and block-to-live side by side (owner,
+        // 2026-10-18, answer (A), a refinement of answer 6; docs/DECISIONS.md D42
+        // item 6). Its Paste and Scan buttons both stand beneath each destination's
+        // field, on one line, so that the field takes the cell's width. Its pages
+        // stay pages.
+        for (width, height) in [(844.0, 390.0), (1024.0, 600.0)] {
+            let with_buttons = |page: Page| with_scanner(phone_at(page, width), ScanPreview::Shell);
+
+            // Page 1: a table with its header, a Paste and a Scan for each row, and
+            // no block. Both buttons stand beneath the field, the Paste beside the
+            // Scan, and the field takes the cell's width: at least 250 pixels, the
+            // implementer's floor and not the owner's (docs/DECISIONS.md D42 item 7).
+            let to = with_buttons(stage_page(SendStage::To(BTreeMap::new()), typed()));
+            let drawn = texts(screens::view(&to), (width, height));
+            for head in ["#", "Destination", "Reference"] {
+                assert!(has(&drawn, head), "{head} is a header at {width} wide");
+            }
+            assert!(!has(&drawn, "Destination 1"), "a table at {width} wide");
+            assert_eq!(pastes_at(&to, width).len(), 2, "at {width} wide");
+            assert_eq!(scans_at(&to, width).len(), 2, "at {width} wide");
+            assert_eq!(fits_at(screens::view(&to), width, height), Ok(()));
+            let field = focusable_bounds_at(screens::view(&to), width, height)[0];
+            let (paste, scan) = (at(&drawn, "Paste"), at(&drawn, "Scan"));
             assert!(
-                !has(&drawn, "Paste"),
-                "the desktop pastes from the keyboard"
+                paste.y > field.y + field.height
+                    && (scan.y - paste.y).abs() < 1.0
+                    && paste.x < scan.x,
+                "the Paste and the Scan stand beneath the field, on one line: \
+                 {paste:?}, {scan:?}, {field:?}"
+            );
+            assert!(
+                field.width >= 250.0,
+                "the To page's field at {width} by {height} is {field:?}"
+            );
+
+            // Page 2: the amounts as rows, with the fee and the block-to-live side
+            // by side.
+            let amounts = phone_at(stage_page(SendStage::Amount, typed()), width);
+            let drawn = texts(screens::view(&amounts), (width, height));
+            for head in ["#", "Destination", "Amount (MCM)"] {
+                assert!(has(&drawn, head), "{head} is a header at {width} wide");
+            }
+            assert!(!has(&drawn, "Destination 1"), "a table at {width} wide");
+            assert_side_by_side(&drawn, "Fee, nanoMCM in total", "Block-to-live");
+            assert_eq!(fits_at(screens::view(&amounts), width, height), Ok(()));
+
+            // The re-sign form: the same table with its Paste and Scan, and its fees
+            // side by side.
+            let resign = with_buttons(Page::Resign(ResignPage {
+                account: accounts()[1],
+                form: typed(),
+            }));
+            let drawn = texts(screens::view(&resign), (width, height));
+            for head in ["#", "Destination", "Amount (MCM)", "Reference"] {
+                assert!(has(&drawn, head), "{head} is a header at {width} wide");
+            }
+            assert!(!has(&drawn, "Destination 1"), "a table at {width} wide");
+            assert_eq!(pastes_at(&resign, width).len(), 2, "at {width} wide");
+            assert_eq!(scans_at(&resign, width).len(), 2, "at {width} wide");
+            assert_side_by_side(&drawn, "Fee, nanoMCM in total", "Block-to-live");
+            assert_eq!(fits_at(screens::view(&resign), width, height), Ok(()));
+            // W8's destination field, with both buttons beneath it: at least 180
+            // pixels, the implementer's floor and not the owner's (docs/DECISIONS.md
+            // D42 item 7).
+            let field = focusable_bounds_at(screens::view(&resign), width, height)[0];
+            let (paste, scan) = (at(&drawn, "Paste"), at(&drawn, "Scan"));
+            assert!(
+                paste.y > field.y + field.height && (scan.y - paste.y).abs() < 1.0,
+                "W8's Paste and Scan stand beneath its field: {paste:?}, {scan:?}, {field:?}"
+            );
+            assert!(
+                field.width >= 180.0,
+                "W8's destination field at {width} by {height} is {field:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_phone_narrower_than_844_held_sideways_keeps_its_blocks() {
+        // A phone held sideways narrower than the table's 844 draws its destinations
+        // as the blocks it draws upright, with its fees one over the other (owner,
+        // 2026-10-18, answer (A)): an iPhone SE at 667 by 375, and a phone at 780 by
+        // 360. Its Paste stands beside each field and its Scan beneath it.
+        for (width, height) in [(667.0, 375.0), (780.0, 360.0)] {
+            let with_buttons = |page: Page| with_scanner(phone_at(page, width), ScanPreview::Shell);
+
+            let to = with_buttons(stage_page(SendStage::To(BTreeMap::new()), typed()));
+            let drawn = texts(screens::view(&to), (width, height));
+            assert!(has(&drawn, "Destination 1"), "a block at {width} wide");
+            assert!(!has(&drawn, "#"), "no table at {width} wide");
+            assert_eq!(pastes_at(&to, width).len(), 2, "at {width} wide");
+            assert_eq!(scans_at(&to, width).len(), 2, "at {width} wide");
+            assert_eq!(fits_at(screens::view(&to), width, height), Ok(()));
+            let field = focusable_bounds_at(screens::view(&to), width, height)[0];
+            let (paste, scan) = (at(&drawn, "Paste"), at(&drawn, "Scan"));
+            assert!(
+                paste.x > field.x + field.width && paste.y < field.y + field.height,
+                "the Paste stands beside the field at {width} wide: {paste:?}, {field:?}"
+            );
+            assert!(
+                scan.y > field.y + field.height && scan.x < paste.x,
+                "the Scan stands beneath the field at {width} wide: {scan:?}, {field:?}"
+            );
+
+            let amounts = phone_at(stage_page(SendStage::Amount, typed()), width);
+            let drawn = texts(screens::view(&amounts), (width, height));
+            assert!(has(&drawn, "Destination 1"), "a block at {width} wide");
+            assert!(!has(&drawn, "#"), "no table at {width} wide");
+            let (fee, btl) = (
+                at(&drawn, "Fee, nanoMCM in total"),
+                at(&drawn, "Block-to-live"),
+            );
+            assert!(
+                btl.y > fee.y + 1.0,
+                "the block-to-live is under the fee at {width} wide: {fee:?}, {btl:?}"
+            );
+            assert_eq!(fits_at(screens::view(&amounts), width, height), Ok(()));
+
+            let resign = with_buttons(Page::Resign(ResignPage {
+                account: accounts()[1],
+                form: typed(),
+            }));
+            let drawn = texts(screens::view(&resign), (width, height));
+            assert!(has(&drawn, "Destination 1"), "a block at {width} wide");
+            assert!(!has(&drawn, "#"), "no table at {width} wide");
+            assert_eq!(fits_at(screens::view(&resign), width, height), Ok(()));
+        }
+    }
+
+    #[test]
+    fn a_phone_review_page_draws_its_destinations_as_blocks_at_every_width() {
+        // Page 3 of a phone's Send is `review_page`, and it draws each destination
+        // as a block at every width, sideways included: the table is on page 1 and
+        // on W8 alone, from 844 wide (docs/SCREENS.md, W5 and "Compact layout").
+        for (width, height) in [
+            (NARROWEST, 640.0),
+            (667.0, 375.0),
+            (780.0, 360.0),
+            (844.0, 390.0),
+            (1024.0, 600.0),
+        ] {
+            let model = phone_at(stage_page(SendStage::Review(plan()), typed()), width);
+            let drawn = texts(screens::view(&model), (width, height));
+            assert!(has(&drawn, "3 of 4"), "page 3 at {width} wide");
+            assert!(has(&drawn, "#1"), "a block at {width} wide");
+            assert!(!has(&drawn, "#"), "no table header at {width} wide");
+            assert!(has(&drawn, "Continue to signing"), "page 3 at {width} wide");
+            assert_eq!(fits_at(screens::view(&model), width, height), Ok(()));
+        }
+    }
+
+    #[test]
+    fn a_phone_held_upright_keeps_its_blocks_and_its_fees_one_over_the_other() {
+        // The layout a phone held upright draws is the one it drew before the
+        // layout followed the width (docs/DECISIONS.md D32 item 10 (b)).
+        for width in [NARROWEST, 390.0] {
+            let to = drawn_on(&phone_at(
+                stage_page(SendStage::To(BTreeMap::new()), typed()),
+                width,
+            ));
+            assert!(has(&to, "Destination 1"), "a block at {width} wide");
+            assert!(!has(&to, "#"), "no table at {width} wide");
+
+            let amounts = drawn_on(&phone_at(stage_page(SendStage::Amount, typed()), width));
+            assert!(has(&amounts, "Destination 1"), "a block at {width} wide");
+            let (fee, btl) = (
+                at(&amounts, "Fee, nanoMCM in total"),
+                at(&amounts, "Block-to-live"),
+            );
+            assert!(
+                btl.y > fee.y + 1.0,
+                "the block-to-live is under the fee at {width} wide: {fee:?}, {btl:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_desktop_draws_its_table_with_its_fees_side_by_side_and_neither_paste_nor_scan() {
+        // The desktop's W4 and W8 are the table they were, with the fees side by
+        // side, and no Paste or Scan, from 600 wide up: the desktop's table is not
+        // the phone's, and starts at COMPACT (docs/DECISIONS.md D32 item 10 (g), D42
+        // item 1, D42 item 6 as refined by answer (A), owner, 2026-10-18).
+        for width in [600.0, 700.0, 843.0, 1024.0, 1440.0] {
+            for page in [
+                compose(typed()),
+                Page::Resign(ResignPage {
+                    account: accounts()[1],
+                    form: typed(),
+                }),
+            ] {
+                let model = with_scanner(desktop_at(page, width), ScanPreview::Shell);
+                let drawn = drawn_on(&model);
+                for head in ["#", "Destination", "Amount (MCM)", "Reference"] {
+                    assert!(has(&drawn, head), "{head} at {width} wide");
+                }
+                assert!(!has(&drawn, "Destination 1"), "a table at {width} wide");
+                assert!(!has(&drawn, "Paste") && !has(&drawn, "Scan"));
+                assert_side_by_side(&drawn, "Fee, nanoMCM in total", "Block-to-live");
+            }
+        }
+    }
+
+    #[test]
+    fn the_signed_bytes_field_keeps_its_paste_and_stands_submit_beside_its_helper_sideways() {
+        // W9's field follows the width as the destinations do: Submit stands beside
+        // its helper in a wide window, and above it upright; the Paste beside the
+        // field stays on a phone at any width (docs/DECISIONS.md D32 item 10 (g)).
+        const HELPER: &str = "Only the bytes' layout is checked here; the node validates the rest.";
+        let page = || {
+            Page::Submit(SubmitPage {
+                hex: sample::sent_view().artifact_hex,
+                result: None,
+                ..SubmitPage::default()
+            })
+        };
+        for (width, height) in [
+            (NARROWEST, 844.0),
+            (390.0, 844.0),
+            (844.0, 390.0),
+            (1024.0, 600.0),
+        ] {
+            let model = phone_at(page(), width);
+            let drawn = texts(screens::view(&model), (width, height));
+            let (submit, helper) = (at(&drawn, "Submit"), at(&drawn, HELPER));
+            assert_eq!(pastes_at(&model, width).len(), 1, "at {width} wide");
+            assert_eq!(
+                helper.y < submit.y + submit.height,
+                width >= crate::app::COMPACT,
+                "Submit beside its helper only in a wide window, at {width} wide: \
+                 {submit:?}, {helper:?}"
+            );
+            assert_eq!(fits_at(screens::view(&model), width, height), Ok(()));
+        }
+    }
+
+    #[test]
+    fn the_desktop_draws_neither_paste_nor_scan_even_where_a_scanner_is_given() {
+        // Only a phone's shell gives a scanner, and the desktop's pages draw
+        // neither button (docs/DECISIONS.md D32 item 10 (g), D42 item 1).
+        for width in [1024.0, 1440.0] {
+            for page in [
+                compose(typed()),
+                Page::Resign(ResignPage {
+                    account: accounts()[1],
+                    form: typed(),
+                }),
+            ] {
+                let model = with_scanner(desktop_at(page, width), ScanPreview::Shell);
+                let drawn = drawn_on(&model);
+                assert!(!has(&drawn, "Paste"), "{drawn:?}");
+                assert!(!has(&drawn, "Scan"), "{drawn:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_tap_on_a_scan_button_asks_for_its_own_row_and_none_is_asked_while_a_scan_is_under_way() {
+        let idle = with_scanner(
+            phone_at(
+                stage_page(SendStage::To(BTreeMap::new()), typed()),
+                NARROWEST,
+            ),
+            ScanPreview::Shell,
+        );
+        let second = scans_at(&idle, NARROWEST)[1];
+        let mut driver = Driver::new(screens::view(&idle), (360, 844));
+        let (messages, _, _) = driver.send(&[
+            mouse_move(second.center_x(), second.center_y()),
+            mouse_press(),
+            mouse_release(),
+        ]);
+        assert!(
+            matches!(messages.as_slice(), [Message::Scan(1)]),
+            "{messages:?}"
+        );
+
+        // A scan under way disables every Scan button: a second scan is not begun.
+        let under_way = scanning(
+            with_scanner(
+                phone_at(
+                    stage_page(SendStage::To(BTreeMap::new()), typed()),
+                    NARROWEST,
+                ),
+                ScanPreview::Shell,
+            ),
+            0,
+        );
+        let second = scans_at(&under_way, NARROWEST)[1];
+        let mut driver = Driver::new(screens::view(&under_way), (360, 844));
+        let (messages, _, _) = driver.send(&[
+            mouse_move(second.center_x(), second.center_y()),
+            mouse_press(),
+            mouse_release(),
+        ]);
+        assert!(messages.is_empty(), "{messages:?}");
+    }
+
+    #[test]
+    fn the_scan_page_draws_its_frame_a_line_and_cancel_and_fits_a_phone() {
+        // The camera's preview is drawn in the application: the page shows the
+        // latest frame, what to point at, and Cancel, whole at 360 by 640 and at
+        // 390 by 844 (docs/DECISIONS.md D42 item 3).
+        for (width, height) in PHONES {
+            let mut model = scanning(
+                with_scanner(
+                    phone_at(stage_page(SendStage::To(BTreeMap::new()), typed()), width),
+                    ScanPreview::Application,
+                ),
+                0,
+            );
+            // The phone's status bar and home indicator cover the window's edges,
+            // so the page is drawn between them, as the phone draws it.
+            model.safe_area = SafeArea::new(PHONE_INSETS);
+            model.scan_preview = Some(iced::widget::image::Handle::from_rgba(
+                4,
+                3,
+                vec![0x40; 4 * 3 * 4],
+            ));
+            let problems = crate::harness::fits_the_viewport(
+                screens::view(&model),
+                (width, height),
+                PHONE_INSETS,
+            );
+            assert!(problems.is_empty(), "at {width} by {height}: {problems:?}");
+            assert!(
+                past_the_edge(screens::view(&model), width, height).is_empty(),
+                "at {width} by {height}"
+            );
+            let drawn = texts(screens::view(&model), (width, height));
+            assert!(has(&drawn, "Cancel"), "{drawn:?}");
+            assert!(
+                has(
+                    &drawn,
+                    "Point the camera at a QR code with a destination in it."
+                ),
+                "{drawn:?}"
+            );
+            assert!(!has(&drawn, "Paste") && !has(&drawn, "Scan"), "{drawn:?}");
+        }
+    }
+
+    #[test]
+    fn a_tap_on_cancel_on_the_scan_page_asks_to_stop_the_scan() {
+        let model = scanning(
+            with_scanner(
+                phone_at(
+                    stage_page(SendStage::To(BTreeMap::new()), typed()),
+                    NARROWEST,
+                ),
+                ScanPreview::Application,
+            ),
+            0,
+        );
+        let cancel = texts(screens::view(&model), (NARROWEST, 640.0))
+            .into_iter()
+            .find(|(text, _)| text == "Cancel")
+            .map(|(_, at)| at)
+            .expect("Cancel is drawn");
+        let mut driver = Driver::new(screens::view(&model), (360, 640));
+        let (messages, _, _) = driver.send(&[
+            mouse_move(cancel.center_x(), cancel.center_y()),
+            mouse_press(),
+            mouse_release(),
+        ]);
+        assert!(
+            matches!(messages.as_slice(), [Message::CancelScan]),
+            "{messages:?}"
+        );
     }
 
     #[test]
@@ -2523,7 +3312,7 @@ mod tests {
             "{messages:?}"
         );
 
-        let model = phone(Page::Submit(SubmitPage::default()), None);
+        let model = phone_at(Page::Submit(SubmitPage::default()), NARROWEST);
         let at = pastes(&model)[0];
         let mut driver = Driver::new(screens::view(&model), (360, 844));
         let (messages, _, _) = driver.send(&[

@@ -1087,9 +1087,9 @@ fn restore<'a>(model: &Model, r: &'a RestoreForm, drawn: u64) -> Element<'a, Mes
 
 /// S6's recovery-phrase field, drawn as `ui::field` draws a field, with what
 /// keyboard paste brings cleaned as a phrase (docs/DECISIONS.md D32 item 10
-/// (h)), and in the compact layout a Paste button beside it (item 10 (g)). The
-/// button's read carries the generation the field is drawn at, as the field's
-/// own text does.
+/// (h)), and on a phone, at any width, a Paste button beside it (item 10 (g)).
+/// The button's read carries the generation the field is drawn at, as the
+/// field's own text does.
 fn phrase_field<'a>(
     model: &Model,
     r: &'a RestoreForm,
@@ -1105,7 +1105,7 @@ fn phrase_field<'a>(
         .style(theme::field(radius::R12))
         .on_input(move |text| Message::PhraseText(Typed { text, drawn }))
         .on_submit_maybe(ready.then_some(Message::RestoreWallet));
-    let entry = if model.compact() {
+    let entry = if model.phone() {
         row![
             paste::phrase_paste(field),
             paste::button(Some(Message::Paste(PasteInto::Phrase { drawn }))),
@@ -2634,6 +2634,16 @@ mod tests {
                 [Message::Paste(PasteInto::Phrase { drawn })] if *drawn == model.drawn()
             ),
             "{messages:?}"
+        );
+
+        // A phone held sideways pastes into the phrase too, as it does
+        // portrait (docs/DECISIONS.md D40 item 5, as built).
+        let mut sideways = phone_model(Screen::Restore(RestoreForm::default()));
+        sideways.width = 844.0;
+        assert!(
+            texts(view(&sideways), (844.0, 844.0))
+                .iter()
+                .any(|(text, _)| text == "Paste")
         );
 
         let mut desktop = Model::new(Preferences::default(), None);

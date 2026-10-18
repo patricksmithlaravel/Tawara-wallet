@@ -90,6 +90,10 @@ records live here (D33 item 4).
    the CI runners, and (from phase 5) packaging and signing.
 6. **Tawara and the person.** The person decides whom to trust as a node,
    where to keep the store, what to type, and whether to read a refusal.
+7. **The camera and the codes it reads.** A code is text that anyone can print
+   or place over another one, so what the camera reads is untrusted until it is
+   checked as a destination (D42 item 4). The Android preview holds the latest
+   frame only while a scan draws it, and the frame goes with the scan.
 
 ### Adversaries
 
@@ -105,6 +109,7 @@ records live here (D33 item 4).
 | A8 | **A reorg** | revert a block a settle relied on | (it leaves a store that recorded a settle the chain no longer shows) |
 | A9 | **The supply chain**: a crate, the iced fork, the library's repository, the toolchain, CI runners, packaging | put code in the build | the seed, the password, a changed destination |
 | A10 | **The person's own mistakes** | lose the phrase, run two wallets on one phrase, paste the wrong destination, press on past a warning | (loss of funds by accident) |
+| A11 | **Whoever prints or places the code the camera reads** | make a code hold any text, a destination or not, and put it where the person scans | a payment to an account of its own, in place of the one the payee gave |
 
 ## 3. Threats, protections and status
 
@@ -199,6 +204,13 @@ with its source; what checks that protection; what is left; and the status.
 |---|---|---|---|---|---|
 | T43 | **The kept password opens the store for whoever passes the phone's check.** With the device unlock on, the passcode is enough: the system's prompt may accept Face ID, Touch ID or the passcode, so anyone who knows the passcode can open the wallet (D45 item 2). A face or a finger can be compelled, which no row of section 2 names. | The unlock is off until the person accepts the offer, which is made once, after a password unlock has opened the store (D45 item 4; `crates/app/src/app.rs`, `make_offer` and `answer_offer`). The password the offer would keep is copied only from the unlock's send until the answer, and `release_device` drops it with any ask on a lock, a move to the background and a stop (T12). The password is kept under the store identifier: 32 random bytes in `store-id` beside `preferences`, drawn once and not secret (`crates/wallet-core/src/store_identifier.rs`). An item labelled with another identifier, or with no identifier to match, is deleted and not used (`app.rs`, `unlock_with_device` and `device_missing`). A password the store refuses as wrong is deleted, and the unlock is turned off (`Purpose::KeptUnlock`). Turning the unlock off deletes the password first (`turn_off_device_unlock`). A declined check changes nothing, and an answer that comes after its ask was dropped is ignored, with its password wiped (`released`). The shell's side, the Keychain item under `.userPresence` and `kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly` as D45 item 2 designs it, will be in a Tawara-mobile pull request, not yet opened (its number goes here when it is), and it is not in this change. The Tawara password is still the way in, and its field stays on S7 (D45 item 3). | `crates/app/src/app.rs` tests `the_device_unlock_is_offered_once_after_a_password_unlock` (`:9187`), `declining_the_offer_keeps_nothing` (`:9281`), `a_device_unlock_sends_unlock_with_the_password_it_released` (`:9299`), `a_wrong_kept_password_is_forgotten_and_the_form_is_shown` (`:9331`), `a_mismatched_identifier_forgets_the_password_and_shows_the_form` (`:9358`), `a_declined_check_keeps_the_password` (`:9393`), `turning_the_unlock_off_forgets_the_password` (`:9433`), `a_password_released_after_the_app_left_the_foreground_is_not_used` (`:9484`), `the_offer_waits_on_the_wallet_and_a_lock_takes_it_away` (`:9539`); `crates/app/src/host.rs` `a_released_password_and_an_answer_print_no_text` (`:637`); `crates/wallet-core/src/store_identifier.rs` `the_identifier_file_is_private_to_the_user` and `a_file_that_is_not_an_identifier_is_replaced`. | A passcode opens the wallet with the kept password, and so does a compelled face or finger. A passcode can be watched (A5), or shared, a risk D45 item 5 records and this row keeps. The shell's own copies of the password, the one it is given to write and the one it reads back, are not zeroed by Tawara, since the calls carry text. A Keychain item that survives an uninstall is reached by no check until a keep replaces it (G28). **For the owner** (5.4 item 16). | verified in the app with a fake shell; the Keychain side and the device, owed (V19, G28) |
 
+### 3.10 The camera: QR scanning on a phone (D42)
+
+| # | threat | protections (sources) | checked by | residual | status |
+|---|---|---|---|---|---|
+| T44 | **A scanned text fills a destination row it should not**: a code that is not a destination, is longer than a destination can be, is not UTF-8, or was scanned for a row or a page that has since changed (A11). | The text is trimmed, bounded at 128 bytes, read as UTF-8 and checked by `parse_destination` (`crates/app/src/scan.rs`, `destination`). It fills only the row the scan began for, and only while the page, its form and that row are as they were when the scan began (`crates/app/src/app/wallet.rs`, `scan_fits` and `scanned`). A refusal shows under that row's address. No other message takes the text, so it never reaches a password or a phrase field. The scanner's page draws the camera's frame and no text a code holds (`crates/app/src/screens/wallet/send.rs`, `scanner`). | `scan.rs` tests `a_destination_is_trimmed_and_checked_as_the_library_checks_it`, `a_text_is_bounded_once_trimmed_and_not_before`, `an_empty_text_and_a_text_that_is_not_utf8_are_refused`; `app.rs` tests `a_scan_fills_the_row_it_was_begun_for_and_no_other`, `a_text_that_is_not_a_destination_is_refused_under_its_row`, `an_overlong_or_non_utf8_text_is_refused_under_its_row`, `a_reply_after_the_row_the_scan_fills_changed_is_dropped`, `a_reply_after_a_row_was_added_or_the_page_was_left_is_dropped`, `a_reply_to_a_scan_that_has_ended_is_dropped_even_when_another_is_under_way`; `send.rs` tests `the_scan_page_draws_its_frame_a_line_and_cancel_and_fits_a_phone` and `a_tap_on_a_scan_button_asks_for_its_own_row_and_none_is_asked_while_a_scan_is_under_way`. | A valid destination that is the wrong one fills its row, as a swapped code would: only the review catches it, as it does a Paste (T34; D42 item 4). | verified in the application; the shells' scanners owed (G29) |
+| T45 | **The camera keeps reading after the person has left the scan** (A1, A2): the page is left, the store locks, or the application moves to the background. | The scan stops when the page or its row changes, checked after each message (`update`); on a lock (`Message::Lock`, and the worker's `Locked`); on a move to the background, where the shell stops the camera on its own thread as `host::left_foreground` runs (`leaving_hook`) and the application drops the scan at its next message (`Model::backgrounded`); on Back on the scanner's page, which ends the scan through `stop_scan` and is not the shell's Back (`Message::SystemBack`; owner, 2026-10-18); and when the shell's reply comes back, a read or none (`scanned`). A reply to a scan that has ended is dropped. | `app.rs` tests `a_read_stops_the_camera_as_its_reply_is_taken`, `a_reply_to_a_scan_that_has_ended_is_dropped_even_when_another_is_under_way`, `leaving_the_page_locking_or_backgrounding_stops_the_camera`, `a_scan_ends_when_the_destinations_are_continued_past`, `a_scan_cancelled_or_refused_by_the_shell_fills_nothing`, `back_on_the_scanner_page_cancels_the_scan_and_keeps_the_form`, `a_preview_frame_is_shown_while_a_scan_draws_its_preview_in_the_application`. | The shells must stop the camera when they are told, which only a device shows (G29, V20). | verified in the application; on a device, owed (G29, V20) |
+
 ## 4. Platform specifics
 
 ### Desktop: Windows, macOS, Linux
@@ -243,18 +255,20 @@ with its source; what checks that protection; what is left; and the status.
   which `FLAG_SECURE` does not cover. The owner accepted it on 2026-10-13,
   for the sheet's lifetime (D32 item 10 (i), amended 2026-10-13; G18).
 - **Locking.** `Suspended` (the window destroyed) locks and wipes, without
-  waiting (D32 item 6). Back moves the task to the background and never
-  finishes the activity (`Tawara-mobile:crates/mobile/src/android.rs:97-108`;
-  `AndroidManifest.xml:28`), and so locks the application, except on pages 2
-  to 4 of a phone's Send. There Back steps back a page inside the application,
-  without moving the task to the background, so it does not lock (`SystemBack`
-  in `crates/app/src/app.rs`; D40 item 3, for the owner's approval with the
-  pages). Going back a page keeps the form, and gives up a plan only as Edit
-  does (D40 item 2). On those pages, as on the desktop, the idle period and
-  Lock are the only locks. On page 1 of Send, and everywhere else, Back moves
-  the task to the background as before. After `Destroy` the process ends with
-  `libc::_exit`, without waiting for the lock (D32 item 9 (j), amended
-  2026-10-13; G6).
+  waiting (D32 item 6). Back moves the task to the background and never finishes
+  the activity (`Tawara-mobile:crates/mobile/src/android.rs:97-108`;
+  `AndroidManifest.xml:28`), and so locks the application, except on pages 2 to
+  4 of a phone's Send, and on the scanner's page while the application draws its
+  preview (D42 item 5; owner, 2026-10-18). There Back steps back a page, or
+  cancels the scan, inside the application, without moving the task to the
+  background, so it does not lock (`SystemBack` in `crates/app/src/app.rs`; D40
+  item 3, for the owner's approval with the pages). Going back a page keeps the
+  form, and gives up a plan only as Edit does (D40 item 2); a cancelled scan
+  keeps it too. On those pages, as on the desktop, the idle period and Lock are
+  the only locks. On page 1 of Send, except on the scanner's page, and
+  everywhere else, Back moves the task to the background as before. After
+  `Destroy` the process ends with `libc::_exit`, without waiting for the lock
+  (D32 item 9 (j), amended 2026-10-13; G6).
 - **Clipboard.** Copy buttons mark the copy sensitive. The system reads the
   mark from API 33, so below that it does nothing; Tawara's minimum is API
   26 (D32 item 10 (j) and its note). Android gets no expiry and no
@@ -266,6 +280,16 @@ with its source; what checks that protection; what is left; and the status.
   recreate the Activity (D32 item 9 (i); `AndroidManifest.xml:39-44`). Target
   API 36 is PR B, due before 2026-11-01 if the Play extension is needed
   (D32 items 9 (i) and 10 (k)).
+- **Camera (D42; not built, G29).** The scanner's permission is
+  `android.permission.CAMERA`, with `android.hardware.camera` and
+  `android.hardware.camera.any` both not required, so that the app installs on a
+  phone with no camera (D42 item 5; owner, 2026-10-18). The permission is asked
+  through JNI and then polled, since a NativeActivity is not expected to receive
+  the answer; that is an inference, to be checked on a device (D42 item 3). The
+  camera's frames reach the application through `host::preview_frame`. The
+  camera stops when the scan ends, on a lock, on a move to the background, and
+  on Back on the scanner's page (T45; owner, 2026-10-18). Nothing of this is in
+  the shell yet, and nothing has run on a device (G29, V20).
 - **Verified** in Tawara-mobile CI on an x86_64 API 35 emulator: 14 checks,
   passed on 587329c (the manifest's attributes, `SECURE` in `dumpsys`,
   `no_backup` mode, the lock's log lines on Home and Back). Nothing on a
@@ -298,6 +322,13 @@ with its source; what checks that protection; what is left; and the status.
 - **Device unlock (D45).** The Keychain side will be in a Tawara-mobile pull
   request, not yet opened (its number goes here when it is). Until it is in the
   shell's `main`, no phone keeps a password or offers the check (T43).
+- **Camera (D42; not built, G29).** The scanner is UIKit's own screen, presented
+  as the share sheet is, with `AVCaptureMetadataOutput`, which decodes the code
+  (D42 item 2). Its usage text is `NSCameraUsageDescription`, which awaits the
+  owner's approval (D42 item 5). The camera stops when the scan ends, and on a
+  move to the background, where the shell stops it on its own thread (T45).
+  Nothing of this is in the shell yet, and nothing has run on a device (G29,
+  V20).
 - **Verified** in Tawara-mobile CI on the simulator: 18 checks, passed on
   587329c (protection call returned success, backup attribute, folder mode
   and access list, cover added, key window in a scene, lock on background,
@@ -342,6 +373,7 @@ done under the owner's delegation, through pull requests the owner reviews.
 | G26 | The policy test's manifest scans skip `spikes/`, which has a `[patch]` (allowed by D17) and an older library pin. | T38 | Delegated | Extend the scan to every manifest, listing the spike's `iced_winit` patch as the one exception under D17. |
 | G27 | **iOS while the app is active.** The app does not stop a screenshot, a screen recording or mirroring of S4. The cover comes off on `DidBecomeActive` (`Tawara-mobile:crates/mobile/src/ios.rs:338`, `uncover` at `:403-409`); the iced fork's iOS `set_content_protected` is empty (`fork:vendor/winit/src/platform_impl/ios/window.rs:459`); no code pinned before D44 item 3 reads `UIScreen.isCaptured`, which Apple's Technical Q&A QA1970, "Responding to screen capture in iOS 11" (https://developer.apple.com/library/archive/qa/qa1970/_index.html), describes as true while the screen is recorded (QuickTime Player over a cable among the routes), mirrored or sent over AirPlay; and PLAN 4.3 asks for the iOS cover only as far as the switcher's snapshot (`docs/PLAN.md:171-172`). V6 does not see this. | T16 | Owner (device check V18), then delegated | The control is D44 item 3, merged with PR #26 (a recommendation, since on 2026-10-13 the owner decided only D44's frame order, item 1): on iOS the grid is blanked while iOS reports the screen as recorded or mirrored, as far as it reports it, and a warning follows a screenshot, which cannot block it; on a phone the warning takes the words' place until "Show the phrase" is pressed (D44 item 1). Its app side is built in this repository; its iOS calls are in Tawara-mobile, and it is not active on a phone until they land. Item 3 also records developers' reports that the capture state can read inactive while a recording runs, so the blanking is best effort, and V18 can fail even once the control is built. The owner decides G27 after V18 has a recorded result (section 6, items 1 and 6); meanwhile 5.4 item 15 puts the risk to the owner. |
 | G28 | **A Keychain item left by an earlier install.** The item may survive an uninstall (D45 item 5). After one, `store-id` and the setting are gone with the folder, so the unlock starts unoffered and asks nothing, and only a keep reaches an item left behind. | T43 | Owner (device check V19) | V19 on a device, recording whether the item survives and whether a keep replaces it. If it survives, the owner decides between deleting it at the first start where no `store-id` exists (a delegated change in `crates/app`, through the shell's forget) and accepting it (5.4 item 16). |
+| G29 | **The camera on a phone is not checked on a device.** The shells' scanners (AVFoundation's metadata output on iOS, Camera2 and `rqrr` on Android) are Tawara-mobile's. Until they are, no code is read on a phone. The Scan button and the scanner page are built in the application, which draws the camera's frame and no text a code holds, and its tests check the camera's stop on a read, a page's leaving, a lock, a move to the background and Back on the scanner's page (T44, T45). The Android spike of about 50 captures per decoder (D42 item 3) is owed too. | T44, T45 | Delegated (the shells), then Owner (the devices, V20) | The shells, through their own pull request; then V20 on each phone, with the spike's results recorded in the records. |
 
 ### 5.2 Device checks still owed
 
@@ -369,6 +401,7 @@ arm64 Android phone and an iPhone, on the builds to be released (section 6).
 | V17 | **Drawing, speed and memory on a phone.** Real-GPU drawing, frame pacing, unlock time and memory on a phone; scrolling on iOS, which `simctl` cannot drive. | usability | spikes/README.md, "What CI cannot measure" |
 | V18 | **Screen recording and mirroring while S4 is shown (iPhone).** Start a capture by one of three routes: a screen recording from Control Center; a recording in QuickTime Player on a Mac, with the phone on a cable; or a mirror to another screen, by AirPlay or by a wired display adapter. Then open S4 with a phrase on it, and check the recording or the mirror: the words must not be visible in it. Record the iOS version and the route used. The app blanks the words while the shell reports a capture (D44 item 3), but a recording can still show them if iOS reports the screen as not captured, so a fail is recorded, not waived. Also take a screenshot of S4 with the words drawn: the warning must take their place afterwards, and "Show the phrase" must bring them back (D44 item 1). **Not run:** it needs an iPhone and a Tawara-mobile build that reports the capture; until one exists, no phone blanks S4 or warns after a screenshot. | G27, T16 | G27; D44 item 3 (merged with PR #26); Apple QA1970 |
 | V19 | **The device unlock on a phone.** On an iPhone with Face ID and one with Touch ID (D45 item 6), with the unlock on: unlock with the check; with a face or a finger that does not match, then with the passcode; cancel the check; and move the app to the background while the check is open. Read the usage string on the prompt. Then delete the app, reinstall it, and read the Keychain: whether the item is there, and whether a keep after the reinstall replaces it. Record the iOS version and the device for each. | T43, G28 | D45 items 2, 5 and 6 |
+| V20 | **The QR scanner on a phone.** Once the shells are built, on an iPhone and on an arm64 Android phone: allow the camera at its first prompt, and refuse it on a second install; scan a destination into a row, then a code that is not a destination, then one with more text than a destination can hold; scan from a printed sheet and from a screen, in light and in shade; end a scan by a read, by Cancel, by Back on the scanner's page on Android, by leaving the page, by a lock and by a move to the background, and check that the camera's light goes out each time. On Android, run the spike of about 50 captures through `rqrr` (D42 item 3), and record the decode time and any wrong text, of which there must be none. Record the OS version and the device for each. | T44, T45, G29 | D42 items 2, 3 and 5 |
 
 ### 5.3 Records that disagree
 
@@ -420,17 +453,21 @@ bundled roots (owner, 2026-10-04). Not yet accepted, each named in section 3:
     shared (D45 items 2 and 5). The offer says that anyone who knows the
     passcode can open the wallet, and the unlock is off until the person
     accepts it.
+17. T44: a code printed or placed over another one (A11) can give a valid
+    destination that is the wrong one, and it fills its row. Only the review
+    catches it, as it does a destination typed or pasted wrongly (T34). D42 item
+    4 names this residual, and the owner is asked to accept it, or to add a
+    control.
 
 ## 6. Before release
 
 PLAN section 7 makes this file a condition of phase 5. These must be closed,
 or accepted by the owner in writing in DECISIONS, before any release:
 
-1. **Every device check in 5.2**, V1 to V19, on the builds to be
-   released, with results recorded in DECISIONS. A failure of V1 (what
-   counts as one is the owner's to decide, T17), V2, V5, V6, or of the
-   footer link or Paste in V9, blocks the phone release it concerns until
-   fixed.
+1. **Every device check in 5.2**, V1 to V20, on the builds to be released, with
+   results recorded in DECISIONS. A failure of V1 (what counts as one is the
+   owner's to decide, T17), V2, V5, V6, or of the footer link or Paste in V9,
+   blocks the phone release it concerns until fixed.
 2. **G6** (the Android exit after `Destroy`) is answered by the
    2026-10-13 amendment to D32 item 9 (j). Its emulator check is repeated at
    the release's pin, and its device check is V4, in item 1.

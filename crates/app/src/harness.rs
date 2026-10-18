@@ -26,7 +26,8 @@ use iced::theme::Base;
 use iced::{Element, Event, Padding, Point, Rectangle, Size, Vector, mouse, touch, window};
 use iced_runtime::user_interface::{Cache, State, UserInterface};
 
-use crate::host::{Device, DeviceCheck, Host, Released};
+use crate::host::{Device, DeviceCheck, Host, Released, ScanDone, ScanPreview, ScanStart};
+use crate::scan::Scanner;
 use crate::{fonts, overflow, theme};
 
 /// The renderer the tests draw with: the software renderer, with the bundled
@@ -407,9 +408,39 @@ pub(crate) fn face_id_device() -> Device {
         keep_password: Some(no_keep),
         release_password: Some(no_release),
         forget_password: Some(no_forget),
+        scan: None,
+        cancel_scan: None,
+        scan_preview: None,
     };
     let (answers, _received) = iced::futures::channel::mpsc::unbounded();
     Device::of(&host, answers).expect("a shell that gives every device field offers the unlock")
+}
+
+/// The QR scanner of a phone whose shell gives all three scan fields, with its
+/// camera's preview drawn by `preview` (docs/DECISIONS.md D42): what the
+/// screens' tests draw such a phone with. Its replies go nowhere, and a scan
+/// started with it finds no camera.
+pub(crate) fn scanner(preview: ScanPreview) -> Scanner {
+    fn start(_: ScanDone) -> Result<(), String> {
+        Ok(())
+    }
+    fn cancel() {}
+    let host = Host {
+        private_dir: PathBuf::new(),
+        copy: no_copy,
+        share: no_share,
+        back: no_back,
+        captured: None,
+        device_check: None,
+        keep_password: None,
+        release_password: None,
+        forget_password: None,
+        scan: Some(start as ScanStart),
+        cancel_scan: Some(cancel as fn()),
+        scan_preview: Some(preview),
+    };
+    let (replies, _received) = iced::futures::channel::mpsc::unbounded();
+    Scanner::of(&host, replies).expect("a shell that gives every scan field offers a scanner")
 }
 
 /// Every node of `root` whose right edge passes `width` plus half a pixel

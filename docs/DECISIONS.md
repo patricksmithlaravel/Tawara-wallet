@@ -3579,12 +3579,15 @@ E1's compact row change with the work. OS libraries: none added.
 
 ### D40. Send on phones as a series of pages
 
-**proposed; asked by the owner (item 5); recommended. The page images, and
-with them the pages, are approved, and so are the readings of item 7 (a) and
-(c) and Back on page 1 as built (owner, 2026-10-17). Paste on a phone held
-sideways is decided and is to be built in a later pull request (owner,
-2026-10-17). Item 6 is open.** On a phone, Send is
-one long scroll from W4 to W6 today. The owner asked for a series of pages.
+**proposed; asked by the owner (item 5); recommended. The page images, and with
+them the pages, are approved, and so are the readings of item 7 (a) and (c) and
+Back on page 1 as built (owner, 2026-10-17). Paste on a phone held sideways is
+decided (owner, 2026-10-17) and is built with D42, and its wide layout inside
+the pages is decided too (owner, 2026-10-18): on a phone, from 844 wide, as
+answer (A) of D42 refines answer 6, and W9's Submit beside its helper from 600
+wide is approved (answer (B), owner, 2026-10-18). Item 6 is open.** On a phone,
+Send is one long scroll from W4 to W6 today. The owner asked for a series of
+pages.
 
 1. **Five pages (recommended).** To (1 of 4): the From line, with
    "Change" when more than one account can spend, one destination at a
@@ -3708,10 +3711,12 @@ Readings approved (owner, 2026-10-17), with item 7:
   4, with "Sign & submit". Approved (owner, 2026-10-17).
 - Back on page 1 is unchanged. Item 2 gives a Back at the top of each page, but
   page 1 is the first page and has none. Android's Back there keeps its meaning
-  (`Host::back`), which moves the application to the background and locks it,
-  as it does today. Item 3's "pages 1 to 4" is read as pages 2 to 4. Approved
-  (owner, 2026-10-17): page 1 has no Back in the application, and Android's
-  Back there still moves it to the background and locks it.
+  (`Host::back`), which moves the application to the background and locks it, as
+  it does today. Item 3's "pages 1 to 4" is read as pages 2 to 4. Approved
+  (owner, 2026-10-17): page 1 has no Back in the application, and Android's Back
+  there still moves it to the background and locks it. While the scanner's page
+  draws its preview on Android, Back cancels the scan instead (D42 item 5;
+  owner, 2026-10-18).
 - The approval names item 7 (a) and (c) and Back on page 1. Item 7's other
   readings, (b) and (d) to (i), are recorded as built.
 
@@ -3727,15 +3732,30 @@ Judgment calls that D40 does not settle, for the owner to note:
 - A Paste read that comes back once the person is on page 2 is dropped, since
   page 2 has no field to paste into (`form_of`).
 
+Paste on a phone held sideways is built with D42. The owner decided it on
+2026-10-17: Paste follows `phone()` (`Model::phone` in `crates/app/src/app.rs`),
+as W1's sections follow the phone shell (D39 item 5), so that a phone held
+sideways draws it too. Every Paste button follows `phone()`: on page 1, the
+re-sign form (W8), the signed-bytes field (W9) and the recovery phrase (S6).
+Scan follows `phone()` in the same way (D42). The layout inside the pages follows
+the width, not the phone shell (owner, 2026-10-18): on the desktop, from 600 wide,
+Send's destinations on page 1 and on W8 are table rows, and the fees and
+block-to-live side by side, as they always were (`table_of` in
+`crates/app/src/screens/wallet/send.rs`, which follows `compact()` there). On a
+phone they are table rows only from 844 wide (`PHONE_TABLE` in
+`crates/app/src/app.rs`), with Paste and Scan both beneath each field (owner,
+2026-10-18, answer (A) of D42, a refinement of answer 6). Below 844 wide a phone
+held sideways draws the blocks and the stacked fees it draws upright. Its pages
+stay pages; only the layout inside them uses the width.
+
+W9's signed-bytes field also follows the width, with Submit beside its helper
+from 600 wide up, a phone held sideways included. The owner approved that
+placement (owner, 2026-10-18, answer (B)), so it is not the implementer's
+extension any more.
+
 Not built:
 - Item 6, the note on S7 after a lock, is not built. It is new wording, and the
   owner approves it first.
-- On a phone held sideways, 600 to 1023 wide, the pages draw without Paste
-  buttons, since Paste is drawn in the compact layout only. Decided (owner,
-  2026-10-17): Paste is to follow `phone()` (`Model::phone` in
-  `crates/app/src/app.rs`), as W1's sections follow the phone shell (D39 item
-  5), so that a phone held sideways draws it too. That is to be built in a later
-  pull request, not this one.
 
 Corrected line references:
 - Items 2, 3 and 5 gave lines that were stale at b67e90c, the base of this
@@ -3783,8 +3803,10 @@ OS libraries: none added.
 
 ### D42. QR scanning on phones
 
-**proposed; items 1 to 3 decided by the owner on 2026-10-13, in outline;
-the details recommended.** Item 6 asks that Send can scan a QR code.
+**proposed; items 1 to 3 decided by the owner on 2026-10-13, in outline; item 5
+in part on 2026-10-16, and confirmed on 2026-10-18; the readings answered on
+2026-10-18 (owner, 2026-10-18); the details recommended.** Item 6 asks that Send
+can scan a QR code.
 
 1. **Phones only (owner, 2026-10-13).** The desktop has no scanning, and
    rendering 03's "Scan QR" is not drawn on the desktop's Send: a desktop
@@ -3811,23 +3833,216 @@ the details recommended.** Item 6 asks that Send can scan a QR code.
    decides whether it is a destination. It fills only the row it was asked
    for, is dropped if the page changed while the camera ran, and never
    reaches a password or phrase field. The camera stops when the page is
-   left and on a move to the background. A swapped sticker gives a valid
+   left, when the shell's reply comes back (a read, or none), and on a move
+   to the background. A swapped sticker gives a valid
    but wrong destination, which only the review catches, as with Paste.
    The threat model gains the camera as an input.
-5. **Open.** iced's `image` feature, which Android's preview needs and
-   which reaches the desktop builds as well, is a new feature for the
-   owner's approval before the Android work (D32 item 9). The usage text,
-   `NSCameraUsageDescription` on iOS, and the Android manifest's
-   `android.permission.CAMERA`, with `android.hardware.camera.any` not
-   required, are for the owner's approval with the work. Tawara-mobile's
-   `MOBILE_DEPENDENCIES` gains `ndk-sys` and any new crate.
+5. **iced's image widget, the camera permission and `ndk-sys` (owner,
+   2026-10-16; confirmed on 2026-10-18).** The owner
+   approved, for Android's preview, iced's `image` feature, the Android
+   manifest's `android.permission.CAMERA` with `android.hardware.camera.any`
+   not required, and `ndk-sys` in Tawara-mobile's `MOBILE_DEPENDENCIES`.
+   The feature enabled is `image-without-codecs`, which is the image widget
+   without the image crate's codecs, and it is what the preview uses: the
+   widget, and `Handle::from_rgba` for each frame. `image` itself turns on
+   `image/default`, the codecs, avif among them. That adds 70 packages to
+   `Cargo.lock`, `rav1e` among them, an AV1 encoder whose `libfuzzer-sys`
+   is NCSA-licensed; deny.toml does not admit that licence, so `cargo deny`
+   fails on `image`. `image-without-codecs` adds six packages: `image` 0.25,
+   `byteorder-lite`, `kamadak-exif`, `moxcms`, `mutate_once` and `pxfm`, all
+   admitted. Both are features of the one iced line, so the desktop builds
+   have the widget too, since the desktop depends on `tawara-app`. Taking
+   `image` instead would need NCSA admitted in deny.toml (D12) as well as the
+   approval. The owner confirmed `image-without-codecs` (owner, 2026-10-18). The usage
+   text, `NSCameraUsageDescription` on iOS, is new wording and awaits the
+   owner's approval, with the scanner page's text and the Scan label.
 
-docs/SCREENS.md's W4 row, which says "Scan QR" is not built, changes with
-the work. OS libraries: AVFoundation on iOS; `camera2ndk` and `mediandk`,
-which holds `AImageReader`, on Android, linked by Tawara-mobile. `ndk-sys`
-declares their functions, but links `mediandk` only behind its `media`
-feature, which Tawara-mobile's build does not turn on today, and links
-nothing for `camera2ndk`.
+docs/SCREENS.md's W4 and W8 rows and its compact rows changed with the work, as
+the note below says. OS libraries: AVFoundation on iOS; `camera2ndk` and
+`mediandk`, which holds `AImageReader`, on Android, linked by Tawara-mobile.
+`ndk-sys` declares their functions, but links `mediandk` only behind its `media`
+feature, which Tawara-mobile's build does not turn on today, and links nothing
+for `camera2ndk`.
+
+**As built.** This change builds the application's side of the scanner: the
+`Host` fields, the checks on a scanned text, the Scan buttons, the scanner's
+page on Android, and the image feature. It does not build the shells, which are
+Tawara-mobile's (G29). Until they set the three scan fields, no phone reads a
+code, and Tawara-mobile's `Host` literals do not compile against this change.
+Nothing here has run on a phone.
+
+- **The Host fields.** `Host` has three scan fields, each `None` where a shell
+  has no scanner. `scan` is a `ScanStart`: it begins a scan, and returns why it
+  cannot, in the platform's words. `cancel_scan` is a `fn()` that stops the
+  camera, and may be called from any thread. `scan_preview` is a `ScanPreview`:
+  `Shell` on iOS, where the shell draws the preview, or `Application` on
+  Android, where the shell hands each camera frame to `host::preview_frame`.
+  That keeps the latest frame, and drops one that has no pixels or whose bytes
+  are not its width by its height by four. A shell gives the text back once,
+  through the `ScanDone` it was given, as the bytes its decoder read, unchecked;
+  `None` says the scan was cancelled or the camera was not allowed. An
+  application offers a scan only with all three fields (`Scanner::of`,
+  `crates/app/src/scan.rs`), and the desktop has no `Host`, so it offers none.
+- **The pipeline and its bound.** A reply is `Message::Scanned(row, ask, text)`:
+  `row` is the destination the scan began for, and `ask` is that scan's number,
+  so a reply to a scan that has ended is dropped even when the same row is
+  scanned again. The reply fills its row only while that scan is still under
+  way, the page, its form and the row are as they were when it began, and the
+  worker is not busy. `scan::destination` then checks the text, in this order.
+  The ASCII whitespace round it is trimmed. An empty text is refused (`EMPTY`).
+  A text longer than `MAX_BYTES`, which is 128 bytes once trimmed, is refused
+  (`OVERLONG`): the longest destination is 42 characters (`0x` and forty hex
+  digits), and a Base58 one is at most 31. A text that is not UTF-8 is refused
+  (`NOT_TEXT`). The rest goes to `parse_destination`, and its refusal is the
+  library's own words. A checked text sets its row's address, trimmed, and
+  clears that row's earlier address refusal; nothing is submitted. A refusal
+  shows under the row's address. `Code`'s `Debug` prints `Code(..)`, so no
+  message log shows a scanned text. The camera stops when the page or its row
+  changes (checked after each message), on a lock, on a move to the background
+  (where the shell stops it on its own thread, from `host::left_foreground`), on
+  Cancel, on Android's Back on the scanner's page (owner, 2026-10-18), and when
+  the shell's reply comes back, a read or none (`scanned`, which stops it once
+  the reply is taken, so a stale reply stops nothing). A scan begins only while
+  nothing is being done for the page, as Paste does, and no other scan is under
+  way.
+- **The image feature.** The owner approved iced's `image` on 2026-10-16, for
+  the Android preview. This change lists `image-without-codecs` instead: the
+  widget, without the image crate's codecs, which is what the preview uses,
+  through `Handle::from_rgba` for each frame. `image` turns on `image/default`,
+  which adds 70 packages to `Cargo.lock`, `rav1e` among them, whose
+  `libfuzzer-sys` is NCSA-licensed. deny.toml does not admit that licence, so
+  `cargo deny` fails on `image`. `image-without-codecs` adds six packages, all
+  admitted: `image` 0.25.10, `byteorder-lite` 0.1.0, `kamadak-exif` 0.6.1,
+  `moxcms` 0.8.1, `mutate_once` 0.1.2 and `pxfm` 0.1.30. `Cargo.lock` goes from
+  405 packages to 411. The feature is listed for every target, since the iced
+  line is shared, and `ICED_FEATURES` in `crates/wallet-core/tests/policy.rs`
+  names it.
+
+**The views.** On a phone whose shell gives a scanner (`Model::scan_offered`),
+each destination row of page 1 of Send, and of the re-sign form (W8), has its
+Paste beside its field and a Scan button on a line of its own beneath the
+field (owner, 2026-10-18). The Scan button is drawn with `Icon::Scan`, and it
+is enabled while nothing is being done for the page and no scan is under way.
+The placement holds at every width on a phone, held upright or sideways, in a
+block. From 844 wide, a phone held sideways draws the destinations as table
+rows, and there both the Paste and the Scan stand beneath the field, on one
+line, so that the field takes the cell's width (answer 7). Below 844 it draws
+the blocks, as upright. The desktop's table, from 600 wide, has neither Paste
+nor Scan. While a scan draws its preview
+in the application (`Model::previewing`, on Android), the scanner's page
+stands in place of the page the scan began on: the latest frame in a box 200
+logical pixels tall, the line on what to point at, and Cancel, with no text a
+code holds. The page fits 360 by 640 and 390 by 844 without scrolling
+(`the_scan_page_draws_its_frame_a_line_and_cancel_and_fits_a_phone`,
+`screens/wallet/send.rs`). Android's Back on that page cancels the scan and
+returns to the page the scan began from, with what was typed; it does not move
+the application to the background (owner, 2026-10-18; `Message::SystemBack` in
+`crates/app/src/app.rs`, tested by
+`back_on_the_scanner_page_cancels_the_scan_and_keeps_the_form`). On iOS the
+page is the shell's own, so the application keeps the page as it was, with
+Scan disabled while the scan is under way.
+
+Five images are committed, rendered in the Linux container as D40's are:
+`phone-w4-send-to-scan.png` (page 1, with Scan beneath each field; changed on
+2026-10-18); `phone-w4-send-scan-preview.png` (the scanner's page, whose frame
+is a stand-in drawn in code, not a camera frame);
+`phone-w4-send-to-sideways.png` (page 1 held sideways, 844 by 390, with insets
+the render assumes and not a device's, scrolled 90 pixels; changed on
+2026-10-18, and again under answer 7, with Paste and Scan both beneath the
+field); `phone-w8-resign-scan.png` (the re-sign form with a shell's
+scanner; new on 2026-10-18); and `phone-w4-send-amount-sideways.png` (page 2
+held sideways, 844 by 390, scrolled 100 pixels so that the fee and
+block-to-live show side by side; new on 2026-10-18).
+
+**The owner's answers, 2026-10-18.** The owner answered the readings in chat,
+and each answer is recorded as given. Answers 1 to 3 are confirmed or
+approved; answers 4 to 8 are decided, built or approved.
+
+1. Confirmed (owner, 2026-10-18): `image-without-codecs` in place of `image`,
+   as above.
+2. Confirmed (owner, 2026-10-18): the manifest declares
+   `android.hardware.camera` not required, beside
+   `android.hardware.camera.any`, which is not required either. The manifest
+   is Tawara-mobile's.
+3. Approved (owner, 2026-10-18): Scan on the re-sign form (W8) as well as on
+   Send.
+4. Decided and built (owner, 2026-10-18): Scan gets a line of its own under
+   each destination's field, instead of standing beside its Paste. At 360 wide
+   the field was too narrow. It is built at every width on a phone, as the
+   views above say.
+5. Decided and built (owner, 2026-10-18): Android's Back on the scanner's page
+   cancels the scan and returns to the page the scan began from. It no longer
+   moves the application to the background. It is handled in `tawara-app`
+   before `host::back()`, as D40 handles it for the Send pages.
+6. Decided and built (owner, 2026-10-18): on a phone held sideways, 600 to
+   1023 wide, the Send destinations draw as table rows and the fees side by
+   side, using the extra width, as on a narrow desktop. Paste and Scan still
+   appear, since they follow `phone()`. D40's pages stay pages on a phone;
+   only the layout inside them uses the width. It was built at 600, as the owner
+   set it. Answer 7 refines it, and settles the limit at 600 that answer 6 left
+   open.
+7. Decided and built (owner, 2026-10-18), a refinement of answer 6, answer
+   (A): on a phone (`phone()`), the Send destinations and the fees draw as
+   table rows, with the fees side by side, only from 844 wide, the width
+   `PHONE_TABLE` in `crates/app/src/app.rs` names. A phone narrower than 844
+   held sideways, such as an iPhone SE at 667 by 375, keeps the blocks it draws
+   upright, with the fees one over the other. In that table, Paste and Scan
+   both stand beneath the destination's field, so that the field takes the
+   cell's full width. The desktop is unchanged: its table still starts at 600
+   (`!compact()`), and it has neither Paste nor Scan. The three checks that set
+   the table, in `to_page`, `amount_page` and `destinations`, call `table_of`,
+   which holds both rules. The check for W9's Submit, in `submit_form`, is
+   answer 8's and still follows `compact()`.
+8. Approved (owner, 2026-10-18), answer (B): W9's Submit stands beside its
+   helper on a wide phone, from 600 wide and following the width, a phone held
+   sideways included. It is no longer the implementer's extension (D40).
+
+Measured after answer 7, on 2026-10-18, in the test harness's geometry, which
+has no insets (not on a device; nothing has been seen on one): the To page's
+destination field is 260.7 pixels wide at 844 and 380.7 at 1024, and W8's is
+189.5 at 844 and 279.5 at 1024. The sideways image draws its page inside 47
+pixels of insets at each side (`phone_sideways` in
+`crates/app/examples/screenshots.rs`), which the render assumes and a device may
+not give. With them the To page's field is 198.0 at 844 and 318.0 at 1024, and
+W8's is 142.5 and 232.5. The 250 and the 180 pixels are the implementer's test
+floors, not the owner's: answer 7 asks that the field take the cell's full width
+and names no pixel figure. The tests hold the To page's field to 250 pixels and
+W8's to 180 in the harness, at both widths and without the insets. With the
+insets they hold only at 1024: at 844 the To page's field is 198.0 and W8's is
+142.5, each below its floor. The owner must accept that or change the layout.
+Before answer 7, with Paste beside each field, the harness measured 188
+and 117 at 844, and 308 and 207 at 1024: the Paste button and its space took
+72.7 pixels from each field.
+
+**Wording awaiting approval.** None of it is approved yet:
+
+- The scanner's page: its title, "Scan a destination", and its line, "Point the
+  camera at a QR code with a destination in it."
+- The Scan button, labelled "Scan", with the scan glyph, on a line of its own
+  beneath each destination's field.
+- The refusals of a scanned text, under the row's address: `EMPTY`, "This code
+  holds no text, so it is not a destination."; `OVERLONG`, "This code holds more
+  text than a destination can have, so it is not one."; and `NOT_TEXT`, "This
+  code holds no text this wallet can read, so it is not a destination."
+- The iOS usage text, `NSCameraUsageDescription`, which Tawara-mobile writes. As
+  drafted there: "Tawara uses the camera to read a QR code with a destination
+  address, when you choose to scan one."
+- The shell's own words for a scan that cannot start, such as that the camera is
+  not allowed, or that the device has none. They show under the row, and they
+  are approved with the shell.
+
+**The device spike, owed.** D42 item 3 asks for about 50 real captures through
+each decoder, in varied light, angle and distance, with the decode time and any
+wrong text recorded. On Android the decoder is `rqrr`, with its default features
+off. No Android phone is attached, so the spike has not run. Nothing on a phone
+has been checked: the camera permission, the two scanners, the preview, and the
+camera's stop on a read, a page's leaving, a lock and a move to the background
+are all owed, on an iPhone and an arm64 Android phone (G29; V20).
+
+**Not built.** The shells' scanners and camera permission (Tawara-mobile,
+G29), and the device checks (V20). The shells are in Tawara-mobile pull
+request #18, a draft. The application's side is verified by the tests named in
+docs/THREAT_MODEL.md section 3.10 (T44 and T45).
 
 ### D43. A default node: `https://api.mochimo.org`
 

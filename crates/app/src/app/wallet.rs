@@ -28,6 +28,7 @@ use tawara_wallet_core::{AccountReport, amount};
 
 use crate::history::{Filter, RowId};
 use crate::host;
+use crate::scan::{Code, destination};
 use tawara_wallet_core::{
     Command, Discovered, MAX_DESTINATIONS, PlanView, ReceiveView, RefusalKind, Reply, SentView,
 };
@@ -404,6 +405,23 @@ impl SendStage {
             _ => None,
         }
     }
+}
+
+/// A scan under way, for the destination row it fills (docs/DECISIONS.md D42).
+/// It holds the form and row as they were when the scan began: a reply that
+/// comes once either has changed is dropped (item 4).
+#[derive(Clone, Debug)]
+pub struct Scanning {
+    /// The number of this scan, as its reply carries it.
+    pub ask: u64,
+    /// The destination row the text is for, zero based.
+    pub row: usize,
+    /// The form the row is on.
+    pub form: FormOf,
+    /// How many rows the form had.
+    pub rows: usize,
+    /// The row as it was when the scan began.
+    pub typed: DestinationRow,
 }
 
 /// W6.
@@ -908,6 +926,71 @@ impl Signed {
 }
 
 impl Model {
+    /// Whether a Scan button is offered: only where a shell gives a scanner,
+    /// which only phones do (docs/DECISIONS.md D42 item 1). The desktop offers
+    /// none.
+    #[must_use]
+    pub fn scan_offered(&self) -> bool {
+        self.scanner.is_some() && self.phone()
+    }
+
+    /// Whether a scan draws its preview in the application, and so takes the
+    /// camera's frames (docs/DECISIONS.md D42 item 3).
+    #[must_use]
+    pub fn previewing(&self) -> bool {
+        self.scanning.is_some()
+            && self
+                .scanner
+                .as_ref()
+                .is_some_and(|s| s.preview() == crate::host::ScanPreview::Application)
+    }
+
+    /// Ends the scan under way, if there is one: the shell's camera is stopped,
+    /// and a reply it may still give finds no scan to fill (docs/DECISIONS.md
+    /// D42 item 4). Its preview goes with it.
+    pub fn stop_scan(&mut self) {
+        self.scan_preview = None;
+        if self.scanning.take().is_some()
+            && let Some(scanner) = &self.scanner
+        {
+            scanner.cancel();
+        }
+    }
+
+    /// Takes the camera's latest frame into the preview, while a scan draws its
+    /// preview in the application (docs/DECISIONS.md D42 item 3). A frame that
+    /// comes when no scan is under way is left where the shell put it.
+    pub fn take_preview(&mut self) {
+        if !self.previewing() {
+            return;
+        }
+        if let Some(frame) = crate::host::take_frame() {
+            self.scan_preview = Some(iced::widget::image::Handle::from_rgba(
+                frame.width,
+                frame.height,
+                frame.rgba,
+            ));
+        }
+    }
+
+    /// The spend form shown, as [`App::form`] reaches it: on a phone the pages
+    /// that hold it are the destinations and the amounts.
+    fn shown_form(&self) -> Option<&SpendForm> {
+        match &self.screen {
+            Screen::Wallet(WalletPage {
+                page:
+                    Page::Send(SendPage {
+                        form,
+                        stage: SendStage::Compose | SendStage::To(_) | SendStage::Amount,
+                        ..
+                    })
+                    | Page::Resign(ResignPage { form, .. }),
+                ..
+            }) => Some(form),
+            _ => None,
+        }
+    }
+
     /// The spend form shown, if one is, and how many destination rows it
     /// has: what a destination's Paste button records when it is pressed,
     /// and what its read is checked against when it comes back
@@ -1543,6 +1626,103 @@ impl App {
                 self.send(Command::DiscardPlan, Purpose::DiscardPlan);
             }
             _ => {}
+        }
+    }
+
+    /// Whether `scanning` is still the scan the page shows: the same form, with
+    /// the same number of rows, and the row it fills as it was (docs/DECISIONS.md
+    /// D42 item 4).
+    pub(super) fn scan_fits(&self, scanning: &Scanning) -> bool {
+        self.model.form_of() == Some((scanning.form, scanning.rows))
+            && self
+                .model
+                .shown_form()
+                .and_then(|form| form.rows.get(scanning.row))
+                == Some(&scanning.typed)
+    }
+
+    /// Begins a scan of a QR code for destination row `row`, on a phone's
+    /// destinations, where Paste is offered (docs/DECISIONS.md D42). The shell
+    /// is asked to start its scanner, and its reply comes back as
+    /// [`Message::Scanned`]. A scan that cannot start says why under the row.
+    pub(super) fn begin_scan(&mut self, row: usize) -> Task<Message> {
+        let m = &mut self.model;
+        let Some(scanner) = m.scanner.clone() else {
+            return Task::none();
+        };
+        // Only where the destination can be pasted too: on a phone, while
+        // nothing is being done for the page, and for a row that is shown.
+        if !m.phone() || m.busy.is_some() || m.scanning.is_some() {
+            return Task::none();
+        }
+        let Some((form, rows)) = m.form_of() else {
+            return Task::none();
+        };
+        let Some(typed) = m.shown_form().and_then(|f| f.rows.get(row)).cloned() else {
+            return Task::none();
+        };
+        m.scan_asks += 1;
+        let ask = m.scan_asks;
+        m.scan_preview = None;
+        if scanner.preview() == crate::host::ScanPreview::Application {
+            // A frame left from an earlier scan is not the camera's now.
+            let _ = crate::host::take_frame();
+        }
+        m.scanning = Some(Scanning {
+            ask,
+            row,
+            form,
+            rows,
+            typed,
+        });
+        if let Err(why) = scanner.start(row, ask) {
+            m.scanning = None;
+            self.refuse_row(row, why);
+        }
+        Task::none()
+    }
+
+    /// The shell's reply to scan number `ask`, begun for row `row`. The text fills
+    /// that row, and no other, once it is checked as a destination (docs/DECISIONS.md
+    /// D42 item 4). A reply to a scan that is no longer under way, or whose page
+    /// or row has changed since it began, is dropped.
+    pub(super) fn scanned(&mut self, row: usize, ask: u64, text: Option<Code>) -> Task<Message> {
+        let Some(scanning) = self.model.scanning.take_if(|s| s.ask == ask) else {
+            return Task::none();
+        };
+        // The scan is over, so the shell's camera stops, whatever the reply holds
+        // (docs/DECISIONS.md D42 item 4). A reply to a scan that has ended was
+        // dropped above, so this stops only the scan that the reply ends.
+        if let Some(scanner) = &self.model.scanner {
+            scanner.cancel();
+        }
+        // The scan is over, so its preview goes with it, whatever the reply holds.
+        self.model.scan_preview = None;
+        if scanning.row != row || !self.scan_fits(&scanning) || self.model.busy.is_some() {
+            return Task::none();
+        }
+        // Cancelled, or refused by the camera: nothing is read.
+        let Some(Code(bytes)) = text else {
+            return Task::none();
+        };
+        match destination(&bytes, row) {
+            Ok(to) => self.update(Message::Wallet(WalletMsg::DestinationTo(row, to))),
+            Err(why) => {
+                self.refuse_row(row, why);
+                Task::none()
+            }
+        }
+    }
+
+    /// Shows `why` under the address of destination row `row`, as "Continue"
+    /// shows a refused address (docs/DECISIONS.md D42 item 4). Where the page has
+    /// no such field, it is shown on the page.
+    fn refuse_row(&mut self, row: usize, why: String) {
+        match self.refusals() {
+            Some(refused) => {
+                refused.insert((row, RefusedField::Address), why);
+            }
+            None => self.page_error(Some(why)),
         }
     }
 

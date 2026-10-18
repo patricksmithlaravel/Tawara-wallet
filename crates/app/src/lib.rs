@@ -16,8 +16,11 @@
 //!   check, where it offers one (docs/DECISIONS.md D45).
 //! - [`screens`]: every screen, a function of the model alone, so that the
 //!   screenshot example draws any screen from sample data.
-//! - [`paste`]: the Paste button of the compact layout, and a pasted
+//! - [`paste`]: the Paste button of a phone, and a pasted
 //!   recovery phrase's cleaning (docs/DECISIONS.md D32 item 10 (g), (h)).
+//! - [`scan`]: the QR scanner's side of the phones: the scanner a shell
+//!   gives, and what a scanned text must be before a destination row takes
+//!   it (docs/DECISIONS.md D42).
 //! - [`tap`]: a row or card that acts on release, as a touch scroll needs
 //!   (docs/DECISIONS.md D32 item 10 (d)).
 //! - [`overflow`]: the check that nothing a phone screen draws passes the
@@ -34,6 +37,7 @@ pub mod icon;
 mod keyboard;
 pub mod overflow;
 pub mod paste;
+pub mod scan;
 pub mod screens;
 pub mod tap;
 pub mod theme;
