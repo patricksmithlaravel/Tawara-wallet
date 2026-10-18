@@ -5,9 +5,9 @@
 //! On a phone iced's fields have no edit menu, so a paste reaches them only
 //! from a hardware keyboard (D32 item 9 (g)). On a phone, at any width, a Paste
 //! button stands beside each destination field (W4, W8), the signed-bytes
-//! field (W9) and the recovery-phrase field (S6), and a Scan button beside
-//! each destination (D42 item 1). It reads the platform's
-//! clipboard through iced, only on that tap, and what it read replaces what
+//! field (W9) and the recovery-phrase field (S6), and a Scan button beneath
+//! each destination field (D42 item 1; owner, 2026-10-18). It reads the
+//! platform's clipboard through iced, only on that tap, and what it read replaces what
 //! the field held; an empty or refused read changes nothing. Nothing a paste
 //! brings is ever submitted. The desktop keeps keyboard paste and shows no
 //! button.
