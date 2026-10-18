@@ -308,6 +308,9 @@ records how; it is merged in both repositories before the first release.
 - [ ] **Shown to people** (owner): a file inside a phone app cannot be
   opened by the person using it. **(Recommended)** a Licences page in
   Settings that draws the same file, with wording the owner approves.
+  **Built** (D35, as built; docs/SCREENS.md, W11a): About's "Show the
+  licences" opens it, and it draws both files. Its wording awaits the
+  owner's approval, so the box stays unticked until the owner gives it.
 
 That the file is current at the tag is section 5.3.
 

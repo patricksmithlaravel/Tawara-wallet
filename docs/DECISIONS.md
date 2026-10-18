@@ -2677,6 +2677,21 @@ merge in.
      puts to counsel whether bindings generated from those files carry their
      licences, before the first Linux distribution.
 
+**As built (2026-10-18).** The Licences page that docs/RELEASE.md section 4
+recommends, so that the notices are shown to people as well as packaged, is
+built. Settings' About card has a Licences row, "Show the licences", which
+opens the page (`crates/app/src/screens/wallet/licences.rs`; docs/SCREENS.md,
+W11a). The page draws `LICENSE.md` and `THIRD-PARTY-NOTICES.txt`, each
+embedded with `include_str!` from the repository root, so a build needs both
+files there. Each text is cut into parts of 40 lines, and each copy button
+copies its whole text. Back returns to Settings, and opening the page and Back
+both scroll it to its top. The row's and the page's wording is new and awaits
+the owner's approval, so the checklist's item stays unticked. Settings' pixels
+changed, so its four images were drawn again in the Linux image that D32 item
+10 (c) pins, as CI draws them; the page's two images are new (`w11-licences`
+and `phone-w11-licences`). Packaging is not in this change: item 5 and D36
+still place the file in each package, and items 6 (a) to (h) stand as written.
+
 ### D36. Packaging: the platform's own tools for each target
 
 **proposed, 2026-10-13, for the owner's decision.** Phase 5 (docs/PLAN.md
