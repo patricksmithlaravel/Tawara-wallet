@@ -327,6 +327,14 @@ pub const WIDE: f32 = 1280.0;
 /// [`crate::WINDOW_MIN`]'s 1024 (docs/DECISIONS.md D32 item 10 (b)).
 pub const COMPACT: f32 = 600.0;
 
+/// The narrowest width at which a phone draws its Send destinations and fees as
+/// table rows, with the fees side by side: an iPhone held sideways, 844 by 390
+/// (docs/DECISIONS.md D42 item 6, as the owner refined it in answer (A),
+/// 2026-10-18). Narrower, a phone held sideways, such as an iPhone SE at 667 by
+/// 375, draws the blocks it draws upright, so that a destination's field keeps
+/// its width. The desktop's table still starts at [`COMPACT`].
+pub const PHONE_TABLE: f32 = 844.0;
+
 /// The narrowest width the phone layout is drawn at (docs/DECISIONS.md D32
 /// item 10 (b)): at it nothing is cut off and nothing scrolls sideways.
 pub const NARROWEST: f32 = 360.0;

@@ -3583,8 +3583,11 @@ E1's compact row change with the work. OS libraries: none added.
 them the pages, are approved, and so are the readings of item 7 (a) and (c) and
 Back on page 1 as built (owner, 2026-10-17). Paste on a phone held sideways is
 decided (owner, 2026-10-17) and is built with D42, and its wide layout inside
-the pages is decided too (owner, 2026-10-18). Item 6 is open.** On a phone, Send
-is one long scroll from W4 to W6 today. The owner asked for a series of pages.
+the pages is decided too (owner, 2026-10-18): on a phone, from 844 wide, as
+answer (A) of D42 refines answer 6, and W9's Submit beside its helper from 600
+wide is approved (answer (B), owner, 2026-10-18). Item 6 is open.** On a phone,
+Send is one long scroll from W4 to W6 today. The owner asked for a series of
+pages.
 
 1. **Five pages (recommended).** To (1 of 4): the From line, with
    "Change" when more than one account can spend, one destination at a
@@ -3729,23 +3732,26 @@ Judgment calls that D40 does not settle, for the owner to note:
 - A Paste read that comes back once the person is on page 2 is dropped, since
   page 2 has no field to paste into (`form_of`).
 
-Paste on a phone held sideways, 600 to 1023 wide, is built with D42. The owner
-decided it on 2026-10-17: Paste follows `phone()` (`Model::phone` in
-`crates/app/src/app.rs`), as W1's sections follow the phone shell (D39 item 5),
-so that a phone held sideways draws it too. Every Paste button follows
-`phone()`: on page 1, the re-sign form (W8), the signed-bytes field (W9) and the
-recovery phrase (S6). Scan follows `phone()` in the same way (D42). The layout
-inside the pages follows the width, not the phone shell (owner, 2026-10-18):
-from 600 wide, a phone held sideways draws its Send destinations as table rows,
-and its fees and block-to-live side by side, as a narrow desktop does (the table
-follows `compact()` in `crates/app/src/screens/wallet/send.rs`). Its pages stay
-pages; only the layout inside them uses the width. Below 600 wide the blocks and
-the stacked fees are as they are upright. The limit of the table at 600 is open
-for the owner ("Still open for the owner", D42).
+Paste on a phone held sideways is built with D42. The owner decided it on
+2026-10-17: Paste follows `phone()` (`Model::phone` in `crates/app/src/app.rs`),
+as W1's sections follow the phone shell (D39 item 5), so that a phone held
+sideways draws it too. Every Paste button follows `phone()`: on page 1, the
+re-sign form (W8), the signed-bytes field (W9) and the recovery phrase (S6).
+Scan follows `phone()` in the same way (D42). The layout inside the pages follows
+the width, not the phone shell (owner, 2026-10-18): on the desktop, from 600 wide,
+Send's destinations on page 1 and on W8 are table rows, and the fees and
+block-to-live side by side, as they always were (`table_of` in
+`crates/app/src/screens/wallet/send.rs`, which follows `compact()` there). On a
+phone they are table rows only from 844 wide (`PHONE_TABLE` in
+`crates/app/src/app.rs`), with Paste and Scan both beneath each field (owner,
+2026-10-18, answer (A) of D42, a refinement of answer 6). Below 844 wide a phone
+held sideways draws the blocks and the stacked fees it draws upright. Its pages
+stay pages; only the layout inside them uses the width.
 
 W9's signed-bytes field also follows the width, with Submit beside its helper
-from 600 wide up. That is the implementer's extension, not part of the owner's
-answer above, and it awaits the owner's approval.
+from 600 wide up, a phone held sideways included. The owner approved that
+placement (owner, 2026-10-18, answer (B)), so it is not the implementer's
+extension any more.
 
 Not built:
 - Item 6, the note on S7 after a lock, is not built. It is new wording, and the
@@ -3917,9 +3923,12 @@ each destination row of page 1 of Send, and of the re-sign form (W8), has its
 Paste beside its field and a Scan button on a line of its own beneath the
 field (owner, 2026-10-18). The Scan button is drawn with `Icon::Scan`, and it
 is enabled while nothing is being done for the page and no scan is under way.
-The placement holds at every width on a phone, held upright or sideways. From
-600 wide, a phone held sideways draws the destinations as table rows, with the
-same Paste and Scan; the desktop has neither. While a scan draws its preview
+The placement holds at every width on a phone, held upright or sideways, in a
+block. From 844 wide, a phone held sideways draws the destinations as table
+rows, and there both the Paste and the Scan stand beneath the field, on one
+line, so that the field takes the cell's width (answer 7). Below 844 it draws
+the blocks, as upright. The desktop's table, from 600 wide, has neither Paste
+nor Scan. While a scan draws its preview
 in the application (`Model::previewing`, on Android), the scanner's page
 stands in place of the page the scan began on: the latest frame in a box 200
 logical pixels tall, the line on what to point at, and Cancel, with no text a
@@ -3939,14 +3948,15 @@ Five images are committed, rendered in the Linux container as D40's are:
 is a stand-in drawn in code, not a camera frame);
 `phone-w4-send-to-sideways.png` (page 1 held sideways, 844 by 390, with insets
 the render assumes and not a device's, scrolled 90 pixels; changed on
-2026-10-18); `phone-w8-resign-scan.png` (the re-sign form with a shell's
+2026-10-18, and again under answer 7, with Paste and Scan both beneath the
+field); `phone-w8-resign-scan.png` (the re-sign form with a shell's
 scanner; new on 2026-10-18); and `phone-w4-send-amount-sideways.png` (page 2
 held sideways, 844 by 390, scrolled 100 pixels so that the fee and
 block-to-live show side by side; new on 2026-10-18).
 
 **The owner's answers, 2026-10-18.** The owner answered the readings in chat,
 and each answer is recorded as given. Answers 1 to 3 are confirmed or
-approved; answers 4 to 6 are decided and built.
+approved; answers 4 to 8 are decided, built or approved.
 
 1. Confirmed (owner, 2026-10-18): `image-without-codecs` in place of `image`,
    as above.
@@ -3968,35 +3978,37 @@ approved; answers 4 to 6 are decided and built.
    1023 wide, the Send destinations draw as table rows and the fees side by
    side, using the extra width, as on a narrow desktop. Paste and Scan still
    appear, since they follow `phone()`. D40's pages stay pages on a phone;
-   only the layout inside them uses the width. It is built at 600, as the owner
-   set it; its limit at 600 is open, below.
+   only the layout inside them uses the width. It was built at 600, as the owner
+   set it. Answer 7 refines it, and settles the limit at 600 that answer 6 left
+   open.
+7. Decided and built (owner, 2026-10-18), a refinement of answer 6, answer
+   (A): on a phone (`phone()`), the Send destinations and the fees draw as
+   table rows, with the fees side by side, only from 844 wide, the width
+   `PHONE_TABLE` in `crates/app/src/app.rs` names. A phone narrower than 844
+   held sideways, such as an iPhone SE at 667 by 375, keeps the blocks it draws
+   upright, with the fees one over the other. In that table, Paste and Scan
+   both stand beneath the destination's field, so that the field takes the
+   cell's full width. The desktop is unchanged: its table still starts at 600
+   (`!compact()`), and it has neither Paste nor Scan. The three checks that set
+   the table, in `to_page`, `amount_page` and `destinations`, call `table_of`,
+   which holds both rules. The check for W9's Submit, in `submit_form`, is
+   answer 8's and still follows `compact()`.
+8. Approved (owner, 2026-10-18), answer (B): W9's Submit stands beside its
+   helper on a wide phone, from 600 wide and following the width, a phone held
+   sideways included. It is no longer the implementer's extension (D40).
 
-**Still open for the owner.** At 600 wide the table leaves the destination
-field too narrow to use, and the owner has not yet said whether to accept that
-or to raise the threshold. Measured on 2026-10-18 in the test harness's
-geometry, with the table as built (not on a device; nothing has been seen on a
-device):
-
-- The To page's destination field is 26 pixels wide at 600, 52 at 640, 92 at
-  700, 146 at 780, 188 at 844 and 308 at 1024.
-- W8's destination field is none at 600, where Paste takes the cell, and 15,
-  45, 85, 117 and 207 pixels at 640, 700, 780, 844 and 1024.
-- W8's amount and reference fields are 34 pixels at 600, 44 at 640, 59 at 700,
-  79 at 780, 95 at 844 and 140 at 1024.
-- On page 2 (Amount), the amount field is 65 pixels at 600, 78 at 640, 98 at
-  700, 125 at 780, 146 at 844 and 206 at 1024.
-- At 600 the Paste label's box is 31.5 pixels for a word of 36.3, and the
-  Scan label's box is 15.5 pixels for a word of 32.9. From 640 up both fit.
-
-The owner either keeps 600 and records W8's field at 600 as an accepted limit,
-or raises the threshold. Three checks set the table, in `to_page`, `amount_page`
-and `destinations` in `crates/app/src/screens/wallet/send.rs`. W9's Submit
-placement has a fourth, in `submit_form`, which a new threshold would move too
-unless it is split off. A threshold of 844 would give W8's destination 117
-pixels and the table from 844 wide. A threshold of 1024, the narrowest desktop
-window (`WINDOW_MIN` in `crates/app/src/lib.rs`), would take the table away from
-every sideways phone, since they are 600 to 1023 wide. This item stays open
-until the owner answers.
+Measured after answer 7, on 2026-10-18, in the test harness's geometry, which
+has no insets (not on a device; nothing has been seen on one): the To page's
+destination field is 260.7 pixels wide at 844 and 380.7 at 1024, and W8's is
+189.5 at 844 and 279.5 at 1024. The sideways image draws its page inside 47
+pixels of insets at each side (`phone_sideways` in
+`crates/app/examples/screenshots.rs`), which the render assumes and a device may
+not give. With them the To page's field is 198.0 at 844 and 318.0 at 1024, and
+W8's is 142.5 and 232.5. So the 250 and the 180 pixels that answer 7 asks of the
+To page and of W8 hold in the harness at both widths, and with the insets only
+at 1024. Before answer 7, with Paste beside each field, the harness measured 188
+and 117 at 844, and 308 and 207 at 1024: the Paste button and its space took
+72.7 pixels from each field.
 
 **Wording awaiting approval.** None of it is approved yet:
 

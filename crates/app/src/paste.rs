@@ -6,11 +6,13 @@
 //! from a hardware keyboard (D32 item 9 (g)). On a phone, at any width, a Paste
 //! button stands beside each destination field (W4, W8), the signed-bytes
 //! field (W9) and the recovery-phrase field (S6), and a Scan button beneath
-//! each destination field (D42 item 1; owner, 2026-10-18). It reads the
-//! platform's clipboard through iced, only on that tap, and what it read replaces what
-//! the field held; an empty or refused read changes nothing. Nothing a paste
-//! brings is ever submitted. The desktop keeps keyboard paste and shows no
-//! button.
+//! each destination field (D42 item 1; owner, 2026-10-18). In a table row of
+//! Send, on a phone held sideways from 844 wide, the Paste and the Scan both
+//! stand beneath the field instead (owner, 2026-10-18, answer (A) of D42). It
+//! reads the platform's clipboard through iced, only on that tap, and what it
+//! read replaces what the field held; an empty or refused read changes nothing.
+//! Nothing a paste brings is ever submitted. The desktop keeps keyboard paste
+//! and shows no button.
 //!
 //! iced's `text_input` drops every control character of a paste before any
 //! hook sees it, so a phrase copied one word to a line would arrive as one
