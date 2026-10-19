@@ -43,7 +43,7 @@
 //! (`phone-w1-wallet-offer.png`), and Settings with the unlock's row
 //! (`phone-w11-settings-device.png`) (docs/DECISIONS.md D45 item 4). The
 //! desktop offers no device unlock, so they are the phone's alone. So the
-//! phone's images are 86 in all. Every piece of text names a bundled face
+//! phone's images are 87 in all. Every piece of text names a bundled face
 //! (`tawara_app::fonts`), so the pixels do not depend on the fonts a machine
 //! has installed.
 //!
@@ -768,6 +768,10 @@ fn samples() -> Vec<(&'static str, (u32, u32), Model)> {
                 node: NODE.to_owned(),
             })),
         ),
+        // The licences, from Settings' About card (docs/DECISIONS.md D35): the
+        // wallet's licence, then the third-party notices, each in a card with
+        // its copy button, under Back. The phone's image is drawn from it too.
+        ("w11-licences", DASHBOARD, on(Page::Licences)),
         // As the reports come: every one at its summary, none read, so
         // the advance waits.
         (
@@ -1274,6 +1278,7 @@ fn scanner(preview: ScanPreview) -> Scanner {
         copy,
         share,
         back,
+        notices: include_str!("../../../THIRD-PARTY-NOTICES.txt"),
         captured: None,
         device_check: None,
         keep_password: None,
@@ -1376,6 +1381,7 @@ fn face_id_device() -> Device {
         copy,
         share,
         back,
+        notices: include_str!("../../../THIRD-PARTY-NOTICES.txt"),
         captured: None,
         device_check: Some(check),
         keep_password: Some(keep),

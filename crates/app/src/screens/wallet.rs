@@ -9,6 +9,7 @@ mod activity;
 mod add_account;
 mod dashboard;
 mod explorer;
+mod licences;
 mod receive;
 mod recovery;
 mod report;
@@ -57,6 +58,7 @@ pub fn view<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> 
         Page::Account(a) => account::view(model, page, a),
         Page::Activity(a) => activity::view(model, page, a),
         Page::Settings(s) => settings::view(model, page, s),
+        Page::Licences => licences::view(model, page),
         Page::Recovery(r) => recovery::view(model, page, r),
         Page::Explorer(e) => explorer::overview(model, page, e),
         Page::Block(b) => explorer::block(model, page, b),

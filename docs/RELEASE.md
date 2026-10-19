@@ -308,6 +308,15 @@ records how; it is merged in both repositories before the first release.
 - [ ] **Shown to people** (owner): a file inside a phone app cannot be
   opened by the person using it. **(Recommended)** a Licences page in
   Settings that draws the same file, with wording the owner approves.
+  **Built** (D35, as built; docs/SCREENS.md, W11a): About's "Show the
+  licences" opens it, and it draws the licence and the notices. On the
+  desktop the notices are the wallet's own file. A phone's shell gives its
+  own, the file its package carries, as `Host::notices`, which is required,
+  so a shell cannot leave the page with the wallet's file. Tawara-mobile
+  passes its file when its pin moves to the commit that carries the page.
+  Until then no phone has the page, so the phones' part of this item is
+  open. Its wording awaits the owner's approval, so the box stays unticked
+  until the owner gives it.
 
 That the file is current at the tag is section 5.3.
 

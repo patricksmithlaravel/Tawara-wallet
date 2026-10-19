@@ -197,6 +197,7 @@ mod tests {
             copy: |_| {},
             share: |_, _| Ok(()),
             back: || {},
+            notices: include_str!("../../../THIRD-PARTY-NOTICES.txt"),
             captured: None,
             device_check: None,
             keep_password: None,
