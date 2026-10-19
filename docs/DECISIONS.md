@@ -2978,7 +2978,8 @@ As built, item by item:
 - **4, signing on the owner's machines.** Built. The packaging job
   (`.github/workflows/packaging.yml`) runs each host's script with `--dev`,
   then `packaging/check.sh`: unsigned packages, `permissions: {}`, no secret
-  and no upload. A signing step runs only where its variable is set.
+  and no upload. In a `--dev` build a signing step runs only where its
+  variable is set; a release requires the variable, and refuses without it.
   Awaiting the owner.
 - **5, macOS 11.0 and one universal binary.** Built: `LSMinimumSystemVersion`
   11.0, and `minos` is checked for each slice. Awaiting the owner.
@@ -3005,11 +3006,12 @@ each one does):
 - `TAWARA_ICON`: the app icon, an `.icns` file (macOS).
 - `TAWARA_BUILD_NUMBER`, or `--build-number N`: the macOS `CFBundleVersion`.
   A macOS release needs it; `--dev` uses 1.
-- `TAWARA_MAC_SIGN_ID`: the Developer ID Application identity. It signs when
-  set.
+- `TAWARA_MAC_SIGN_ID`: the Developer ID Application identity. A release
+  requires it and refuses `-`, the ad-hoc signature; a `--dev` build signs when
+  it is set.
 - `TAWARA_TEAM_ID`: the team the signature must name, checked after signing.
-- `TAWARA_NOTARY_PROFILE`: the `notarytool` keychain profile, needed to
-  notarise.
+- `TAWARA_NOTARY_PROFILE`: the `notarytool` keychain profile. A release
+  requires it, to notarise.
 - `TAWARA_ICON_PNG`: a square PNG of at least 1024 pixels, the source of the
   Linux icons.
 - `TAWARA_DEB_MAINTAINER`: the `.deb`'s `Maintainer:` as `Name <address>`. A
@@ -3018,7 +3020,7 @@ each one does):
   It signs when set.
 - `TAWARA_WIN_ICO`: the `.ico` icon for the executable and the installer.
 - `TAWARA_WIN_CERT_SHA1`: the SHA-1 thumbprint of the code-signing
-  certificate. It signs when set.
+  certificate. A release requires it; a `--dev` build signs when it is set.
 - `TAWARA_WIN_TIMESTAMP_URL`: the certificate authority's RFC 3161 timestamp
   address, required when signing.
 - `TAWARA_WIN_PUBLISHER`: the publisher in Installed apps. Unset, it is

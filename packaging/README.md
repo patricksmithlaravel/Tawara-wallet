@@ -66,23 +66,26 @@ It makes these, in order, and stops with an error at the first step that fails:
    - `Contents/Resources/LICENSE.md` and `THIRD-PARTY-NOTICES.txt`, copied from
      the repository root (`docs/RELEASE.md` section 4; D35);
    - `Contents/Resources/AppIcon.icns`, when `TAWARA_ICON` is set.
-5. Signing, when `TAWARA_MAC_SIGN_ID` is set: `codesign --options runtime
-   --timestamp` with the empty entitlements file (an ad-hoc `-` takes no
-   timestamp), then `codesign --verify --deep --strict`. When `TAWARA_TEAM_ID`
-   is also set, the signature must name that team.
+5. Signing: `codesign --options runtime --timestamp` with the empty entitlements
+   file, then `codesign --verify --deep --strict`. A release signs with the
+   Developer ID identity in `TAWARA_MAC_SIGN_ID`, which it requires. A `--dev`
+   build signs when the variable is set, and an ad-hoc `-` takes no timestamp.
+   When `TAWARA_TEAM_ID` is also set, the signature must name that team.
 6. `Tawara-X.Y.Z.dmg` (`Tawara-X.Y.Z-dev.dmg` with `--dev`), made by
    `hdiutil create` from a folder holding the app and a link to
    `/Applications`. It is signed the same way when an identity is set.
-7. Notarisation, when a Developer ID identity is set (not `-`),
-   `TAWARA_NOTARY_PROFILE` is set and the build is not `--dev`:
-   `notarytool submit --wait`, which must report
+7. Notarisation, in a release: `notarytool submit --wait` with the keychain
+   profile in `TAWARA_NOTARY_PROFILE`, which a release requires. It must report
    `status: Accepted`; then `stapler staple` and `stapler validate`; then
-   `spctl` must accept the image with `source=Notarized Developer ID`.
+   `spctl` must accept the image with `source=Notarized Developer ID`. A `--dev`
+   build does not notarise.
 8. `SHA256SUMS` beside the image, checked with `shasum -a 256 -c`.
 
 The packages go to `target/package/macos` unless `--out` says otherwise. The
-script prints `signed: yes|no; notarised: yes|no` at the end. A package that
-says `no` for either must not be published (`docs/RELEASE.md` section 6.2).
+script ends with `signed: yes|ad-hoc|no; notarised: yes|no`. A release refuses
+to start without an identity and a notary profile, so a release ends with
+`signed: yes; notarised: yes`. A `--dev` package ends with `ad-hoc` or `no`, and
+`notarised: no`, and must not be published (`docs/RELEASE.md` section 6.2).
 
 The script first checks that both Rust targets are installed
 (`rustup target list --installed`). When one is not, it stops and prints the
@@ -222,8 +225,10 @@ It makes these, in order, and stops with an error at the first step that fails:
 8. `SHA256SUMS` beside the installer, checked with `sha256sum -c`.
 
 The package goes to `target/package/windows` unless `--out` says otherwise, and
-the script ends with `signed: yes` or `signed: no`. A package that says `no`
-must not be published (`docs/RELEASE.md` section 6.1). The uninstaller's own
+the script ends with `signed: yes` or `signed: no`. A release refuses to start
+without `TAWARA_WIN_CERT_SHA1`, so a release ends with `signed: yes`. A `--dev`
+package ends with `signed: no` and must not be published (`docs/RELEASE.md`
+section 6.1). The uninstaller's own
 signature is checked after an install, as the checklist asks:
 `signtool verify /pa /v "%LOCALAPPDATA%\Programs\Tawara\uninstall.exe"`. The
 uninstaller removes the program's files, its Start menu entry and its Installed
@@ -241,9 +246,9 @@ environment and is skipped, with a message, when that name is unset.
 | `DEVELOPER_DIR` | the Xcode to build with. Unset, and `/Applications/Xcode_26.6.app` exists, the script uses that one (`docs/RELEASE.md` section 1.6) | required; its macOS SDK must be 26.x | optional; a warning if the SDK is not 26.x |
 | `TAWARA_ICON` | path to the app icon as an `.icns` file. The owner supplies the artwork (`docs/RELEASE.md` section 1.2); `iconutil -c icns` makes the file from an `.iconset` folder of the standard sizes, made from a 1024-pixel PNG | required | optional; without it the build has no icon |
 | `TAWARA_BUILD_NUMBER`, or `--build-number` | the bundle's `CFBundleVersion` | required | defaults to `1` |
-| `TAWARA_MAC_SIGN_ID` | the Developer ID Application identity, by the name `codesign` reads, such as `Developer ID Application: Name (TEAMID)` | unset: the packages are unsigned, with a warning | signs when set |
+| `TAWARA_MAC_SIGN_ID` | the Developer ID Application identity, by the name `codesign` reads, such as `Developer ID Application: Name (TEAMID)` | required; `-` (ad-hoc) is refused | signs when set; unset: the packages are unsigned, with a warning |
 | `TAWARA_TEAM_ID` | the team the signature must name, checked after signing | optional | optional |
-| `TAWARA_NOTARY_PROFILE` | the `notarytool` keychain profile, made with `xcrun notarytool store-credentials` on this Mac | needed to notarise | not used |
+| `TAWARA_NOTARY_PROFILE` | the `notarytool` keychain profile, made with `xcrun notarytool store-credentials` on this Mac | required | not used |
 | `CARGO_TARGET_DIR` | where cargo writes its output, as cargo reads it | optional | optional |
 
 The Linux script reads three variables. Its build never uses `CARGO_TARGET_DIR`:
@@ -257,14 +262,14 @@ the build's target directory is the volume described above.
 
 `TAWARA_MAC_SIGN_ID=-` makes an ad-hoc signature. It is not an identity, it
 exercises the signing steps for a local check, and its output is not for
-distribution.
+distribution. A release refuses it, and a `--dev` build prints `signed: ad-hoc`.
 
 The Windows script reads these variables:
 
 | Variable | What it is for | Release | `--dev` |
 |---|---|---|---|
 | `TAWARA_WIN_ICO` | the app icon as an `.ico` file. The owner supplies the artwork (`docs/RELEASE.md` section 1.2). It is the executable's icon and the installer's | required | optional; without it the build has no icon |
-| `TAWARA_WIN_CERT_SHA1` | the SHA-1 thumbprint of the code-signing certificate, which signtool finds in the certificate store that holds the token | unset: unsigned, with a warning | signs when set |
+| `TAWARA_WIN_CERT_SHA1` | the SHA-1 thumbprint of the code-signing certificate, which signtool finds in the certificate store that holds the token | required | signs when set; unset: unsigned, with a warning |
 | `TAWARA_WIN_TIMESTAMP_URL` | the certificate authority's RFC 3161 timestamp address. `docs/RELEASE.md` names none, so the owner supplies it. It must be a plain `http` or `https` address made of letters, digits and `._~:/?=+,@-` | required when signing | required when signing |
 | `TAWARA_WIN_PUBLISHER` | the publisher name that Installed apps shows. Unset, it is `patricksmithlaravel`, D8's Windows publisher, which awaits the owner's confirmation (`docs/RELEASE.md` section 1.2). It may not hold a double quote, a dollar sign or a backquote | optional | optional |
 | `TAWARA_WINSDK_BIN` | the Windows SDK's `x64` folder holding `rc.exe` and `signtool.exe`, when the newest one found is not the one to use | optional | optional |

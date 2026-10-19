@@ -12,8 +12,9 @@
 # lists what awaits the owner.
 #
 # Nothing here holds a key, certificate or password. The signing certificate is
-# named by its thumbprint in the environment, and a step whose variable is unset
-# is skipped with a message. CI never signs (D13, D36).
+# named by its thumbprint in the environment. A release refuses to run without
+# it, and a --dev build skips signing when it is unset, with a message. CI never
+# signs (D13, D36).
 #
 # Usage: bash packaging/windows.sh [--dev] [--out DIR]
 #        bash packaging/windows.sh --record-nsis
@@ -386,8 +387,10 @@ if [ -n "$cert" ]; then
   printf '%s' "$ts_url" | grep -E '^https?://[A-Za-z0-9._~:/?=+,@-]+$' >/dev/null \
     || die "TAWARA_WIN_TIMESTAMP_URL is not a plain http or https address: $ts_url"
   will_sign=yes
-else
+elif $dev; then
   warn "TAWARA_WIN_CERT_SHA1 is unset: the executable and the installer are not signed"
+else
+  die "TAWARA_WIN_CERT_SHA1 is unset. A release is signed with the code-signing certificate's SHA-1 thumbprint (docs/RELEASE.md section 6.1). Use --dev for an unsigned local build."
 fi
 
 installed=$(rustup target list --installed) || die "rustup cannot list the installed Rust targets"

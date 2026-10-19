@@ -10,9 +10,10 @@
 # what awaits the owner.
 #
 # Nothing here holds a key, certificate or password. Identities come from the
-# environment, and a step whose variable is unset is skipped with a message.
-# Run a release on the Mac that holds the keys. The CI packaging job runs this
-# script with --dev on macos-latest: unsigned, and nothing kept (D13, D36).
+# environment. A release refuses to run without its identity and notary profile,
+# and a --dev build skips a step whose variable is unset, with a message. Run a
+# release on the Mac that holds the keys. The CI packaging job runs this script
+# with --dev on macos-latest: unsigned, and nothing kept (D13, D36).
 #
 # Usage: bash packaging/macos.sh [--dev] [--build-number N] [--out DIR]
 #
@@ -155,6 +156,20 @@ for notice in LICENSE.md THIRD-PARTY-NOTICES.txt; do
   [ -f "$root/$notice" ] || die "$notice is missing at the repository root (docs/RELEASE.md section 4)"
 done
 
+# A release is signed with a Developer ID identity and notarised (docs/RELEASE.md
+# section 6.2). Both are checked here, before the build, so that a release
+# without them stops at once. A --dev build may leave them unset, or make an
+# ad-hoc signature with '-' for a local check.
+sign_id=${TAWARA_MAC_SIGN_ID:-}
+notary_profile=${TAWARA_NOTARY_PROFILE:-}
+if ! $dev; then
+  case "$sign_id" in
+    "") die "TAWARA_MAC_SIGN_ID is unset. A release is signed with a Developer ID Application identity (docs/RELEASE.md section 6.2). Use --dev for an unsigned local build." ;;
+    -) die "TAWARA_MAC_SIGN_ID is '-', an ad-hoc signature that is not for distribution. A release is signed with a Developer ID Application identity (docs/RELEASE.md section 6.2)." ;;
+  esac
+  [ -n "$notary_profile" ] || die "TAWARA_NOTARY_PROFILE is unset. A release is notarised with a notarytool keychain profile (docs/RELEASE.md section 6.2). Use --dev for a local build without one."
+fi
+
 # RELEASE.md section 1.6 keeps Xcode 26.6 beside Xcode 27 and selects it with
 # DEVELOPER_DIR, so the Mac's default Xcode is left as it is.
 if [ -z "${DEVELOPER_DIR:-}" ] && [ -d /Applications/Xcode_26.6.app/Contents/Developer ]; then
@@ -246,17 +261,18 @@ if [ -n "$icon" ]; then
 fi
 
 entitlements=$root/packaging/macos/entitlements.plist
-sign_id=${TAWARA_MAC_SIGN_ID:-}
 signed=no
 if [ -n "$sign_id" ]; then
   if [ "$sign_id" = - ]; then
     step "ad-hoc signing Tawara.app for a local check: not an identity, not for distribution"
     codesign --force --options runtime --entitlements "$entitlements" --sign - "$app" \
       || die "codesign failed for Tawara.app"
+    signed=ad-hoc
   else
     step "signing Tawara.app with the hardened runtime and a secure timestamp, no entitlements"
     codesign --force --options runtime --timestamp --entitlements "$entitlements" \
       --sign "$sign_id" "$app" || die "codesign failed for Tawara.app"
+    signed=yes
   fi
   codesign --verify --deep --strict "$app" || die "the signature on Tawara.app does not verify"
   details=$(codesign -dv --verbose=4 "$app" 2>&1) || die "codesign cannot read the signature on Tawara.app"
@@ -266,7 +282,6 @@ if [ -n "$sign_id" ]; then
       *) die "the signature on Tawara.app does not name the team in TAWARA_TEAM_ID" ;;
     esac
   fi
-  signed=yes
 else
   warn "Tawara.app is not signed: TAWARA_MAC_SIGN_ID is unset"
 fi
@@ -298,14 +313,13 @@ if [ -n "$sign_id" ]; then
 fi
 
 notarised=no
-notary_profile=${TAWARA_NOTARY_PROFILE:-}
 if [ -z "$sign_id" ] || [ "$sign_id" = - ]; then
   step "$dmg_name is not notarised: notarisation needs a Developer ID signature"
 elif $dev; then
   step "$dmg_name is not notarised: notarisation is skipped in a --dev build"
-elif [ -z "$notary_profile" ]; then
-  warn "$dmg_name is not notarised: TAWARA_NOTARY_PROFILE is unset"
 else
+  # A release has a Developer ID identity and a notary profile: both were checked
+  # before the build.
   step "notarising $dmg_name with the keychain profile in TAWARA_NOTARY_PROFILE"
   log=$out/notarytool.log
   xcrun notarytool submit "$dmg" --keychain-profile "$notary_profile" --wait >"$log" 2>&1 || true
