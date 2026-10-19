@@ -255,6 +255,10 @@ pub struct Model {
     /// What the device unlock last found, for the screens to say (provisional
     /// wording, for the owner's approval; docs/DECISIONS.md D45 item 6).
     pub device_note: Option<String>,
+    /// The notices the Licences page draws, as the shell gave them
+    /// (`Host::notices`, docs/DECISIONS.md D35). `None` on the desktop, which
+    /// has no `Host`: the page draws the wallet's own file then.
+    pub(crate) notices: Option<&'static str>,
     /// The QR scanner the shell gives, where it gives one: phones only, as
     /// docs/DECISIONS.md D42 item 1 decides. `None` on the desktop, which offers
     /// no scan.
@@ -1186,6 +1190,7 @@ impl Model {
             device_asks: 0,
             device_asked: None,
             device_note: None,
+            notices: None,
             scanner: None,
             scanning: None,
             scan_asks: 0,
@@ -1474,6 +1479,8 @@ impl App {
         app.model.scanner = crate::scan::Scanner::of(host, replies);
         host::on_leaving(app.leaving_hook());
         host::on_capture(Arc::clone(&app.model.capture), host.captured);
+        // The Licences page draws the notices the shell packages (D35).
+        app.model.notices = Some(host.notices);
         // The shell answers an ask of the device's check from its own thread, and
         // the answer comes into the interface on this channel as a message
         // (docs/DECISIONS.md D45 item 4). Where the shell offers no device unlock,
@@ -8617,6 +8624,29 @@ mod tests {
     }
 
     #[test]
+    fn the_licences_open_from_settings_and_back_returns_to_settings() {
+        // The row in About opens the licences, and Back returns to Settings, as a
+        // person goes between them (docs/DECISIONS.md D35).
+        let mut app = on_wallet(Page::Settings(SettingsPage::default()));
+        for message in press_drawn(&app.model, "Show the licences", SETTINGS_WINDOW) {
+            let _ = app.update(message);
+        }
+        assert!(
+            matches!(wallet_page(&app).page, Page::Licences),
+            "{:?}",
+            wallet_page(&app).page
+        );
+        for message in press_drawn(&app.model, "Back", (1440, 900)) {
+            let _ = app.update(message);
+        }
+        assert!(
+            matches!(wallet_page(&app).page, Page::Settings(_)),
+            "{:?}",
+            wallet_page(&app).page
+        );
+    }
+
+    #[test]
     fn recovery_shows_every_report_whole_and_advances_only_as_typed_and_confirmed() {
         let reports = tawara_wallet_core::sample::review();
         let paused = reports[2].account;
@@ -10776,6 +10806,7 @@ mod tests {
             copy: copy_nothing,
             share: share_nothing,
             back: back_nothing,
+            notices: include_str!("../../../THIRD-PARTY-NOTICES.txt"),
             captured: None,
             device_check: Some(fake_check),
             keep_password: Some(fake_keep),

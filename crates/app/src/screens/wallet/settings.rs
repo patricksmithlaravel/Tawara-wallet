@@ -668,7 +668,9 @@ fn display(model: &Model) -> Element<'_, Message> {
     .into()
 }
 
-/// About (05): what this build is.
+/// About (05): what this build is, and the Licences row that opens the
+/// licences (docs/DECISIONS.md D35). The row's wording is new and awaits the
+/// owner's approval (docs/RELEASE.md section 4).
 fn about<'a>(model: &'a Model) -> Element<'a, Message> {
     let compact = model.compact();
     let fact = |label: &'static str, value: String| -> Element<'a, Message> {
@@ -686,6 +688,25 @@ fn about<'a>(model: &'a Model) -> Element<'a, Message> {
         .spacing(sp::S12)
         .into()
     };
+    let to_licences: Option<Message> = model
+        .busy
+        .is_none()
+        .then(|| WalletMsg::Open(To::Licences).into());
+    let licences = setting(
+        compact,
+        "Licences",
+        Some("The wallet's own licence, and the notices of the software it includes.".to_owned()),
+        Some(
+            ui::button_with(
+                "Show the licences",
+                theme::Button::Secondary,
+                Size::Small,
+                None,
+                to_licences,
+            )
+            .into(),
+        ),
+    );
     ui::card_for(
         compact,
         column![
@@ -700,6 +721,7 @@ fn about<'a>(model: &'a Model) -> Element<'a, Message> {
                     &tawara_wallet_core::LIBRARY_REV[..7]
                 )
             ),
+            licences,
         ]
         .spacing(sp::S12),
     )
@@ -1026,5 +1048,38 @@ mod tests {
                 .any(|m| matches!(m, Message::TurnOffDeviceUnlock)),
             "{messages:?}"
         );
+    }
+
+    /// The messages a press on the drawn text `label` produces in a window of
+    /// `size`, as a person presses it.
+    fn pressed(model: &Model, label: &str, size: (u32, u32)) -> Vec<Message> {
+        let mut driver = crate::harness::Driver::new(screens::view(model), size);
+        let at = driver
+            .text_bounds(label)
+            .unwrap_or_else(|| panic!("`{label}` is not drawn"));
+        let (messages, _, _) = driver.send(&[
+            crate::harness::mouse_move(at.center_x(), at.center_y()),
+            crate::harness::mouse_press(),
+            crate::harness::mouse_release(),
+        ]);
+        messages
+    }
+
+    #[test]
+    fn the_licences_row_in_about_opens_the_licences_on_the_desktop_and_a_phone() {
+        // Each page is drawn tall enough that the row's button is in the window.
+        for (size, model) in [
+            ((1440, 2400), sample_model(1440.0)),
+            ((360, 4000), sample_model(NARROWEST)),
+        ] {
+            let messages = pressed(&model, "Show the licences", size);
+            assert!(
+                matches!(
+                    messages.as_slice(),
+                    [Message::Wallet(WalletMsg::Open(To::Licences))]
+                ),
+                "{messages:?}"
+            );
+        }
     }
 }

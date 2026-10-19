@@ -3,7 +3,8 @@
 //!
 //! A shell gives the app-private directory, where the store and the
 //! preferences live, the platform's clipboard, its share sheet, and what
-//! Android's Back does.
+//! Android's Back does. It also gives the notices its package carries, which
+//! the Licences page draws (docs/DECISIONS.md D35).
 //! Copy goes through the shell's own write, not iced's: iced's reaches the
 //! phones at the pin, but it sets none of the protection that
 //! docs/DECISIONS.md D32 item 9 (d) puts in the shell's write. It calls
@@ -56,6 +57,14 @@ pub struct Host {
     /// winit can build its event loop again, so that choice is Tawara's,
     /// not winit's.
     pub back: fn(),
+    /// The notices of the software the shell's package includes, word for word
+    /// as its `THIRD-PARTY-NOTICES.txt` gives them (docs/DECISIONS.md D35;
+    /// docs/RELEASE.md section 4). The Licences page draws them beside the
+    /// wallet's licence. A phone is built from other crates than the desktop,
+    /// so a phone's shell gives its own file. The desktop has no `Host`, and
+    /// its page draws the wallet's file. The field is required, so a shell
+    /// that leaves it out fails to build, rather than drawing the wrong file.
+    pub notices: &'static str,
     /// Whether the screen is being recorded or mirrored, as the system reports
     /// it (`UIScreen.isCaptured` on iOS), read once when the application
     /// starts. Later changes come through [`capture_changed`]. `None` where a
@@ -655,6 +664,7 @@ mod tests {
             copy: copy_nothing,
             share: share_nothing,
             back: back_nothing,
+            notices: include_str!("../../../THIRD-PARTY-NOTICES.txt"),
             captured: None,
             device_check: None,
             keep_password: None,
