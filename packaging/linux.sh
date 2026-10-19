@@ -14,7 +14,7 @@
 # Nothing here holds a key, certificate or password. The GPG key is named by its
 # identity in the environment, and is used only when that variable is set. A
 # release runs on the machine that holds the keys. The CI packaging job runs this
-# script with --dev on ubuntu-latest: unsigned, with a test icon, and nothing kept
+# script with --dev on ubuntu-24.04: unsigned, with a test icon, and nothing kept
 # (D13, D36).
 #
 # Usage: bash packaging/linux.sh [--dev] [--out DIR]

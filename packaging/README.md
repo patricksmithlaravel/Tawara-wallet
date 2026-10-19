@@ -286,7 +286,7 @@ on what that made:
 | Host | Builds | Checks | Starts |
 |---|---|---|---|
 | `macos-latest` | `macos.sh --dev`: both Rust targets, the universal app, the disk image | the two slices and `minos 11.0`, `Info.plist`, the notices, the disk image and the app in it | the app, from the bundle, on wgpu and on tiny-skia |
-| `ubuntu-latest` | `linux.sh --dev` in the pinned `ubuntu:22.04` container, with a test icon | the `.deb`'s control fields and contents, the glibc floor, the AppImage's contents | the `.deb`, installed with apt, then removed; the AppImage's executable, once extracted |
+| `ubuntu-24.04` | `linux.sh --dev` in the pinned `ubuntu:22.04` container, with a test icon | the `.deb`'s control fields and contents, the glibc floor, the AppImage's contents | the `.deb`, installed with apt, then removed; the AppImage's executable, once extracted |
 | `windows-latest` | `windows.sh --dev` in Git Bash | the executable: x86-64, no Visual C++ runtime DLL, the version resource; the installer, once made | the executable is not run |
 
 The job has no third-party action (D13), `permissions: {}`, and no secret. Nothing

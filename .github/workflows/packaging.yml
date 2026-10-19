@@ -19,7 +19,7 @@
 # WHAT A GREEN RUN SAYS. On macos-latest: the universal app holds both
 # architectures, each with minos 11.0, and an Info.plist with the identifier and
 # minimum system version section 6.2 names; the disk image verifies and holds the
-# same executable; and the app starts on wgpu and on tiny-skia. On ubuntu-latest,
+# same executable; and the app starts on wgpu and on tiny-skia. On ubuntu-24.04,
 # where the Linux build runs in the pinned Ubuntu 22.04 container: the .deb's
 # control fields are the ones packaging/check.sh expects, its executable needs no
 # glibc symbol newer than 2.35, and it holds the files section 6.3 lists. On the
@@ -78,7 +78,9 @@ jobs:
       # A red host does not cancel the other two: each log is evidence of its own.
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
+        # ubuntu-24.04 rather than the moving ubuntu-latest label, which GitHub
+        # moves to Ubuntu 26 from 2026-10-19. RELEASE.md section 7 names 24.04.
+        os: [macos-latest, ubuntu-24.04, windows-latest]
     runs-on: ${{ matrix.os }}
     # Cold builds, each from nothing: the Linux build in its container with two
     # jobs, the macOS build for two targets, and the Windows build.
