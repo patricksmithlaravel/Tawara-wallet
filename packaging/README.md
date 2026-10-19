@@ -441,8 +441,9 @@ Nothing below is settled by this change. The owner decides each one.
   apt packages without `file` and `squashfs-tools`, and it runs appimagetool
   with `--appimage-extract-and-run`. The script does both differently, as step
   6 above says, and needs the two packages for it. Whether the checklist's text
-  changes is the owner's to decide: this change leaves `docs/RELEASE.md` as it
-  is.
+  changes is the owner's to decide: this change leaves the text of
+  `docs/RELEASE.md` section 6.3 as it is, and adds only desktop notes to the
+  two items in sections 3 and 4 that name the packages.
 - **The Linux build's caps.** The container has 2 CPUs, 4 GiB and two cargo
   jobs, the caps the owner's build-CPU rule sets. `docs/RELEASE.md` section 6.3
   records a `rustc` killed for lack of memory in an 8 GiB Docker VM at four

@@ -2953,6 +2953,80 @@ an optional GPG key; the app icon; the export compliance answer; and the
 machines of its section 1.6, including Xcode 26.6 beside Xcode 27 and a
 container runtime.
 
+**As built in PR #43 (2026-10-18).** The desktop scripts and the packaging
+job are built to the recommendations above. D36 is still proposed, so each
+item under "What the owner decides" awaits the owner's answer, which this
+entry records with its date when it comes. The new user-visible wording (the
+`.deb`'s description, the desktop entry's comment and categories, the Windows
+installer's pages and file description, and the copyright lines) awaits the
+owner too, and this build approves none of it. Nothing is signed, notarised,
+stapled, uploaded or published, and no account, certificate, token or key was
+used.
+
+As built, item by item:
+
+- **1, tools per target.** Plain shell scripts: `packaging/macos.sh`;
+  `packaging/linux.sh` with `packaging/linux/in-container.sh`, run in the
+  pinned container; `packaging/windows.sh` with `packaging/windows/tawara.nsi`;
+  and `packaging/check.sh`, the static checks. Awaiting the owner.
+- **2, NSIS 3.13.** Built, from `nsis-3.13.zip`. `NSIS_SHA256` in
+  `packaging/windows.sh` is empty, so a release refuses to start, and a
+  `--dev` build stops at the installer, until the owner records the hash
+  (item 8). Awaiting the owner.
+- **3, the executable's name.** `tawara-desktop`, on every desktop system.
+  Awaiting the owner.
+- **4, signing on the owner's machines.** Built. The packaging job
+  (`.github/workflows/packaging.yml`) runs each host's script with `--dev`,
+  then `packaging/check.sh`: unsigned packages, `permissions: {}`, no secret
+  and no upload. A signing step runs only where its variable is set.
+  Awaiting the owner.
+- **5, macOS 11.0 and one universal binary.** Built: `LSMinimumSystemVersion`
+  11.0, and `minos` is checked for each slice. Awaiting the owner.
+- **6, x86_64 first, glibc 2.35 as the floor.** Built: the Linux build fails
+  above GLIBC_2.35. Awaiting the owner.
+- **7, identifiers.** Built as proposed: `com.patricksmithlaravel.tawara` for
+  macOS and `com.patricksmithlaravel.tawara.desktop` for Linux. Not yet in
+  D8. Awaiting the owner.
+- **8, pinned downloads.** Built. The base image is pinned by digest,
+  `ubuntu:22.04@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956`,
+  and each download is checked against a SHA-256 in the script: rustup-init
+  1.29.1, appimagetool 1.9.1 and its type 2 runtime 20251108
+  (`packaging/linux.sh`). NSIS 3.13 is the exception until its hash is
+  recorded: the two-network first download and that recording are the
+  owner's step. Awaiting the owner.
+- **9, accounts.** Not built. They are the owner's, in `docs/RELEASE.md`
+  section 1.2. Awaiting the owner.
+
+The environment variables the scripts read (`packaging/README.md` says what
+each one does):
+
+- `DEVELOPER_DIR`: the Xcode to build with. Unset, the macOS script uses
+  `/Applications/Xcode_26.6.app` when it exists.
+- `TAWARA_ICON`: the app icon, an `.icns` file (macOS).
+- `TAWARA_BUILD_NUMBER`, or `--build-number N`: the macOS `CFBundleVersion`.
+  A macOS release needs it; `--dev` uses 1.
+- `TAWARA_MAC_SIGN_ID`: the Developer ID Application identity. It signs when
+  set.
+- `TAWARA_TEAM_ID`: the team the signature must name, checked after signing.
+- `TAWARA_NOTARY_PROFILE`: the `notarytool` keychain profile, needed to
+  notarise.
+- `TAWARA_ICON_PNG`: a square PNG of at least 1024 pixels, the source of the
+  Linux icons.
+- `TAWARA_DEB_MAINTAINER`: the `.deb`'s `Maintainer:` as `Name <address>`. A
+  release refuses the placeholder and any `.invalid` address.
+- `TAWARA_GPG_KEY`: the GPG identity that signs `SHA256SUMS` and the packages.
+  It signs when set.
+- `TAWARA_WIN_ICO`: the `.ico` icon for the executable and the installer.
+- `TAWARA_WIN_CERT_SHA1`: the SHA-1 thumbprint of the code-signing
+  certificate. It signs when set.
+- `TAWARA_WIN_TIMESTAMP_URL`: the certificate authority's RFC 3161 timestamp
+  address, required when signing.
+- `TAWARA_WIN_PUBLISHER`: the publisher in Installed apps. Unset, it is
+  `patricksmithlaravel` (D8's Windows publisher), which the owner confirms.
+- `TAWARA_WINSDK_BIN`: the SDK's `x64` folder with `rc.exe` and `signtool.exe`,
+  when the newest SDK is not the one to use.
+- `CARGO_TARGET_DIR`: read as cargo reads it, by the macOS and Windows scripts.
+
 **Sources.** Each was read on the date given; "research" means the phase 5
 packaging study of 2026-10-12, whose notes are not in the repository.
 
