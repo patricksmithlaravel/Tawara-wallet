@@ -21,6 +21,8 @@ user-visible wording listed under "Not decided".
 | `packaging/linux/in-container.sh` | what runs inside that container: the build, the glibc floor check, the `.deb` and the AppImage | this change |
 | `packaging/linux/AppRun` | the AppImage's entry point: it runs the executable beside it | this change |
 | `packaging/linux/com.patricksmithlaravel.tawara.desktop` | the desktop entry, the same in both Linux packages | this change |
+| `packaging/check.sh` | the static checks on the packages the three scripts make, as `docs/RELEASE.md` sections 6.1 to 6.3 name them. It reads what it is given and changes nothing | this change |
+| `.github/workflows/packaging.yml` | the packaging job: each host builds its packages with `--dev` and runs `check.sh`. No third-party action, no secret, nothing uploaded (D13, D36) | this change |
 
 The two plist files carry no XML comments: `codesign` refuses an entitlements file with one (`AMFIUnserializeXML: syntax error`), so the reasons are written here instead.
 
@@ -185,10 +187,12 @@ bash packaging/windows.sh --out DIR       # a release build (needs the variables
 It makes these, in order, and stops with an error at the first step that fails:
 
 1. The NSIS 3.13 archive, `nsis-3.13.zip`, from SourceForge over HTTPS, when
-   `target/package/tools` has no copy with the recorded hash. The script refuses
-   to start until `NSIS_SHA256`, in the script, holds that hash (D36 decision 8;
-   see "Not decided"). It unpacks the archive with `Expand-Archive` and checks
-   that `makensis -VERSION` reports 3.13.
+   `target/package/tools` has no copy with the recorded hash. Until `NSIS_SHA256`,
+   in the script, holds that hash (D36 decision 8; see "Not decided"), a release
+   refuses to start, before its build. A `--dev` build takes this step after step
+   4 and before step 5, and stops here when the hash is not recorded, so that the
+   executable is built and checked first. The archive is unpacked with
+   `Expand-Archive`, and `makensis -VERSION` must report 3.13.
 2. The Rust target `x86_64-pc-windows-msvc`, and the Windows SDK's `rc.exe` and
    `signtool.exe`: from `TAWARA_WINSDK_BIN`, or else from the newest
    `Windows Kits\10\bin\10.*\x64` under `Program Files (x86)` that holds both.
@@ -247,7 +251,7 @@ the build's target directory is the volume described above.
 
 | Variable | What it is for | Release | `--dev` |
 |---|---|---|---|
-| `TAWARA_ICON_PNG` | the app icon as a square PNG of at least 1024 pixels. It is the owner's artwork (`docs/RELEASE.md` section 1.2), and `sips` makes the sizes. `TAWARA_ICON` is the macOS `.icns` above, so this has its own name | required | optional; without it the `.deb` has no icons and there is no AppImage |
+| `TAWARA_ICON_PNG` | the app icon as a square PNG of at least 1024 pixels. It is the owner's artwork (`docs/RELEASE.md` section 1.2), and `sips` makes the sizes on macOS, with ImageMagick's `identify` and `convert` where `sips` is absent (the CI runner). `TAWARA_ICON` is the macOS `.icns` above, so this has its own name | required | optional; without it the `.deb` has no icons and there is no AppImage |
 | `TAWARA_DEB_MAINTAINER` | the `.deb`'s `Maintainer:` field, as `Name <address>` (`docs/RELEASE.md` section 1.2). A release refuses the placeholder `Tawara Maintainer <maintainer@example.invalid>` and any `.invalid` address | required | optional; the placeholder when unset |
 | `TAWARA_GPG_KEY` | the GPG key that signs `SHA256SUMS` and the packages, named by an identity in the keyring (`gpg --local-user`). Checked before the build starts | unset: unsigned | signs when set |
 
@@ -266,15 +270,47 @@ The Windows script reads these variables:
 | `TAWARA_WINSDK_BIN` | the Windows SDK's `x64` folder holding `rc.exe` and `signtool.exe`, when the newest one found is not the one to use | optional | optional |
 | `CARGO_TARGET_DIR` | where cargo writes its output, read as cargo reads it: a relative path is relative to the repository root | optional | optional |
 
-CI never runs this script with secrets. `.github/workflows/ci.yml` has
-`permissions: {}`, and D36 decision 4 keeps signing on the owner's machines.
+CI runs this script only with `--dev`, unsigned, on `windows-latest`, and with
+no secrets: `.github/workflows/packaging.yml` has `permissions: {}`, and D36
+decision 4 keeps signing on the owner's machines.
+
+## The packaging job
+
+`.github/workflows/packaging.yml` builds the packages on the three hosts and
+checks them, as D36 describes. It runs on a push to `main`, and on a pull request,
+when one of these changes: `packaging/`, `ci/liveness.sh`, `Cargo.toml`,
+`Cargo.lock`, `rust-toolchain.toml`, the two notices, or the workflow. It also
+runs by hand. Each host runs its script with `--dev`, then `packaging/check.sh`
+on what that made:
+
+| Host | Builds | Checks | Starts |
+|---|---|---|---|
+| `macos-latest` | `macos.sh --dev`: both Rust targets, the universal app, the disk image | the two slices and `minos 11.0`, `Info.plist`, the notices, the disk image and the app in it | the app, from the bundle, on wgpu and on tiny-skia |
+| `ubuntu-latest` | `linux.sh --dev` in the pinned `ubuntu:22.04` container, with a test icon | the `.deb`'s control fields and contents, the glibc floor, the AppImage's contents | the `.deb`, installed with apt, then removed; the AppImage's executable, once extracted |
+| `windows-latest` | `windows.sh --dev` in Git Bash | the executable: x86-64, no Visual C++ runtime DLL, the version resource; the installer, once made | the executable is not run |
+
+The job has no third-party action (D13), `permissions: {}`, and no secret. Nothing
+is signed, notarised or uploaded. The test icon is a plain square that the job
+makes, not the owner's artwork, and nothing it makes is published.
+
+The Windows leg is red at `windows.sh` until the owner records `NSIS_SHA256`
+(D36 decision 8). That is the failure this job expects, and the installer check
+after that step does not run until the hash is recorded. Its executable check
+runs regardless.
 
 ## Checks
 
+`packaging/check.sh` runs these, in the job and by hand. It reads the packages
+and changes nothing; it needs no key, certificate or network.
+
 - `bash -n packaging/macos.sh` and `shellcheck -S warning packaging/macos.sh`.
-- `bash packaging/macos.sh --dev`, then `lipo -info` (both architectures),
-  `vtool -show-build` (`minos 11.0` for each), `plutil -lint` on the bundle's
-  `Info.plist`, and a launch: `LIVENESS_SECONDS=10 bash ci/liveness.sh
+- `bash packaging/macos.sh --dev`, then `bash packaging/check.sh macos
+  target/package/macos`: `lipo -archs` (both architectures), `vtool -arch … -show-build`
+  (`minos 11.0` for each), `plutil` on the bundle's `Info.plist` (identifier,
+  executable, package type, minimum system version and version), the notices
+  against the repository's copies, and the disk image, which must verify and
+  hold the same executable, attached read-only.
+- A launch: `LIVENESS_SECONDS=10 bash ci/liveness.sh
   target/package/macos/Tawara.app/Contents/MacOS/tawara-desktop`. The liveness
   script starts the app with a fresh `HOME`, once on wgpu and once on
   tiny-skia. Each launch must still be running after the wait, with no panic in
@@ -285,6 +321,17 @@ CI never runs this script with secrets. `.github/workflows/ci.yml` has
 - `bash -n` and `shellcheck -S warning` on `packaging/linux.sh` and
   `packaging/linux/in-container.sh`, and `/bin/bash -n` (macOS's bash 3.2) on
   the first.
+- `bash packaging/check.sh linux target/package/linux`: the `.deb`'s `Package`,
+  `Architecture`, `Version` (with `~dev` in a development build), `Maintainer`,
+  `Depends` (a `libc6` version, and the libraries section 6.3 names by hand) and
+  `Recommends`, read with `dpkg-deb -f`; its contents (`dpkg-deb -c`), including
+  the executable at mode 0755 and seven icons; the GLIBC symbol versions of the
+  unpacked executable (`objdump -T`), at most 2.35; and the AppImage, extracted
+  with `--appimage-extract`, which must hold `AppRun`, the desktop entry, and the
+  same executable as the `.deb`. `SHA256SUMS` must list both and check.
+- The CI job installs the `.deb` on the runner with apt, starts it under Xvfb
+  with `ci/liveness.sh` for 20 seconds on each renderer, and removes it. It
+  extracts the AppImage and runs the same check on the executable inside.
 - The input checks stop before Docker is used: a missing or wrong icon, an
   unset, placeholder or malformed maintainer, a `TAWARA_GPG_KEY` that names no
   secret key, and an unknown argument each exit with an error and a message.
@@ -310,6 +357,13 @@ CI never runs this script with secrets. `.github/workflows/ci.yml` has
 
 - `bash -n`, `shellcheck -S warning` and `shellcheck` on `packaging/windows.sh`,
   and `/bin/bash -n` (macOS's bash 3.2) on the same file.
+- `bash packaging/check.sh windows-exe target/x86_64-pc-windows-msvc/release/tawara-desktop.exe`:
+  the file is a Windows executable with an x86-64 machine type, names no Visual
+  C++ runtime DLL (so the static runtime applied), and its version resource reads
+  `FileVersion` `X.Y.Z.0`, `ProductName` Tawara, `ProductVersion` `X.Y.Z` (or
+  `X.Y.Z-dev`) and `FileDescription` Tawara, read by PowerShell.
+- `bash packaging/check.sh windows target/package/windows`, once the installer is
+  made: one installer, listed in `SHA256SUMS`, which checks.
 - `makensis` compiles `packaging/windows/tawara.nsi` with the defines the script
   passes, with `-WX` (warnings are errors), both unsigned and with signing on,
   using a stand-in `signtool`. With signing on, the uninstaller's signing command
@@ -357,8 +411,9 @@ Nothing below is settled by this change. The owner decides each one.
 - **Windows (D36 decisions 2, 6 and 8).** This change builds to their
   recommendations: NSIS rather than WiX, x86_64 only, and the pinned archive.
   Its open parts:
-  - **The NSIS hash.** `NSIS_SHA256` is empty, so a build refuses to start until
-    the owner records the hash, trusted on first use (D36 decision 8):
+  - **The NSIS hash.** `NSIS_SHA256` is empty, so a release refuses to start, and
+    a `--dev` build stops at the installer, until the owner records the hash,
+    trusted on first use (D36 decision 8):
     `--record-nsis` on one network and again on a second, the two hashes
     compared, then the value recorded by a pull request. NSIS publishes no
     checksum or signature.

@@ -1,0 +1,256 @@
+# The desktop packages, built unsigned on each host and checked: the packaging
+# job that docs/DECISIONS.md D36 describes under "What CI does", for the steps of
+# docs/RELEASE.md section 6. Each host runs its own script in development mode,
+# --dev, which makes the packages a release makes, unsigned, with a test icon
+# where a Linux package needs one, and not for distribution. packaging/check.sh
+# then runs the static checks that section 6 names for each target. Nothing is
+# uploaded, and a run's only output is its job log (D13).
+#
+# NO ACTIONS, as in ci.yml and spikes.yml (D13): every step is a command against
+# the runner's own git, rustup, Docker, apt-get, Xcode command-line tools and
+# PowerShell, and the clone is anonymous, of the commit by its SHA. The token has
+# no permission, and no step reads a secret. Signing and notarising are the
+# owner's, on the owner's machines (D36 decision 4), so nothing here can sign.
+#
+# It runs on a push to main, and on a pull request, when one of the files listed
+# below changes, and by hand. D36 names pull requests that touch the packaging
+# scripts; the list also has the files those scripts build from and check with.
+#
+# WHAT A GREEN RUN SAYS. On macos-latest: the universal app holds both
+# architectures, each with minos 11.0, and an Info.plist with the identifier and
+# minimum system version section 6.2 names; the disk image verifies and holds the
+# same executable; and the app starts on wgpu and on tiny-skia. On ubuntu-latest,
+# where the Linux build runs in the pinned Ubuntu 22.04 container: the .deb's
+# control fields are the ones packaging/check.sh expects, its executable needs no
+# glibc symbol newer than 2.35, and it holds the files section 6.3 lists. On the
+# runner the .deb installs with its dependencies, the app starts, and the package
+# is removed. The AppImage holds the same executable, which starts once extracted.
+# On windows-latest: the executable is x86-64, names no Visual C++ runtime DLL,
+# and carries the version resource.
+#
+# WHAT IS NOT CHECKED HERE. The installer: windows.sh makes it only once the owner
+# has recorded the NSIS archive's SHA-256 (D36 decision 8). Until then the Windows
+# leg stops at that step, and the installer check after it does not run. The
+# silent install and uninstall, the signatures, notarisation, stapling, Gatekeeper
+# and SmartScreen are the owner's checks, on clean machines (docs/RELEASE.md
+# section 7). The x86_64 slice of the macOS app is checked for its architecture
+# and its minimum version, and is not run.
+
+name: packaging
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packaging/**"
+      - "ci/liveness.sh"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "LICENSE.md"
+      - "THIRD-PARTY-NOTICES.txt"
+      - ".github/workflows/packaging.yml"
+  pull_request:
+    paths:
+      - "packaging/**"
+      - "ci/liveness.sh"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "LICENSE.md"
+      - "THIRD-PARTY-NOTICES.txt"
+      - ".github/workflows/packaging.yml"
+  workflow_dispatch:
+
+# The job reads a public repository and writes nothing, so the token is given no
+# permission at all. The clone below is anonymous.
+permissions: {}
+
+# A newer push to the same branch or pull request supersedes a run in flight.
+concurrency:
+  group: packaging-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  packaging:
+    name: packaging, ${{ matrix.os }}
+    strategy:
+      # A red host does not cancel the other two: each log is evidence of its own.
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    # Cold builds, each from nothing: the Linux build in its container with two
+    # jobs, the macOS build for two targets, and the Windows build.
+    timeout-minutes: 120
+    defaults:
+      run:
+        # `bash --noprofile --norc -e -o pipefail`; on Windows, Git Bash.
+        shell: bash
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Clone the commit under the user's profile
+        # Under the profile rather than the runner's workspace, as ci.yml does: on
+        # Windows a directory outside the profile can inherit an access list that
+        # grants other users. The commit is fetched by its id, as ci.yml explains.
+        run: |
+          base=$HOME
+          if [ -n "${USERPROFILE:-}" ]; then base=$(cygpath -u "$USERPROFILE"); fi
+          git clone --quiet --no-checkout "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$base/tawara"
+          git -C "$base/tawara" fetch --quiet origin "$GITHUB_SHA"
+          git -C "$base/tawara" checkout --quiet --detach "$GITHUB_SHA"
+          echo "TAWARA=$base/tawara" >> "$GITHUB_ENV"
+
+      - name: Refuse a checkout that is not the commit's bytes
+        # `.gitattributes` asks for LF on every text file, and a file git reports as
+        # CRLF in the working tree is a tree that is not the commit.
+        run: |
+          cd "$TAWARA"
+          eol=$(git ls-files --eol)
+          if printf '%s\n' "$eol" | grep 'w/crlf'; then
+            echo "The files above were checked out with CRLF line endings." >&2
+            exit 1
+          fi
+
+      - name: Name the commit, the host and the toolchain
+        # Its outcome gates the steps below: they run only when the clone, the
+        # line-ending refusal and the toolchain install all succeeded.
+        id: toolchain
+        run: |
+          cd "$TAWARA"
+          rustup toolchain install --no-self-update
+          echo "commit  $(git rev-parse HEAD)"
+          echo "date    $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "image   ${ImageOS:-unnamed} ${ImageVersion:-unversioned}"
+          echo "host    $(uname -srm)"
+          rustc -vV
+          cargo -V
+
+      - name: macOS, the Rust targets of the universal app
+        # rust-toolchain.toml names no targets, so the two the app is built for are
+        # added to the pinned compiler here.
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && runner.os == 'macOS' }}
+        run: |
+          cd "$TAWARA"
+          rustup target add x86_64-apple-darwin aarch64-apple-darwin
+
+      - name: macOS, packaging/macos.sh --dev
+        id: macos
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && runner.os == 'macOS' }}
+        run: |
+          cd "$TAWARA"
+          bash packaging/macos.sh --dev
+
+      - name: macOS, packaging/check.sh macos
+        if: ${{ !cancelled() && steps.macos.outcome == 'success' }}
+        run: |
+          cd "$TAWARA"
+          bash packaging/check.sh macos target/package/macos
+
+      - name: macOS, the app starts on wgpu and on tiny-skia
+        if: ${{ !cancelled() && steps.macos.outcome == 'success' }}
+        run: |
+          cd "$TAWARA"
+          LIVENESS_SECONDS=10 bash ci/liveness.sh "$TAWARA/target/package/macos/Tawara.app/Contents/MacOS/tawara-desktop"
+
+      - name: Linux, the tools for the icon sizes and the start-up checks
+        # ImageMagick makes the icon sizes where macOS's sips does not exist
+        # (packaging/linux.sh). Xvfb, xauth and the Vulkan packages are the ones
+        # ci.yml installs for ci/liveness.sh.
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && runner.os == 'Linux' }}
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends imagemagick xvfb xauth mesa-vulkan-drivers libvulkan1
+
+      - name: Linux, a test icon of 1024 pixels
+        # Not the owner's artwork, which docs/RELEASE.md section 1.2 names. A plain
+        # square makes the icon sizes, the .deb's icons and the AppImage. Nothing
+        # made here is published.
+        id: icon
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && runner.os == 'Linux' }}
+        run: |
+          python3 - "$RUNNER_TEMP/tawara-test-icon.png" <<'PY'
+          import struct
+          import sys
+          import zlib
+
+          path = sys.argv[1]
+          width = height = 1024
+          row = b"\x00" + bytes((29, 53, 87)) * width
+          raw = row * height
+
+          def chunk(kind, data):
+              return (struct.pack(">I", len(data)) + kind + data
+                      + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF))
+
+          png = (b"\x89PNG\r\n\x1a\n"
+                 + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+                 + chunk(b"IDAT", zlib.compress(raw, 9))
+                 + chunk(b"IEND", b""))
+          with open(path, "wb") as f:
+              f.write(png)
+          PY
+
+      - name: Linux, packaging/linux.sh --dev in the pinned Ubuntu 22.04 container
+        id: linux
+        if: ${{ !cancelled() && steps.icon.outcome == 'success' && runner.os == 'Linux' }}
+        run: |
+          cd "$TAWARA"
+          TAWARA_ICON_PNG="$RUNNER_TEMP/tawara-test-icon.png" \
+          TAWARA_DEB_MAINTAINER='Continuous Integration <ci@example.invalid>' \
+            bash packaging/linux.sh --dev
+
+      - name: Linux, packaging/check.sh linux
+        if: ${{ !cancelled() && steps.linux.outcome == 'success' }}
+        run: |
+          cd "$TAWARA"
+          bash packaging/check.sh linux target/package/linux
+
+      - name: Linux, the .deb installs with its dependencies, starts and is removed
+        if: ${{ !cancelled() && steps.linux.outcome == 'success' }}
+        run: |
+          cd "$TAWARA"
+          deb=$(ls target/package/linux/tawara-desktop_*_amd64.deb)
+          sudo apt-get install -y -q "$PWD/$deb"
+          dpkg -s tawara-desktop | grep -x 'Status: install ok installed'
+          LIVENESS_SECONDS=20 bash ci/liveness.sh /usr/bin/tawara-desktop
+          sudo apt-get remove -y -q tawara-desktop
+          if dpkg -s tawara-desktop 2>/dev/null | grep -x 'Status: install ok installed' >/dev/null; then
+            echo "tawara-desktop is still installed after the removal" >&2
+            exit 1
+          fi
+
+      - name: Linux, the AppImage's executable starts once extracted
+        # --appimage-extract needs no FUSE, so it runs on the runner as it is.
+        if: ${{ !cancelled() && steps.linux.outcome == 'success' }}
+        run: |
+          cd "$TAWARA"
+          appimage=$(ls "$TAWARA"/target/package/linux/Tawara-*-x86_64.AppImage)
+          extract="$RUNNER_TEMP/appimage-extract"
+          rm -rf "$extract"
+          mkdir -p "$extract"
+          (cd "$extract" && "$appimage" --appimage-extract >/dev/null)
+          LIVENESS_SECONDS=20 bash ci/liveness.sh "$extract/squashfs-root/usr/bin/tawara-desktop"
+
+      - name: Windows, packaging/windows.sh --dev in Git Bash
+        # Until the owner records the NSIS archive's SHA-256 (D36 decision 8), this
+        # step builds the executable and then stops before the installer, and the
+        # run is red at this step for that reason. The steps after it still run.
+        id: windows
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && runner.os == 'Windows' }}
+        run: |
+          cd "$TAWARA"
+          bash packaging/windows.sh --dev
+
+      - name: Windows, packaging/check.sh windows-exe
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && runner.os == 'Windows' }}
+        run: |
+          cd "$TAWARA"
+          bash packaging/check.sh windows-exe target/x86_64-pc-windows-msvc/release/tawara-desktop.exe
+
+      - name: Windows, packaging/check.sh windows, once the installer is made
+        if: ${{ steps.windows.outcome == 'success' && runner.os == 'Windows' }}
+        run: |
+          cd "$TAWARA"
+          bash packaging/check.sh windows target/package/windows

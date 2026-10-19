@@ -11,7 +11,8 @@
 #
 # Nothing here holds a key, certificate or password. Identities come from the
 # environment, and a step whose variable is unset is skipped with a message.
-# Run this on the Mac that holds the keys, never in CI (D13, D36).
+# Run a release on the Mac that holds the keys. The CI packaging job runs this
+# script with --dev on macos-latest: unsigned, and nothing kept (D13, D36).
 #
 # Usage: bash packaging/macos.sh [--dev] [--build-number N] [--out DIR]
 #

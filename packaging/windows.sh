@@ -2,6 +2,7 @@
 # Makes the Windows installer for Tawara: Tawara-X.Y.Z-x86_64-setup.exe, a
 # per-user NSIS installer for tawara-desktop.exe, with a SHA256SUMS file beside
 # it. Run it in Git Bash on Windows, on the machine that holds the signing token.
+# The CI packaging job runs it with --dev on windows-latest, unsigned (D36).
 #
 # The steps are docs/RELEASE.md section 6.1. Their choices are D36's
 # (docs/DECISIONS.md): NSIS 3.13, its archive pinned by SHA-256 and trusted on
@@ -41,8 +42,9 @@ export MSYS2_ARG_CONV_EXCL MSYS_NO_PATHCONV
 # The pin (D36 decision 8). NSIS publishes no checksum or signature for its
 # archive, so the SHA-256 is recorded on first use: run this script with
 # --record-nsis on one network, run it again on a second, compare the two hashes,
-# and record the value in NSIS_SHA256 by a pull request. Until then a build
-# refuses to start. The address follows the pattern of the setup program's
+# and record the value in NSIS_SHA256 by a pull request. Until then a release
+# refuses to start, and a --dev build stops at the installer, after its build and
+# checks. The address follows the pattern of the setup program's
 # address on NSIS's download page. The folder for 3.13 on SourceForge names this
 # archive (checked 2026-10-18); the first use confirms that it is the one.
 NSIS_VERSION=3.13
@@ -424,7 +426,13 @@ if [ "$will_sign" = yes ] && [ -z "$signtool_exe" ]; then
   die "signtool.exe was not found in the Windows SDK, and TAWARA_WIN_CERT_SHA1 is set. Set TAWARA_WINSDK_BIN to the SDK's x64 folder."
 fi
 
-fetch_nsis
+# A release gets the NSIS archive before its build, so a missing hash stops it
+# before the build's minutes (D36 decision 8). A development build gets it after
+# its build and checks, with the installer (see below), so that the executable
+# can be checked on a runner where the hash is not yet recorded.
+if ! $dev; then
+  fetch_nsis
+fi
 
 if [ -z "$out" ]; then
   out=$target_dir/package/windows
@@ -475,6 +483,11 @@ bin=$target_dir/x86_64-pc-windows-msvc/release/tawara-desktop.exe
 cp "$bin" "$stage/tawara-desktop.exe" || die "cannot copy the executable into $stage"
 cp "$root/LICENSE.md" "$root/THIRD-PARTY-NOTICES.txt" "$stage/" \
   || die "cannot copy the notices into $stage"
+
+# A development build gets the NSIS archive here, before the installer is made.
+if $dev; then
+  fetch_nsis
+fi
 
 signed=no
 if [ "$will_sign" = yes ]; then

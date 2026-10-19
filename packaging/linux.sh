@@ -12,8 +12,10 @@
 # awaits the owner.
 #
 # Nothing here holds a key, certificate or password. The GPG key is named by its
-# identity in the environment, and is used only when that variable is set. Run
-# this on the machine that holds the keys, never in CI (D13, D36).
+# identity in the environment, and is used only when that variable is set. A
+# release runs on the machine that holds the keys. The CI packaging job runs this
+# script with --dev on ubuntu-latest: unsigned, with a test icon, and nothing kept
+# (D13, D36).
 #
 # Usage: bash packaging/linux.sh [--dev] [--out DIR]
 #
@@ -151,18 +153,30 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/tawara-linux.XXXXXX") || die "cannot make a wo
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/icons"
 
-# The icon's sizes are made with sips, which macOS has. The icon is the owner's
-# artwork (docs/RELEASE.md section 1.2), and must be a square PNG of at least
-# 1024 pixels.
+# The icon's sizes are made with sips, which macOS has. Where sips is absent, as on
+# the CI packaging job's Linux runner, ImageMagick's identify and convert do the
+# same work. The icon is the owner's artwork (docs/RELEASE.md section 1.2), and
+# must be a square PNG of at least 1024 pixels.
 has_icon=no
 if [ -n "$icon" ]; then
   [ -f "$icon" ] || die "TAWARA_ICON_PNG names no file: $icon"
-  command -v sips >/dev/null 2>&1 || die "making the icon sizes needs sips, which macOS has"
-  icon_info=$(sips -g format -g pixelWidth -g pixelHeight "$icon" 2>/dev/null) \
-    || die "sips cannot read $icon"
-  icon_format=$(printf '%s\n' "$icon_info" | awk '$1 == "format:" { print $2 }')
-  icon_width=$(printf '%s\n' "$icon_info" | awk '$1 == "pixelWidth:" { print $2 }')
-  icon_height=$(printf '%s\n' "$icon_info" | awk '$1 == "pixelHeight:" { print $2 }')
+  if command -v sips >/dev/null 2>&1; then
+    icon_tool=sips
+    icon_info=$(sips -g format -g pixelWidth -g pixelHeight "$icon" 2>/dev/null) \
+      || die "sips cannot read $icon"
+    icon_format=$(printf '%s\n' "$icon_info" | awk '$1 == "format:" { print $2 }')
+    icon_width=$(printf '%s\n' "$icon_info" | awk '$1 == "pixelWidth:" { print $2 }')
+    icon_height=$(printf '%s\n' "$icon_info" | awk '$1 == "pixelHeight:" { print $2 }')
+  elif command -v identify >/dev/null 2>&1 && command -v convert >/dev/null 2>&1; then
+    icon_tool=imagemagick
+    icon_info=$(identify -format '%m %w %h\n' "$icon" 2>/dev/null | sed -n '1p') \
+      || die "identify cannot read $icon"
+    icon_format=$(printf '%s\n' "$icon_info" | awk '{ print tolower($1) }')
+    icon_width=$(printf '%s\n' "$icon_info" | awk '{ print $2 }')
+    icon_height=$(printf '%s\n' "$icon_info" | awk '{ print $3 }')
+  else
+    die "making the icon sizes needs sips (macOS), or ImageMagick's identify and convert"
+  fi
   [ "$icon_format" = png ] || die "TAWARA_ICON_PNG is not a PNG: $icon"
   case "$icon_width" in
     ''|*[!0-9]*) die "cannot read the width of $icon" ;;
@@ -171,8 +185,13 @@ if [ -n "$icon" ]; then
     || die "TAWARA_ICON_PNG is not square: $icon is $icon_width by $icon_height"
   [ "$icon_width" -ge 1024 ] || die "TAWARA_ICON_PNG is smaller than 1024 pixels: $icon"
   for size in 16 32 48 64 128 256 512; do
-    sips -z "$size" "$size" "$icon" --out "$work/icons/icon-$size.png" >/dev/null \
-      || die "sips could not make the $size-pixel icon"
+    if [ "$icon_tool" = sips ]; then
+      sips -z "$size" "$size" "$icon" --out "$work/icons/icon-$size.png" >/dev/null \
+        || die "sips could not make the $size-pixel icon"
+    else
+      convert "$icon" -resize "${size}x${size}" "PNG:$work/icons/icon-$size.png" \
+        || die "convert could not make the $size-pixel icon"
+    fi
   done
   has_icon=yes
 elif $dev; then
