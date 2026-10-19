@@ -3014,9 +3014,13 @@ As built, item by item:
   1.29.1, appimagetool 1.9.1 and its type 2 runtime 20251108
   (`packaging/linux.sh`). NSIS 3.13 `nsis-3.13.zip` sha256
   `ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8`, recorded
-  on first use 2026-10-19 at the owner's request; SourceForge's published SHA-1
+  on first use 2026-10-19 at the owner's request, from one network. The
+  second-network comparison in decision 8 has not been run. SourceForge's
+  folder listing publishes the same SHA-256, with SHA-1
   `db14f8af2ea346b786c6ae19343f61aaf5e09b8e` and MD5
-  `530e3623c077cba879ed2ae6e13be362` matched. Awaiting the owner.
+  `530e3623c077cba879ed2ae6e13be362`, and all three matched the file. They
+  all come from SourceForge, which also serves the download, so they do not
+  replace that comparison. Awaiting the owner.
 - **9, accounts.** Not built. They are the owner's, in `docs/RELEASE.md`
   section 1.2. Awaiting the owner.
 
