@@ -95,7 +95,9 @@ find_one() {
 # Dies unless DIR's SHA256SUMS lists NAME, and every file it lists checks.
 check_sums() {
   local dir=$1 name=$2
-  awk -v n="$name" '$2 == n { found = 1 } END { exit !found }' "$dir/SHA256SUMS" \
+  # sha256sum writes binary mode under Git Bash, as "hash *name", so the name may
+  # carry a leading asterisk. The name is compared without it.
+  awk -v n="$name" '{ f = $2; sub(/^[*]/, "", f); if (f == n) found = 1 } END { exit !found }' "$dir/SHA256SUMS" \
     || die "SHA256SUMS in $dir does not list $name"
   if command -v sha256sum >/dev/null 2>&1; then
     (cd "$dir" && sha256sum -c SHA256SUMS >/dev/null 2>&1) \
