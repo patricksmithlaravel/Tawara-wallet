@@ -26,15 +26,14 @@
 # runner the .deb installs with its dependencies, the app starts, and the package
 # is removed. The AppImage holds the same executable, which starts once extracted.
 # On windows-latest: the executable is x86-64, names no Visual C++ runtime DLL,
-# and carries the version resource.
+# and carries the version resource. Its installer, made from the NSIS archive
+# whose SHA-256 is recorded (D36 decision 8), is checked beside its SHA256SUMS.
 #
-# WHAT IS NOT CHECKED HERE. The installer: windows.sh makes it only once the owner
-# has recorded the NSIS archive's SHA-256 (D36 decision 8). Until then the Windows
-# leg stops at that step, and the installer check after it does not run. The
-# silent install and uninstall, the signatures, notarisation, stapling, Gatekeeper
-# and SmartScreen are the owner's checks, on clean machines (docs/RELEASE.md
-# section 7). The x86_64 slice of the macOS app is checked for its architecture
-# and its minimum version, and is not run.
+# WHAT IS NOT CHECKED HERE. The silent install and uninstall of the installer, the
+# signatures, notarisation, stapling, Gatekeeper and SmartScreen are the owner's
+# checks, on clean machines (docs/RELEASE.md section 7). The installer is unsigned
+# here. The x86_64 slice of the macOS app is checked for its architecture and its
+# minimum version, and is not run.
 
 name: packaging
 
@@ -236,9 +235,9 @@ jobs:
           LIVENESS_SECONDS=20 bash ci/liveness.sh "$extract/squashfs-root/usr/bin/tawara-desktop"
 
       - name: Windows, packaging/windows.sh --dev in Git Bash
-        # Until the owner records the NSIS archive's SHA-256 (D36 decision 8), this
-        # step builds the executable and then stops before the installer, and the
-        # run is red at this step for that reason. The steps after it still run.
+        # This step builds the executable, then makes the installer from the NSIS
+        # archive whose SHA-256 windows.sh records (D36 decision 8). The steps after
+        # it check the executable and the installer.
         id: windows
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && runner.os == 'Windows' }}
         run: |

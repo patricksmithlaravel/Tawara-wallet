@@ -289,8 +289,8 @@ threat model's wins and this summary is corrected.
   `packaging/linux/in-container.sh`) and `packaging/windows.sh` (with
   `packaging/windows/tawara.nsi`), checked by `packaging/check.sh` in the
   packaging job (`.github/workflows/packaging.yml`). The job's Windows leg
-  stays red until the owner records `NSIS_SHA256` (D36 decision 8). Still
-  open: the two phone scripts, in Tawara-mobile.
+  makes the installer from the NSIS archive whose SHA-256 is recorded (D36
+  decision 8). Still open: the two phone scripts, in Tawara-mobile.
 
 ## 4. Third-party notices
 

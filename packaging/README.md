@@ -298,10 +298,9 @@ The job has no third-party action (D13), `permissions: {}`, and no secret. Nothi
 is signed, notarised or uploaded. The test icon is a plain square that the job
 makes, not the owner's artwork, and nothing it makes is published.
 
-The Windows leg is red at `windows.sh` until the owner records `NSIS_SHA256`
-(D36 decision 8). That is the failure this job expects, and the installer check
-after that step does not run until the hash is recorded. Its executable check
-runs regardless.
+The Windows leg builds the executable and makes the installer with `windows.sh`
+from the NSIS archive whose SHA-256 is recorded (D36 decision 8). The executable
+check runs whether or not that step succeeds; the installer check runs after it.
 
 ## Checks
 
@@ -415,18 +414,13 @@ Nothing below is settled by this change. The owner decides each one.
   in this change runs them against any account.
 - **Windows (D36 decisions 2, 6 and 8).** This change builds to their
   recommendations: NSIS rather than WiX, x86_64 only, and the pinned archive.
-  Its open parts:
-  - **The NSIS hash.** `NSIS_SHA256` is empty, so a release refuses to start, and
-    a `--dev` build stops at the installer, until the owner records the hash,
-    trusted on first use (D36 decision 8):
-    `--record-nsis` on one network and again on a second, the two hashes
-    compared, then the value recorded by a pull request. NSIS publishes no
-    checksum or signature.
-  - **The archive.** D36 names `nsis-3.13.zip`. The SourceForge folder for 3.13
-    lists that zip (checked 2026-10-18), and the NSIS download page lists only
-    `nsis-3.13-setup.exe` and the source archive for 3.13. The script uses the
-    zip, and the first use confirms the address, or the owner chooses another
-    artifact (decision 8).
+  The archive is `nsis-3.13.zip`, which the SourceForge folder for 3.13 lists
+  (checked 2026-10-18); the NSIS download page lists only `nsis-3.13-setup.exe`
+  and the source archive for 3.13. Its hash was recorded on first use on
+  2026-10-19, at the owner's request, from one network, so the two-network check
+  that `--record-nsis` describes was not run. The folder's address and the
+  script's address gave the same bytes, and SourceForge's listing gives the same
+  SHA-1 and MD5 (decision 8). Its open parts:
   - **The publisher**, which D8 records as `patricksmithlaravel` and the owner
     confirms against the certificate's subject, and **the timestamp address**,
     which the certificate authority gives. The owner also supplies the icon.

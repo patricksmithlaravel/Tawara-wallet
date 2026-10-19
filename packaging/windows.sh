@@ -40,18 +40,20 @@ MSYS2_ARG_CONV_EXCL='*'
 MSYS_NO_PATHCONV=1
 export MSYS2_ARG_CONV_EXCL MSYS_NO_PATHCONV
 
-# The pin (D36 decision 8). NSIS publishes no checksum or signature for its
-# archive, so the SHA-256 is recorded on first use: run this script with
-# --record-nsis on one network, run it again on a second, compare the two hashes,
-# and record the value in NSIS_SHA256 by a pull request. Until then a release
-# refuses to start, and a --dev build stops at the installer, after its build and
-# checks. The address follows the pattern of the setup program's
-# address on NSIS's download page. The folder for 3.13 on SourceForge names this
-# archive (checked 2026-10-18); the first use confirms that it is the one.
+# The pin (D36 decision 8). NSIS's download page publishes no checksum or
+# signature for its archive, so the SHA-256 is recorded on first use: run this
+# script with --record-nsis on one network, run it again on a second, compare the
+# two hashes, and record the value in NSIS_SHA256 by a pull request. While
+# NSIS_SHA256 is empty, a release refuses to start, and a --dev build stops at the
+# installer, after its build and checks. The address follows the pattern of the
+# setup program's address on NSIS's download page. The folder for 3.13 on
+# SourceForge names this archive (checked 2026-10-18). The value below was
+# recorded on first use, on 2026-10-19 at the owner's request, from one network;
+# SourceForge's published SHA-1 and MD5 for the file matched it.
 NSIS_VERSION=3.13
 NSIS_FILE=nsis-3.13.zip
 NSIS_URL='https://prdownloads.sourceforge.net/nsis/nsis-3.13.zip?download'
-NSIS_SHA256=
+NSIS_SHA256=ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8
 
 # D8 records the Windows publisher as patricksmithlaravel. docs/RELEASE.md
 # section 1.2 has the owner confirm that it, or the certificate's subject, is the

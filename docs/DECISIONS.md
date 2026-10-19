@@ -2970,9 +2970,8 @@ As built, item by item:
   pinned container; `packaging/windows.sh` with `packaging/windows/tawara.nsi`;
   and `packaging/check.sh`, the static checks. Awaiting the owner.
 - **2, NSIS 3.13.** Built, from `nsis-3.13.zip`. `NSIS_SHA256` in
-  `packaging/windows.sh` is empty, so a release refuses to start, and a
-  `--dev` build stops at the installer, until the owner records the hash
-  (item 8). Awaiting the owner.
+  `packaging/windows.sh` holds the hash recorded under item 8, so a release
+  can start, and a `--dev` build reaches the installer. Awaiting the owner.
 - **3, the executable's name.** `tawara-desktop`, on every desktop system.
   Awaiting the owner.
 - **4, signing on the owner's machines.** Built. The packaging job
@@ -2992,9 +2991,11 @@ As built, item by item:
   `ubuntu:22.04@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956`,
   and each download is checked against a SHA-256 in the script: rustup-init
   1.29.1, appimagetool 1.9.1 and its type 2 runtime 20251108
-  (`packaging/linux.sh`). NSIS 3.13 is the exception until its hash is
-  recorded: the two-network first download and that recording are the
-  owner's step. Awaiting the owner.
+  (`packaging/linux.sh`). NSIS 3.13 `nsis-3.13.zip` sha256
+  `ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8`, recorded
+  on first use 2026-10-19 at the owner's request; SourceForge's published SHA-1
+  `db14f8af2ea346b786c6ae19343f61aaf5e09b8e` and MD5
+  `530e3623c077cba879ed2ae6e13be362` matched. Awaiting the owner.
 - **9, accounts.** Not built. They are the owner's, in `docs/RELEASE.md`
   section 1.2. Awaiting the owner.
 
