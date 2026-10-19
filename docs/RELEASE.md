@@ -290,7 +290,13 @@ threat model's wins and this summary is corrected.
 - [ ] **Packaging scripts merged** (delegated; D36): `packaging/` here,
   `platform/android/release.sh` and `platform/ios/release.sh` in
   Tawara-mobile with section 1.6's changes, and the packaging job green on
-  each.
+  each. **Desktop: built in PR #43, not yet merged.** The scripts are
+  `packaging/macos.sh`, `packaging/linux.sh` (with
+  `packaging/linux/in-container.sh`) and `packaging/windows.sh` (with
+  `packaging/windows/tawara.nsi`), checked by `packaging/check.sh` in the
+  packaging job (`.github/workflows/packaging.yml`). The job's Windows leg
+  makes the installer from the NSIS archive whose SHA-256 is recorded (D36
+  decision 8). Still open: the two phone scripts, in Tawara-mobile.
 
 ## 4. Third-party notices
 
@@ -305,12 +311,13 @@ records how; it is merged in both repositories before the first release.
   under the SIL Open Font License (D27 item 6).
 - [ ] **In every package** (delegated; the packaging scripts place it, with
   `LICENSE.md`):
-  - Windows: beside `tawara-desktop.exe` in the install folder;
-  - macOS: `Tawara.app/Contents/Resources/`;
+  - Windows: beside `tawara-desktop.exe` in the install folder
+    (`packaging/windows/tawara.nsi`; PR #43, not yet merged);
+  - macOS: `Tawara.app/Contents/Resources/` (`packaging/macos.sh`; PR #43);
   - `.deb`: `/usr/share/doc/tawara-desktop/`; AppImage: in the AppDir
-    beside the executable;
-  - Android: the bundle's `assets/`;
-  - iOS: the root of `Tawara.app`.
+    beside the executable (`packaging/linux/in-container.sh`; PR #43);
+  - Android: the bundle's `assets/` (open; Tawara-mobile);
+  - iOS: the root of `Tawara.app` (open; Tawara-mobile).
 - [ ] **Shown to people** (owner): a file inside a phone app cannot be
   opened by the person using it. **(Recommended)** a Licences page in
   Settings that draws the same file, with wording the owner approves.

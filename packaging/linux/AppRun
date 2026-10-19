@@ -1,0 +1,5 @@
+#!/bin/sh
+# The AppImage's entry point. It runs the executable beside this file, with the
+# arguments it was given.
+here=$(dirname "$(readlink -f "$0")")
+exec "$here/usr/bin/tawara-desktop" "$@"
