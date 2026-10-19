@@ -2681,9 +2681,15 @@ merge in.
 recommends, so that the notices are shown to people as well as packaged, is
 built. Settings' About card has a Licences row, "Show the licences", which
 opens the page (`crates/app/src/screens/wallet/licences.rs`; docs/SCREENS.md,
-W11a). The page draws `LICENSE.md` and `THIRD-PARTY-NOTICES.txt`, each
-embedded with `include_str!` from the repository root, so a build needs both
-files there. Each text is cut into parts of 40 lines, and each copy button
+W11a). The page draws `LICENSE.md`, embedded with `include_str!` from the repository
+root, and the notices. On the desktop the notices are the wallet's
+`THIRD-PARTY-NOTICES.txt`, embedded the same way, so a desktop build needs both
+files there. A phone's shell gives its own notices as `Host::notices`, a
+required field, since a phone is built from other crates than the desktop
+(D33): a shell cannot leave the page with the wallet's file. The phone has no
+page yet, because Tawara-mobile's pin predates it. Its move, with its own file,
+is Tawara-mobile's change, and the phones' part of section 4 stays open until
+it lands. Each text is cut into parts of 40 lines, and each copy button
 copies its whole text. Back returns to Settings, and opening the page and Back
 both scroll it to its top. The row's and the page's wording is new and awaits
 the owner's approval, so the checklist's item stays unticked. Settings' pixels

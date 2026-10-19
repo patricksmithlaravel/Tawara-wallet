@@ -1,9 +1,12 @@
 //! The licences, reached from Settings' About card (docs/DECISIONS.md D35;
 //! docs/RELEASE.md section 4): the wallet's own licence, the Mochimo agreement
 //! in `LICENSE.md` (docs/DECISIONS.md D10), and the notices of the software the
-//! wallet includes, `THIRD-PARTY-NOTICES.txt`, which `ci/notices.sh` writes.
-//! A file inside a phone app cannot be opened by the person using it, so both
-//! texts are embedded when the application is built, word for word.
+//! application includes. A file inside a phone app cannot be opened by the
+//! person using it, so the licence is embedded when the application is built,
+//! word for word. The notices are the desktop's `THIRD-PARTY-NOTICES.txt`,
+//! which `ci/notices.sh` writes, unless the shell gives its own
+//! (`Host::notices`): a phone is built from other crates than the desktop, and
+//! its package carries its own file.
 //!
 //! The page is one scrollable column of monospace text in cards, each with a
 //! copy button, so that it scrolls with a finger on a phone and with the wheel
@@ -13,8 +16,6 @@
 //!
 //! The wording of the Settings row and of this page is new, and it awaits the
 //! owner's approval (docs/RELEASE.md section 4).
-
-use std::sync::OnceLock;
 
 use iced::widget::text::Wrapping;
 use iced::widget::{column, row};
@@ -31,15 +32,13 @@ use crate::ui::{self, Size, t, ty};
 const LICENCE: &str = include_str!("../../../../../LICENSE.md");
 
 /// The notices of the software the wallet includes, as `ci/notices.sh` writes
-/// them (docs/DECISIONS.md D35). The generator appends the licence above.
+/// them (docs/DECISIONS.md D35). The generator appends the licence above. The
+/// desktop has no shell, so its page draws these; a phone draws the notices its
+/// shell gives (see the module's notes).
 const NOTICES: &str = include_str!("../../../../../THIRD-PARTY-NOTICES.txt");
 
 /// How many lines one part of a text holds (see the module's notes).
 const LINES: usize = 40;
-
-/// The parts of [`LICENCE`] and of [`NOTICES`], cut once.
-static LICENCE_PARTS: OnceLock<Vec<&'static str>> = OnceLock::new();
-static NOTICES_PARTS: OnceLock<Vec<&'static str>> = OnceLock::new();
 
 /// The licences page (W11's Licences): the wallet's licence, then the third
 /// party notices, each in a card under a Back that returns to Settings.
@@ -58,6 +57,8 @@ pub fn view<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> 
         to_settings,
     )
     .into();
+    // The shell's notices on a phone, and the wallet's own file on the desktop.
+    let notices = model.notices.unwrap_or(NOTICES);
     frame(
         model,
         page,
@@ -65,21 +66,13 @@ pub fn view<'a>(model: &'a Model, page: &'a WalletPage) -> Element<'a, Message> 
         "The wallet's own licence, and the notices of the software it includes",
         vec![back],
         vec![
-            text_card(
-                model,
-                page,
-                "Tawara's licence",
-                "Copy the licence",
-                LICENCE,
-                &LICENCE_PARTS,
-            ),
+            text_card(model, page, "Tawara's licence", "Copy the licence", LICENCE),
             text_card(
                 model,
                 page,
                 "Third-party notices",
                 "Copy the notices",
-                NOTICES,
-                &NOTICES_PARTS,
+                notices,
             ),
         ],
     )
@@ -95,7 +88,6 @@ fn text_card<'a>(
     title: &'a str,
     label: &'a str,
     whole: &'static str,
-    cell: &'static OnceLock<Vec<&'static str>>,
 ) -> Element<'a, Message> {
     let compact = model.compact();
     let title_text = t(title, ty::CARD_TITLE, color::TEXT_PRIMARY);
@@ -109,22 +101,14 @@ fn text_card<'a>(
             .into()
     };
     let mut lines: iced::widget::Column<'a, Message> = column![].width(Length::Fill);
-    for part in parts(whole, cell) {
+    for part in split(whole) {
         lines = lines.push(
-            t(*part, ty::PAGE, color::TEXT_SECONDARY)
+            t(part, ty::PAGE, color::TEXT_SECONDARY)
                 .wrapping(Wrapping::WordOrGlyph)
                 .width(Length::Fill),
         );
     }
     ui::card_for(compact, column![head, lines].spacing(sp::S16)).into()
-}
-
-/// The parts of `whole`, cut once into `cell`.
-fn parts(
-    whole: &'static str,
-    cell: &'static OnceLock<Vec<&'static str>>,
-) -> &'static [&'static str] {
-    cell.get_or_init(|| split(whole)).as_slice()
 }
 
 /// `whole` cut into parts of [`LINES`] lines, each without its last line
@@ -217,8 +201,8 @@ mod tests {
 
     #[test]
     fn the_parts_give_each_text_back_whole() {
-        for (whole, cell) in [(LICENCE, &LICENCE_PARTS), (NOTICES, &NOTICES_PARTS)] {
-            let parts = parts(whole, cell);
+        for whole in [LICENCE, NOTICES] {
+            let parts = split(whole);
             assert_eq!(parts.join("\n"), whole);
             assert!(parts.iter().all(|part| part.matches('\n').count() < LINES));
         }
@@ -234,8 +218,8 @@ mod tests {
             .into_iter()
             .map(|(text, _)| text)
             .collect();
-        for (whole, cell) in [(LICENCE, &LICENCE_PARTS), (NOTICES, &NOTICES_PARTS)] {
-            for part in parts(whole, cell) {
+        for whole in [LICENCE, NOTICES] {
+            for part in split(whole) {
                 assert!(
                     drawn.iter().any(|text| text == part),
                     "a part of the text is not drawn: {part:.60?}"
@@ -328,6 +312,44 @@ mod tests {
             .scroll_of(&screens::page_id())
             .map_or(0.0, |(_, offset)| offset.y);
         assert_eq!(top, 0.0, "the page is at its top");
+    }
+
+    #[test]
+    fn the_page_draws_the_notices_the_shell_gives_and_copies_them() {
+        // A phone's shell gives the notices its package carries (`Host::notices`),
+        // and the page draws those, whole, in place of the wallet's own file.
+        let body: String = (0..LINES * 2 + 5)
+            .map(|line| format!("a notice of the shell's own package, line {line}\n"))
+            .collect();
+        let shell: &'static str = format!("THIRD-PARTY NOTICES\n{body}").leak();
+        let mut model = licences_at(DESKTOP.0);
+        model.notices = Some(shell);
+        let drawn: Vec<String> = texts(screens::view(&model), DESKTOP)
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect();
+        for part in split(shell) {
+            assert!(
+                drawn.iter().any(|text| text == part),
+                "a part of the shell's notices is not drawn: {part:.60?}"
+            );
+        }
+        assert!(
+            !drawn
+                .iter()
+                .any(|text| text.contains("Tawara includes the third-party software")),
+            "the wallet's own notices are drawn in place of the shell's"
+        );
+        // The button copies what the shell gave, and it is drawn below the licence.
+        let tall = (DESKTOP.0, 20_000.0);
+        let messages = pressed(&model, "Copy the notices", tall);
+        assert!(
+            matches!(
+                messages.as_slice(),
+                [Message::Wallet(WalletMsg::Copy(text))] if text == shell
+            ),
+            "{messages:?}"
+        );
     }
 
     #[test]

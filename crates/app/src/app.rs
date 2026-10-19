@@ -255,6 +255,10 @@ pub struct Model {
     /// What the device unlock last found, for the screens to say (provisional
     /// wording, for the owner's approval; docs/DECISIONS.md D45 item 6).
     pub device_note: Option<String>,
+    /// The notices the Licences page draws, as the shell gave them
+    /// (`Host::notices`, docs/DECISIONS.md D35). `None` on the desktop, which
+    /// has no `Host`: the page draws the wallet's own file then.
+    pub(crate) notices: Option<&'static str>,
     /// The QR scanner the shell gives, where it gives one: phones only, as
     /// docs/DECISIONS.md D42 item 1 decides. `None` on the desktop, which offers
     /// no scan.
@@ -1186,6 +1190,7 @@ impl Model {
             device_asks: 0,
             device_asked: None,
             device_note: None,
+            notices: None,
             scanner: None,
             scanning: None,
             scan_asks: 0,
@@ -1474,6 +1479,8 @@ impl App {
         app.model.scanner = crate::scan::Scanner::of(host, replies);
         host::on_leaving(app.leaving_hook());
         host::on_capture(Arc::clone(&app.model.capture), host.captured);
+        // The Licences page draws the notices the shell packages (D35).
+        app.model.notices = Some(host.notices);
         // The shell answers an ask of the device's check from its own thread, and
         // the answer comes into the interface on this channel as a message
         // (docs/DECISIONS.md D45 item 4). Where the shell offers no device unlock,
@@ -10799,6 +10806,7 @@ mod tests {
             copy: copy_nothing,
             share: share_nothing,
             back: back_nothing,
+            notices: include_str!("../../../THIRD-PARTY-NOTICES.txt"),
             captured: None,
             device_check: Some(fake_check),
             keep_password: Some(fake_keep),
