@@ -15,7 +15,8 @@ user-visible wording listed under "Not decided".
 | `packaging/macos.sh` | the macOS packages: a universal `Tawara.app`, `Tawara-X.Y.Z.dmg`, `SHA256SUMS` | this change |
 | `packaging/macos/Info.plist` | the template for the bundle's `Info.plist`; the script sets its version, build number and minimum system version | this change |
 | `packaging/macos/entitlements.plist` | the hardened runtime's entitlements: an empty dictionary, so no exception is granted | this change |
-| `packaging/windows.*` | the NSIS installer, per user (D36 decision 2) | not yet written |
+| `packaging/windows.sh` | the Windows installer: `tawara-desktop.exe` for x86_64 with the static C runtime and its version resource, and `Tawara-X.Y.Z-x86_64-setup.exe`, a per-user NSIS installer, with `SHA256SUMS`. It is signed when a certificate is configured (D36 decision 2) | this change |
+| `packaging/windows/tawara.nsi` | the NSIS script the installer is made from | this change |
 | `packaging/linux.sh` | the AppImage and the `.deb` for x86_64, built in a pinned `ubuntu:22.04` container, with `SHA256SUMS` and optional GPG signatures | this change |
 | `packaging/linux/in-container.sh` | what runs inside that container: the build, the glibc floor check, the `.deb` and the AppImage | this change |
 | `packaging/linux/AppRun` | the AppImage's entry point: it runs the executable beside it | this change |
@@ -29,6 +30,10 @@ by version and hash where D36 says so. The scripts run under
 macOS's `/bin/bash` (version 3.2), and pass `bash -n` and
 `shellcheck -S warning`. `packaging/linux/in-container.sh` runs in the Linux
 container under that image's bash, and passes the same two checks.
+`packaging/windows.sh` is a plain shell script too (D36). It runs under Git Bash
+on Windows, the shell that CI's Windows jobs already use. It passes the same two
+checks, and its logic was also run under `/bin/bash` 3.2 on macOS, with test
+doubles for the Windows tools.
 
 ## `packaging/macos.sh`
 
@@ -166,6 +171,61 @@ versions of the packages `docs/RELEASE.md` section 6.3 names, and of `file` and
 and unpacking its squashfs part needs `squashfs-tools`. The image digest pins
 the base system only.
 
+## `packaging/windows.sh`
+
+Run it from the repository root, in Git Bash on Windows, on the machine that
+holds the signing token:
+
+```sh
+bash packaging/windows.sh --record-nsis   # first use only: prints the NSIS archive's SHA-256
+bash packaging/windows.sh --dev           # a local check build, not for distribution
+bash packaging/windows.sh --out DIR       # a release build (needs the variables below)
+```
+
+It makes these, in order, and stops with an error at the first step that fails:
+
+1. The NSIS 3.13 archive, `nsis-3.13.zip`, from SourceForge over HTTPS, when
+   `target/package/tools` has no copy with the recorded hash. The script refuses
+   to start until `NSIS_SHA256`, in the script, holds that hash (D36 decision 8;
+   see "Not decided"). It unpacks the archive with `Expand-Archive` and checks
+   that `makensis -VERSION` reports 3.13.
+2. The Rust target `x86_64-pc-windows-msvc`, and the Windows SDK's `rc.exe` and
+   `signtool.exe`: from `TAWARA_WINSDK_BIN`, or else from the newest
+   `Windows Kits\10\bin\10.*\x64` under `Program Files (x86)` that holds both.
+3. The version resource: `rc.exe` compiles the icon, when `TAWARA_WIN_ICO` is
+   set, and the version information, with `FileVersion` `X.Y.Z.0` and
+   `ProductVersion` `X.Y.Z` (`docs/RELEASE.md` section 6.1). A `--dev` build
+   without `rc.exe` has no resource.
+4. The build: `cargo build --release --locked -p tawara-desktop --target
+   x86_64-pc-windows-msvc`, with `target.x86_64-pc-windows-msvc.rustflags=["-C",
+   "target-feature=+crt-static"]` on the command line, as the checklist gives
+   it, and the resource's link flag in the same list. A release refuses when
+   `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS` or
+   `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS` is set, because cargo would
+   then ignore that list.
+5. When `TAWARA_WIN_CERT_SHA1` is set, `signtool sign /sha1 THUMBPRINT /fd sha256
+   /tr ADDRESS /td sha256` on `tawara-desktop.exe`, then `signtool verify /pa /v`.
+6. The installer, by `makensis -V2 -WX` on `packaging/windows/tawara.nsi`. It
+   installs per user into `%LOCALAPPDATA%\Programs\Tawara`, with a Start menu
+   entry named "Tawara", an uninstaller and an Installed apps entry, and it
+   places `LICENSE.md` and `THIRD-PARTY-NOTICES.txt` beside the executable. When
+   signing is on, NSIS signs the uninstaller as it makes it (`!uninstfinalize`).
+   makensis does not fail when that command fails, so the command also writes a
+   stamp file. When the stamp is missing, the script removes the installer and
+   stops.
+7. When signing is on, `signtool sign` and `signtool verify /pa /v` on the
+   installer.
+8. `SHA256SUMS` beside the installer, checked with `sha256sum -c`.
+
+The package goes to `target/package/windows` unless `--out` says otherwise, and
+the script ends with `signed: yes` or `signed: no`. A package that says `no`
+must not be published (`docs/RELEASE.md` section 6.1). The uninstaller's own
+signature is checked after an install, as the checklist asks:
+`signtool verify /pa /v "%LOCALAPPDATA%\Programs\Tawara\uninstall.exe"`. The
+uninstaller removes the program's files, its Start menu entry and its Installed
+apps entry, and never the store under `%LOCALAPPDATA%\Tawara` (D21). It does not
+stop a running Tawara, so close the app first.
+
 ## Environment
 
 No identity, team, key, certificate or password is read from a file, and none
@@ -194,6 +254,17 @@ the build's target directory is the volume described above.
 `TAWARA_MAC_SIGN_ID=-` makes an ad-hoc signature. It is not an identity, it
 exercises the signing steps for a local check, and its output is not for
 distribution.
+
+The Windows script reads these variables:
+
+| Variable | What it is for | Release | `--dev` |
+|---|---|---|---|
+| `TAWARA_WIN_ICO` | the app icon as an `.ico` file. The owner supplies the artwork (`docs/RELEASE.md` section 1.2). It is the executable's icon and the installer's | required | optional; without it the build has no icon |
+| `TAWARA_WIN_CERT_SHA1` | the SHA-1 thumbprint of the code-signing certificate, which signtool finds in the certificate store that holds the token | unset: unsigned, with a warning | signs when set |
+| `TAWARA_WIN_TIMESTAMP_URL` | the certificate authority's RFC 3161 timestamp address. `docs/RELEASE.md` names none, so the owner supplies it. It must be a plain `http` or `https` address made of letters, digits and `._~:/?=+,@-` | required when signing | required when signing |
+| `TAWARA_WIN_PUBLISHER` | the publisher name that Installed apps shows. Unset, it is `patricksmithlaravel`, D8's Windows publisher, which awaits the owner's confirmation (`docs/RELEASE.md` section 1.2). It may not hold a double quote, a dollar sign or a backquote | optional | optional |
+| `TAWARA_WINSDK_BIN` | the Windows SDK's `x64` folder holding `rc.exe` and `signtool.exe`, when the newest one found is not the one to use | optional | optional |
+| `CARGO_TARGET_DIR` | where cargo writes its output, read as cargo reads it: a relative path is relative to the repository root | optional | optional |
 
 CI never runs this script with secrets. `.github/workflows/ci.yml` has
 `permissions: {}`, and D36 decision 4 keeps signing on the owner's machines.
@@ -235,6 +306,26 @@ CI never runs this script with secrets. `.github/workflows/ci.yml` has
   runs the same files from their squashfs part (`docs/RELEASE.md` section 7
   says `--appimage-extract`).
 
+### Windows checks
+
+- `bash -n`, `shellcheck -S warning` and `shellcheck` on `packaging/windows.sh`,
+  and `/bin/bash -n` (macOS's bash 3.2) on the same file.
+- `makensis` compiles `packaging/windows/tawara.nsi` with the defines the script
+  passes, with `-WX` (warnings are errors), both unsigned and with signing on,
+  using a stand-in `signtool`. With signing on, the uninstaller's signing command
+  runs with the thumbprint and the timestamp address in it, and the stamp file
+  exists only after it succeeds. On macOS, NSIS needs a UTF-8 locale
+  (`LC_ALL=en_US.UTF-8`): with the C locale, the Homebrew build aborts with
+  `std::bad_alloc`.
+- On Windows, the first use of the NSIS archive: `bash packaging/windows.sh
+  --record-nsis` on one network, and again on a second. The two hashes must agree
+  before `NSIS_SHA256` is recorded.
+- Then `bash packaging/windows.sh --dev` on the Windows machine, and the Windows
+  entry of `docs/RELEASE.md` section 7 on a clean machine: install without an
+  administrator prompt, the Start menu entry starts the app, uninstall leaves the
+  store and preferences where they were, and any SmartScreen prompt names the
+  certificate's subject.
+
 ## Not decided
 
 Nothing below is settled by this change. The owner decides each one.
@@ -251,17 +342,34 @@ Nothing below is settled by this change. The owner decides each one.
   it is the version itself or a counter is the owner's to say.
 - **The app icon.** The artwork is the owner's (`docs/RELEASE.md` section 1.2;
   D27 item 2). The script only places an `.icns` it is given.
-- **User-visible wording (awaiting the owner).** This change adds none. The
-  name "Tawara" is D8's display name. No copyright line is set, so
-  `NSHumanReadableCopyright` is left out until the owner approves its wording.
-  The Licences page in Settings (`docs/RELEASE.md` section 4) is not in this
-  change.
+- **User-visible wording (awaiting the owner).** The Windows installer adds
+  wording: its pages use NSIS's English text, its file description is "Tawara
+  installer", and the executable's description is "Tawara". The name "Tawara" is
+  D8's display name. No copyright line is set: the installer's `LegalCopyright`
+  is present and empty, and `NSHumanReadableCopyright` is left out of the macOS
+  bundle until the owner approves its wording. The Licences page in Settings
+  (`docs/RELEASE.md` section 4) is not in this change.
 - **Xcode 26.6.** The build machine for this change has Xcode 27 only, so a
   `--dev` check uses that Xcode and says so. A release needs Xcode 26.6 beside
   it (`docs/RELEASE.md` section 1.6).
 - **Signing, notarisation and stapling** with the owner's identities. No step
   in this change runs them against any account.
-- **Windows.** Its script is not written yet.
+- **Windows (D36 decisions 2, 6 and 8).** This change builds to their
+  recommendations: NSIS rather than WiX, x86_64 only, and the pinned archive.
+  Its open parts:
+  - **The NSIS hash.** `NSIS_SHA256` is empty, so a build refuses to start until
+    the owner records the hash, trusted on first use (D36 decision 8):
+    `--record-nsis` on one network and again on a second, the two hashes
+    compared, then the value recorded by a pull request. NSIS publishes no
+    checksum or signature.
+  - **The archive.** D36 names `nsis-3.13.zip`. The SourceForge folder for 3.13
+    lists that zip (checked 2026-10-18), and the NSIS download page lists only
+    `nsis-3.13-setup.exe` and the source archive for 3.13. The script uses the
+    zip, and the first use confirms the address, or the owner chooses another
+    artifact (decision 8).
+  - **The publisher**, which D8 records as `patricksmithlaravel` and the owner
+    confirms against the certificate's subject, and **the timestamp address**,
+    which the certificate authority gives. The owner also supplies the icon.
 - **The Linux choices in D36, awaiting the owner.** This change builds to D36's
   recommendations for Linux: the AppImage and the `.deb` (decision 1); the
   x86_64 architecture with glibc 2.35 as the floor (decision 6); the identifier
